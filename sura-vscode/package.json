@@ -1,0 +1,133 @@
+{
+  "name": "sura-language",
+  "displayName": "Sura Language Support",
+  "description": "한국어 친화적 프로그래밍 언어 Sura의 완벽한 VS Code 지원",
+  "version": "1.2.0",
+  "publisher": "sura-team",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onLanguage:sura"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "sura",
+        "aliases": [
+          "Sura",
+          "sura"
+        ],
+        "extensions": [
+          ".sura"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sura",
+        "scopeName": "source.sura",
+        "path": "./syntaxes/sura.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "sura.runFile",
+        "title": "Sura: Run File",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.runREPL",
+        "title": "Sura: Open REPL",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.lint",
+        "title": "Sura: Lint Current File",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.format",
+        "title": "Sura: Format Document",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.runJIT",
+        "title": "Sura: Run File (JIT)",
+        "category": "Sura"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "sura.runFile",
+        "key": "ctrl+shift+r",
+        "when": "editorLangId == sura"
+      },
+      {
+        "command": "sura.format",
+        "key": "ctrl+shift+l",
+        "when": "editorLangId == sura"
+      },
+      {
+        "command": "sura.runJIT",
+        "key": "ctrl+shift+j",
+        "when": "editorLangId == sura"
+      }
+    ],
+    "configuration": {
+      "title": "Sura",
+      "properties": {
+        "sura.enginePath": {
+          "type": "string",
+          "default": "SuraEngine2.exe",
+          "description": "Sura 엔진 경로"
+        },
+        "sura.linting.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Sura 린팅 활성화"
+        },
+        "sura.autoFormat": {
+          "type": "boolean",
+          "default": true,
+          "description": "저장 시 자동 포맷팅"
+        },
+        "sura.hoverDocumentation": {
+          "type": "boolean",
+          "default": true,
+          "description": "호버 시 문서 표시"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run esbuild-base -- --minify",
+    "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "node ./out/test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "@typescript-eslint/eslint-plugin": "^5.0.0",
+    "@typescript-eslint/parser": "^5.0.0",
+    "esbuild": "^0.15.0",
+    "eslint": "^8.0.0",
+    "typescript": "^4.8.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.0.0"
+  }
+}

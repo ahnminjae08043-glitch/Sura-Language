@@ -1,0 +1,28 @@
+// ================================
+// 수라 표준 라이브러리: math
+// 사용법: use math
+// ================================
+// 내장 명령어 (main.cpp 지원):
+//   abs 값 결과       → 절댓값
+//   sqrt 값 결과      → 제곱근
+//   pow 밑 지수 결과  → 거듭제곱
+//   floor 값 결과     → 내림
+//   ceil 값 결과      → 올림
+//   min a b 결과      → 최솟값
+//   max a b 결과      → 최댓값
+
+// 클램프: _val을 _lo~_hi 범위로 제한 → _r
+// 입력: _val _lo _hi
+func clamp do
+    _r is _val
+    if _r < _lo then _r is _lo
+    if _r > _hi then _r is _hi
+end
+
+// sign: _val의 부호 → _r (양수:1, 0:0, 음수:-1)
+// 입력: _val
+func sign do
+    _r is 0
+    if _val > 0 then _r is 1
+    if _val < 0 then _r is -1
+end

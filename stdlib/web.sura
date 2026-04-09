@@ -1,0 +1,105 @@
+// ================================
+// 수라 표준 라이브러리: web
+// 웹 개발 지원 (HTTP, JSON, API)
+// 사용법: use web
+// ================================
+// 내장 명령어 (interpreter.hpp 지원 필요):
+//   http_get 주소 결과           → GET 요청
+//   http_post 주소 데이터 결과   → POST 요청
+//   json_parse 문자열 결과       → JSON 파싱
+//   json_stringify 객체 결과     → JSON 문자열화
+//   url_encode 문자열 결과       → URL 인코딩
+//   url_decode 문자열 결과       → URL 디코딩
+
+// ================================
+// 기본 HTTP 클라이언트
+// ================================
+
+// GET 요청 (JSON 응답)
+// 입력: _url
+// 출력: _result (응답 문자열)
+func http_get_json do
+    http_get _url _result
+    json_parse _result _parsed
+end
+
+// POST 요청 (JSON 전송)
+// 입력: _url, _data (객체)
+// 출력: _result (응답 문자열)
+func http_post_json do
+    json_stringify _data _json_str
+    http_post _url _json_str _result
+end
+
+// ================================
+// JSON 유틸리티
+// ================================
+
+// JSON에서 특정 필드 추출
+// 입력: _json, _key
+// 출력: _value
+func json_get do
+    # 간단한 key-value 추출
+    # 앞으로 native 구현으로 대체
+end
+
+// JSON 배열 길이
+// 입력: _json_array
+// 출력: _length
+func json_array_len do
+    # JSON 배열 길이 계산
+end
+
+// ================================
+// API 클라이언트 패턴
+// ================================
+
+// REST API 요청 (메서드 지정)
+// 입력: _method ("GET", "POST", "PUT", "DELETE")
+// 입력: _url, _headers (옵션), _body (옵션)
+// 출력: _response
+func rest_request do
+    # 나중에 구현
+end
+
+// API 응답 상태 확인
+// 입력: _response
+// 출력: _status_code
+func get_status_code do
+    # 응답 헤더에서 상태 코드 추출
+end
+
+// ================================
+// 형식 변환
+// ================================
+
+// CSV를 객체 배열로 변환
+// 입력: _csv_string
+// 출력: _array
+func csv_to_json do
+    # CSV 파싱
+end
+
+// XML을 객체로 변환 (기본)
+// 입력: _xml_string
+// 출력: _object
+func xml_to_object do
+    # XML 파싱
+end
+
+// ================================
+// 웹 서버 운영 (고급)
+// ================================
+
+// 간단한 웹 서버 시작
+// 입력: _port
+func start_server do
+    # 웹 서버 미니 구현
+end
+
+// 웹 소켓 지원
+// 입력: _url
+// 출력: _connection
+func websocket_connect do
+    # WebSocket 연결
+end

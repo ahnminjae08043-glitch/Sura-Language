@@ -1,0 +1,13 @@
+**
+.git
+.gitignore
+.vscodeignore
+**/.git
+**/.gitigore
+**/.DS_Store
+*.snap
+!node_modules/
+!.vscode-test/
+!**/*.map
+out/test
+src/test

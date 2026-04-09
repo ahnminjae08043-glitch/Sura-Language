@@ -1,0 +1,6 @@
+rand_int 1 100 결과1
+rand_int 1 100 결과2
+rand_int 1 100 결과3
+print 결과1
+print 결과2
+print 결과3

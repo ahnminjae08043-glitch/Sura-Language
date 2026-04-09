@@ -1,0 +1,1350 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>수라(SURA) 언어 레퍼런스</title>
+<style>
+  :root {
+    --bg:       #0f1117;
+    --surface:  #1a1d27;
+    --border:   #2a2d3e;
+    --accent:   #7c6af7;
+    --accent2:  #4fc3f7;
+    --green:    #56d364;
+    --yellow:   #e3b341;
+    --red:      #f85149;
+    --text:     #e6edf3;
+    --muted:    #8b949e;
+    --code-bg:  #161b22;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    min-height: 100vh;
+    font-size: 15px;
+    line-height: 1.6;
+  }
+
+  /* ── Sidebar ── */
+  nav {
+    width: 240px;
+    min-width: 240px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 20px 0;
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+
+  nav .logo {
+    padding: 0 20px 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+
+  nav .logo h1 {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+
+  nav .logo span {
+    font-size: 11px;
+    color: var(--muted);
+    display: block;
+    margin-top: 2px;
+  }
+
+  nav a {
+    display: block;
+    padding: 6px 20px;
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 13px;
+    transition: color .15s, background .15s;
+    border-left: 2px solid transparent;
+  }
+
+  nav a:hover {
+    color: var(--text);
+    background: rgba(124,106,247,.08);
+    border-left-color: var(--accent);
+  }
+
+  nav .nav-section {
+    padding: 12px 20px 4px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ── Main ── */
+  main {
+    flex: 1;
+    padding: 48px 56px;
+    max-width: 960px;
+  }
+
+  h1.page-title {
+    font-size: 32px;
+    font-weight: 800;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+
+  .page-subtitle {
+    color: var(--muted);
+    margin-bottom: 48px;
+    font-size: 15px;
+  }
+
+  section { margin-bottom: 56px; }
+
+  h2 {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 10px;
+    margin-bottom: 22px;
+    scroll-margin-top: 24px;
+  }
+
+  h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent2);
+    margin: 24px 0 10px;
+  }
+
+  p { color: var(--muted); margin-bottom: 12px; }
+
+  /* ── Code blocks ── */
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
+    overflow-x: auto;
+    margin: 10px 0 18px;
+    font-size: 13.5px;
+    line-height: 1.7;
+  }
+
+  code {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    color: var(--text);
+  }
+
+  pre code .kw  { color: #ff7b72; }   /* 키워드 */
+  pre code .fn  { color: #d2a8ff; }   /* 함수/명령 */
+  pre code .str { color: #a5d6ff; }   /* 문자열 */
+  pre code .num { color: #79c0ff; }   /* 숫자 */
+  pre code .cmt { color: #8b949e; font-style: italic; } /* 주석 */
+  pre code .op  { color: #ff7b72; }   /* 연산자 */
+  pre code .var { color: #ffa657; }   /* 변수 */
+
+  /* inline code */
+  :not(pre) > code {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 13px;
+    color: var(--accent2);
+  }
+
+  /* ── Tables ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 10px 0 20px;
+    font-size: 13.5px;
+  }
+
+  th {
+    background: var(--surface);
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    padding: 8px 14px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+
+  td {
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+
+  td code { font-size: 12.5px; }
+
+  tr:last-child td { border-bottom: none; }
+
+  /* ── Cards ── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+
+  .card h4 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+
+  .card pre { margin: 0; padding: 12px 14px; font-size: 12.5px; }
+
+  /* ── Badges ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+
+  .badge-new { background: rgba(86,211,100,.15); color: var(--green); }
+  .badge-tip { background: rgba(79,195,247,.12); color: var(--accent2); }
+
+  /* ── Note box ── */
+  .note {
+    background: rgba(124,106,247,.08);
+    border: 1px solid rgba(124,106,247,.25);
+    border-radius: 6px;
+    padding: 12px 16px;
+    margin: 12px 0;
+    font-size: 13.5px;
+    color: var(--muted);
+  }
+
+  .note strong { color: var(--accent); }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── Table scroll wrapper ── */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── Hamburger button (mobile only) ── */
+  .hamburger {
+    display: none;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 200;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .hamburger span {
+    display: block;
+    width: 20px;
+    height: 2px;
+    background: var(--text);
+    border-radius: 2px;
+    transition: transform .2s, opacity .2s;
+  }
+  .hamburger.open span:nth-child(1) { transform: translateY(7px) rotate(45deg); }
+  .hamburger.open span:nth-child(2) { opacity: 0; }
+  .hamburger.open span:nth-child(3) { transform: translateY(-7px) rotate(-45deg); }
+
+  /* ── Nav overlay (mobile) ── */
+  .nav-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.5);
+    z-index: 98;
+  }
+
+  /* ── Mobile breakpoint ── */
+  @media (max-width: 768px) {
+    body { font-size: 14px; }
+
+    .hamburger { display: flex; }
+    .nav-overlay { display: block; opacity: 0; pointer-events: none; transition: opacity .2s; }
+    .nav-overlay.visible { opacity: 1; pointer-events: auto; }
+
+    nav {
+      position: fixed;
+      left: -260px;
+      top: 0;
+      z-index: 100;
+      height: 100vh;
+      width: 240px;
+      transition: left .25s ease;
+      box-shadow: 4px 0 20px rgba(0,0,0,.4);
+    }
+    nav.open { left: 0; }
+
+    main {
+      padding: 72px 20px 40px;
+      max-width: 100%;
+    }
+
+    h1.page-title { font-size: 24px; }
+    h2 { font-size: 18px; }
+
+    .card-grid { grid-template-columns: 1fr; }
+
+    table { display: block; overflow-x: auto; white-space: nowrap; }
+    th, td { padding: 8px 10px; font-size: 12.5px; }
+
+    pre { font-size: 12px; padding: 14px 14px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 햄버거 버튼 -->
+<button class="hamburger" id="ham" aria-label="메뉴">
+  <span></span><span></span><span></span>
+</button>
+<div class="nav-overlay" id="overlay"></div>
+
+<!-- ══════════ SIDEBAR ══════════ -->
+<nav id="sidebar">
+  <div class="logo">
+    <h1>수라 언어</h1>
+    <span>SURA v11 · 레퍼런스</span>
+  </div>
+
+  <span class="nav-section">시작하기</span>
+  <a href="#start">실행 방법</a>
+  <a href="#basics">기본 문법</a>
+  <a href="#types">타입 시스템</a>
+
+  <span class="nav-section">제어 흐름</span>
+  <a href="#conditions">조건문</a>
+  <a href="#loops">반복문</a>
+
+  <span class="nav-section">함수 &amp; 클래스</span>
+  <a href="#functions">함수</a>
+  <a href="#classes">클래스</a>
+  <a href="#errors">에러 처리</a>
+
+  <span class="nav-section">자료구조</span>
+  <a href="#arrays">배열</a>
+  <a href="#dicts">딕셔너리</a>
+  <a href="#strings">문자열</a>
+
+  <span class="nav-section">내장 명령</span>
+  <a href="#math">수학</a>
+  <a href="#random">랜덤</a>
+  <a href="#time">시간</a>
+  <a href="#grid">그리드</a>
+  <a href="#window">창 (SFML)</a>
+  <a href="#input">키/마우스 입력</a>
+  <a href="#files">파일</a>
+
+  <span class="nav-section">기타</span>
+  <a href="#stdlib">표준 라이브러리</a>
+  <a href="#operators">연산자 우선순위</a>
+  <a href="#errors-ref">오류 메시지</a>
+  <a href="#engine">엔진 구조</a>
+  <a href="#examples">전체 예제</a>
+</nav>
+
+<!-- ══════════ MAIN ══════════ -->
+<main>
+
+<h1 class="page-title">수라(SURA) 언어 레퍼런스</h1>
+<p class="page-subtitle">한국어 친화적 게임 개발용 스크립팅 언어 · C++17 트리-워크 인터프리터</p>
+
+<!-- ─────────────────────────── START ─────────────────────────── -->
+<section id="start">
+<h2>설치 및 실행</h2>
+
+<h3>1단계 — 필요한 것</h3>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>도구</th><th>용도</th><th>설치 방법</th></tr></thead>
+  <tbody>
+    <tr><td><strong>MSYS2</strong></td><td>Windows 용 패키지 관리자 / 빌드 환경</td><td><a href="https://www.msys2.org" style="color:var(--accent2)">msys2.org</a> 에서 설치</td></tr>
+    <tr><td><strong>MinGW-w64 g++</strong></td><td>C++17 컴파일러</td><td>아래 명령으로 설치</td></tr>
+    <tr><td><strong>SFML</strong></td><td>2D 그래픽/창 라이브러리</td><td>아래 명령으로 설치</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>2단계 — MSYS2 터미널에서 의존성 설치</h3>
+<pre><code><span class="cmt"># MSYS2 MinGW 64-bit 터미널 열기 후 실행</span>
+pacman -S mingw-w64-x86_64-gcc
+pacman -S mingw-w64-x86_64-sfml</code></pre>
+
+<div class="note">
+  <strong>주의:</strong> 반드시 <strong>MSYS2 MinGW x64</strong> 터미널을 사용하세요 (MSYS2 MSYS 터미널 아님).
+</div>
+
+<h3>3단계 — 빌드</h3>
+<pre><code><span class="cmt"># 소스 폴더로 이동</span>
+cd /c/Users/유저이름/Documents/Sura
+
+<span class="cmt"># make 사용 (권장)</span>
+make
+
+<span class="cmt"># 또는 직접 컴파일</span>
+g++ -std=c++17 -O2 main2.cpp -o SuraEngine2.exe \
+    -IC:/msys64/mingw64/include \
+    -LC:/msys64/mingw64/lib \
+    -lsfml-graphics -lsfml-window -lsfml-system</code></pre>
+
+<h3>4단계 — 실행</h3>
+<pre><code><span class="cmt"># 스크립트 파일 실행</span>
+./SuraEngine2.exe 파일명.sura
+
+<span class="cmt"># REPL (실시간 모드)</span>
+./SuraEngine2.exe
+
+<span class="cmt"># REPL 종료</span>
+exit</code></pre>
+
+<div class="note">
+  <strong>REPL</strong>에서는 식을 단독으로 입력하면 결과가 자동 출력됩니다. 예: <code>3 + 4</code> → <code>7</code>
+</div>
+</section>
+
+<!-- ─────────────────────────── BASICS ─────────────────────────── -->
+<section id="basics">
+<h2>기본 문법</h2>
+
+<h3>변수 선언 및 대입</h3>
+<pre><code>x <span class="kw">is</span> <span class="num">10</span>
+이름 <span class="kw">is</span> <span class="str">"수라"</span>
+켜짐 <span class="kw">is</span> <span class="kw">true</span>
+없음 <span class="kw">is</span> <span class="kw">nil</span></code></pre>
+
+<h3>복합 대입 연산자 <span class="badge badge-new">v11</span></h3>
+<pre><code>x <span class="op">+=</span> <span class="num">3</span>    <span class="cmt"># x = x + 3</span>
+x <span class="op">-=</span> <span class="num">1</span>    <span class="cmt"># x = x - 1</span>
+x <span class="op">*=</span> <span class="num">2</span>    <span class="cmt"># x = x * 2</span>
+x <span class="op">/=</span> <span class="num">4</span>    <span class="cmt"># x = x / 4</span>
+x <span class="op">%=</span> <span class="num">3</span>    <span class="cmt"># x = x % 3</span></code></pre>
+
+<h3>산술 연산</h3>
+<pre><code>결과 <span class="kw">is</span> x <span class="op">+</span> <span class="num">5</span>
+결과 <span class="kw">is</span> (x <span class="op">+</span> <span class="num">3</span>) <span class="op">*</span> <span class="num">2</span>   <span class="cmt"># 괄호 지원</span>
+결과 <span class="kw">is</span> x <span class="op">%</span> <span class="num">3</span>          <span class="cmt"># 나머지</span></code></pre>
+
+<h3>출력</h3>
+<pre><code><span class="fn">print</span> <span class="str">"안녕하세요"</span>
+<span class="fn">print</span> x
+<span class="fn">print</span> <span class="str">"점수: {score}"</span>         <span class="cmt"># 문자열 보간</span>
+<span class="fn">print</span> <span class="str">"결과: {x + y}"</span>          <span class="cmt"># 표현식 보간</span>
+<span class="fn">print</span> <span class="str">"중괄호: {{리터럴}}"</span>    <span class="cmt"># {{ }} 로 리터럴 중괄호</span>
+<span class="fn">print</span>                           <span class="cmt"># 빈 줄</span>
+<span class="fn">print_n</span> <span class="str">"줄바꿈 없이"</span>          <span class="cmt"># 줄바꿈 없이 출력</span></code></pre>
+
+<h3>입력</h3>
+<pre><code><span class="fn">input</span> 변수명
+<span class="fn">input</span> <span class="str">"이름을 입력하세요: "</span> 변수명</code></pre>
+
+<h3>증감 단축</h3>
+<pre><code><span class="fn">inc</span> x    <span class="cmt"># x = x + 1</span>
+<span class="fn">dec</span> x    <span class="cmt"># x = x - 1</span></code></pre>
+
+<h3>주석</h3>
+<pre><code><span class="cmt"># 이것은 주석입니다</span>
+<span class="cmt">// 이것도 주석입니다</span></code></pre>
+
+<h3>삼항 연산자 <span class="badge badge-new">v11</span></h3>
+<pre><code>결과 <span class="kw">is</span> x <span class="op">&gt;</span> <span class="num">0</span> <span class="op">?</span> <span class="str">"양수"</span> <span class="op">:</span> <span class="str">"음수"</span>
+메시지 <span class="kw">is</span> 켜짐 <span class="op">?</span> <span class="str">"ON"</span> <span class="op">:</span> <span class="str">"OFF"</span></code></pre>
+
+<h3>비트 연산자 <span class="badge badge-new">v11</span></h3>
+<pre><code>a <span class="kw">is</span> <span class="num">0b0110</span>   <span class="cmt"># 바이너리 리터럴은 미지원 — 십진수 사용</span>
+a <span class="kw">is</span> <span class="num">6</span>
+b <span class="kw">is</span> <span class="num">3</span>
+
+<span class="fn">print</span> a <span class="op">&amp;</span> b    <span class="cmt"># 2  (AND)</span>
+<span class="fn">print</span> a <span class="op">|</span> b    <span class="cmt"># 7  (OR)</span>
+<span class="fn">print</span> a <span class="op">^</span> b    <span class="cmt"># 5  (XOR)</span>
+<span class="fn">print</span> <span class="op">~</span>a       <span class="cmt"># -7 (NOT)</span>
+<span class="fn">print</span> a <span class="op">&lt;&lt;</span> <span class="num">1</span>  <span class="cmt"># 12 (왼쪽 시프트)</span>
+<span class="fn">print</span> a <span class="op">&gt;&gt;</span> <span class="num">1</span>  <span class="cmt"># 3  (오른쪽 시프트)</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── TYPES ─────────────────────────── -->
+<section id="types">
+<h2>타입 시스템</h2>
+
+<table>
+  <thead><tr><th>타입</th><th>예시</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>숫자</code></td><td><code>42</code>, <code>3.14</code>, <code>-7</code></td><td>64비트 부동소수점</td></tr>
+    <tr><td><code>문자열</code></td><td><code>"안녕"</code></td><td>UTF-8 문자열</td></tr>
+    <tr><td><code>불리언</code></td><td><code>true</code>, <code>false</code></td><td>참/거짓</td></tr>
+    <tr><td><code>nil</code></td><td><code>nil</code></td><td>값 없음</td></tr>
+    <tr><td><code>배열</code></td><td><code>[1, 2, 3]</code></td><td>동적 배열</td></tr>
+    <tr><td><code>딕셔너리</code></td><td><code>{"키": 값}</code></td><td>키-값 맵</td></tr>
+  </tbody>
+</table>
+
+<h3>타입 확인 및 변환</h3>
+<pre><code><span class="fn">type</span> x 결과        <span class="cmt"># 타입 이름 문자열 → 결과  ("숫자", "문자열", ...)</span>
+<span class="fn">to_num</span> <span class="str">"42"</span> 결과  <span class="cmt"># 문자열 → 숫자</span>
+<span class="fn">to_str</span> <span class="num">42</span> 결과    <span class="cmt"># 숫자 → 문자열</span></code></pre>
+
+<h3>암시적 변환</h3>
+<table>
+  <thead><tr><th>식</th><th>결과</th><th>규칙</th></tr></thead>
+  <tbody>
+    <tr><td><code>"10" + 5</code></td><td><code>15</code></td><td>숫자형 문자열은 숫자로 자동 변환</td></tr>
+    <tr><td><code>"안녕" + "!"</code></td><td><code>"안녕!"</code></td><td>문자열 + 문자열 = 연결</td></tr>
+    <tr><td><code>true + 1</code></td><td><code>2</code></td><td>bool → 숫자 (true=1, false=0)</td></tr>
+  </tbody>
+</table>
+
+<h3>참/거짓 판별 (truthy)</h3>
+<table>
+  <thead><tr><th>값</th><th>결과</th></tr></thead>
+  <tbody>
+    <tr><td><code>nil</code></td><td>거짓</td></tr>
+    <tr><td><code>false</code></td><td>거짓</td></tr>
+    <tr><td><code>0</code></td><td>거짓</td></tr>
+    <tr><td><code>""</code> (빈 문자열)</td><td>거짓</td></tr>
+    <tr><td><code>[]</code> (빈 배열)</td><td>거짓</td></tr>
+    <tr><td>나머지 모두</td><td>참</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ─────────────────────────── CONDITIONS ─────────────────────────── -->
+<section id="conditions">
+<h2>조건문</h2>
+
+<h3>인라인 (한 줄)</h3>
+<pre><code><span class="kw">if</span> x <span class="op">&gt;</span> <span class="num">5</span> <span class="kw">then</span> <span class="fn">print</span> <span class="str">"크다"</span>
+<span class="kw">if</span> 켜짐 <span class="kw">then</span> running <span class="kw">is</span> <span class="num">0</span></code></pre>
+
+<h3>블록</h3>
+<pre><code><span class="kw">if</span> x <span class="op">&gt;</span> <span class="num">5</span> <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"크다"</span>
+<span class="kw">else</span>
+    <span class="fn">print</span> <span class="str">"작거나 같다"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>elif <span class="badge badge-new">v11</span></h3>
+<pre><code><span class="kw">if</span> 점수 <span class="op">&gt;=</span> <span class="num">90</span> <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"A"</span>
+<span class="kw">elif</span> 점수 <span class="op">&gt;=</span> <span class="num">80</span> <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"B"</span>
+<span class="kw">elif</span> 점수 <span class="op">&gt;=</span> <span class="num">70</span> <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"C"</span>
+<span class="kw">else</span>
+    <span class="fn">print</span> <span class="str">"F"</span>
+<span class="kw">end</span></code></pre>
+
+<div class="note">
+  <strong>참고:</strong> <code>elif</code>는 파서 단계에서 중첩된 <code>if/else</code>로 변환됩니다. 체인 끝에 <code>end</code>는 하나만 씁니다.
+</div>
+
+<h3>비교 연산자</h3>
+<table>
+  <thead><tr><th>연산자</th><th>의미</th></tr></thead>
+  <tbody>
+    <tr><td><code>==</code></td><td>같다</td></tr>
+    <tr><td><code>!=</code></td><td>다르다</td></tr>
+    <tr><td><code>&gt;</code></td><td>크다</td></tr>
+    <tr><td><code>&lt;</code></td><td>작다</td></tr>
+    <tr><td><code>&gt;=</code></td><td>크거나 같다</td></tr>
+    <tr><td><code>&lt;=</code></td><td>작거나 같다</td></tr>
+    <tr><td><code>in</code></td><td>포함 여부 (배열/딕셔너리/문자열)</td></tr>
+  </tbody>
+</table>
+
+<h3><code>in</code> 연산자 <span class="badge badge-new">v11</span></h3>
+<pre><code>과일 <span class="kw">is</span> [<span class="str">"사과"</span>, <span class="str">"바나나"</span>, <span class="str">"딸기"</span>]
+<span class="fn">print</span> <span class="str">"사과"</span> <span class="kw">in</span> 과일    <span class="cmt"># true</span>
+<span class="fn">print</span> <span class="str">"포도"</span> <span class="kw">in</span> 과일    <span class="cmt"># false</span>
+
+정보 <span class="kw">is</span> {<span class="str">"이름"</span>: <span class="str">"수라"</span>, <span class="str">"버전"</span>: <span class="num">11</span>}
+<span class="fn">print</span> <span class="str">"이름"</span> <span class="kw">in</span> 정보     <span class="cmt"># true (키 확인)</span>
+
+<span class="fn">print</span> <span class="str">"하세"</span> <span class="kw">in</span> <span class="str">"안녕하세요"</span>  <span class="cmt"># true (부분 문자열)</span></code></pre>
+
+<h3>논리 연산자</h3>
+<pre><code><span class="kw">if</span> x <span class="op">&gt;</span> <span class="num">0</span> <span class="kw">and</span> y <span class="op">&gt;</span> <span class="num">0</span> <span class="kw">then</span> <span class="fn">print</span> <span class="str">"둘 다 양수"</span>
+<span class="kw">if</span> x <span class="op">==</span> <span class="num">0</span> <span class="kw">or</span> y <span class="op">==</span> <span class="num">0</span> <span class="kw">then</span> <span class="fn">print</span> <span class="str">"하나는 0"</span>
+<span class="kw">if</span> <span class="kw">not</span> 켜짐 <span class="kw">then</span> <span class="fn">print</span> <span class="str">"꺼짐"</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── LOOPS ─────────────────────────── -->
+<section id="loops">
+<h2>반복문</h2>
+
+<h3>while</h3>
+<pre><code><span class="kw">while</span> x <span class="op">&gt;</span> <span class="num">0</span> <span class="kw">do</span>
+    <span class="fn">print</span> x
+    x <span class="op">-=</span> <span class="num">1</span>
+<span class="kw">end</span></code></pre>
+
+<h3>repeat (N번 반복)</h3>
+<pre><code><span class="kw">repeat</span> <span class="num">5</span> <span class="kw">do</span>
+    <span class="fn">print</span> <span class="str">"안녕"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>for — 숫자 범위</h3>
+<pre><code><span class="cmt"># to / ~ 모두 동일</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="num">1</span> <span class="kw">to</span> <span class="num">10</span> <span class="kw">do</span>
+    <span class="fn">print</span> i
+<span class="kw">end</span>
+
+<span class="cmt"># step 지정</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="num">0</span> <span class="kw">to</span> <span class="num">100</span> <span class="kw">step</span> <span class="num">10</span> <span class="kw">do</span>
+    <span class="fn">print</span> i
+<span class="kw">end</span>
+
+<span class="cmt"># 역순</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="num">10</span> <span class="kw">to</span> <span class="num">1</span> <span class="kw">step</span> <span class="op">-</span><span class="num">1</span> <span class="kw">do</span>
+    <span class="fn">print</span> i
+<span class="kw">end</span></code></pre>
+
+<h3>for — 배열 순회</h3>
+<pre><code>과일 <span class="kw">is</span> [<span class="str">"사과"</span>, <span class="str">"바나나"</span>, <span class="str">"딸기"</span>]
+
+<span class="cmt"># 값만</span>
+<span class="kw">for</span> v <span class="kw">in</span> 과일 <span class="kw">do</span>
+    <span class="fn">print</span> v
+<span class="kw">end</span>
+
+<span class="cmt"># 인덱스 + 값  (v11)</span>
+<span class="kw">for</span> i, v <span class="kw">in</span> 과일 <span class="kw">do</span>
+    <span class="fn">print</span> <span class="str">"{i}: {v}"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>for — 딕셔너리 순회 <span class="badge badge-new">v11</span></h3>
+<pre><code>정보 <span class="kw">is</span> {<span class="str">"이름"</span>: <span class="str">"수라"</span>, <span class="str">"버전"</span>: <span class="num">11</span>}
+
+<span class="kw">for</span> k, v <span class="kw">in</span> 정보 <span class="kw">do</span>
+    <span class="fn">print</span> <span class="str">"{k} = {v}"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>break / continue</h3>
+<pre><code><span class="cmt"># break — 반복 탈출</span>
+<span class="kw">while</span> <span class="num">1</span> <span class="kw">do</span>
+    <span class="fn">input</span> <span class="str">"입력: "</span> 값
+    <span class="kw">if</span> 값 <span class="op">==</span> <span class="str">"q"</span> <span class="kw">then</span> <span class="kw">break</span>
+<span class="kw">end</span>
+
+<span class="cmt"># continue — 다음 순환으로</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="num">1</span> <span class="kw">to</span> <span class="num">10</span> <span class="kw">do</span>
+    <span class="kw">if</span> i <span class="op">%</span> <span class="num">2</span> <span class="op">==</span> <span class="num">0</span> <span class="kw">then</span> <span class="kw">continue</span>
+    <span class="fn">print</span> i    <span class="cmt"># 홀수만 출력</span>
+<span class="kw">end</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── FUNCTIONS ─────────────────────────── -->
+<section id="functions">
+<h2>함수</h2>
+
+<h3>기본 정의 및 호출</h3>
+<pre><code><span class="cmt"># 매개변수 없음</span>
+<span class="kw">func</span> <span class="fn">인사</span> <span class="kw">do</span>
+    <span class="fn">print</span> <span class="str">"안녕하세요!"</span>
+<span class="kw">end</span>
+<span class="fn">인사</span>           <span class="cmt"># 반환값 필요 없을 때</span>
+
+<span class="cmt"># 매개변수 있음</span>
+<span class="kw">func</span> <span class="fn">더하기</span>(a, b) <span class="kw">do</span>
+    <span class="kw">return</span> a <span class="op">+</span> b
+<span class="kw">end</span>
+
+결과 <span class="kw">is</span> <span class="fn">더하기</span>(<span class="num">3</span>, <span class="num">5</span>)   <span class="cmt"># 반환값 사용</span>
+<span class="fn">print</span> 결과               <span class="cmt"># 8</span></code></pre>
+
+<h3>기본 매개변수 <span class="badge badge-new">v11</span></h3>
+<p>매개변수 뒤에 <code>is 기본값</code>을 쓰면 호출 시 생략 가능합니다. 기본값은 함수 정의 시점에 평가됩니다.</p>
+<pre><code><span class="kw">func</span> <span class="fn">인사</span>(이름 <span class="kw">is</span> <span class="str">"손님"</span>, 횟수 <span class="kw">is</span> <span class="num">1</span>) <span class="kw">do</span>
+    <span class="kw">repeat</span> 횟수 <span class="kw">do</span>
+        <span class="fn">print</span> <span class="str">"안녕하세요, {이름}!"</span>
+    <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="fn">인사</span>()              <span class="cmt"># "안녕하세요, 손님!"</span>
+<span class="fn">인사</span>(<span class="str">"수라"</span>)        <span class="cmt"># "안녕하세요, 수라!"</span>
+<span class="fn">인사</span>(<span class="str">"수라"</span>, <span class="num">3</span>)    <span class="cmt"># 3번 출력</span></code></pre>
+
+<h3>재귀</h3>
+<pre><code><span class="kw">func</span> <span class="fn">팩토리얼</span>(n) <span class="kw">do</span>
+    <span class="kw">if</span> n <span class="op">&lt;=</span> <span class="num">1</span> <span class="kw">then</span> <span class="kw">return</span> <span class="num">1</span>
+    <span class="kw">return</span> n <span class="op">*</span> <span class="fn">팩토리얼</span>(n <span class="op">-</span> <span class="num">1</span>)
+<span class="kw">end</span>
+
+<span class="fn">print</span> <span class="fn">팩토리얼</span>(<span class="num">5</span>)    <span class="cmt"># 120</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── CLASSES ─────────────────────────── -->
+<section id="classes">
+<h2>클래스</h2>
+
+<h3>정의 및 인스턴스 생성</h3>
+<pre><code><span class="kw">class</span> 몬스터 <span class="kw">do</span>
+    이름 <span class="kw">is</span> <span class="str">"몬스터"</span>
+    체력 <span class="kw">is</span> <span class="num">100</span>
+    공격력 <span class="kw">is</span> <span class="num">10</span>
+
+    <span class="kw">func</span> <span class="fn">init</span>(이름, 체력) <span class="kw">do</span>    <span class="cmt"># 생성자</span>
+        <span class="kw">self</span>.이름 <span class="kw">is</span> 이름
+        <span class="kw">self</span>.체력 <span class="kw">is</span> 체력
+    <span class="kw">end</span>
+
+    <span class="kw">func</span> <span class="fn">공격</span> <span class="kw">do</span>
+        <span class="fn">print</span> <span class="str">"{self.이름}이 {self.공격력} 데미지!"</span>
+    <span class="kw">end</span>
+
+    <span class="kw">func</span> <span class="fn">피해</span>(양) <span class="kw">do</span>
+        <span class="kw">self</span>.체력 <span class="op">-=</span> 양
+        <span class="kw">if</span> <span class="kw">self</span>.체력 <span class="op">&lt;=</span> <span class="num">0</span> <span class="kw">then</span>
+            <span class="fn">print</span> <span class="str">"{self.이름} 쓰러짐!"</span>
+        <span class="kw">end</span>
+    <span class="kw">end</span>
+<span class="kw">end</span>
+
+슬라임 <span class="kw">is</span> <span class="kw">new</span> 몬스터(<span class="str">"슬라임"</span>, <span class="num">50</span>)
+드래곤 <span class="kw">is</span> <span class="kw">new</span> 몬스터(<span class="str">"드래곤"</span>, <span class="num">300</span>)
+
+슬라임.공격()
+드래곤.피해(<span class="num">80</span>)
+<span class="fn">print</span> 슬라임.체력</code></pre>
+
+<h3>상속 (extends)</h3>
+<pre><code><span class="kw">class</span> 보스 <span class="kw">extends</span> 몬스터 <span class="kw">do</span>
+    패턴 <span class="kw">is</span> <span class="num">1</span>
+
+    <span class="kw">func</span> <span class="fn">피해</span>(양) <span class="kw">do</span>        <span class="cmt"># 메서드 오버라이드</span>
+        <span class="kw">self</span>.체력 <span class="op">-=</span> 양 <span class="op">/</span> <span class="num">2</span>  <span class="cmt"># 절반만 받음</span>
+        <span class="fn">print</span> <span class="str">"{self.이름}이 저항!"</span>
+    <span class="kw">end</span>
+
+    <span class="kw">func</span> <span class="fn">분노</span> <span class="kw">do</span>
+        <span class="kw">self</span>.패턴 <span class="kw">is</span> <span class="num">2</span>
+        <span class="fn">print</span> <span class="str">"{self.이름} 분노!"</span>
+    <span class="kw">end</span>
+<span class="kw">end</span>
+
+보스몹 <span class="kw">is</span> <span class="kw">new</span> 보스(<span class="str">"드래곤"</span>, <span class="num">500</span>)
+보스몹.피해(<span class="num">100</span>)   <span class="cmt"># 오버라이드된 메서드</span>
+보스몹.분노()        <span class="cmt"># 보스 전용 메서드</span>
+보스몹.공격()        <span class="cmt"># 부모에서 상속</span></code></pre>
+
+<div class="note">
+  <strong>self</strong>는 현재 인스턴스를 가리킵니다. 메서드 내에서 필드에 접근할 때는 반드시 <code>self.필드명</code>을 사용하세요.
+</div>
+</section>
+
+<!-- ─────────────────────────── ERRORS ─────────────────────────── -->
+<section id="errors">
+<h2>에러 처리</h2>
+
+<h3>try / catch / end</h3>
+<pre><code><span class="kw">try</span>
+    <span class="fn">print</span> 없는변수
+<span class="kw">catch</span> 오류
+    <span class="fn">print</span> <span class="str">"오류 발생: {오류}"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>throw</h3>
+<pre><code><span class="kw">func</span> <span class="fn">나누기</span>(a, b) <span class="kw">do</span>
+    <span class="kw">if</span> b <span class="op">==</span> <span class="num">0</span> <span class="kw">then</span>
+        <span class="kw">throw</span> <span class="str">"0으로 나눌 수 없습니다"</span>
+    <span class="kw">end</span>
+    <span class="kw">return</span> a <span class="op">/</span> b
+<span class="kw">end</span>
+
+<span class="kw">try</span>
+    결과 <span class="kw">is</span> <span class="fn">나누기</span>(<span class="num">10</span>, <span class="num">0</span>)
+<span class="kw">catch</span> 오류
+    <span class="fn">print</span> <span class="str">"잡힘: {오류}"</span>
+<span class="kw">end</span></code></pre>
+
+<div class="note">
+  <strong>런타임 오류</strong>(예: 0 나누기, 정의되지 않은 변수)도 <code>try/catch</code>로 잡을 수 있습니다.
+</div>
+
+<h3>스택 트레이스</h3>
+<p>오류 발생 시 호출 경로를 자동으로 출력합니다:</p>
+<pre><code>[수라 런타임 오류] 정의되지 않은 변수: 'x'
+  호출 경로:
+    [2] 함수B (5줄)
+    [1] 함수A (10줄)</code></pre>
+</section>
+
+<!-- ─────────────────────────── ARRAYS ─────────────────────────── -->
+<section id="arrays">
+<h2>배열</h2>
+
+<h3>리터럴</h3>
+<pre><code>과일 <span class="kw">is</span> [<span class="str">"사과"</span>, <span class="str">"바나나"</span>, <span class="str">"딸기"</span>]
+숫자 <span class="kw">is</span> [<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>, <span class="num">4</span>, <span class="num">5</span>]
+빈배열 <span class="kw">is</span> []</code></pre>
+
+<h3>인덱스 접근</h3>
+<pre><code><span class="fn">print</span> 과일[<span class="num">0</span>]        <span class="cmt"># "사과" (0-기반)</span>
+<span class="fn">print</span> 과일[<span class="op">-</span><span class="num">1</span>]       <span class="cmt"># "딸기" (음수 인덱스)</span>
+과일[<span class="num">1</span>] <span class="kw">is</span> <span class="str">"포도"</span>    <span class="cmt"># 수정</span></code></pre>
+
+<h3>배열 명령</h3>
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>arr_push arr 값</code></td><td>끝에 추가</td></tr>
+    <tr><td><code>arr_pop arr [결과]</code></td><td>끝에서 제거 (결과에 저장 가능)</td></tr>
+    <tr><td><code>arr_len arr 결과</code></td><td>길이 → 결과</td></tr>
+    <tr><td><code>arr_get arr 인덱스 결과</code></td><td>인덱스 읽기 → 결과</td></tr>
+    <tr><td><code>arr_set arr 인덱스 값</code></td><td>인덱스 쓰기</td></tr>
+    <tr><td><code>arr_insert arr 인덱스 값</code></td><td>중간 삽입</td></tr>
+    <tr><td><code>arr_remove arr 인덱스</code></td><td>인덱스 제거</td></tr>
+    <tr><td><code>arr_sort arr</code></td><td>정렬 (오름차순)</td></tr>
+    <tr><td><code>arr_copy arr 결과</code></td><td>얕은 복사 → 결과</td></tr>
+    <tr><td><code>arr_new 결과</code></td><td>빈 배열 생성 → 결과</td></tr>
+  </tbody>
+</table>
+
+<h3>예제 — 합계 계산</h3>
+<pre><code>점수 <span class="kw">is</span> [<span class="num">90</span>, <span class="num">75</span>, <span class="num">88</span>, <span class="num">95</span>, <span class="num">60</span>]
+합계 <span class="kw">is</span> <span class="num">0</span>
+
+<span class="kw">for</span> v <span class="kw">in</span> 점수 <span class="kw">do</span>
+    합계 <span class="op">+=</span> v
+<span class="kw">end</span>
+
+<span class="fn">arr_len</span> 점수 n
+<span class="fn">print</span> <span class="str">"평균: {합계 / n}"</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── DICTS ─────────────────────────── -->
+<section id="dicts">
+<h2>딕셔너리</h2>
+
+<h3>리터럴 <span class="badge badge-new">v11</span></h3>
+<pre><code>플레이어 <span class="kw">is</span> {<span class="str">"이름"</span>: <span class="str">"용사"</span>, <span class="str">"체력"</span>: <span class="num">100</span>, <span class="str">"공격력"</span>: <span class="num">25</span>}
+빈딕트 <span class="kw">is</span> {}</code></pre>
+
+<h3>닷 표기법 접근</h3>
+<pre><code>플레이어.이름 <span class="kw">is</span> <span class="str">"용사"</span>
+플레이어.체력 <span class="kw">is</span> <span class="num">100</span>
+<span class="fn">print</span> 플레이어.이름
+플레이어.체력 <span class="op">-=</span> <span class="num">10</span></code></pre>
+
+<h3>딕셔너리 명령</h3>
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>dict_new 결과</code></td><td>빈 딕셔너리 생성 → 결과</td></tr>
+    <tr><td><code>dict_set d 키 값</code></td><td>키-값 설정</td></tr>
+    <tr><td><code>dict_get d 키 결과</code></td><td>키로 값 읽기 → 결과</td></tr>
+    <tr><td><code>dict_has d 키 결과</code></td><td>키 존재 여부 → 결과 (true/false)</td></tr>
+    <tr><td><code>dict_del d 키</code></td><td>키 삭제</td></tr>
+    <tr><td><code>dict_keys d 결과</code></td><td>모든 키 배열 → 결과</td></tr>
+    <tr><td><code>dict_len d 결과</code></td><td>키 개수 → 결과</td></tr>
+  </tbody>
+</table>
+
+<h3>예제</h3>
+<pre><code>inventory <span class="kw">is</span> {<span class="str">"검"</span>: <span class="num">1</span>, <span class="str">"포션"</span>: <span class="num">5</span>}
+
+<span class="fn">dict_has</span> inventory <span class="str">"포션"</span> 있음
+<span class="kw">if</span> 있음 <span class="kw">then</span>
+    <span class="fn">dict_get</span> inventory <span class="str">"포션"</span> 수량
+    <span class="fn">print</span> <span class="str">"포션 {수량}개"</span>
+<span class="kw">end</span>
+
+<span class="fn">dict_keys</span> inventory 키목록
+<span class="kw">for</span> k <span class="kw">in</span> 키목록 <span class="kw">do</span>
+    <span class="fn">dict_get</span> inventory k v
+    <span class="fn">print</span> <span class="str">"{k}: {v}"</span>
+<span class="kw">end</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── STRINGS ─────────────────────────── -->
+<section id="strings">
+<h2>문자열</h2>
+
+<h3>문자열 보간</h3>
+<pre><code>이름 <span class="kw">is</span> <span class="str">"수라"</span>
+<span class="fn">print</span> <span class="str">"안녕, {이름}!"</span>          <span class="cmt"># 변수 삽입</span>
+<span class="fn">print</span> <span class="str">"1+2 = {1 + 2}"</span>           <span class="cmt"># 표현식 삽입</span>
+<span class="fn">print</span> <span class="str">"중괄호: {{리터럴}}"</span>     <span class="cmt"># {{ }} = 리터럴 {}</span></code></pre>
+
+<h3>문자열 명령</h3>
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>str_len s 결과</code></td><td>길이 → 결과</td></tr>
+    <tr><td><code>str_sub s 시작 길이 결과</code></td><td>부분 문자열 → 결과</td></tr>
+    <tr><td><code>str_upper s 결과</code></td><td>대문자 변환 → 결과</td></tr>
+    <tr><td><code>str_lower s 결과</code></td><td>소문자 변환 → 결과</td></tr>
+    <tr><td><code>str_find s 패턴 결과</code></td><td>첫 위치 → 결과 (없으면 -1)</td></tr>
+    <tr><td><code>str_replace s 대상 바꿀값 결과</code></td><td>치환 → 결과</td></tr>
+    <tr><td><code>str_split s 구분자 결과</code></td><td>분리 → 배열 결과</td></tr>
+    <tr><td><code>str_join arr 구분자 결과</code></td><td>배열 합치기 → 결과</td></tr>
+    <tr><td><code>str_num s 결과</code></td><td>문자 → ASCII 숫자 → 결과</td></tr>
+    <tr><td><code>num_str n 결과</code></td><td>ASCII 숫자 → 문자 → 결과</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">str_len</span>  <span class="str">"안녕하세요"</span> 결과            <span class="cmt"># → 5</span>
+<span class="fn">str_sub</span>  <span class="str">"안녕하세요"</span> <span class="num">0</span> <span class="num">2</span> 결과       <span class="cmt"># → "안녕"</span>
+<span class="fn">str_upper</span> <span class="str">"hello"</span> 결과              <span class="cmt"># → "HELLO"</span>
+<span class="fn">str_find</span> <span class="str">"안녕하세요"</span> <span class="str">"하세"</span> 결과  <span class="cmt"># → 2</span>
+<span class="fn">str_split</span> <span class="str">"a,b,c"</span> <span class="str">","</span> 결과          <span class="cmt"># → ["a","b","c"]</span>
+<span class="fn">str_join</span>  결과 <span class="str">"-"</span> 합침              <span class="cmt"># → "a-b-c"</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── MATH ─────────────────────────── -->
+<section id="math">
+<h2>수학 명령</h2>
+
+<table>
+  <thead><tr><th>명령</th><th>설명</th><th>예시</th></tr></thead>
+  <tbody>
+    <tr><td><code>abs n 결과</code></td><td>절댓값</td><td><code>abs -5 r</code> → 5</td></tr>
+    <tr><td><code>sqrt n 결과</code></td><td>제곱근</td><td><code>sqrt 16 r</code> → 4</td></tr>
+    <tr><td><code>pow 밑 지수 결과</code></td><td>거듭제곱</td><td><code>pow 2 10 r</code> → 1024</td></tr>
+    <tr><td><code>floor n 결과</code></td><td>내림</td><td><code>floor 3.7 r</code> → 3</td></tr>
+    <tr><td><code>ceil n 결과</code></td><td>올림</td><td><code>ceil 3.2 r</code> → 4</td></tr>
+    <tr><td><code>round n 결과</code></td><td>반올림</td><td><code>round 3.5 r</code> → 4</td></tr>
+    <tr><td><code>min a b 결과</code></td><td>최솟값</td><td><code>min 3 7 r</code> → 3</td></tr>
+    <tr><td><code>max a b 결과</code></td><td>최댓값</td><td><code>max 3 7 r</code> → 7</td></tr>
+    <tr><td><code>sin n 결과</code></td><td>사인 (라디안)</td><td></td></tr>
+    <tr><td><code>cos n 결과</code></td><td>코사인 (라디안)</td><td></td></tr>
+    <tr><td><code>tan n 결과</code></td><td>탄젠트 (라디안)</td><td></td></tr>
+    <tr><td><code>log n 결과</code></td><td>자연로그</td><td></td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ─────────────────────────── RANDOM ─────────────────────────── -->
+<section id="random">
+<h2>랜덤</h2>
+
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>rand 결과</code></td><td>0.0 ~ 1.0 실수 난수 → 결과</td></tr>
+    <tr><td><code>rand_int 최소 최대 결과</code></td><td>정수 난수 → 결과</td></tr>
+    <tr><td><code>random 최소 ~ 최대 결과</code></td><td>정수 난수 (특수 문법)</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">rand</span> r                   <span class="cmt"># r = 0.0 ~ 1.0</span>
+<span class="fn">rand_int</span> <span class="num">1</span> <span class="num">6</span> 주사위     <span class="cmt"># 1 ~ 6</span>
+<span class="fn">random</span> <span class="num">1</span> <span class="op">~</span> <span class="num">100</span> 결과    <span class="cmt"># 1 ~ 100</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── TIME ─────────────────────────── -->
+<section id="time">
+<h2>시간</h2>
+
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>sleep ms</code></td><td>밀리초(ms) 동안 대기</td></tr>
+    <tr><td><code>time 결과</code></td><td>유닉스 타임스탬프 → 결과</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">sleep</span> <span class="num">1000</span>        <span class="cmt"># 1초 대기</span>
+<span class="fn">time</span> 현재          <span class="cmt"># 현재 시각 (초)</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── GRID ─────────────────────────── -->
+<section id="grid">
+<h2>그리드 (텍스트 화면)</h2>
+
+<p>터미널 기반 게임에서 2D 그리드를 관리합니다.</p>
+
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>grid_init 너비 높이</code></td><td>그리드 초기화 (예: 30×16)</td></tr>
+    <tr><td><code>grid_clear</code></td><td>전체 공백으로 지우기</td></tr>
+    <tr><td><code>grid_set x y 문자</code></td><td>(x, y) 위치에 문자 설정</td></tr>
+    <tr><td><code>grid_get x y 결과</code></td><td>(x, y) 위치 문자 읽기 → 결과</td></tr>
+    <tr><td><code>grid_draw</code></td><td>화면에 그리드 출력</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">grid_init</span> <span class="num">20</span> <span class="num">10</span>
+<span class="fn">grid_set</span>  <span class="num">5</span> <span class="num">3</span> <span class="str">"O"</span>
+<span class="fn">grid_set</span>  <span class="num">10</span> <span class="num">5</span> <span class="str">"X"</span>
+<span class="fn">grid_draw</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── WINDOW ─────────────────────────── -->
+<section id="window">
+<h2>창 / 그래픽 (SFML)</h2>
+
+<p>SFML 기반 2D 창을 제어합니다. <code>SuraEngine2.exe</code>는 SFML이 링크된 빌드에서만 동작합니다.</p>
+
+<h3>창 제어</h3>
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>win_init 너비 높이 제목</code></td><td>창 열기</td></tr>
+    <tr><td><code>win_fps fps</code></td><td>목표 프레임레이트 설정</td></tr>
+    <tr><td><code>win_title 제목</code></td><td>창 제목 변경</td></tr>
+    <tr><td><code>win_clear [r g b [a]]</code></td><td>창 지우기 (색 지정 가능, 기본 검정)</td></tr>
+    <tr><td><code>win_update</code></td><td>프레임 표시 (이벤트 처리 포함)</td></tr>
+    <tr><td><code>win_close</code></td><td>창 닫기</td></tr>
+    <tr><td><code>win_open 결과</code></td><td>창이 열려있으면 true → 결과</td></tr>
+  </tbody>
+</table>
+
+<h3>그리기</h3>
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>win_rect x y 너비 높이 r g b [a]</code></td><td>직사각형</td></tr>
+    <tr><td><code>win_circle x y 반지름 r g b [a]</code></td><td>원</td></tr>
+    <tr><td><code>win_text 텍스트 x y 크기 r g b [폰트]</code></td><td>텍스트</td></tr>
+    <tr><td><code>win_image 경로 x y [너비 높이]</code></td><td>이미지 (크기 조절 가능)</td></tr>
+    <tr><td><code>load_font 경로</code></td><td>폰트 파일 불러오기</td></tr>
+    <tr><td><code>load_image 경로</code></td><td>이미지 파일 불러오기</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">win_init</span> <span class="num">800</span> <span class="num">600</span> <span class="str">"내 게임"</span>
+<span class="fn">win_fps</span> <span class="num">60</span>
+
+<span class="kw">while</span> <span class="num">1</span> <span class="kw">do</span>
+    <span class="fn">win_open</span> 열림
+    <span class="kw">if</span> <span class="kw">not</span> 열림 <span class="kw">then</span> <span class="kw">break</span> <span class="kw">end</span>
+
+    <span class="fn">win_clear</span> <span class="num">30</span> <span class="num">30</span> <span class="num">46</span>            <span class="cmt"># 배경색</span>
+    <span class="fn">win_rect</span>  <span class="num">100</span> <span class="num">100</span> <span class="num">50</span> <span class="num">50</span>  <span class="num">255</span> <span class="num">0</span> <span class="num">0</span>   <span class="cmt"># 빨간 사각형</span>
+    <span class="fn">win_circle</span> <span class="num">400</span> <span class="num">300</span> <span class="num">40</span>  <span class="num">0</span> <span class="num">200</span> <span class="num">100</span>  <span class="cmt"># 초록 원</span>
+    <span class="fn">win_text</span>  <span class="str">"수라"</span> <span class="num">10</span> <span class="num">10</span> <span class="num">24</span>  <span class="num">255</span> <span class="num">255</span> <span class="num">255</span>
+    <span class="fn">win_update</span>
+<span class="kw">end</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── INPUT ─────────────────────────── -->
+<section id="input">
+<h2>키보드 / 마우스 입력</h2>
+
+<h3>키보드</h3>
+<pre><code><span class="fn">key_down</span> <span class="str">"left"</span>  결과    <span class="cmt"># 방향키</span>
+<span class="fn">key_down</span> <span class="str">"right"</span> 결과
+<span class="fn">key_down</span> <span class="str">"up"</span>    결과
+<span class="fn">key_down</span> <span class="str">"down"</span>  결과
+<span class="fn">key_down</span> <span class="str">"space"</span> 결과    <span class="cmt"># 스페이스</span>
+<span class="fn">key_down</span> <span class="str">"enter"</span> 결과    <span class="cmt"># 엔터</span>
+<span class="fn">key_down</span> <span class="str">"escape"</span> 결과   <span class="cmt"># ESC</span>
+<span class="fn">key_down</span> <span class="str">"shift"</span> 결과    <span class="cmt"># 시프트</span>
+<span class="fn">key_down</span> <span class="str">"ctrl"</span>  결과    <span class="cmt"># 컨트롤</span>
+<span class="fn">key_down</span> <span class="str">"a"</span>     결과    <span class="cmt"># 알파벳 (a-z)</span>
+<span class="fn">key_down</span> <span class="str">"0"</span>     결과    <span class="cmt"># 숫자키 (0-9)</span></code></pre>
+
+<h3>마우스</h3>
+<pre><code><span class="fn">mouse_pos</span> mx my              <span class="cmt"># 마우스 좌표 → mx, my</span>
+<span class="fn">mouse_down</span> <span class="str">"left"</span>   결과    <span class="cmt"># 왼쪽 버튼 누름</span>
+<span class="fn">mouse_down</span> <span class="str">"right"</span>  결과    <span class="cmt"># 오른쪽 버튼</span>
+<span class="fn">mouse_down</span> <span class="str">"middle"</span> 결과    <span class="cmt"># 가운데 버튼</span></code></pre>
+
+<pre><code><span class="cmt"># 방향키로 이동 예제</span>
+px <span class="kw">is</span> <span class="num">400</span>
+py <span class="kw">is</span> <span class="num">300</span>
+
+<span class="kw">while</span> <span class="num">1</span> <span class="kw">do</span>
+    <span class="fn">win_open</span> 열림
+    <span class="kw">if</span> <span class="kw">not</span> 열림 <span class="kw">then</span> <span class="kw">break</span> <span class="kw">end</span>
+
+    <span class="fn">key_down</span> <span class="str">"left"</span>  l
+    <span class="fn">key_down</span> <span class="str">"right"</span> r
+    <span class="fn">key_down</span> <span class="str">"up"</span>    u
+    <span class="fn">key_down</span> <span class="str">"down"</span>  d
+
+    <span class="kw">if</span> l <span class="kw">then</span> px <span class="op">-=</span> <span class="num">3</span> <span class="kw">end</span>
+    <span class="kw">if</span> r <span class="kw">then</span> px <span class="op">+=</span> <span class="num">3</span> <span class="kw">end</span>
+    <span class="kw">if</span> u <span class="kw">then</span> py <span class="op">-=</span> <span class="num">3</span> <span class="kw">end</span>
+    <span class="kw">if</span> d <span class="kw">then</span> py <span class="op">+=</span> <span class="num">3</span> <span class="kw">end</span>
+
+    <span class="fn">win_clear</span>
+    <span class="fn">win_circle</span> px py <span class="num">20</span>  <span class="num">100</span> <span class="num">180</span> <span class="num">255</span>
+    <span class="fn">win_update</span>
+<span class="kw">end</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── FILES ─────────────────────────── -->
+<section id="files">
+<h2>파일 입출력</h2>
+
+<table>
+  <thead><tr><th>명령</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td><code>file_save 경로 내용</code></td><td>파일에 문자열 저장 (덮어쓰기)</td></tr>
+    <tr><td><code>file_load 경로 결과</code></td><td>파일 전체 읽기 → 결과</td></tr>
+    <tr><td><code>file_exists 경로 결과</code></td><td>파일 존재 여부 → 결과 (true/false)</td></tr>
+  </tbody>
+</table>
+
+<pre><code><span class="fn">file_save</span> <span class="str">"save.txt"</span> <span class="str">"체력:100\n점수:9999"</span>
+
+<span class="fn">file_exists</span> <span class="str">"save.txt"</span> 있음
+<span class="kw">if</span> 있음 <span class="kw">then</span>
+    <span class="fn">file_load</span> <span class="str">"save.txt"</span> 내용
+    <span class="fn">print</span> 내용
+<span class="kw">end</span></code></pre>
+</section>
+
+<!-- ─────────────────────────── STDLIB ─────────────────────────── -->
+<section id="stdlib">
+<h2>표준 라이브러리 (use)</h2>
+
+<pre><code><span class="kw">use</span> <span class="str">"math"</span>
+<span class="kw">use</span> <span class="str">"game"</span>
+<span class="kw">use</span> <span class="str">"string"</span>
+<span class="kw">use</span> <span class="str">"system"</span>
+<span class="kw">use</span> <span class="str">"time"</span></code></pre>
+
+<table>
+  <thead><tr><th>라이브러리</th><th>주요 함수</th></tr></thead>
+  <tbody>
+    <tr><td><code>math</code></td><td><code>clamp(v, lo, hi)</code>, <code>sign(v)</code></td></tr>
+    <tr><td><code>game</code></td><td><code>collide(x1,y1,w1,h1,x2,y2,w2,h2)</code>, <code>in_bounds(x,y,w,h)</code>, <code>manhattan(x1,y1,x2,y2)</code>, <code>lerp(a,b,t)</code>, <code>dice(n)</code></td></tr>
+    <tr><td><code>string</code></td><td><code>repeat_str(s, n)</code>, <code>starts_with(s, prefix)</code></td></tr>
+    <tr><td><code>system</code></td><td><code>save_data(key, val)</code>, <code>load_data(key)</code></td></tr>
+    <tr><td><code>time</code></td><td><code>time_now()</code>, <code>time_wait(ms)</code>, <code>fps_wait(fps)</code></td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ─────────────────────────── OPERATORS ─────────────────────────── -->
+<section id="operators">
+<h2>연산자 우선순위</h2>
+
+<p>아래 표는 높은 우선순위에서 낮은 순서입니다.</p>
+
+<table>
+  <thead><tr><th>우선순위</th><th>연산자</th><th>설명</th></tr></thead>
+  <tbody>
+    <tr><td>1 (높음)</td><td><code>- ~ not</code></td><td>단항 연산</td></tr>
+    <tr><td>2</td><td><code>* / %</code></td><td>곱셈/나눗셈/나머지</td></tr>
+    <tr><td>3</td><td><code>+ -</code></td><td>덧셈/뺄셈</td></tr>
+    <tr><td>4</td><td><code>&lt;&lt; &gt;&gt;</code></td><td>비트 시프트</td></tr>
+    <tr><td>5</td><td><code>&amp;</code></td><td>비트 AND</td></tr>
+    <tr><td>6</td><td><code>^</code></td><td>비트 XOR</td></tr>
+    <tr><td>7</td><td><code>|</code></td><td>비트 OR</td></tr>
+    <tr><td>8</td><td><code>== != &lt; &gt; &lt;= &gt;= in</code></td><td>비교</td></tr>
+    <tr><td>9</td><td><code>and</code></td><td>논리 AND</td></tr>
+    <tr><td>10</td><td><code>or</code></td><td>논리 OR</td></tr>
+    <tr><td>11</td><td><code>? :</code></td><td>삼항 연산</td></tr>
+    <tr><td>12 (낮음)</td><td><code>is += -= *= /= %=</code></td><td>대입</td></tr>
+  </tbody>
+</table>
+</section>
+
+<!-- ─────────────────────────── ERRORS REF ─────────────────────────── -->
+<section id="errors-ref">
+<h2>오류 메시지 레퍼런스</h2>
+
+<table>
+  <thead><tr><th>오류 종류</th><th>예시 메시지</th><th>원인</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>렉서 오류</td>
+      <td><code>알 수 없는 문자: '@'</code></td>
+      <td>지원하지 않는 문자</td>
+    </tr>
+    <tr>
+      <td>파서 오류</td>
+      <td><code>'then' 필요 — 대신 'do' 있음</code></td>
+      <td>문법 구조 오류</td>
+    </tr>
+    <tr>
+      <td>런타임 오류</td>
+      <td><code>정의되지 않은 변수: 'x'</code></td>
+      <td>선언 전에 변수 사용</td>
+    </tr>
+    <tr>
+      <td>런타임 오류</td>
+      <td><code>0으로 나눌 수 없습니다</code></td>
+      <td><code>a / 0</code></td>
+    </tr>
+    <tr>
+      <td>타입 오류</td>
+      <td><code>'-' 연산에는 숫자 필요</code></td>
+      <td>잘못된 타입에 연산</td>
+    </tr>
+    <tr>
+      <td>인덱스 오류</td>
+      <td><code>배열 인덱스 범위 초과</code></td>
+      <td>범위 밖 접근</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>힌트</h3>
+<ul style="color:var(--muted); padding-left: 20px; line-height: 2;">
+  <li>변수 오류: <code>변수명 is 값</code> 으로 먼저 선언했는지 확인</li>
+  <li>인자 오류: 함수 호출 시 인자 개수/순서 확인</li>
+  <li><code>type x 결과</code>로 타입을 확인해 디버깅</li>
+  <li><code>try/catch</code>로 오류를 잡아 디버그 정보 출력</li>
+</ul>
+</section>
+
+<!-- ─────────────────────────── ENGINE ─────────────────────────── -->
+<section id="engine">
+<h2>엔진 내부 구조</h2>
+
+<pre><code>소스코드 (.sura)
+    ↓  lexer.hpp        문자열 → 토큰 스트림
+    ↓  parser.hpp       토큰 → AST 트리
+    ↓  ast.hpp          트리 노드 구조체 정의
+    ↓  value.hpp        Value 타입 (숫자/문자열/bool/nil/배열/딕셔너리)
+    ↓  interpreter.hpp  AST 순회 실행 (트리-워크)
+    ↓  platform.hpp     크로스플랫폼 (Windows / macOS / Linux)
+    ↓  main2.cpp        진입점 — REPL + 파일 실행</code></pre>
+
+<div class="card-grid">
+  <div class="card">
+    <h4>lexer.hpp</h4>
+    <p style="color:var(--muted);font-size:13px;">소스 문자열을 토큰 목록으로 변환. 키워드, 연산자, 문자열 리터럴, 숫자 처리.</p>
+  </div>
+  <div class="card">
+    <h4>parser.hpp</h4>
+    <p style="color:var(--muted);font-size:13px;">재귀 하강 파서. 토큰을 AST로 변환. elif 는 중첩 if로 탈당.</p>
+  </div>
+  <div class="card">
+    <h4>value.hpp</h4>
+    <p style="color:var(--muted);font-size:13px;">Value 구조체 — 모든 런타임 값. 배열/딕셔너리는 shared_ptr 기반 RC.</p>
+  </div>
+  <div class="card">
+    <h4>interpreter.hpp</h4>
+    <p style="color:var(--muted);font-size:13px;">Scope 스택, 제어 흐름 신호(BreakSignal 등), 내장 명령 실행기.</p>
+  </div>
+</div>
+</section>
+
+<!-- ─────────────────────────── EXAMPLES ─────────────────────────── -->
+<section id="examples">
+<h2>전체 예제</h2>
+
+<h3>RPG 전투</h3>
+<pre><code><span class="kw">class</span> 캐릭터 <span class="kw">do</span>
+    이름 <span class="kw">is</span> <span class="str">"캐릭터"</span>
+    체력 <span class="kw">is</span> <span class="num">100</span>
+    공격력 <span class="kw">is</span> <span class="num">20</span>
+
+    <span class="kw">func</span> <span class="fn">init</span>(이름, 체력, 공격력) <span class="kw">do</span>
+        <span class="kw">self</span>.이름 <span class="kw">is</span> 이름
+        <span class="kw">self</span>.체력 <span class="kw">is</span> 체력
+        <span class="kw">self</span>.공격력 <span class="kw">is</span> 공격력
+    <span class="kw">end</span>
+
+    <span class="kw">func</span> <span class="fn">공격</span>(대상) <span class="kw">do</span>
+        <span class="fn">rand_int</span> <span class="num">1</span> <span class="kw">self</span>.공격력 피해량
+        <span class="fn">print</span> <span class="str">"{self.이름} → {대상.이름} {피해량} 데미지"</span>
+        대상.체력 <span class="op">-=</span> 피해량
+    <span class="kw">end</span>
+
+    <span class="kw">func</span> <span class="fn">살아있음</span> <span class="kw">do</span>
+        <span class="kw">return</span> <span class="kw">self</span>.체력 <span class="op">&gt;</span> <span class="num">0</span>
+    <span class="kw">end</span>
+<span class="kw">end</span>
+
+용사 <span class="kw">is</span> <span class="kw">new</span> 캐릭터(<span class="str">"용사"</span>, <span class="num">100</span>, <span class="num">25</span>)
+슬라임 <span class="kw">is</span> <span class="kw">new</span> 캐릭터(<span class="str">"슬라임"</span>, <span class="num">40</span>, <span class="num">10</span>)
+
+<span class="fn">print</span> <span class="str">"=== 전투 시작 ==="</span>
+
+<span class="kw">while</span> 용사.살아있음() <span class="kw">and</span> 슬라임.살아있음() <span class="kw">do</span>
+    용사.공격(슬라임)
+    <span class="kw">if</span> 슬라임.살아있음() <span class="kw">then</span>
+        슬라임.공격(용사)
+    <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">if</span> 용사.살아있음() <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"용사 승리! 남은 체력: {용사.체력}"</span>
+<span class="kw">else</span>
+    <span class="fn">print</span> <span class="str">"슬라임 승리!"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>점수판 (딕셔너리 활용)</h3>
+<pre><code>점수판 <span class="kw">is</span> {<span class="str">"홍길동"</span>: <span class="num">1500</span>, <span class="str">"이수라"</span>: <span class="num">2300</span>, <span class="str">"김테스트"</span>: <span class="num">980</span>}
+
+<span class="fn">print</span> <span class="str">"=== 점수판 ==="</span>
+<span class="kw">for</span> 이름, 점수 <span class="kw">in</span> 점수판 <span class="kw">do</span>
+    등급 <span class="kw">is</span> 점수 <span class="op">&gt;=</span> <span class="num">2000</span> <span class="op">?</span> <span class="str">"S"</span> <span class="op">:</span> 점수 <span class="op">&gt;=</span> <span class="num">1000</span> <span class="op">?</span> <span class="str">"A"</span> <span class="op">:</span> <span class="str">"B"</span>
+    <span class="fn">print</span> <span class="str">"{이름}: {점수}점 ({등급})"</span>
+<span class="kw">end</span></code></pre>
+
+<h3>가위바위보</h3>
+<pre><code>선택지 <span class="kw">is</span> [<span class="str">"가위"</span>, <span class="str">"바위"</span>, <span class="str">"보"</span>]
+
+<span class="fn">input</span> <span class="str">"가위/바위/보: "</span> 내선택
+<span class="fn">rand_int</span> <span class="num">0</span> <span class="num">2</span> idx
+<span class="fn">arr_get</span> 선택지 idx 컴선택
+
+<span class="fn">print</span> <span class="str">"컴퓨터: {컴선택}"</span>
+
+<span class="kw">if</span> 내선택 <span class="op">==</span> 컴선택 <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"무승부!"</span>
+<span class="kw">elif</span> (내선택 <span class="op">==</span> <span class="str">"가위"</span> <span class="kw">and</span> 컴선택 <span class="op">==</span> <span class="str">"보"</span>) <span class="kw">or</span>
+     (내선택 <span class="op">==</span> <span class="str">"바위"</span> <span class="kw">and</span> 컴선택 <span class="op">==</span> <span class="str">"가위"</span>) <span class="kw">or</span>
+     (내선택 <span class="op">==</span> <span class="str">"보"</span>   <span class="kw">and</span> 컴선택 <span class="op">==</span> <span class="str">"바위"</span>) <span class="kw">then</span>
+    <span class="fn">print</span> <span class="str">"승리!"</span>
+<span class="kw">else</span>
+    <span class="fn">print</span> <span class="str">"패배!"</span>
+<span class="kw">end</span></code></pre>
+</section>
+
+</main>
+
+<script>
+  const ham = document.getElementById('ham');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('overlay');
+
+  function openNav() {
+    sidebar.classList.add('open');
+    ham.classList.add('open');
+    overlay.classList.add('visible');
+  }
+  function closeNav() {
+    sidebar.classList.remove('open');
+    ham.classList.remove('open');
+    overlay.classList.remove('visible');
+  }
+
+  ham.addEventListener('click', () => sidebar.classList.contains('open') ? closeNav() : openNav());
+  overlay.addEventListener('click', closeNav);
+  sidebar.querySelectorAll('a').forEach(a => a.addEventListener('click', closeNav));
+</script>
+</body>
+</html>

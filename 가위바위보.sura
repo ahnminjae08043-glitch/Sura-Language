@@ -1,0 +1,44 @@
+print "=== 가위바위보 ==="
+print "0=가위  1=바위  2=보  -1=종료"
+print ""
+
+선택지 is ["가위", "바위", "보"]
+이긴횟수 is 0
+진횟수 is 0
+비긴횟수 is 0
+
+while true do
+    rand_int 0 2 컴
+    input "선택: " 입력
+    to_num 입력 내
+
+    if 내 == -1 then break
+
+    if 내 < 0 or 내 > 2 then
+        print "0~2 사이로 입력하세요"
+        continue
+    end
+
+    내것 is 선택지[내]
+    컴것 is 선택지[컴]
+    결과 is (내 - 컴 + 3) % 3
+
+    print "나: {내것}  컴: {컴것}"
+
+    if 결과 == 0 then
+        print "-> 비겼다"
+        비긴횟수 += 1
+    end
+    if 결과 == 1 then
+        print "-> 이겼다!"
+        이긴횟수 += 1
+    end
+    if 결과 == 2 then
+        print "-> 졌다..."
+        진횟수 += 1
+    end
+    print ""
+end
+
+print "=== 결과 ==="
+print "이김: {이긴횟수}  짐: {진횟수}  비김: {비긴횟수}"

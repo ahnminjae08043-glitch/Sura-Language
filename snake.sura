@@ -1,0 +1,148 @@
+// ================================
+// 수라 지렁이 게임 v1.0
+// 조작: W(위) A(왼쪽) S(아래) D(오른쪽) Q(종료)
+// ================================
+
+// 그리드 초기화 (30x16)
+grid_init 30 16
+
+// 뱀 초기 위치 (길이 3, 가운데서 오른쪽 방향)
+sx0 is 17
+sy0 is 8
+sx1 is 16
+sy1 is 8
+sx2 is 15
+sy2 is 8
+sx3 is 14
+sy3 is 14
+sx4 is 13
+sy4 is 14
+sx5 is 12
+sy5 is 14
+len is 3
+
+// 방향
+dir is d
+
+// 먹이
+random 1 ~ 28 fx
+random 1 ~ 14 fy
+
+// 상태
+score is 0
+running is 1
+
+// 내부 메시지 억제 (게임 루프 노이즈 방지)
+silent on
+
+// 첫 화면
+cls
+grid_clear
+grid_set fx fy *
+grid_set sx0 sy0 O
+if len >= 2 then grid_set sx1 sy1 o
+if len >= 3 then grid_set sx2 sy2 o
+grid_draw
+print === 수라 지렁이 게임 ===
+print 점수: + score
+print W/A/S/D=이동  Q=종료
+
+// 게임 루프
+while running == 1 do
+
+  // 키 입력
+  readkey key
+  if key == q then running is 0
+  if key == w then dir is w
+  if key == s then dir is s
+  if key == a then dir is a
+  if key == d then dir is d
+
+  // 몸통 이동 (뒤에서 앞으로 복사)
+  sx5 is sx4
+  sy5 is sy4
+  sx4 is sx3
+  sy4 is sy3
+  sx3 is sx2
+  sy3 is sy2
+  sx2 is sx1
+  sy2 is sy1
+  sx1 is sx0
+  sy1 is sy0
+
+  // 머리 이동
+  if dir == w then sy0 - 1
+  if dir == s then sy0 + 1
+  if dir == a then sx0 - 1
+  if dir == d then sx0 + 1
+
+  // 벽 충돌
+  if sx0 < 0 then running is 0
+  if sx0 > 29 then running is 0
+  if sy0 < 0 then running is 0
+  if sy0 > 15 then running is 0
+
+  // 자기 몸통 충돌
+  if len >= 2 then
+    if sx0 == sx1 then
+      if sy0 == sy1 then running is 0
+    end
+  end
+  if len >= 3 then
+    if sx0 == sx2 then
+      if sy0 == sy2 then running is 0
+    end
+  end
+  if len >= 4 then
+    if sx0 == sx3 then
+      if sy0 == sy3 then running is 0
+    end
+  end
+  if len >= 5 then
+    if sx0 == sx4 then
+      if sy0 == sy4 then running is 0
+    end
+  end
+  if len >= 6 then
+    if sx0 == sx5 then
+      if sy0 == sy5 then running is 0
+    end
+  end
+
+  // 먹이 먹기
+  if sx0 == fx then
+    if sy0 == fy then
+      score + 1
+      if len < 6 then len + 1
+      random 1 ~ 28 fx
+      random 1 ~ 14 fy
+    end
+  end
+
+  // 화면 그리기
+  cls
+  grid_clear
+  grid_set fx fy *
+  grid_set sx0 sy0 O
+  if len >= 2 then grid_set sx1 sy1 o
+  if len >= 3 then grid_set sx2 sy2 o
+  if len >= 4 then grid_set sx3 sy3 o
+  if len >= 5 then grid_set sx4 sy4 o
+  if len >= 6 then grid_set sx5 sy5 o
+  grid_draw
+  print === 수라 지렁이 게임 ===
+  print 점수: + score
+  print W/A/S/D=이동  Q=종료
+
+end
+
+// 게임 오버
+cls
+print
+print  +-----------------------+
+print  |      게임  오버!      |
+print  +-----------------------+
+print
+print 최종 점수: + score
+print 최종 길이: + len
+print

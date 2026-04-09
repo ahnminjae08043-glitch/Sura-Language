@@ -1,0 +1,22 @@
+# 오타 탐지 테스트 (print -> pirent)
+pirent "안녕하세요 수라입니다!"
+
+# 내장 명령어 테스트
+time is clock()
+print "현재 시간: ", time
+
+T is type(time)
+print "시간 데이터 타입: ", T
+
+user_name is input("이름을 입력하세요: ")
+print "당신의 이름은 ", user_name, "이군요!"
+
+print "3초 후 종료합니다..."
+# sleep_ms 는 없지만 반복문으로 대기 체험
+i is 0
+while i < 1000000 do
+    i += 1
+end
+
+print "프로그램 종료"
+exit()
