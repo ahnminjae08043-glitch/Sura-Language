@@ -5,100 +5,100 @@
 #include <memory>
 #include <map>
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?˜ë¼(SURA) AST  ??v3.0
-//  interpreter.hpp ???¤ì œ ?¬ìš© ?¨í„´??ë§ì¶° ?•ì˜
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
 
-// ?€?€ ?¸ë“œ ?œê·¸ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+
+
+
+
+
 enum class NK {
-    // ?€?€ ë¦¬í„°???€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
-    NUM_LIT,      // ?«ì ë¦¬í„°??     42 / 3.14
-    STR_LIT,      // ë¬¸ì??ë¦¬í„°??   "?ˆë…•"
-    BOOL_LIT,     // ë¶ˆë¦¬??          ì°?/ ê±°ì§“
-    NIL_LIT,      // ??ë¦¬í„°??       nil
+    
+    NUM_LIT,      
+    STR_LIT,      
+    BOOL_LIT,     
+    NIL_LIT,      
 
-    // ?€?€ ?œí˜„???€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
-    IDENT,        // ?ë³„??          x, ?ìˆ˜
-    BIN_OP,       // ?´í•­ ?°ì‚°        x + y, x == y
-    UNARY_OP,     // ?¨í•­ ?°ì‚°        -x, not x
-    DOT_ACCESS,   // ???‘ê·¼          obj.prop
-    INDEX,        // ?¸ë±???‘ê·¼      arr[i]
-    CALL,         // ?¨ìˆ˜ ?¸ì¶œ        ?”í•˜ê¸?3, 5)
-    METHOD_CALL,  // ë©”ì„œ???¸ì¶œ      obj.ë©”ì„œ???¸ì)
-    SUPER_CALL,   // super ?¸ì¶œ       super.ë©”ì„œ???¸ì)
-    ARRAY_LIT,    // ë°°ì—´ ë¦¬í„°??     [1, 2, 3]
-    DICT_LIT,     // ?•ì…”?ˆë¦¬ ë¦¬í„°?? {"??: ê°?
-    NEW_EXPR,     // new ?œí˜„??(eval ê²½ë¡œ??
+    
+    IDENT,        
+    BIN_OP,       
+    UNARY_OP,     
+    DOT_ACCESS,   
+    INDEX,        
+    CALL,         
+    METHOD_CALL,  
+    SUPER_CALL,   
+    ARRAY_LIT,    
+    DICT_LIT,     
+    NEW_EXPR,     
 
-    // ?€?€ ë¬¸ì¥ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
-    SuraBlock,        // ë¸”ë¡             { stmt* }
-    ASSIGN,       // ?¨ìˆœ ?€??       name is expr
-    IN_PLACE,     // ë³µí•© ?€??       name += expr
-    DOT_ASSIGN,   // ???€??         obj.prop is expr
-    INDEX_ASSIGN, // ?¸ë±???€??     arr[i] is expr
-    IF,           // ì¡°ê±´ë¬?
-    WHILE,        // while ë°˜ë³µ
-    REPEAT,       // repeat N ë°˜ë³µ
-    FOR,          // for i from s to e [step st]
-    FOREACH,      // for item in collection
-    FUNC_DEF,     // ?¨ìˆ˜ ?•ì˜
-    CLASS_DEF,    // ?´ë˜???•ì˜
-    NEW_INST,     // ?¸ìŠ¤?´ìŠ¤ ?ì„±    var is new ClassName(?¸ì)
-    RETURN,       // return [ê°?
-    BREAK,        // break
-    CONTINUE,     // continue
-    THROW,        // throw ë©”ì‹œì§€
-    TRY,          // try ... catch ?¤ë¥˜ë³€??... end
-    USE,          // use ?¼ì´ë¸ŒëŸ¬ë¦?
-    CMD,          // ?´ì¥ ëª…ë ¹??     print, arr_push, ...
-    EXPR_STMT,    // ?œí˜„??ë¬¸ì¥      8  /  1+2  (REPL??
-    TERNARY,      // ?¼í•­ ?°ì‚°??     ì¡°ê±´ ? ì°¸ê°’ : ê±°ì§“ê°?
-    FUNC_EXPR,    // ?µëª… ?¨ìˆ˜ ?œí˜„?? func(params) do ... end
-    STR_INTERP,   // ë³´ê°„ ë¬¸ì??      "?ˆë…• {name}"
+    
+    SuraBlock,        
+    ASSIGN,       
+    IN_PLACE,     
+    DOT_ASSIGN,   
+    INDEX_ASSIGN, 
+    IF,           
+    WHILE,        
+    REPEAT,       
+    FOR,          
+    FOREACH,      
+    FUNC_DEF,     
+    CLASS_DEF,    
+    NEW_INST,     
+    RETURN,       
+    BREAK,        
+    CONTINUE,     
+    THROW,        
+    TRY,          
+    USE,          
+    CMD,          
+    EXPR_STMT,    
+    TERNARY,      
+    FUNC_EXPR,    
+    STR_INTERP,   
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?€???´ë…¸?Œì´??
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 enum class SType {
-    ANY,        // ?€???†ìŒ (ê¸°ì¡´ ?™ì )
-    NUMBER,     // ?«ì
-    STRING,     // ë¬¸ì??
-    BOOL,       // ë¶ˆë¦¬??
-    ARRAY,      // ë°°ì—´
-    DICT,       // ?•ì…”?ˆë¦¬
-    NIL,        // nil
-    CLASS,      // ?¬ìš©???•ì˜ ?´ë˜??
+    ANY,        
+    NUMBER,     
+    STRING,     
+    BOOL,       
+    ARRAY,      
+    DICT,       
+    NIL,        
+    CLASS,      
 };
 
 inline const char* stype_name(SType t) {
     switch (t) {
-        case SType::ANY:    return "?„ë¬´";
-        case SType::NUMBER: return "?«ì";
-        case SType::STRING: return "ë¬¸ì??;
-        case SType::BOOL:   return "ë¶ˆë¦¬??;
+        case SType::ANY:    return "?ï¿½ë¬´";
+        case SType::NUMBER: return "?ï¿½ì";
+        case SType::STRING: return "ë¬¸ìì—´";
+        case SType::BOOL:   return "ë¶ˆë¦¬ì–¸";
         case SType::ARRAY:  return "ë°°ì—´";
-        case SType::DICT:   return "?•ì…”?ˆë¦¬";
-        case SType::NIL:    return "?†ìŒ";
-        case SType::CLASS:  return "<?´ë˜??";
+        case SType::DICT:   return "?ï¿½ì…”?ï¿½ë¦¬";
+        case SType::NIL:    return "?ï¿½ìŒ";
+        case SType::CLASS:  return "<?ï¿½ë˜??";
     }
-    return "?„ë¬´";
+    return "?ï¿½ë¬´";
 }
 
 struct TypeAnnot {
     SType       kind       = SType::ANY;
-    std::string class_name;          // CLASS?????´ë˜???´ë¦„
-    bool        present    = false;  // ?´ë…¸?Œì´?˜ì´ ëª…ì‹œ?ëŠ”ì§€ ?¬ë?
+    std::string class_name;          
+    bool        present    = false;  
 
     bool is_any() const { return !present || kind == SType::ANY; }
 
-    // VType(?°í????€???????´ë…¸?Œì´?˜ê³¼ ?¼ì¹˜?˜ëŠ”ì§€ ?•ì¸
-    // value.hpp ??VType ê³?ë¹„êµ ???„ë°© ? ì–¸ ?†ì´ ?¸ë¼?¸ìœ¼ë¡?ì²˜ë¦¬
+    
+    
     bool matches_vtype(int vt) const {
         if (is_any()) return true;
-        // vt: 0=NIL, 1=NUMBER, 2=BOOL, 3=STRING, 4=ARRAY, 5=DICT, 6=FUNC
+        
         switch (kind) {
             case SType::NUMBER: return vt == 1;
             case SType::STRING: return vt == 3;
@@ -106,15 +106,15 @@ struct TypeAnnot {
             case SType::ARRAY:  return vt == 4;
             case SType::DICT:   return vt == 5;
             case SType::NIL:    return vt == 0;
-            case SType::CLASS:  return vt == 5; // ?¸ìŠ¤?´ìŠ¤??DICTë¡??œí˜„
+            case SType::CLASS:  return vt == 5; 
             default:            return true;
         }
     }
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ê¸°ë°˜ ?¸ë“œ
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 struct Node {
     NK  kind;
     int line = 0;
@@ -135,9 +135,9 @@ protected:
 };
 using StmtPtr = std::unique_ptr<Stmt>;
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ë¦¬í„°??
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 struct NumLit : Expr {
     double value;
@@ -158,9 +158,9 @@ struct NilLit : Expr {
     NilLit(int l = 0) : Expr(NK::NIL_LIT, l) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?œí˜„??
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 struct Ident : Expr {
     std::string name;
@@ -182,7 +182,7 @@ struct UnaryOp : Expr {
         : Expr(NK::UNARY_OP, l), op(std::move(o)), operand(std::move(e)) {}
 };
 
-// ???‘ê·¼: obj.prop
+
 struct DotAccess : Expr {
     ExprPtr     obj;
     std::string prop;
@@ -190,7 +190,7 @@ struct DotAccess : Expr {
         : Expr(NK::DOT_ACCESS, l), obj(std::move(o)), prop(std::move(p)) {}
 };
 
-// ?¸ë±???‘ê·¼: arr[i]  ??interpreter.hpp 250: idx->obj, idx->key
+
 struct IndexExpr : Expr {
     ExprPtr obj;
     ExprPtr key;
@@ -205,8 +205,8 @@ struct CallExpr : Expr {
         : Expr(NK::CALL, l), name(std::move(n)) {}
 };
 
-// ë©”ì„œ???¸ì¶œ ?œí˜„?? obj.ë©”ì„œ???¸ì)
-// interpreter.hpp 338: mc->obj.get()
+
+
 struct MethodCallExpr : Expr {
     ExprPtr              obj;
     std::string          method;
@@ -215,7 +215,7 @@ struct MethodCallExpr : Expr {
         : Expr(NK::METHOD_CALL, l), obj(std::move(o)), method(std::move(m)) {}
 };
 
-// super.ë©”ì„œ???¸ì)
+
 struct SuperCallExpr : Expr {
     std::string          method;
     std::vector<ExprPtr> args;
@@ -223,18 +223,18 @@ struct SuperCallExpr : Expr {
         : Expr(NK::SUPER_CALL, l), method(std::move(m)) {}
 };
 
-// ë°°ì—´ ë¦¬í„°?? [1, 2, "?¬ê³¼"]
+
 struct ArrayLit : Expr {
     std::vector<ExprPtr> elements;
     ArrayLit(int l = 0) : Expr(NK::ARRAY_LIT, l) {}
 };
 
-// ?•ì…”?ˆë¦¬ ë¦¬í„°?? {"??: ê°? ...}
-// interpreter.hpp 243: `for (auto& [k, v] : dl->pairs)`
-//   ??pairs ??map<string, ExprPtr>
+
+
+
 struct DictLit : Expr {
     std::map<std::string, ExprPtr> pairs;
-    std::vector<std::string>       key_order; // ?½ì… ?œì„œ ë³´ì¡´
+    std::vector<std::string>       key_order; 
     DictLit(int l = 0) : Expr(NK::DICT_LIT, l) {}
     void add(std::string k, ExprPtr v) {
         key_order.push_back(k);
@@ -242,7 +242,7 @@ struct DictLit : Expr {
     }
 };
 
-// new ?œí˜„??(eval ê²½ë¡œ?? ?¨ë… ?œí˜„?ìœ¼ë¡?????
+
 struct NewExpr : Expr {
     std::string          class_name;
     std::vector<ExprPtr> args;
@@ -250,44 +250,44 @@ struct NewExpr : Expr {
         : Expr(NK::NEW_EXPR, l), class_name(std::move(c)) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ë¸”ë¡
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 struct SuraBlock : Stmt {
     std::vector<StmtPtr> body;
     SuraBlock(int l = 0) : Stmt(NK::SuraBlock, l) {}
 };
 using BlockPtr = std::unique_ptr<SuraBlock>;
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?€??ë¬¸ì¥
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
 
-// ?¨ìˆœ ?€?? name is expr  /  name: ?€??is expr
-// interpreter.hpp 373: a->name
+
+
+
+
+
 struct AssignStmt : Stmt {
     std::string name;
     ExprPtr     value;
-    TypeAnnot   type_annot; // ? íƒ???€???´ë…¸?Œì´??
+    TypeAnnot   type_annot; 
     AssignStmt(std::string n, ExprPtr v, int l = 0)
         : Stmt(NK::ASSIGN, l), name(std::move(n)), value(std::move(v)) {}
 };
 
-// ë³µí•© ?€?? name += expr  (IN_PLACE)
-// interpreter.hpp 382: ip->name, ip->op, ip->value
+
+
 struct InPlaceStmt : Stmt {
     std::string name;
-    std::string op;   // "+", "-", "*", "/", "%"
+    std::string op;   
     ExprPtr     value;
     InPlaceStmt(std::string n, std::string o, ExprPtr v, int l = 0)
         : Stmt(NK::IN_PLACE, l), name(std::move(n)),
           op(std::move(o)), value(std::move(v)) {}
 };
-// parser.hpp 451 ?¸í™˜ ë³„ì¹­
+
 using InplaceStmt = InPlaceStmt;
 
-// ???€?? obj.prop is expr  (DOT_ASSIGN)
-// interpreter.hpp 399: da->obj_name, da->prop, da->value
+
+
 struct DotAssignStmt : Stmt {
     std::string obj_name;
     std::string prop;
@@ -297,8 +297,8 @@ struct DotAssignStmt : Stmt {
           prop(std::move(p)), value(std::move(v)) {}
 };
 
-// ?¸ë±???€?? arr[i] is expr  (INDEX_ASSIGN)
-// interpreter.hpp 412: ia->name, ia->key, ia->value
+
+
 struct IndexAssignStmt : Stmt {
     std::string name;
     ExprPtr     key;
@@ -308,14 +308,14 @@ struct IndexAssignStmt : Stmt {
           key(std::move(k)), value(std::move(v)) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?œì–´ ?ë¦„
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 struct IfStmt : Stmt {
     ExprPtr  cond;
     BlockPtr then_block;
-    BlockPtr else_block; // nullptr = else ?†ìŒ
+    BlockPtr else_block; 
     IfStmt(ExprPtr c, BlockPtr t, BlockPtr e, int l = 0)
         : Stmt(NK::IF, l), cond(std::move(c)),
           then_block(std::move(t)), else_block(std::move(e)) {}
@@ -335,13 +335,13 @@ struct RepeatStmt : Stmt {
         : Stmt(NK::REPEAT, l), count(std::move(c)), body(std::move(b)) {}
 };
 
-// for ?˜ì¹˜ ë°˜ë³µ: for i from ?œì‘ to ??[step ê°?
-// interpreter.hpp 446: fs->from, fs->to, fs->step, fs->var, fs->body
+
+
 struct ForStmt : Stmt {
     std::string var;
     ExprPtr     from;
     ExprPtr     to;
-    ExprPtr     step; // nullptr ???ë™ +1/-1
+    ExprPtr     step; 
     BlockPtr    body;
     ForStmt(std::string v, ExprPtr fr, ExprPtr t, ExprPtr st, BlockPtr b, int l = 0)
         : Stmt(NK::FOR, l), var(std::move(v)),
@@ -349,10 +349,10 @@ struct ForStmt : Stmt {
           step(std::move(st)), body(std::move(b)) {}
 };
 
-// foreach ë°˜ë³µ: for item in collection  /  for k, v in dict
+
 struct ForeachStmt : Stmt {
     std::string var;
-    std::string var2; // ë¹?ë¬¸ì??= ?¨ì¼ ë³€??
+    std::string var2; 
     ExprPtr     collection;
     BlockPtr    body;
     ForeachStmt(std::string v, std::string v2, ExprPtr col, BlockPtr b, int l = 0)
@@ -360,51 +360,51 @@ struct ForeachStmt : Stmt {
           collection(std::move(col)), body(std::move(b)) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?¨ìˆ˜ / ?´ë˜???•ì˜
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 struct FuncDef : Stmt {
     std::string              name;
     std::vector<std::string> params;
-    std::vector<ExprPtr>     defaults;    // params ?€ 1:1, nullptr = ê¸°ë³¸ê°??†ìŒ
-    std::vector<TypeAnnot>   param_types; // params ?€ 1:1, ? íƒ??
-    TypeAnnot                return_type; // -> ë°˜í™˜ ?€?? ? íƒ??
+    std::vector<ExprPtr>     defaults;    
+    std::vector<TypeAnnot>   param_types; 
+    TypeAnnot                return_type; 
     BlockPtr                 body;
     FuncDef(std::string n, std::vector<std::string> p, BlockPtr b, int l = 0)
         : Stmt(NK::FUNC_DEF, l), name(std::move(n)),
           params(std::move(p)), body(std::move(b)) {}
-    // ?˜ìœ„ ?¸í™˜: params ?˜ì¤‘??push_back
+    
     FuncDef(std::string n, BlockPtr b, int l = 0)
         : Stmt(NK::FUNC_DEF, l), name(std::move(n)), body(std::move(b)) {}
 };
 
-// ?´ë˜????ë©”ì„œ????ª©
+
 struct MethodEntry {
     std::vector<std::string> params;
-    std::vector<ExprPtr>     defaults; // params ?€ 1:1, nullptr = ê¸°ë³¸ê°??†ìŒ
-    SuraBlock*                   body = nullptr; // ?Œìœ ê¶Œì? ClassDef
+    std::vector<ExprPtr>     defaults; 
+    SuraBlock*                   body = nullptr; 
 };
 
-// ?´ë˜???•ì˜
-// interpreter.hpp 500: cd->field_defaults  map<string, ExprPtr>
-// interpreter.hpp 502: cd->methods         map<string, MethodEntry>
+
+
+
 struct ClassDef : Stmt {
     std::string name;
-    std::string parent; // ë¹?ë¬¸ì??= ?ì† ?†ìŒ
+    std::string parent; 
 
     std::map<std::string, ExprPtr>     field_defaults;
     std::map<std::string, MethodEntry> methods;
 
-    // method_bodies ê°€ BlockPtr ???Œìœ ê¶Œì„ ë³´ê?
+    
     std::vector<BlockPtr> method_bodies;
 
-    // (name, parent, line)
+    
     ClassDef(std::string n, std::string p = {}, int l = 0)
         : Stmt(NK::CLASS_DEF, l), name(std::move(n)), parent(std::move(p)) {}
 
-    // parser.hpp 367 ?¸í™˜: make_unique<ClassDef>(name, body, ln)
-    // ?Œì„œê°€ BlockPtr ???˜ê¸°?????œê·¸?ˆì²˜ ??body ??ë¬´ì‹œ?˜ê³  name/line ë§??¬ìš©
+    
+    
     ClassDef(std::string n, BlockPtr /*body_unused*/, int l = 0)
         : Stmt(NK::CLASS_DEF, l), name(std::move(n)) {}
 
@@ -425,12 +425,12 @@ struct ClassDef : Stmt {
     }
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?¸ìŠ¤?´ìŠ¤ ?ì„± ë¬¸ì¥
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
 
-// var is new ClassName(?¸ì)
-// interpreter.hpp 510: ni->var, ni->class_name, ni->args
+
+
+
+
+
 struct NewInstStmt : Stmt {
     std::string          var;
     std::string          class_name;
@@ -439,12 +439,12 @@ struct NewInstStmt : Stmt {
         : Stmt(NK::NEW_INST, l), var(std::move(v)), class_name(std::move(c)) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ê¸°í? ë¬¸ì¥
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 
 struct ReturnStmt : Stmt {
-    ExprPtr value; // nullptr = ê°??†ëŠ” return
+    ExprPtr value; 
     ReturnStmt(ExprPtr v, int l = 0) : Stmt(NK::RETURN, l), value(std::move(v)) {}
 };
 
@@ -456,8 +456,8 @@ struct ContinueStmt : Stmt {
     ContinueStmt(int l = 0) : Stmt(NK::CONTINUE, l) {}
 };
 
-// throw ë©”ì‹œì§€
-// interpreter.hpp 547: ts->msg.get()
+
+
 struct ThrowStmt : Stmt {
     ExprPtr msg;
     ThrowStmt(ExprPtr m, int l = 0) : Stmt(NK::THROW, l), msg(std::move(m)) {}
@@ -467,7 +467,7 @@ struct TryStmt : Stmt {
     BlockPtr    try_block;
     std::string catch_var;
     BlockPtr    catch_block;
-    BlockPtr    finally_block; // optional
+    BlockPtr    finally_block; 
     TryStmt(BlockPtr t, std::string cv, BlockPtr c, BlockPtr f, int l = 0)
         : Stmt(NK::TRY, l), try_block(std::move(t)),
           catch_var(std::move(cv)), catch_block(std::move(c)),
@@ -490,7 +490,7 @@ struct ExprStmt : Stmt {
     ExprStmt(ExprPtr e, int l = 0) : Stmt(NK::EXPR_STMT, l), expr(std::move(e)) {}
 };
 
-// ?¼í•­ ?°ì‚°?? ì¡°ê±´ ? ì°¸ê°’ : ê±°ì§“ê°?
+
 struct TernaryExpr : Expr {
     ExprPtr cond, then_val, else_val;
     TernaryExpr(ExprPtr c, ExprPtr t, ExprPtr e, int l)
@@ -498,23 +498,23 @@ struct TernaryExpr : Expr {
           then_val(std::move(t)), else_val(std::move(e)) {}
 };
 
-// ?µëª… ?¨ìˆ˜ ?œí˜„????func(params) do ... end
+
 struct FuncExpr : Expr {
     std::vector<std::string> params;
-    std::vector<ExprPtr>     defaults; // nullptr = ê¸°ë³¸ê°??†ìŒ
+    std::vector<ExprPtr>     defaults; 
     BlockPtr                 body;
     FuncExpr(int l = 0) : Expr(NK::FUNC_EXPR, l) {}
 };
 
-// ë³´ê°„ ë¬¸ì????"?ˆë…• {name}! ?˜ì´: {age}??
+
 struct StrInterp : Expr {
-    std::vector<ExprPtr> parts; // StrLit ê³??„ì˜ ?œí˜„?ì˜ ?¼í•©
+    std::vector<ExprPtr> parts; 
     StrInterp(int l = 0) : Expr(NK::STR_INTERP, l) {}
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  AST ?¤í”„ (?”ë²„ê·¸ìš©)
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
 #include <cstdio>
 struct SuraBlock;
 
@@ -527,7 +527,7 @@ static void dump_expr(const Expr* e, int depth = 0) {
         case NK::STR_LIT:
             printf("%sSTR(\"%s\")\n", ind.c_str(), static_cast<const StrLit*>(e)->value.c_str()); break;
         case NK::BOOL_LIT:
-            printf("%sBOOL(%s)\n", ind.c_str(), (static_cast<const BoolLit*>(e)->value ? "ì°? : "ê±°ì§“")); break;
+            printf("%sBOOL(%s)\n", ind.c_str(), (static_cast<const BoolLit*>(e)->value ? "ì°¸" : "ê±°ì§“")); break;
         case NK::NIL_LIT:
             printf("%sNIL\n", ind.c_str()); break;
         case NK::IDENT:
@@ -556,18 +556,18 @@ static void dump_expr(const Expr* e, int depth = 0) {
         }
         case NK::CALL: {
             auto* ce = static_cast<const CallExpr*>(e);
-            printf("%sCALL %s (%zu ?¸ì)\n", ind.c_str(), ce->name.c_str(), ce->args.size());
+            printf("%sCALL %s (%zu ?ï¿½ì)\n", ind.c_str(), ce->name.c_str(), ce->args.size());
             for (auto& a : ce->args) dump_expr(a.get(), depth + 1); break;
         }
         case NK::METHOD_CALL: {
             auto* mc = static_cast<const MethodCallExpr*>(e);
-            printf("%sMETHOD .%s (%zu ?¸ì)\n", ind.c_str(), mc->method.c_str(), mc->args.size());
+            printf("%sMETHOD .%s (%zu ?ï¿½ì)\n", ind.c_str(), mc->method.c_str(), mc->args.size());
             dump_expr(mc->obj.get(), depth + 1);
             for (auto& a : mc->args) dump_expr(a.get(), depth + 1); break;
         }
         case NK::SUPER_CALL: {
             auto* sc = static_cast<const SuperCallExpr*>(e);
-            printf("%sSUPER.%s (%zu ?¸ì)\n", ind.c_str(), sc->method.c_str(), sc->args.size());
+            printf("%sSUPER.%s (%zu ?ï¿½ì)\n", ind.c_str(), sc->method.c_str(), sc->args.size());
             for (auto& a : sc->args) dump_expr(a.get(), depth + 1); break;
         }
         case NK::ARRAY_LIT: {
@@ -589,7 +589,7 @@ static void dump_expr(const Expr* e, int depth = 0) {
             printf("%sNEW_EXPR %s\n", ind.c_str(), ne->class_name.c_str());
             for (auto& a : ne->args) dump_expr(a.get(), depth + 1); break;
         }
-        default: printf("%s(?????†ëŠ” ?œí˜„??\n", ind.c_str()); break;
+        default: printf("%s(?????ï¿½ëŠ” ?ï¿½í˜„??\n", ind.c_str()); break;
     }
 }
 
@@ -684,7 +684,7 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
         }
         case NK::NEW_INST: {
             auto* ni = static_cast<const NewInstStmt*>(s);
-            printf("%sNEW_INST %s = new %s (%zu ?¸ì)\n",
+            printf("%sNEW_INST %s = new %s (%zu ?ï¿½ì)\n",
                    ind.c_str(), ni->var.c_str(), ni->class_name.c_str(), ni->args.size());
             for (auto& a : ni->args) dump_expr(a.get(), depth + 1); break;
         }
@@ -716,10 +716,10 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
             printf("%sUSE %s\n", ind.c_str(), static_cast<const UseStmt*>(s)->lib.c_str()); break;
         case NK::CMD: {
             auto* cs = static_cast<const CmdStmt*>(s);
-            printf("%sCMD %s (%zu ?¸ì)\n", ind.c_str(), cs->cmd.c_str(), cs->args.size());
+            printf("%sCMD %s (%zu ?ï¿½ì)\n", ind.c_str(), cs->cmd.c_str(), cs->args.size());
             for (auto& a : cs->args) dump_expr(a.get(), depth + 1); break;
         }
-        default: printf("%s(?????†ëŠ” ë¬¸ì¥)\n", ind.c_str()); break;
+        default: printf("%s(?????ï¿½ëŠ” ë¬¸ì¥)\n", ind.c_str()); break;
     }
 }
 
@@ -729,9 +729,9 @@ static void dump_block(const SuraBlock* SuraBlock, int depth) {
 }
 
 static void dump_ast(const SuraBlock* program) {
-    printf("?â• AST ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•\n");
+    printf("?ï¿½â• AST ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•\n");
     dump_block(program, 0);
-    printf("?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•\n");
+    printf("?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•\n");
 }
 
-#endif // SURA_AST_H
+#endif 

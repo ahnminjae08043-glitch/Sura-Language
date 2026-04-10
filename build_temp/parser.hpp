@@ -5,27 +5,27 @@
 #include <stdexcept>
 #include <algorithm>
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?˜ë¼(SURA) Parser  ??v2.0
-//  ? í° ?¤íŠ¸ë¦???AST
-//  ë°©ì‹: Recursive Descent (?¬ê? ?˜ê°•)
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
+//  ?ï¿½ë¼(SURA) Parser  ??v2.0
+//  ?ï¿½í° ?ï¿½íŠ¸ï¿½???AST
+//  ë°©ì‹: Recursive Descent (?ï¿½ï¿½? ?ï¿½ê°•)
 //
-//  ?°ì‚°???°ì„ ?œìœ„ (??Œ ???’ìŒ)
+//  ?ï¿½ì‚°???ï¿½ì„ ?ï¿½ìœ„ (??ï¿½ï¿½ ???ï¿½ìŒ)
 //    1. or
 //    2. and
-//    3. not  (?¨í•­)
+//    3. not  (?ï¿½í•­)
 //    4. ==  !=  >  <  >=  <=
 //    5. +  -
 //    6. *  /  %
-//    7. -  (?¨í•­ ?Œìˆ˜)
-//    8. primary  (ë¦¬í„°?? ?ë³„?? ê´„í˜¸)
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+//    7. -  (?ï¿½í•­ ?ï¿½ìˆ˜)
+//    8. primary  (ë¦¬í„°?? ?ï¿½ë³„?? ê´„í˜¸)
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 
 struct ParseError : std::runtime_error {
     int line;
     std::string details;
     ParseError(const std::string& msg, int ln, const std::string& det = "")
-        : std::runtime_error("[?˜ë¼ ?Œì„œ ?¤ë¥˜] " + std::to_string(ln) + "ì¤? " + msg + (det.empty() ? "" : " (" + det + ")"))
+        : std::runtime_error("[?ï¿½ë¼ ?ï¿½ì„œ ?ï¿½ë¥˜] " + std::to_string(ln) + "ï¿½? " + msg + (det.empty() ? "" : " (" + det + ")"))
         , line(ln), details(det) {}
 };
 
@@ -33,18 +33,18 @@ class Parser {
     std::vector<Token> tokens;
     size_t             pos = 0;
 
-    // ?€?€ ?¤í? ì¶”ì²œ??ëª©ë¡ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½ï¿½? ì¶”ì²œ??ëª©ë¡ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     std::vector<std::string> get_all_keywords() {
         return {
             "is", "if", "then", "else", "end", "while", "do", "func", "repeat", 
             "break", "return", "and", "or", "not", "true", "false", "use", 
             "continue", "for", "in", "to", "try", "catch", "throw", "class", 
             "new", "extends", "super", "elif", "finally",
-            "print", "print_n", "input", "exit", "clock", "type" // ?´ì¥ ëª…ë ¹?´ë„ ?¬í•¨
+            "print", "print_n", "input", "exit", "clock", "type" // ?ï¿½ì¥ ëª…ë ¹?ï¿½ë„ ?ï¿½í•¨
         };
     }
 
-    // ?€?€ ? í° ?‘ê·¼ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½í° ?ï¿½ê·¼ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     Token& peek(int off = 0) {
         static Token eof = {TT::EOF_T, "", 0};
         size_t i = pos + (size_t)off;
@@ -62,10 +62,10 @@ class Parser {
 
     Token expect(TT t, const std::string& what) {
         if (!check(t)) {
-            std::string msg = "'" + what + "' ?„ìš” ???€??'" + peek().type_str() + "' ?ˆìŒ";
+            std::string msg = "'" + what + "' ?ï¿½ìš” ???ï¿½??'" + peek().type_str() + "' ?ï¿½ìŒ";
             if (peek().type == TT::IDENT) {
                 std::string sug = sura_suggest(peek().value, get_all_keywords());
-                if (!sug.empty()) msg += " (?¹ì‹œ '" + sug + "'ë¥??…ë ¥?˜ì‹œ???ˆë‚˜??)";
+                if (!sug.empty()) msg += " (?ï¿½ì‹œ '" + sug + "'ï¿½??ï¿½ë ¥?ï¿½ì‹œ???ï¿½ë‚˜??)";
             }
             throw ParseError(msg, peek().line, peek().value);
         }
@@ -74,59 +74,59 @@ class Parser {
 
     void skip_newlines() { while (check(TT::NEWLINE)) advance(); }
 
-    // ?€?€ ?€???´ë…¸?Œì´???Œì‹± ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
-    // ?„ì¬ ?„ì¹˜?ì„œ ?€???´ë¦„ IDENTë¥??½ì–´ TypeAnnot ë°˜í™˜
-    // ì§€?? ?«ì, ë¬¸ì?? ë¶ˆë¦¬?? ë°°ì—´, ?•ì…”?ˆë¦¬, ?†ìŒ, ?„ë¬´,
-    //       number, string, bool, array, dict, nil, any, ?´ë˜?¤ëª…
+    // ?ï¿½?ï¿½ ?ï¿½???ï¿½ë…¸?ï¿½ì´???ï¿½ì‹± ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
+    // ?ï¿½ì¬ ?ï¿½ì¹˜?ï¿½ì„œ ?ï¿½???ï¿½ë¦„ IDENTï¿½??ï¿½ì–´ TypeAnnot ë°˜í™˜
+    // ì§€?? ?ï¿½ì, ë¬¸ì?? ë¶ˆë¦¬?? ë°°ì—´, ?ï¿½ì…”?ï¿½ë¦¬, ?ï¿½ìŒ, ?ï¿½ë¬´,
+    //       number, string, bool, array, dict, nil, any, ?ï¿½ë˜?ï¿½ëª…
     TypeAnnot parse_type_annot() {
         TypeAnnot ta;
         ta.present = true;
         if (!check(TT::IDENT))
-            throw ParseError("?€???´ë¦„ ?„ìš”", peek().line);
+            throw ParseError("?ï¿½???ï¿½ë¦„ ?ï¿½ìš”", peek().line);
         std::string tname = advance().value;
-        if      (tname == "?«ì"   || tname == "number") ta.kind = SType::NUMBER;
+        if      (tname == "?ï¿½ì"   || tname == "number") ta.kind = SType::NUMBER;
         else if (tname == "ë¬¸ì?? || tname == "string") ta.kind = SType::STRING;
         else if (tname == "ë¶ˆë¦¬?? || tname == "bool")   ta.kind = SType::BOOL;
         else if (tname == "ë°°ì—´"   || tname == "array")  ta.kind = SType::ARRAY;
-        else if (tname == "?•ì…”?ˆë¦¬"|| tname == "dict")  ta.kind = SType::DICT;
-        else if (tname == "?†ìŒ"   || tname == "nil")    ta.kind = SType::NIL;
-        else if (tname == "?„ë¬´"   || tname == "any")    ta.kind = SType::ANY;
+        else if (tname == "?ï¿½ì…”?ï¿½ë¦¬"|| tname == "dict")  ta.kind = SType::DICT;
+        else if (tname == "?ï¿½ìŒ"   || tname == "nil")    ta.kind = SType::NIL;
+        else if (tname == "?ï¿½ë¬´"   || tname == "any")    ta.kind = SType::ANY;
         else {
-            // ?¬ìš©???•ì˜ ?´ë˜???€??            ta.kind       = SType::CLASS;
+            // ?ï¿½ìš©???ï¿½ì˜ ?ï¿½ë˜???ï¿½??            ta.kind       = SType::CLASS;
             ta.class_name = tname;
         }
         return ta;
     }
 
-    // ë¬¸ì¥ ??ê°œí–‰ ?Œë¹„ (EOF, ë¸”ë¡ ì¢…ë£Œ?ë„ ?ˆìš©)
+    // ë¬¸ì¥ ??ê°œí–‰ ?ï¿½ë¹„ (EOF, ë¸”ë¡ ì¢…ë£Œ?ï¿½ë„ ?ï¿½ìš©)
     void eat_newline() {
         if (check(TT::EOF_T)) return;
-        // ë¸”ë¡ ì¢…ë£Œ?ëŠ” ê°œí–‰ ?†ì–´??OK (?¸ë¼???¨ìˆ˜ ë³¸ë¬¸ ì§€??
+        // ë¸”ë¡ ì¢…ë£Œ?ï¿½ëŠ” ê°œí–‰ ?ï¿½ì–´??OK (?ï¿½ë¼???ï¿½ìˆ˜ ë³¸ë¬¸ ì§€??
         if (check(TT::END) || check(TT::ELSE) || check(TT::ELIF) || check(TT::CATCH) || check(TT::FINALLY)) return;
         if (!match(TT::NEWLINE))
-            throw ParseError("ì¤???ê°œí–‰) ?„ìš”", peek().line);
+            throw ParseError("ï¿½???ê°œí–‰) ?ï¿½ìš”", peek().line);
     }
 
-    // ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-    //  ?œí˜„???Œì‹± ???°ì‚°???°ì„ ?œìœ„ ê³„ì¸µ
-    // ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+    // ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
+    //  ?ï¿½í˜„???ï¿½ì‹± ???ï¿½ì‚°???ï¿½ì„ ?ï¿½ìœ„ ê³„ì¸µ
+    // ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 
     ExprPtr parse_expr() { return parse_ternary(); }
 
-    // ?€?€ ?¼í•­: ì¡°ê±´ ? ì°¸ê°’ : ê±°ì§“ê°??€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½í•­: ì¡°ê±´ ? ì°¸ê°’ : ê±°ì§“ï¿½??ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_ternary() {
         auto left = parse_or();
         if (check(TT::QUESTION)) {
             int ln = peek().line; advance();
             auto then_val = parse_expr();
             expect(TT::COLON, ":");
-            auto else_val = parse_ternary(); // ?°ê²°??            return std::make_unique<TernaryExpr>(
+            auto else_val = parse_ternary(); // ?ï¿½ê²°??            return std::make_unique<TernaryExpr>(
                 std::move(left), std::move(then_val), std::move(else_val), ln);
         }
         return left;
     }
 
-    // ?€?€ or ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ or ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_or() {
         auto left = parse_and();
         while (check(TT::OR)) {
@@ -137,7 +137,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ and ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ and ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_and() {
         auto left = parse_not();
         while (check(TT::AND)) {
@@ -148,7 +148,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ not (?¨í•­) ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ not (?ï¿½í•­) ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_not() {
         if (check(TT::NOT)) {
             int ln = peek().line; advance();
@@ -157,7 +157,7 @@ class Parser {
         return parse_compare();
     }
 
-    // ?€?€ ë¹„êµ: ==  !=  >  <  >=  <=  in ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë¹„êµ: ==  !=  >  <  >=  <=  in ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_compare() {
         auto left = parse_bitor();
         TT t = peek().type;
@@ -175,7 +175,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ë¹„íŠ¸ OR: | ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë¹„íŠ¸ OR: | ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_bitor() {
         auto left = parse_bitxor();
         while (check(TT::PIPE)) {
@@ -185,7 +185,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ë¹„íŠ¸ XOR: ^ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë¹„íŠ¸ XOR: ^ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_bitxor() {
         auto left = parse_bitand();
         while (check(TT::CARET)) {
@@ -195,7 +195,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ë¹„íŠ¸ AND: & ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë¹„íŠ¸ AND: & ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_bitand() {
         auto left = parse_shift();
         while (check(TT::AMP)) {
@@ -205,7 +205,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ?œí”„?? <<  >> ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½í”„?? <<  >> ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_shift() {
         auto left = parse_additive();
         while (check(TT::LSHIFT) || check(TT::RSHIFT)) {
@@ -216,7 +216,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ?§ì…ˆ/ëº„ì…ˆ: +  - ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½ì…ˆ/ëº„ì…ˆ: +  - ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_additive() {
         auto left = parse_multiplicative();
         while (check(TT::PLUS) || check(TT::MINUS)) {
@@ -228,7 +228,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ê³±ì…ˆ/?˜ëˆ—?? *  /  % ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ê³±ì…ˆ/?ï¿½ëˆ—?? *  /  % ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_multiplicative() {
         auto left = parse_unary();
         while (check(TT::STAR) || check(TT::SLASH) || check(TT::PERCENT)) {
@@ -240,7 +240,7 @@ class Parser {
         return left;
     }
 
-    // ?€?€ ?¨í•­: -x  ~x ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½í•­: -x  ~x ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     ExprPtr parse_unary() {
         if (check(TT::MINUS)) {
             int ln = peek().line; advance();
@@ -253,7 +253,7 @@ class Parser {
         return parse_primary();
     }
 
-    // ?€?€ ë³´ê°„ ë¬¸ì???œë¸Œ ?Œì„œ (JIT ?”ì§„?ì„œ ì§ì ‘ ?Œì‹±?˜ë?ë¡??¬ê¸°?œëŠ” ?¨ìˆœ ì²˜ë¦¬) ?€?€
+    // ?ï¿½?ï¿½ ë³´ê°„ ë¬¸ì???ï¿½ë¸Œ ?ï¿½ì„œ (JIT ?ï¿½ì§„?ï¿½ì„œ ì§ì ‘ ?ï¿½ì‹±?ï¿½ï¿½?ï¿½??ï¿½ê¸°?ï¿½ëŠ” ?ï¿½ìˆœ ì²˜ë¦¬) ?ï¿½?ï¿½
     ExprPtr parse_fstr(const Token& tok) {
         return std::make_unique<StrLit>(tok.value, tok.line);
     }
@@ -261,7 +261,7 @@ class Parser {
     ExprPtr parse_primary() {
         int ln = peek().line;
 
-        // ?«ì
+        // ?ï¿½ì
         if (check(TT::NUM)) {
             double v = std::stod(peek().value);
             advance();
@@ -280,10 +280,10 @@ class Parser {
         if (check(TT::TRUE))  { advance(); return std::make_unique<BoolLit>(true,  ln); }
         if (check(TT::FALSE)) { advance(); return std::make_unique<BoolLit>(false, ln); }
 
-        // ?ë³„??/ ?¨ìˆ˜ ?¸ì¶œ ?œí˜„??        if (check(TT::IDENT)) {
+        // ?ï¿½ë³„??/ ?ï¿½ìˆ˜ ?ï¿½ì¶œ ?ï¿½í˜„??        if (check(TT::IDENT)) {
             std::string name = advance().value;
 
-            // ?¨ìˆ˜ ?¸ì¶œ: name(arg1, arg2, ...)
+            // ?ï¿½ìˆ˜ ?ï¿½ì¶œ: name(arg1, arg2, ...)
             if (check(TT::LPAREN)) {
                 advance(); // (
                 auto call = std::make_unique<CallExpr>(name, ln);
@@ -300,7 +300,7 @@ class Parser {
             while (true) {
                 if (check(TT::DOT)) {
                     advance();
-                    std::string prop = expect(TT::IDENT, "?ì„±ëª??ëŠ” ë©”ì„œ?œëª…").value;
+                    std::string prop = expect(TT::IDENT, "?ï¿½ì„±ï¿½??ï¿½ëŠ” ë©”ì„œ?ï¿½ëª…").value;
                     if (check(TT::LPAREN)) {
                         advance();
                         auto mc = std::make_unique<MethodCallExpr>(std::move(expr), prop, ln);
@@ -314,7 +314,7 @@ class Parser {
                         expr = std::make_unique<DotAccess>(std::move(expr), prop, ln);
                     }
                 } else if (check(TT::LBRACKET)) {
-                    // arr[i] ?½ê¸°
+                    // arr[i] ?ï¿½ê¸°
                     advance();
                     auto key = parse_expr();
                     expect(TT::RBRACKET, "]");
@@ -325,10 +325,10 @@ class Parser {
             }
             return expr;
         }
-        // new ?´ë˜?¤ëª…[(?¸ì)]
+        // new ?ï¿½ë˜?ï¿½ëª…[(?ï¿½ì)]
         if (check(TT::NEW)) {
             advance();
-            std::string cls = expect(TT::IDENT, "?´ë˜???´ë¦„").value;
+            std::string cls = expect(TT::IDENT, "?ï¿½ë˜???ï¿½ë¦„").value;
             auto ne = std::make_unique<NewExpr>(cls, ln);
             if (match(TT::LPAREN)) {
                 while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
@@ -340,7 +340,7 @@ class Parser {
             return ne;
         }
 
-        // ?•ì…”?ˆë¦¬ ë¦¬í„°?? {"??: ê°? ?ë³„?? ê°? ...}
+        // ?ï¿½ì…”?ï¿½ë¦¬ ë¦¬í„°?? {"??: ï¿½? ?ï¿½ë³„?? ï¿½? ...}
         if (check(TT::LBRACE)) {
             advance(); // {
             auto dict = std::make_unique<DictLit>(ln);
@@ -348,7 +348,7 @@ class Parser {
                 std::string key;
                 if (check(TT::STR))   key = advance().value;
                 else if (check(TT::IDENT)) key = advance().value;
-                else throw ParseError("?•ì…”?ˆë¦¬ ?¤ëŠ” ë¬¸ì???ëŠ” ?ë³„?ì—¬???©ë‹ˆ??, peek().line);
+                else throw ParseError("?ï¿½ì…”?ï¿½ë¦¬ ?ï¿½ëŠ” ë¬¸ì???ï¿½ëŠ” ?ï¿½ë³„?ï¿½ì—¬???ï¿½ë‹ˆ??, peek().line);
                 expect(TT::COLON, ":");
                 auto val = parse_expr();
                 dict->key_order.push_back(key);
@@ -375,7 +375,7 @@ class Parser {
         if (check(TT::SUPER)) {
             advance();
             expect(TT::DOT, ".");
-            std::string method = expect(TT::IDENT, "ë©”ì„œ?œëª…").value;
+            std::string method = expect(TT::IDENT, "ë©”ì„œ?ï¿½ëª…").value;
             auto sc = std::make_unique<SuperCallExpr>(method, ln);
             if (match(TT::LPAREN)) {
                 while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
@@ -387,13 +387,13 @@ class Parser {
             return sc;
         }
 
-        // func(params) do ... end ???µëª… ?¨ìˆ˜ ?œí˜„??        if (peek().type == TT::FUNC) {
+        // func(params) do ... end ???ï¿½ëª… ?ï¿½ìˆ˜ ?ï¿½í˜„??        if (peek().type == TT::FUNC) {
             advance(); // func
             expect(TT::LPAREN, "(");
             std::vector<std::string> params;
             std::vector<ExprPtr> defaults;
             while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
-                params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?˜ëª…").value);
+                params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?ï¿½ëª…").value);
                 ExprPtr def;
                 if (check(TT::IS)) { advance(); def = parse_expr(); }
                 defaults.push_back(std::move(def));
@@ -401,7 +401,7 @@ class Parser {
             }
             expect(TT::RPAREN, ")");
             expect(TT::DO, "do");
-            match(TT::NEWLINE); // ê°œí–‰?€ ? íƒ (?¸ë¼???ˆìš©)
+            match(TT::NEWLINE); // ê°œí–‰?ï¿½ ?ï¿½íƒ (?ï¿½ë¼???ï¿½ìš©)
             auto body = parse_block();
             expect(TT::END, "end");
             auto fe = std::make_unique<FuncExpr>(ln);
@@ -419,14 +419,14 @@ class Parser {
             return expr;
         }
 
-        throw ParseError("?œí˜„???„ìš” ???€??'" + peek().value + "' ?ˆìŒ", ln);
+        throw ParseError("?ï¿½í˜„???ï¿½ìš” ???ï¿½??'" + peek().value + "' ?ï¿½ìŒ", ln);
     }
 
-    // ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-    //  ë¬¸ì¥ ?Œì‹±
-    // ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+    // ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
+    //  ë¬¸ì¥ ?ï¿½ì‹±
+    // ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 
-    // ë¸”ë¡: stmt* (end / else / catch / EOF ?ì„œ ë©ˆì¶¤, ?Œë¹„?˜ì? ?ŠìŒ)
+    // ë¸”ë¡: stmt* (end / else / catch / EOF ?ï¿½ì„œ ë©ˆì¶¤, ?ï¿½ë¹„?ï¿½ï¿½? ?ï¿½ìŒ)
     BlockPtr parse_block() {
         auto SuraBlock = std::make_unique<SuraBlock>(peek().line);
         skip_newlines();
@@ -438,25 +438,25 @@ class Parser {
         return SuraBlock;
     }
 
-    // if ì¡°ê±´ë¬?    StmtPtr parse_if() {
+    // if ì¡°ê±´ï¿½?    StmtPtr parse_if() {
         int ln = peek().line;
         expect(TT::IF, "if");
         auto cond = parse_expr();
         expect(TT::THEN, "then");
 
-        // ?€?€ ?¸ë¼??if: then ??ê°™ì? ì¤„ì— ë¬¸ì¥???ˆìŒ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+        // ?ï¿½?ï¿½ ?ï¿½ë¼??if: then ??ê°™ï¿½? ì¤„ì— ë¬¸ì¥???ï¿½ìŒ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
         if (!check(TT::NEWLINE) && !check(TT::EOF_T)) {
-            auto inline_body = parse_stmt_body(ln); // ê°œí–‰ ?¬í•¨ ?Œë¹„
+            auto inline_body = parse_stmt_body(ln); // ê°œí–‰ ?ï¿½í•¨ ?ï¿½ë¹„
             auto then_block = std::make_unique<SuraBlock>(ln);
             then_block->body.push_back(std::move(inline_body));
             return std::make_unique<IfStmt>(std::move(cond), std::move(then_block), nullptr, ln);
         }
 
-        // ?€?€ ë¸”ë¡ if ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+        // ?ï¿½?ï¿½ ë¸”ë¡ if ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
         eat_newline();
         auto then_block = parse_block();
 
-        // elif ???˜ì§‘
+        // elif ???ï¿½ì§‘
         struct ElifClause { ExprPtr cond; BlockPtr body; int ln; };
         std::vector<ElifClause> elifs;
         while (check(TT::ELIF)) {
@@ -476,7 +476,7 @@ class Parser {
         expect(TT::END, "end");
         eat_newline();
 
-        // elif ì²´ì¸???¤ì—???ìœ¼ë¡?ì¤‘ì²© IfStmt ë¡?ë³€??        BlockPtr cur_else = std::move(else_block);
+        // elif ì²´ì¸???ï¿½ì—???ï¿½ìœ¼ï¿½?ì¤‘ì²© IfStmt ï¿½?ë³€??        BlockPtr cur_else = std::move(else_block);
         for (int i = (int)elifs.size() - 1; i >= 0; --i) {
             auto inner = std::make_unique<IfStmt>(
                 std::move(elifs[i].cond), std::move(elifs[i].body),
@@ -507,7 +507,7 @@ class Parser {
         int ln = peek().line;
         expect(TT::REPEAT, "repeat");
         auto count = parse_expr();
-        match(TT::DO); // do ??? íƒ
+        match(TT::DO); // do ???ï¿½íƒ
         eat_newline();
         auto body = parse_block();
         expect(TT::END, "end");
@@ -515,8 +515,8 @@ class Parser {
         return std::make_unique<RepeatStmt>(std::move(count), std::move(body), ln);
     }
 
-    // for i in ?œì‘ to ??[step ê°? do ... end  (?«ì ë²”ìœ„)
-    // for i in ?œì‘ ~ ?? [step ê°? do ... end  (~ ???ˆìš©)
+    // for i in ?ï¿½ì‘ to ??[step ï¿½? do ... end  (?ï¿½ì ë²”ìœ„)
+    // for i in ?ï¿½ì‘ ~ ?? [step ï¿½? do ... end  (~ ???ï¿½ìš©)
     // for item in ë°°ì—´ do ... end                (foreach)
     StmtPtr parse_for() {
         int ln = peek().line;
@@ -541,17 +541,17 @@ class Parser {
                 std::move(var), std::move(var2), std::move(first), std::move(body), ln);
         }
 
-        // ?«ì ë²”ìœ„: to ?ëŠ” ~ ?????ˆìš©
+        // ?ï¿½ì ë²”ìœ„: to ?ï¿½ëŠ” ~ ?????ï¿½ìš©
         if (!match(TT::TO) && !match(TT::TILDE))
-            throw ParseError("'to', '~', ?ëŠ” 'do' ?„ìš”", peek().line);
+            throw ParseError("'to', '~', ?ï¿½ëŠ” 'do' ?ï¿½ìš”", peek().line);
         auto end = parse_expr();
-        // ? íƒ??step
+        // ?ï¿½íƒ??step
         ExprPtr step;
         if (peek().type == TT::IDENT && peek().value == "step") {
             advance();
             step = parse_expr();
         }
-        match(TT::DO); // do ??? íƒ
+        match(TT::DO); // do ???ï¿½íƒ
         eat_newline();
         auto body = parse_block();
         expect(TT::END, "end");
@@ -560,22 +560,22 @@ class Parser {
             std::move(var), std::move(first), std::move(end), std::move(step), std::move(body), ln);
     }
 
-    // try ... catch ?¤ë¥˜ë³€??... end
+    // try ... catch ?ï¿½ë¥˜ë³€??... end
     StmtPtr parse_try() {
         int ln = peek().line;
         expect(TT::TRY, "try");
         eat_newline();
-        auto try_block = parse_block();          // CATCH ?ì„œ ë©ˆì¶¤
+        auto try_block = parse_block();          // CATCH ?ï¿½ì„œ ë©ˆì¶¤
         expect(TT::CATCH, "catch");
-        std::string catch_var = expect(TT::IDENT, "?¤ë¥˜ ë³€?˜ëª…").value;
+        std::string catch_var = expect(TT::IDENT, "?ï¿½ë¥˜ ë³€?ï¿½ëª…").value;
         eat_newline();
-        auto catch_block = parse_block();        // END ?ëŠ” FINALLY ?ì„œ ë©ˆì¶¤
+        auto catch_block = parse_block();        // END ?ï¿½ëŠ” FINALLY ?ï¿½ì„œ ë©ˆì¶¤
 
         BlockPtr finally_block;
         if (match(TT::FINALLY)) {
             expect(TT::DO, "do");
             eat_newline();
-            finally_block = parse_block();       // END ?ì„œ ë©ˆì¶¤
+            finally_block = parse_block();       // END ?ï¿½ì„œ ë©ˆì¶¤
         }
         expect(TT::END, "end");
         eat_newline();
@@ -583,15 +583,15 @@ class Parser {
             std::move(try_block), std::move(catch_var),
             std::move(catch_block), std::move(finally_block), ln);
     }
-    //   func ë©”ì„œ?œëª…(params) do ... end
+    //   func ë©”ì„œ?ï¿½ëª…(params) do ... end
     // end
     StmtPtr parse_class() {
         int ln = peek().line;
         expect(TT::CLASS, "class");
-        std::string name = expect(TT::IDENT, "?´ë˜???´ë¦„").value;
+        std::string name = expect(TT::IDENT, "?ï¿½ë˜???ï¿½ë¦„").value;
         std::string parent;
         if (match(TT::EXTENDS))
-            parent = expect(TT::IDENT, "ë¶€ëª??´ë˜???´ë¦„").value;
+            parent = expect(TT::IDENT, "ë¶€ï¿½??ï¿½ë˜???ï¿½ë¦„").value;
         expect(TT::DO, "do");
         eat_newline();
 
@@ -600,16 +600,16 @@ class Parser {
         skip_newlines();
         while (!check(TT::EOF_T) && !check(TT::END)) {
             if (check(TT::FUNC)) {
-                // ë©”ì„œ?? func ?´ë¦„(params) do ... end
+                // ë©”ì„œ?? func ?ï¿½ë¦„(params) do ... end
                 advance(); // func
-                std::string mname = expect(TT::IDENT, "ë©”ì„œ???´ë¦„").value;
+                std::string mname = expect(TT::IDENT, "ë©”ì„œ???ï¿½ë¦„").value;
                 std::vector<std::string> params;
                 std::vector<ExprPtr>     defaults;
                 if (match(TT::LPAREN)) {
                     while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
-                        params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?˜ëª…").value);
-                        // ? íƒ???€???´ë…¸?Œì´??(?´ë˜??ë©”ì„œ??
-                        if (check(TT::COLON)) { advance(); parse_type_annot(); } // ?Œì‹±ë§?(ë¯¸ë˜ ?•ì¥??
+                        params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?ï¿½ëª…").value);
+                        // ?ï¿½íƒ???ï¿½???ï¿½ë…¸?ï¿½ì´??(?ï¿½ë˜??ë©”ì„œ??
+                        if (check(TT::COLON)) { advance(); parse_type_annot(); } // ?ï¿½ì‹±ï¿½?(ë¯¸ë˜ ?ï¿½ì¥??
                         ExprPtr def;
                         if (check(TT::IS)) { advance(); def = parse_expr(); }
                         defaults.push_back(std::move(def));
@@ -617,8 +617,8 @@ class Parser {
                     }
                     expect(TT::RPAREN, ")");
                 }
-                // ? íƒ??ë°˜í™˜ ?€??(?´ë˜??ë©”ì„œ??
-                if (check(TT::ARROW)) { advance(); parse_type_annot(); } // ?Œì‹±ë§?(ë¯¸ë˜ ?•ì¥??
+                // ?ï¿½íƒ??ë°˜í™˜ ?ï¿½??(?ï¿½ë˜??ë©”ì„œ??
+                if (check(TT::ARROW)) { advance(); parse_type_annot(); } // ?ï¿½ì‹±ï¿½?(ë¯¸ë˜ ?ï¿½ì¥??
                 expect(TT::DO, "do");
                 eat_newline();
                 auto mbody = parse_block();
@@ -626,13 +626,13 @@ class Parser {
                 eat_newline();
                 cd->add_method(mname, std::move(params), std::move(defaults), std::move(mbody));
             } else if (check(TT::IDENT)) {
-                // ?„ë“œ: ?„ë“œëª?is ê¸°ë³¸ê°?                std::string fname = advance().value;
+                // ?ï¿½ë“œ: ?ï¿½ë“œï¿½?is ê¸°ë³¸ï¿½?                std::string fname = advance().value;
                 expect(TT::IS, "is");
                 auto fval = parse_expr();
                 eat_newline();
                 cd->add_field(std::move(fname), std::move(fval));
             } else {
-                throw ParseError("?´ë˜??ë°”ë””??func ?ëŠ” ?„ë“œ ?•ì˜ ?„ìš” ???€??'" + peek().value + "'", peek().line);
+                throw ParseError("?ï¿½ë˜??ë°”ë””??func ?ï¿½ëŠ” ?ï¿½ë“œ ?ï¿½ì˜ ?ï¿½ìš” ???ï¿½??'" + peek().value + "'", peek().line);
             }
             skip_newlines();
         }
@@ -642,21 +642,21 @@ class Parser {
         return cd;
     }
 
-    // func name(a, b) do  ?ëŠ”  func name do  (ë§¤ê°œë³€???†ëŠ” ê¸°ì¡´ ë¬¸ë²•)
+    // func name(a, b) do  ?ï¿½ëŠ”  func name do  (ë§¤ê°œë³€???ï¿½ëŠ” ê¸°ì¡´ ë¬¸ë²•)
     StmtPtr parse_func() {
         int ln = peek().line;
         expect(TT::FUNC, "func");
-        std::string name = expect(TT::IDENT, "?¨ìˆ˜ ?´ë¦„").value;
+        std::string name = expect(TT::IDENT, "?ï¿½ìˆ˜ ?ï¿½ë¦„").value;
 
-        // ? íƒ??ë§¤ê°œë³€?? func name(a, b is ê¸°ë³¸ê°? c) do
-        //                   func name(a: ?«ì, b: ë¬¸ì??is "ê¸°ë³¸") -> ?«ì do
+        // ?ï¿½íƒ??ë§¤ê°œë³€?? func name(a, b is ê¸°ë³¸ï¿½? c) do
+        //                   func name(a: ?ï¿½ì, b: ë¬¸ì??is "ê¸°ë³¸") -> ?ï¿½ì do
         std::vector<std::string> params;
         std::vector<ExprPtr>     defaults;
         std::vector<TypeAnnot>   param_types;
         if (match(TT::LPAREN)) {
             while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
-                params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?˜ëª…").value);
-                // ? íƒ???€???´ë…¸?Œì´?? param: ?€??                TypeAnnot pta;
+                params.push_back(expect(TT::IDENT, "ë§¤ê°œë³€?ï¿½ëª…").value);
+                // ?ï¿½íƒ???ï¿½???ï¿½ë…¸?ï¿½ì´?? param: ?ï¿½??                TypeAnnot pta;
                 if (check(TT::COLON)) { advance(); pta = parse_type_annot(); }
                 param_types.push_back(pta);
                 ExprPtr def;
@@ -667,7 +667,7 @@ class Parser {
             expect(TT::RPAREN, ")");
         }
 
-        // ? íƒ??ë°˜í™˜ ?€?? -> ?€??        TypeAnnot return_type;
+        // ?ï¿½íƒ??ë°˜í™˜ ?ï¿½?? -> ?ï¿½??        TypeAnnot return_type;
         if (check(TT::ARROW)) { advance(); return_type = parse_type_annot(); }
 
         expect(TT::DO, "do");
@@ -684,10 +684,10 @@ class Parser {
         return fd;
     }
 
-    // ?´ì¥ ëª…ë ¹?? cmd expr expr ...
-    // random ?€ min ~ max result ?¨í„´ ?¹ìˆ˜ ì²˜ë¦¬
+    // ?ï¿½ì¥ ëª…ë ¹?? cmd expr expr ...
+    // random ?ï¿½ min ~ max result ?ï¿½í„´ ?ï¿½ìˆ˜ ì²˜ë¦¬
     StmtPtr parse_cmd(const std::string& cmd_name, int ln) {
-        // ?Œë ¤ì§??¤ì›Œ?œë? ?¤ìˆ˜ë¡?ëª…ë ¹?´ë¡œ ?¼ëŠ”ì§€ ì²´í¬ (?¤í? ?ì?)
+        // ?ï¿½ë ¤ï¿½??ï¿½ì›Œ?ï¿½ï¿½? ?ï¿½ìˆ˜ï¿½?ëª…ë ¹?ï¿½ë¡œ ?ï¿½ëŠ”ì§€ ì²´í¬ (?ï¿½ï¿½? ?ï¿½ï¿½?)
         static const std::vector<std::string> BUILTINS = {"print", "print_n", "input", "exit", "clock", "type"};
         static const std::vector<std::string> KWS = {"is", "if", "then", "else", "end", "while", "do", "func", "repeat", "break", "return", "use", "class", "try"};
         
@@ -697,13 +697,13 @@ class Parser {
             if (sug.empty()) sug = sura_suggest(cmd_name, KWS);
             
             if (!sug.empty()) {
-                // ?„ì „???€ë¦?ê²??„ë‹ ?˜ë„ ?ˆìœ¼??ê²½ê³ ??ë©”ì‹œì§€ë¥??´ì•„ ?ëŸ¬ë¥??˜ì§
-                // (?¬ìš©?ê? ?•ì˜???¨ìˆ˜???˜ë„ ?ˆì?ë§? pirent ì²˜ëŸ¼ ?ˆë¬´ ? ì‚¬?˜ë©´ ?œì•ˆ)
+                // ?ï¿½ì „???ï¿½ï¿½?ï¿½??ï¿½ë‹ ?ï¿½ë„ ?ï¿½ìœ¼??ê²½ê³ ??ë©”ì‹œì§€ï¿½??ï¿½ì•„ ?ï¿½ëŸ¬ï¿½??ï¿½ì§
+                // (?ï¿½ìš©?ï¿½ï¿½? ?ï¿½ì˜???ï¿½ìˆ˜???ï¿½ë„ ?ï¿½ï¿½?ï¿½? pirent ì²˜ëŸ¼ ?ï¿½ë¬´ ?ï¿½ì‚¬?ï¿½ë©´ ?ï¿½ì•ˆ)
                 if (cmd_name != sug) {
-                     // ?¬ê¸°??ë°”ë¡œ throw ?˜ê¸°ë³´ë‹¨, ?˜ì¤‘???¤í–‰ ???ëŸ¬ê°€ ?˜ê² ì§€ë§?
-                     // ?Œì„œ ?˜ì??ì„œ ?•ì‹¤???¤í?(?? pirent)???¡ì•„ì£¼ëŠ” ê²?ì¢‹ìŒ
-                     // ?˜ì?ë§?? ì—°?±ì„ ?„í•´ ?¼ë‹¨ CmdStmtë¡??˜ê¸°ê³? 
-                     // ?˜ì¤‘??"?????†ëŠ” ëª…ë ¹?? ?ëŸ¬ ??suggestion???œìš©?˜ë„ë¡???
+                     // ?ï¿½ê¸°??ë°”ë¡œ throw ?ï¿½ê¸°ë³´ë‹¨, ?ï¿½ì¤‘???ï¿½í–‰ ???ï¿½ëŸ¬ê°€ ?ï¿½ê² ì§€ï¿½?
+                     // ?ï¿½ì„œ ?ï¿½ï¿½??ï¿½ì„œ ?ï¿½ì‹¤???ï¿½ï¿½?(?? pirent)???ï¿½ì•„ì£¼ëŠ” ï¿½?ì¢‹ìŒ
+                     // ?ï¿½ï¿½?ï¿½??ï¿½ì—°?ï¿½ì„ ?ï¿½í•´ ?ï¿½ë‹¨ CmdStmtï¿½??ï¿½ê¸°ï¿½? 
+                     // ?ï¿½ì¤‘??"?????ï¿½ëŠ” ëª…ë ¹?? ?ï¿½ëŸ¬ ??suggestion???ï¿½ìš©?ï¿½ë„ï¿½???
                 }
             }
         }
@@ -724,21 +724,21 @@ class Parser {
         return stmt;
     }
 
-    // ?€?€ ?ë³„?ë¡œ ?œì‘?˜ëŠ” ë¬¸ì¥ êµ¬ë¶„ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ?ï¿½ë³„?ï¿½ë¡œ ?ï¿½ì‘?ï¿½ëŠ” ë¬¸ì¥ êµ¬ë¶„ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     // 1. name is expr         ??AssignStmt
     // 2. obj.prop is expr     ??DotAssignStmt
     // 3. arr[i] is expr       ??IndexAssignStmt
     // 4. name op= expr        ??InplaceStmt
-    // 5. name(args)           ??CmdStmt (?¨ìˆ˜ ?¸ì¶œ)
-    // 6. cmd args...          ??CmdStmt (?´ì¥ ëª…ë ¹??
+    // 5. name(args)           ??CmdStmt (?ï¿½ìˆ˜ ?ï¿½ì¶œ)
+    // 6. cmd args...          ??CmdStmt (?ï¿½ì¥ ëª…ë ¹??
     StmtPtr parse_ident_stmt(int ln) {
-        std::string name = advance().value; // IDENT ?Œë¹„
+        std::string name = advance().value; // IDENT ?ï¿½ë¹„
 
         // obj.prop is expr  ??DotAssignStmt
         // obj.method(args) ??CmdStmt("obj.method", args)
         if (check(TT::DOT)) {
             advance(); // .
-            std::string prop = expect(TT::IDENT, "?ì„±ëª??ëŠ” ë©”ì„œ?œëª…").value;
+            std::string prop = expect(TT::IDENT, "?ï¿½ì„±ï¿½??ï¿½ëŠ” ë©”ì„œ?ï¿½ëª…").value;
 
             // obj.prop is expr
             if (check(TT::IS)) {
@@ -748,7 +748,7 @@ class Parser {
                 return std::make_unique<DotAssignStmt>(name, prop, std::move(val), ln);
             }
 
-            // obj.method(args) ??ë©”ì„œ???¸ì¶œ ë¬¸ì¥
+            // obj.method(args) ??ë©”ì„œ???ï¿½ì¶œ ë¬¸ì¥
             if (check(TT::LPAREN)) {
                 advance(); // (
                 auto mc = std::make_unique<MethodCallExpr>(
@@ -762,7 +762,7 @@ class Parser {
                 return std::make_unique<ExprStmt>(std::move(mc), ln);
             }
 
-            throw ParseError("???¤ì— 'is' ?ëŠ” '(' ?„ìš”", peek().line);
+            throw ParseError("???ï¿½ì— 'is' ?ï¿½ëŠ” '(' ?ï¿½ìš”", peek().line);
         }
 
         // arr[i] is expr  ??IndexAssignStmt
@@ -776,7 +776,7 @@ class Parser {
             return std::make_unique<IndexAssignStmt>(name, std::move(key), std::move(val), ln);
         }
 
-        // name: ?€??is expr  ???€???´ë…¸?Œì´???ˆëŠ” ?€??        if (check(TT::COLON)) {
+        // name: ?ï¿½??is expr  ???ï¿½???ï¿½ë…¸?ï¿½ì´???ï¿½ëŠ” ?ï¿½??        if (check(TT::COLON)) {
             advance(); // :
             TypeAnnot ta = parse_type_annot();
             expect(TT::IS, "is");
@@ -794,7 +794,7 @@ class Parser {
             return std::make_unique<AssignStmt>(name, std::move(val), ln);
         }
 
-        // name += expr  (ë³µí•© ?€?? ëª…ì‹œ???•íƒœë§??ˆìš©)
+        // name += expr  (ë³µí•© ?ï¿½?? ëª…ì‹œ???ï¿½íƒœï¿½??ï¿½ìš©)
         {
             TT t = peek().type;
             std::string op;
@@ -811,7 +811,7 @@ class Parser {
             }
         }
 
-        // name(args) ???¨ìˆ˜/?´ì¥?¨ìˆ˜ ?¸ì¶œ ë¬¸ì¥ (ExprStmt)
+        // name(args) ???ï¿½ìˆ˜/?ï¿½ì¥?ï¿½ìˆ˜ ?ï¿½ì¶œ ë¬¸ì¥ (ExprStmt)
         if (check(TT::LPAREN)) {
             advance(); // (
             auto ce = std::make_unique<CallExpr>(name, ln);
@@ -824,11 +824,11 @@ class Parser {
             return std::make_unique<ExprStmt>(std::move(ce), ln);
         }
 
-        // ?´ì¥ ëª…ë ¹??or ?¸ì ?†ëŠ” ?¨ìˆ˜ ?¸ì¶œ
+        // ?ï¿½ì¥ ëª…ë ¹??or ?ï¿½ì ?ï¿½ëŠ” ?ï¿½ìˆ˜ ?ï¿½ì¶œ
         return parse_cmd(name, ln);
     }
 
-    // ë¬¸ì¥ ë³¸ì²´ ?Œì‹± (if ?¸ë¼?¸ìš©, parse_stmt ?´ë??ì„œ???¬ìš©)
+    // ë¬¸ì¥ ë³¸ì²´ ?ï¿½ì‹± (if ?ï¿½ë¼?ï¿½ìš©, parse_stmt ?ï¿½ï¿½??ï¿½ì„œ???ï¿½ìš©)
     StmtPtr parse_stmt_body(int ln) {
         switch (peek().type) {
             case TT::IF:     return parse_if();
@@ -855,7 +855,7 @@ class Parser {
             }
             case TT::USE: {
                 advance();
-                std::string lib = expect(TT::IDENT, "?¼ì´ë¸ŒëŸ¬ë¦¬ëª…").value;
+                std::string lib = expect(TT::IDENT, "?ï¿½ì´ë¸ŒëŸ¬ë¦¬ëª…").value;
                 eat_newline();
                 return std::make_unique<UseStmt>(std::move(lib), ln);
             }
@@ -865,7 +865,7 @@ class Parser {
                 // super.method(args) ë¬¸ì¥ ??ExprStmt(SuperCallExpr)
                 advance(); // super
                 expect(TT::DOT, ".");
-                std::string method = expect(TT::IDENT, "ë©”ì„œ?œëª…").value;
+                std::string method = expect(TT::IDENT, "ë©”ì„œ?ï¿½ëª…").value;
                 auto sc = std::make_unique<SuperCallExpr>(method, ln);
                 if (match(TT::LPAREN)) {
                     while (!check(TT::RPAREN) && !check(TT::EOF_T)) {
@@ -878,7 +878,7 @@ class Parser {
                 return std::make_unique<ExprStmt>(std::move(sc), ln);
             }
             default: {
-                // ?«ìÂ·ë¬¸ì?´Â·ë¶ˆë¦¬ì–¸Â·ê´„í˜¸Â·?¨í•­ ?°ì‚°???±ìœ¼ë¡??œì‘?˜ëŠ” ?œí˜„??ë¬¸ì¥ (REPL ?¸ì˜)
+                // ?ï¿½ìÂ·ë¬¸ì?ï¿½Â·ë¶ˆë¦¬ì–¸Â·ê´„í˜¸Â·?ï¿½í•­ ?ï¿½ì‚°???ï¿½ìœ¼ï¿½??ï¿½ì‘?ï¿½ëŠ” ?ï¿½í˜„??ë¬¸ì¥ (REPL ?ï¿½ì˜)
                 TT t = peek().type;
                 if (t == TT::NUM || t == TT::STR || t == TT::TRUE || t == TT::FALSE
                     || t == TT::LPAREN || t == TT::MINUS || t == TT::NOT
@@ -887,12 +887,12 @@ class Parser {
                     eat_newline();
                     return std::make_unique<ExprStmt>(std::move(expr), ln);
                 }
-                throw ParseError("ë¬¸ì¥ ?Œì‹± ?¤íŒ¨ ??'" + peek().value + "'", ln);
+                throw ParseError("ë¬¸ì¥ ?ï¿½ì‹± ?ï¿½íŒ¨ ??'" + peek().value + "'", ln);
             }
         }
     }
 
-    // ìµœìƒ??ë¬¸ì¥ ?Œì‹±
+    // ìµœìƒ??ë¬¸ì¥ ?ï¿½ì‹±
     StmtPtr parse_stmt() {
         skip_newlines();
         int ln = peek().line;
@@ -900,7 +900,7 @@ class Parser {
     }
 
 public:
-    // ?€?€ ì§„ì…?? ? í° ??AST (SuraBlock = ?„ì²´ ?„ë¡œê·¸ë¨) ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ì§„ì…?? ?ï¿½í° ??AST (SuraBlock = ?ï¿½ì²´ ?ï¿½ë¡œê·¸ë¨) ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     BlockPtr parse(const std::vector<Token>& toks) {
         tokens = toks;
         pos    = 0;
@@ -913,7 +913,7 @@ public:
         return program;
     }
 
-    // ?ŒìŠ¤ ë¬¸ì?´ì—??ë°”ë¡œ ?Œì‹± (Lexer ?¬í•¨)
+    // ?ï¿½ìŠ¤ ë¬¸ì?ï¿½ì—??ë°”ë¡œ ?ï¿½ì‹± (Lexer ?ï¿½í•¨)
     BlockPtr parse_source(const std::string& source) {
         Lexer lexer;
         return parse(lexer.tokenize(source));

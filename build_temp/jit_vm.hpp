@@ -7,23 +7,23 @@
 #include <vector>
 #include "platform.hpp"
 
-// ?ˆì??¤í„° ?„ë ˆ??struct CallFrame {
+// ?ï¿½ï¿½??ï¿½í„° ?ï¿½ë ˆ??struct CallFrame {
     std::vector<Value> registers;
-    GCClosure* closure = nullptr; // ?¤í–‰ ì¤‘ì¸ ?´ë¡œ?€ (Upvalue ?‘ê·¼??
+    GCClosure* closure = nullptr; // ?ï¿½í–‰ ì¤‘ì¸ ?ï¿½ë¡œ?ï¿½ (Upvalue ?ï¿½ê·¼??
     size_t ip = 0;
     size_t end_ip = 0;
     const JitChunk* chunk = nullptr;
 };
 
-// ?ˆì™¸ êµ¬ì¡°ì²?struct JitReturn { Value value; };
+// ?ï¿½ì™¸ êµ¬ì¡°ï¿½?struct JitReturn { Value value; };
 struct JitThrow { std::string message; int line; };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 // ê°€??ë¨¸ì‹  (Inline Caching & Tracing GC)
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 class JitVM {
     std::vector<Value> globals;
-    std::vector<GCUpvalue*> open_upvalues; // ?«íˆì§€ ?Šì? Upvalue ëª©ë¡
+    std::vector<GCUpvalue*> open_upvalues; // ?ï¿½íˆì§€ ?ï¿½ï¿½? Upvalue ëª©ë¡
     
     std::unordered_map<std::string, JitFuncInfo> rt_functions;
     std::unordered_map<std::string, JitClassInfo> rt_classes;
@@ -44,14 +44,14 @@ class JitVM {
             }
         }
 
-        // 2. Mark Root - ?œì„± ?„ë ˆ???ˆì??¤í„°
+        // 2. Mark Root - ?ï¿½ì„± ?ï¿½ë ˆ???ï¿½ï¿½??ï¿½í„°
         for (auto* frame : active_frames) {
             for (auto& v : frame->registers) {
                 v.mark_value();
             }
         }
 
-        // 3. Mark Root - ?œì„± ?„ë ˆ?„ì˜ ì²?¬ ë³´í˜¸(?ìˆ˜ ?€, ?´ë˜???¨ìˆ˜ ?”í´??
+        // 3. Mark Root - ?ï¿½ì„± ?ï¿½ë ˆ?ï¿½ì˜ ï¿½?ï¿½ï¿½ ë³´í˜¸(?ï¿½ìˆ˜ ?ï¿½, ?ï¿½ë˜???ï¿½ìˆ˜ ?ï¿½í´??
         for (auto* frame : active_frames) {
             if (frame->chunk) {
                 for (auto v : frame->chunk->constants) { Value temp = v; temp.mark_value(); }
@@ -66,8 +66,8 @@ class JitVM {
                 }
             }
         }
-        // 4. Mark Root - ?´ë¡œ?€ (?„ì¬ ?´ë¡œ?€??GC ê°ì²´?´ë?ë¡?ê°??œíšŒ?ì„œ ?ë™ ?¤ìº”??
-        // 5. ?´ë˜???”í´??        for (auto& [cname, c_info] : rt_classes) {
+        // 4. Mark Root - ?ï¿½ë¡œ?ï¿½ (?ï¿½ì¬ ?ï¿½ë¡œ?ï¿½??GC ê°ì²´?ï¿½ï¿½?ï¿½?ï¿½??ï¿½íšŒ?ï¿½ì„œ ?ï¿½ë™ ?ï¿½ìº”??
+        // 5. ?ï¿½ë˜???ï¿½í´??        for (auto& [cname, c_info] : rt_classes) {
             for (auto& v : c_info.field_defaults) v.mark_value();
         }
 
@@ -117,7 +117,7 @@ public:
         frame.chunk = &main_chunk;
         frame.ip = 0;
         frame.end_ip = main_chunk.code.size();
-        // globals ë°°ì—´ ?¬ê¸°ë¥?ì²?¬???„ì—­ ë³€??ëª©ë¡ ?¬ê¸°??ë§ê²Œ ì¡°ì •
+        // globals ë°°ì—´ ?ï¿½ê¸°ï¿½?ï¿½?ï¿½ï¿½???ï¿½ì—­ ë³€??ëª©ë¡ ?ï¿½ê¸°??ë§ê²Œ ì¡°ì •
         if (globals.size() < main_chunk.global_names.size()) {
             globals.resize(main_chunk.global_names.size(), Value::nil());
         }
@@ -148,7 +148,7 @@ private:
         for (auto it = open_upvalues.begin(); it != open_upvalues.end(); ) {
             GCUpvalue* uv = *it;
             if (uv->location >= last_local) {
-                uv->closed = *(uv->location); // ê°?ë³µì‚¬ (?«ê¸°)
+                uv->closed = *(uv->location); // ï¿½?ë³µì‚¬ (?ï¿½ê¸°)
                 uv->location = nullptr;
                 it = open_upvalues.erase(it);
             } else {
@@ -161,8 +161,8 @@ private:
         while (!cur.empty() && rt_classes.count(cur)) {
             auto& c = rt_classes[cur];
             if (c.methods.count(method)) return &c.methods[method];
-            if (method == "init" && c.methods.count("?ì„±??)) return &c.methods["?ì„±??];
-            if (method == "?ì„±?? && c.methods.count("init")) return &c.methods["init"];
+            if (method == "init" && c.methods.count("?ï¿½ì„±??)) return &c.methods["?ï¿½ì„±??];
+            if (method == "?ï¿½ì„±?? && c.methods.count("init")) return &c.methods["init"];
             cur = c.parent;
         }
         return nullptr;
@@ -257,7 +257,7 @@ private:
                     ci.field_defaults = new_defs;
                     ci.field_indices = new_idx;
                 }
-                // inst.str_idx???´ì œ global index ?´ë©°, ?´ë˜???´ë¦„?€ chunk.global_names???ˆìŒ
+                // inst.str_idx???ï¿½ì œ global index ?ï¿½ë©°, ?ï¿½ë˜???ï¿½ë¦„?ï¿½ chunk.global_names???ï¿½ìŒ
                 rt_classes[chunk.global_names[inst.str_idx]] = ci;
                 break;
             }
@@ -305,16 +305,16 @@ private:
                 break;
             }
             
-            // ?€?€ ?µì‹¬: ?¸ë¼??ìºì‹±(Inline Caching) ì²˜ë¦¬ êµ¬ê°„ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+            // ?ï¿½?ï¿½ ?ï¿½ì‹¬: ?ï¿½ë¼??ìºì‹±(Inline Caching) ì²˜ë¦¬ êµ¬ê°„ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
             case JitOp::DOT_GET: {
                 const std::string& prop = chunk.get_string(inst.str_idx);
                 if (R[b].is_inst()) {
                     GCInstance* inst_obj = R[b].as_inst();
-                    // ìºì‹œ Hit ???? ë¬¸ì???´ì‹± ???˜ê³  ê·¸ëƒ¥ ?«ì ?¸ë±?¤ë¡œ ë°”ë¡œ O(1) ê½‚ìŒ
+                    // ìºì‹œ Hit ???? ë¬¸ì???ï¿½ì‹± ???ï¿½ê³  ê·¸ëƒ¥ ?ï¿½ì ?ï¿½ë±?ï¿½ë¡œ ë°”ë¡œ O(1) ê½‚ìŒ
                     if (inst.ic_cache != -1 && inst_obj->fields.size() > (size_t)inst.ic_cache) {
                         R[a] = inst_obj->fields[inst.ic_cache];
                     } else {
-                        // ìºì‹œ Miss ???? ?´ì‹œë§??¤ì ¸???¤í”„??ì°¾ì•„?¤ê¸° 
+                        // ìºì‹œ Miss ???? ?ï¿½ì‹œï¿½??ï¿½ì ¸???ï¿½í”„??ì°¾ì•„?ï¿½ê¸° 
                         int offset = -1;
                         if (rt_classes.count(inst_obj->class_name)) {
                             auto& c = rt_classes[inst_obj->class_name];
@@ -325,7 +325,7 @@ private:
                                 inst_obj->fields.resize(rt_classes[inst_obj->class_name].field_defaults.size(), Value::nil());
                             }
                             R[a] = inst_obj->fields[offset];
-                            inst.ic_cache = offset; // ?¤ìŒ ë²?ë£¨í”„?ëŠ” ìºì‹œ Hit ?˜ë„ë¡?ëª…ë ¹???êµ¬ ë³€ì¡?(IC!)
+                            inst.ic_cache = offset; // ?ï¿½ìŒ ï¿½?ë£¨í”„?ï¿½ëŠ” ìºì‹œ Hit ?ï¿½ë„ï¿½?ëª…ë ¹???ï¿½êµ¬ ë³€ï¿½?(IC!)
                         } else {
                             R[a] = Value::nil();
                         }
@@ -355,7 +355,7 @@ private:
                                 offset = c.field_indices.size();
                                 c.field_indices[prop] = offset;
                                 c.field_defaults.push_back(Value::nil());
-                                // ?„ì¬ ?ì„±???¸ìŠ¤?´ìŠ¤?ë§Œ ?¬ê¸°ë¥?ë§ì¶”ê¸??„í•´ ë¦¬ì‚¬?´ì¦ˆ ë°?? ë‹¹
+                                // ?ï¿½ì¬ ?ï¿½ì„±???ï¿½ìŠ¤?ï¿½ìŠ¤?ï¿½ë§Œ ?ï¿½ê¸°ï¿½?ë§ì¶”ï¿½??ï¿½í•´ ë¦¬ì‚¬?ï¿½ì¦ˆ ï¿½??ï¿½ë‹¹
                                 if (inst_obj->fields.size() < c.field_defaults.size()) {
                                     inst_obj->fields.resize(c.field_defaults.size(), Value::nil());
                                 }
@@ -367,7 +367,7 @@ private:
                 } else if (R[a].is_dict()) R[a].dict_set(prop, R[b]);
                 break;
             }
-            // ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+            // ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
 
             case JitOp::OP_IN: {
                 if (R[c].is_arr() && R[c].as_arr()) {
@@ -428,8 +428,8 @@ private:
                 } else {
                     static const std::vector<std::string> BUILTINS = {"print", "input", "exit", "clock", "type"};
                     std::string sug = sura_suggest(cmd, BUILTINS);
-                    std::string msg = "?????†ëŠ” ëª…ë ¹?? '" + cmd + "'";
-                    if (!sug.empty()) msg += " (?¹ì‹œ '" + sug + "'ë¥??…ë ¥?˜ì‹œ???ˆë‚˜??)";
+                    std::string msg = "?????ï¿½ëŠ” ëª…ë ¹?? '" + cmd + "'";
+                    if (!sug.empty()) msg += " (?ï¿½ì‹œ '" + sug + "'ï¿½??ï¿½ë ¥?ï¿½ì‹œ???ï¿½ë‚˜??)";
                     throw JitThrow{msg, inst.line};
                 }
                 break;
@@ -463,7 +463,7 @@ private:
                 
                 if (rt_classes.count(cls)) idata->fields = rt_classes[cls].field_defaults;
 
-                auto ctor = find_method(cls, "?ì„±??); if (!ctor) ctor = find_method(cls, "init");
+                auto ctor = find_method(cls, "?ï¿½ì„±??); if (!ctor) ctor = find_method(cls, "init");
                 if (ctor) {
                     CallFrame new_frame;
                     new_frame.registers.resize(ctor->max_regs > 0 ? ctor->max_regs : 256, Value::nil());

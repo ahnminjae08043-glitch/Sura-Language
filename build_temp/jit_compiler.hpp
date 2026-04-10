@@ -2,9 +2,9 @@
 #include "jit_op.hpp"
 #include "ast.hpp"
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?ˆì??¤í„° ê¸°ë°˜ JIT Compiler
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
+//  ?ï¿½ï¿½??ï¿½í„° ê¸°ë°˜ JIT Compiler
+// ?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•?ï¿½â•
 struct CompilerEnv {
     CompilerEnv* enclosing = nullptr;
     std::unordered_map<std::string, uint16_t> locals;
@@ -15,7 +15,7 @@ struct CompilerEnv {
     CompilerEnv(CompilerEnv* enc) : enclosing(enc) {}
     
     uint16_t alloc_reg() {
-        if (next_reg >= 65535) throw std::runtime_error("?¨ìˆ˜/ë¸”ë¡ ??ê°€???ˆì??¤í„° ì´ˆê³¼ (ìµœë? 65535ê°?");
+        if (next_reg >= 65535) throw std::runtime_error("?ï¿½ìˆ˜/ë¸”ë¡ ??ê°€???ï¿½ï¿½??ï¿½í„° ì´ˆê³¼ (ìµœï¿½? 65535ï¿½?");
         uint16_t r = next_reg++;
         if (next_reg > max_regs) max_regs = next_reg;
         return r;
@@ -58,14 +58,14 @@ class JitCompiler {
         ~ScopeGuard() { env->next_reg = saved_reg; env->locals = saved_locals; }
     };
 
-    // ?€?€ ë£¨í”„ ì»¨í…?¤íŠ¸ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë£¨í”„ ì»¨í…?ï¿½íŠ¸ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     struct LoopCtx {
         std::vector<size_t> break_patches;
         size_t              continue_target;
     };
     std::vector<LoopCtx> loop_stack;
 
-    // ?€?€ ë³€???ë³„ ë³´ì¡° ?¨ìˆ˜ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë³€???ï¿½ë³„ ë³´ì¡° ?ï¿½ìˆ˜ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     void emit_load_var(const std::string& name, uint16_t target, int ln) {
         int local = current_env->resolve_local(name);
         if (local != -1) {
@@ -106,7 +106,7 @@ class JitCompiler {
         }
     }
 
-    // ?€?€ ë³´ì¡° ?¨ìˆ˜ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    // ?ï¿½?ï¿½ ë³´ì¡° ?ï¿½ìˆ˜ ?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½?ï¿½
     void compile_interpolated_string(const std::string& s, int line, uint16_t target) {
         if (s.find('{') == std::string::npos) {
             chunk.emit(JitOp::LOAD_CONST, target, 0, 0, chunk.add_const(Value(s)), -1, line);
@@ -178,13 +178,13 @@ public:
         }
         case NK::ARRAY_LIT: {
             auto* al = static_cast<const ArrayLit*>(e);
-            uint16_t start_reg = current_env->next_reg; // ?„ì¬ ? ë‹¹???ˆì??¤í„°????(ë°°ì—´ ?ì†Œ ?„ì‹œ ?€??
+            uint16_t start_reg = current_env->next_reg; // ?ï¿½ì¬ ?ï¿½ë‹¹???ï¿½ï¿½??ï¿½í„°????(ë°°ì—´ ?ï¿½ì†Œ ?ï¿½ì‹œ ?ï¿½??
             for (auto& el : al->elements) {
                 uint16_t r = alloc_reg();
                 compile_expr(el.get(), r);
             }
             chunk.emit(JitOp::MAKE_ARRAY, target, start_reg, 0, (int)al->elements.size(), -1, ln);
-            current_env->next_reg = start_reg; // ?„ì‹œ ?ˆì??¤í„° ?´ì œ
+            current_env->next_reg = start_reg; // ?ï¿½ì‹œ ?ï¿½ï¿½??ï¿½í„° ?ï¿½ì œ
             break;
         }
         case NK::DICT_LIT: {
@@ -469,7 +469,7 @@ public:
             size_t else_jump = chunk.emit(JitOp::JUMP_IF_FALSE, cond_reg, 0, 0, 0, -1, ln);
             current_env->next_reg -= 1;
             
-            compile_stmt(is->then_block.get()); // SuraBlock ì²˜ë¦¬ ?¬í•¨??
+            compile_stmt(is->then_block.get()); // SuraBlock ì²˜ë¦¬ ?ï¿½í•¨??
             if (is->else_block) {
                 size_t end_jump = chunk.emit(JitOp::JUMP, 0, 0, 0, 0, -1, ln);
                 chunk.patch_jump(else_jump, (int)chunk.current_addr());
@@ -545,12 +545,12 @@ public:
                     if (i > 0) ident_info += '\x01';
                     ident_info += (c->args[i]->kind == NK::IDENT) ? static_cast<const Ident*>(c->args[i].get())->name : "\x02";
                 }
-                uint16_t dest = alloc_reg(); // ?´ì¥ ëª…ë ¹?´ë„ ê²°ê³¼ë¥?ë°˜í™˜?????ˆìŒ
+                uint16_t dest = alloc_reg(); // ?ï¿½ì¥ ëª…ë ¹?ï¿½ë„ ê²°ê³¼ï¿½?ë°˜í™˜?????ï¿½ìŒ
                 chunk.emit(JitOp::CALL_BUILTIN, dest, args_start, 0, (int)c->args.size(), chunk.add_string(c->cmd + std::string(1, '\0') + ident_info), ln);
-                // ê²°ê³¼??dest???¨ì–´ì§€ê³?ë¬´ì‹œ?˜ê±°???„ìš”?˜ë©´ ?œìš©??ë³´í†µ CMD??ë¬´ì‹œ??
+                // ê²°ê³¼??dest???ï¿½ì–´ì§€ï¿½?ë¬´ì‹œ?ï¿½ê±°???ï¿½ìš”?ï¿½ë©´ ?ï¿½ìš©??ë³´í†µ CMD??ë¬´ì‹œ??
                 current_env->next_reg -= 1;
             }
-            current_env->next_reg = args_start; // ?¸ì???„ì‹œ ?ˆì??¤í„° ì¦‰ì‹œ ë°˜í™˜ 
+            current_env->next_reg = args_start; // ?ï¿½ì???ï¿½ì‹œ ?ï¿½ï¿½??ï¿½í„° ì¦‰ì‹œ ë°˜í™˜ 
             break;
         }
         case NK::CLASS_DEF: {

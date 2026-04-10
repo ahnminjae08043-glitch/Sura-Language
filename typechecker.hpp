@@ -7,19 +7,19 @@
 #include <stdexcept>
 #include <iostream>
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  ?˜ë¼(SURA) ?€??ê²€?¬ê¸° ??v1.0
-//  ?ì§„???€???œìŠ¤??(Gradual Typing)
-//  - ?€???´ë…¸?Œì´?˜ì´ ?†ìœ¼ë©?ê¸°ì¡´ì²˜ëŸ¼ ?™ì  ?€?…ìœ¼ë¡??™ì‘
-//  - ?€???´ë…¸?Œì´?˜ì´ ?ˆìœ¼ë©?ì»´íŒŒ???€?„ì— ?€??ë¶ˆì¼ì¹?ê²½ê³ /?¤ë¥˜
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
+
+
+
+
 
 struct TypeError {
     int         line;
     std::string message;
 };
 
-// ?€?€ ?¨ìˆ˜ ?œê·¸?ˆì²˜ ?•ë³´ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+
 struct FuncSig {
     std::string              name;
     std::vector<TypeAnnot>   param_types;
@@ -27,7 +27,7 @@ struct FuncSig {
     TypeAnnot                return_type;
 };
 
-// ?€?€ ?€???˜ê²½ (?¤ì½”?? ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+
 class TypeEnv {
     std::vector<std::unordered_map<std::string, TypeAnnot>> scopes;
 public:
@@ -40,13 +40,13 @@ public:
         scopes.back()[name] = ta;
     }
 
-    // ê°€???ˆìª½ ?¤ì½”?„ë???ì°¾ê¸°
+    
     TypeAnnot get(const std::string& name) const {
         for (int i = (int)scopes.size() - 1; i >= 0; --i) {
             auto it = scopes[i].find(name);
             if (it != scopes[i].end()) return it->second;
         }
-        return TypeAnnot{}; // ANY (ë¯¸ì„ ??
+        return TypeAnnot{}; 
     }
 
     bool has(const std::string& name) const {
@@ -56,18 +56,18 @@ public:
     }
 };
 
-// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
-//  TypeChecker ?´ë˜??// ?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•?â•
+
+
 class TypeChecker {
     TypeEnv                                          env;
     std::unordered_map<std::string, FuncSig>         func_sigs;
     std::vector<TypeError>                           errors;
-    TypeAnnot                                        current_return; // ?„ì¬ ?¨ìˆ˜ ë°˜í™˜ ?€??
+    TypeAnnot                                        current_return; 
     void error(int line, const std::string& msg) {
         errors.push_back({line, msg});
     }
 
-    // ?€?€ ë¦¬í„°???œí˜„?ì—???€??ì¶”ë¡  ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    
     TypeAnnot infer(const Expr* e) {
         if (!e) return TypeAnnot{};
         switch (e->kind) {
@@ -88,24 +88,25 @@ class TypeChecker {
                 auto* b = static_cast<const BinOp*>(e);
                 TypeAnnot l = infer(b->left.get());
                 TypeAnnot r = infer(b->right.get());
-                // ?°ìˆ  ?°ì‚°: ?«ì+?«ì ???«ì
+                
                 if (b->op == "+" || b->op == "-" || b->op == "*" || b->op == "/" || b->op == "%") {
                     if (l.present && l.kind == SType::NUMBER &&
                         r.present && r.kind == SType::NUMBER) {
                         TypeAnnot t; t.present = true; t.kind = SType::NUMBER; return t;
                     }
-                    // + ??ë¬¸ì??ë¬¸ì????ë¬¸ì?´ë„ ?ˆìš©
+                    
                     if (b->op == "+" &&
                         l.present && l.kind == SType::STRING &&
                         r.present && r.kind == SType::STRING) {
                         TypeAnnot t; t.present = true; t.kind = SType::STRING; return t;
                     }
                 }
-                // ë¹„êµ ?°ì‚° ??ë¶ˆë¦¬??                if (b->op == "==" || b->op == "!=" || b->op == "<" || b->op == ">" ||
+
+        if (b->op == "==" || b->op == "!=" || b->op == "<" || b->op == ">" ||
                     b->op == "<=" || b->op == ">=" || b->op == "and" || b->op == "or") {
                     TypeAnnot t; t.present = true; t.kind = SType::BOOL; return t;
                 }
-                return TypeAnnot{}; // ANY
+                return TypeAnnot{}; 
             }
 
             case NK::UNARY_OP: {
@@ -131,7 +132,7 @@ class TypeChecker {
                 auto* t = static_cast<const TernaryExpr*>(e);
                 TypeAnnot ta = infer(t->then_val.get());
                 TypeAnnot ea = infer(t->else_val.get());
-                // ??ê°ˆë˜ê°€ ê°™ì? ?€?…ì´ë©?ê·??€?? ?„ë‹ˆë©?ANY
+                
                 if (ta.present && ea.present && ta.kind == ea.kind) return ta;
                 return TypeAnnot{};
             }
@@ -141,7 +142,7 @@ class TypeChecker {
         }
     }
 
-    // ?€?€ ??TypeAnnot ê°€ ?¸í™˜?˜ëŠ”ì§€ ?•ì¸ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    
     bool compatible(const TypeAnnot& expected, const TypeAnnot& actual) {
         if (expected.is_any() || actual.is_any()) return true;
         if (expected.kind == SType::CLASS && actual.kind == SType::CLASS)
@@ -149,7 +150,7 @@ class TypeChecker {
         return expected.kind == actual.kind;
     }
 
-    // ?€?€ ë¬¸ì¥ ê²€???€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    
     void check_stmt(const Stmt* s) {
         if (!s) return;
         switch (s->kind) {
@@ -163,17 +164,17 @@ class TypeChecker {
                 TypeAnnot val_type = infer(a->value.get());
 
                 if (a->type_annot.present) {
-                    // ?€???´ë…¸?Œì´?˜ì´ ?ˆìœ¼ë©??¸í™˜???•ì¸
+                    
                     if (!compatible(a->type_annot, val_type)) {
                         error(a->line,
-                            "'" + a->name + "' ?€??ë¶ˆì¼ì¹? '" +
-                            stype_name(a->type_annot.kind) + "' ? ì–¸, '" +
-                            stype_name(val_type.kind) + "' ê°??€??);
+                            "'" + a->name + "' ?ï¿½??ë¶ˆì¼ï¿½? '" +
+                            stype_name(a->type_annot.kind) + "' ?ï¿½ì–¸, '" +
+                            stype_name(val_type.kind) + " íƒ€ì…ì…ë‹ˆë‹¤.");
                     }
-                    // ?˜ê²½???´ë…¸?Œì´???€???±ë¡
+                    
                     env.set(a->name, a->type_annot);
                 } else {
-                    // ?´ë…¸?Œì´???†ìœ¼ë©?ì¶”ë¡ ???€?…ìœ¼ë¡??±ë¡
+                    
                     env.set(a->name, val_type);
                 }
                 break;
@@ -183,11 +184,11 @@ class TypeChecker {
                 auto* ip = static_cast<const InPlaceStmt*>(s);
                 TypeAnnot var_type = env.get(ip->name);
                 TypeAnnot val_type = infer(ip->value.get());
-                // ?«ì ë³€?˜ì— ë¬¸ì??ë³µí•© ?€??ê²½ê³ 
+                
                 if (var_type.present && var_type.kind == SType::NUMBER &&
                     val_type.present && val_type.kind == SType::STRING) {
                     error(ip->line,
-                        "'" + ip->name + "' ?«ì ë³€?˜ì— ë¬¸ì?´ë¡œ ë³µí•© ?€??ë¶ˆê?");
+                        "'" + ip->name + "' ?ï¿½ì ë³€?ï¿½ì— ë¬¸ì?ï¿½ë¡œ ë³µí•© ?ï¿½??ë¶ˆï¿½?");
                 }
                 break;
             }
@@ -209,7 +210,7 @@ class TypeChecker {
                 auto* rs = static_cast<const RepeatStmt*>(s);
                 TypeAnnot cnt = infer(rs->count.get());
                 if (cnt.present && cnt.kind != SType::NUMBER)
-                    error(rs->line, "repeat ë°˜ë³µ ?Ÿìˆ˜???«ì?¬ì•¼ ?©ë‹ˆ??);
+                    error(rs->line, "repeat íšŸìˆ˜ëŠ” ìˆ«ìì—¬ì•¼ í•©ë‹ˆë‹¤.");
                 check_stmt(rs->body.get());
                 break;
             }
@@ -227,7 +228,7 @@ class TypeChecker {
             case NK::FOREACH: {
                 auto* fe = static_cast<const ForeachStmt*>(s);
                 env.push();
-                env.set(fe->var, TypeAnnot{}); // ?ì†Œ ?€??ë¯¸ì? ??ANY
+                env.set(fe->var, TypeAnnot{}); 
                 if (!fe->var2.empty()) env.set(fe->var2, TypeAnnot{});
                 check_stmt(fe->body.get());
                 env.pop();
@@ -242,13 +243,14 @@ class TypeChecker {
                 sig.param_names = fd->params;
                 sig.param_types = fd->param_types;
 
-                // param_types ê°€ ë¶€ì¡±í•˜ë©?ANY ë¡?ì±„ìš°ê¸?                while (sig.param_types.size() < fd->params.size())
-                    sig.param_types.push_back(TypeAnnot{});
+
+        while (sig.param_types.size() < fd->params.size())
+                while (sig.param_types.size() < fd->params.size())
 
                 func_sigs[fd->name] = sig;
 
-                // ?¨ìˆ˜ ë°”ë”” ê²€??                TypeAnnot prev_ret = current_return;
-                current_return = fd->return_type;
+                
+                TypeAnnot prev_ret = current_return;
 
                 env.push();
                 for (size_t i = 0; i < fd->params.size(); ++i)
@@ -266,8 +268,8 @@ class TypeChecker {
                     TypeAnnot ret_type = rs->value ? infer(rs->value.get()) : TypeAnnot{SType::NIL, "", true};
                     if (!compatible(current_return, ret_type)) {
                         error(rs->line,
-                            std::string("return ?€??ë¶ˆì¼ì¹? '") +
-                            stype_name(current_return.kind) + "' ê¸°ë?, '" +
+                            std::string("return ?ï¿½??ë¶ˆì¼ï¿½? '") +
+                            stype_name(current_return.kind) + "' ê¸°ï¿½?, '" +
                             stype_name(ret_type.kind) + "' ë°˜í™˜");
                     }
                 }
@@ -276,7 +278,7 @@ class TypeChecker {
 
             case NK::EXPR_STMT: {
                 auto* es = static_cast<const ExprStmt*>(s);
-                // ?¨ìˆ˜ ?¸ì¶œ ?¸ì ?€???•ì¸
+                
                 if (es->expr && es->expr->kind == NK::CALL) {
                     check_call(static_cast<const CallExpr*>(es->expr.get()));
                 }
@@ -312,7 +314,7 @@ class TypeChecker {
         }
     }
 
-    // ?€?€ ?¨ìˆ˜ ?¸ì¶œ ?¸ì ?€???•ì¸ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    
     void check_call(const CallExpr* c) {
         auto it = func_sigs.find(c->name);
         if (it == func_sigs.end()) return;
@@ -325,16 +327,16 @@ class TypeChecker {
             TypeAnnot actual = infer(c->args[i].get());
             if (!compatible(expected, actual)) {
                 error(c->line,
-                    "?¨ìˆ˜ '" + c->name + "' " + std::to_string(i + 1) +
-                    "ë²ˆì§¸ ?¸ì ?€??ë¶ˆì¼ì¹? '" + stype_name(expected.kind) +
-                    "' ê¸°ë?, '" + stype_name(actual.kind) + "' ?„ë‹¬");
+                    "?ï¿½ìˆ˜ '" + c->name + "' " + std::to_string(i + 1) +
+                    "ë²ˆì§¸ ?ï¿½ì ?ï¿½??ë¶ˆì¼ï¿½? '" + stype_name(expected.kind) +
+                    "' ê¸°ï¿½?, '" + stype_name(actual.kind) + "' ?ï¿½ë‹¬");
             }
         }
     }
 
 public:
-    // ?€?€ ?„ì²´ ?„ë¡œê·¸ë¨ ê²€???€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
-    // ë°˜í™˜ê°? ?¤ë¥˜ ê°œìˆ˜
+    
+    
     int check(const SuraBlock* program) {
         if (!program) return 0;
         for (auto& stmt : program->body)
@@ -342,16 +344,16 @@ public:
         return (int)errors.size();
     }
 
-    // ?€?€ ?¤ë¥˜/ê²½ê³  ì¶œë ¥ ?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€?€
+    
     void print_errors(bool as_warning = false) const {
         const char* RED    = "\033[1;31m";
         const char* YELLOW = "\033[1;33m";
         const char* RESET  = "\033[0m";
         for (auto& e : errors) {
             if (as_warning)
-                std::cerr << YELLOW << "[?˜ë¼ ?€??ê²½ê³ ] " << e.line << "ì¤? " << e.message << RESET << "\n";
+                std::cerr << YELLOW << "[?ï¿½ë¼ ?ï¿½??ê²½ê³ ] " << e.line << "ï¿½? " << e.message << RESET << "\n";
             else
-                std::cerr << RED    << "[?˜ë¼ ?€???¤ë¥˜] " << e.line << "ì¤? " << e.message << RESET << "\n";
+                std::cerr << RED    << "[?ï¿½ë¼ ?ï¿½???ï¿½ë¥˜] " << e.line << "ï¿½? " << e.message << RESET << "\n";
         }
     }
 

@@ -1,0 +1,17 @@
+// Sura JIT Speed Benchmark
+// 10,000,000 simple additions
+
+var count is 10000000
+var sum is 0
+var i is 0
+
+print("Benchmarking 10 million additions...")
+
+while i < count do
+    sum is sum + 1
+    i is i + 1
+end
+
+print("Done.")
+print("Final sum: ")
+print(sum)

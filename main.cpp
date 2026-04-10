@@ -1,3 +1,5 @@
+#include <cstdio>
+struct PreMain { PreMain() { printf("DEBUG: PRE-MAIN OK\n"); fflush(stdout); } } premain_inst;
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -5,22 +7,36 @@
 #include <vector>
 #include <sstream>
 
-// ÏΩîÏñ¥ Î™®Îìà
+// Core headers
 #include "lexer.hpp"
 #include "ast.hpp"
 #include "parser.hpp"
 #include "value.hpp"
+#include "typechecker.hpp"
 #include "platform.hpp"
 #include "jit.hpp"
 
-// ?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê
-//  ?òÎùº(SURA) ?µÌï© ÏßÑÏûÖ??(Unified Engine Entry)
-//  - ?ÑÏ†Ñ JIT & ?àÏ??§ÌÑ∞ Í∏∞Î∞ò Í∞Ä??Î®∏Ïã†(VM)
-//  - ÏßÄ??Í∏∞Îä•: ?åÏùº ?§Ìñâ, REPL, Î≤§ÏπòÎßàÌÅ¨, Î∞îÏù¥?∏ÏΩî???§ÌîÑ, LSP
-// ?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê
+// ================================================================
+//  Sura(SURA) Unified Engine Entry v3.2
+//  - TypeChecker integrated into pipeline
+//  - --strict flag for strict type checking
+//  - Cross-platform: Windows, Linux, macOS, ARM64
+// ================================================================
+
+// Run TypeChecker on AST, return number of errors found
+static int run_typecheck(const SuraBlock* ast, bool strict_mode) {
+    TypeChecker checker;
+    int err_count = checker.check(ast);
+    if (err_count > 0) {
+        // In strict mode: print as errors
+        // In normal mode: print as warnings
+        checker.print_errors(!strict_mode);
+    }
+    return err_count;
+}
 
 int main(int argc, char* argv[]) {
-    sura_init_console();
+int main(int argc, char* argv[]) {
 
     auto report_error = [&](const std::string& source, int line, const std::string& msg) {
         std::cerr << "\n\033[1;31m" << msg << "\033[0m\n";
@@ -42,53 +58,57 @@ int main(int argc, char* argv[]) {
     bool dump_bytecode = false;
     bool bench_mode    = false;
     bool repl_mode     = false;
+    bool strict_mode   = false;
     std::string filename;
     std::string src;
 
-    // ?Ä?Ä 1. ?µÏÖò ?åÏã± ?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä
+    // ==== 1. Argument Parsing ====
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--dump" || arg == "-d") dump_bytecode = true;
         else if (arg == "--bench" || arg == "-b") bench_mode = true;
         else if (arg == "--repl" || arg == "-r") repl_mode = true;
+        else if (arg == "--strict" || arg == "-s") strict_mode = true;
         else if (arg == "--lsp") {
-            // LSP (Language Server Protocol) ÏßÄ??(?®Ïàú Î©îÌ??∞Ïù¥???ëÎãµ)
             std::string req;
             while (std::getline(std::cin, req)) {
                 std::cout << "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":["
-                    << "{\"label\":\"is\",\"detail\":\"Î≥Ä???Ä??(x is ?úÌòÑ??\"},"
-                    << "{\"label\":\"if\",\"detail\":\"Ï°∞Í±¥Î¨?(if Ï°∞Í±¥ then)\"},"
-                    << "{\"label\":\"while\",\"detail\":\"Î∞òÎ≥µÎ¨?(while Ï°∞Í±¥ do)\"},"
-                    << "{\"label\":\"repeat\",\"detail\":\"NÎ≤?Î∞òÎ≥µ (repeat N do)\"},"
-                    << "{\"label\":\"func\",\"detail\":\"?®Ïàò ?ïÏùò (func ?¥Î¶Ñ do)\"},"
-                    << "{\"label\":\"class\",\"detail\":\"?¥Îûò???ïÏùò (class ?¥Î¶Ñ parent Î∂ÄÎ™?\"},"
-                    << "{\"label\":\"break\",\"detail\":\"Î∞òÎ≥µ ?àÏ∂ú\"},"
-                    << "{\"label\":\"return\",\"detail\":\"?®Ïàò Î∞òÌôò\"},"
-                    << "{\"label\":\"print\",\"detail\":\"Ï∂úÎ†•\"},"
-                    << "{\"label\":\"use\",\"detail\":\"?ºÏù¥Î∏åÎü¨Î¶?Î∂àÎü¨?§Í∏∞\"}"
+                    << "{\"label\":\"is\",\"detail\":\"assignment (x is value)\"},"
+                    << "{\"label\":\"if\",\"detail\":\"conditional (if cond then)\"},"
+                    << "{\"label\":\"while\",\"detail\":\"loop (while cond do)\"},"
+                    << "{\"label\":\"repeat\",\"detail\":\"repeat N times (repeat N do)\"},"
+                    << "{\"label\":\"func\",\"detail\":\"function def (func name do)\"},"
+                    << "{\"label\":\"class\",\"detail\":\"class def (class name extends parent)\"},"
+                    << "{\"label\":\"break\",\"detail\":\"break loop\"},"
+                    << "{\"label\":\"return\",\"detail\":\"return value\"},"
+                    << "{\"label\":\"print\",\"detail\":\"output\"},"
+                    << "{\"label\":\"use\",\"detail\":\"import library\"}"
                     << "]}" << std::endl;
             }
             return 0;
         }
         else if (arg == "--help" || arg == "-h") {
-            std::cout << "?òÎùº(SURA) JIT ?îÏßÑ v3.1 (Error Reporting Enhanced)\n"
-                      << "?¨Ïö©Î≤?\n"
-                      << "  SuraEngine <?åÏùº.sura>           ?§Ìñâ\n"
-                      << "  SuraEngine --repl                ?Ä?îÌòï(REPL) Î™®Îìú ÏßÑÏûÖ\n"
-                      << "  SuraEngine --dump <?åÏùº.sura>    Î∞îÏù¥?∏ÏΩî??Íµ¨Ï°∞ ?ïÏù∏\n"
-                      << "  SuraEngine --bench <?åÏùº.sura>   ?±Îä• Î≤§ÏπòÎßàÌÅ¨ Î™®Îìú\n"
-                      << "  SuraEngine --lsp                 ?êÎîî???êÎèô?ÑÏÑ± ?úÎ≤Ñ Î™®Îìú\n";
+            std::cout << "Sura(SURA) JIT Engine v3.2 (TypeChecker Integrated)\n"
+                      << "Usage:\n"
+                      << "  SuraEngine <file.sura>           Run file\n"
+                      << "  SuraEngine --repl                Interactive REPL\n"
+                      << "  SuraEngine --dump <file.sura>    Show bytecode\n"
+                      << "  SuraEngine --bench <file.sura>   Benchmark\n"
+                      << "  SuraEngine --strict <file.sura>  Strict type checking (errors stop execution)\n"
+                      << "  SuraEngine --lsp                 Language Server mode\n";
             return 0;
         }
         else filename = arg;
     }
 
-    // ?Ä?Ä 2. REPL ?Ä?îÌòï Î™®Îìú ?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä
+    // ==== 2. REPL Mode ====
     if (repl_mode || filename.empty()) {
-        std::cout << "=== ?òÎùº(SURA) JIT REPL v3.1 ===\n"
-                  << "Î™ÖÎ†π?¥Î? ?ÖÎ†•?òÏÑ∏?? ?ïÎãµ ?úÏïà Î∞??úÍ∞Å???§Î•ò Î≥¥Í≥†Í∞Ä ?úÏÑ±?îÎêò?àÏäµ?àÎã§.\n\n";
+        std::cout << "=== Sura(SURA) JIT REPL v3.2 ===\n"
+                  << "Type 'exit' or 'quit' to exit.\n";
+        if (strict_mode) std::cout << "[STRICT MODE] Type errors will stop execution.\n";
+        std::cout << "\n";
 
-        JitVM vm; // REPL ?∏ÏÖò ?¥ÎÇ¥ ?ÑÏó≠ ?ÅÌÉú ?†Ï?Î•??ÑÌïú ?µÌï© VM (?àÏ??§ÌÑ∞ Í∏∞Î∞ò)
+        JitVM vm;
 
         while (true) {
             std::cout << "SURA> ";
@@ -99,7 +119,6 @@ int main(int argc, char* argv[]) {
 
             std::string src = line;
 
-            // ?¨Îü¨ Ï§?Î∏îÎ°ù)???îÍµ¨?òÎäî Î¨∏Î≤ï?∏Ï? Í∞ÑÎã®??Ï≤¥ÌÅ¨
             auto needs_block = [](const std::string& s) {
                 if (s.find("if ") == 0 || s.find("while ") == 0 ||
                     s.find("repeat ") == 0 || s.find("for ") == 0 ||
@@ -122,13 +141,23 @@ int main(int argc, char* argv[]) {
                     if (trimmed == "end") depth--;
                     else if (needs_block(trimmed)) depth++;
                     
-                    // ÎßåÏïΩ ?µÏ?Î°?Îπ†Ï†∏?òÍ??§Î©¥ Îπ?Ï§?                    if (trimmed.empty() && depth > 0) break;
+                    if (trimmed.empty() && depth > 0) break;
                 }
             }
 
             try {
                 Parser parser;
                 auto ast = parser.parse_source(src);
+
+                // TypeChecker: run before compilation
+                int type_errors = run_typecheck(
+                    static_cast<const SuraBlock*>(ast.get()), strict_mode);
+                if (strict_mode && type_errors > 0) {
+                    std::cerr << "\033[1;31m[strict] " << type_errors 
+                              << " type error(s) found. Execution stopped.\033[0m\n";
+                    continue;
+                }
+
                 JitCompiler compiler;
                 JitChunk chunk = compiler.compile(ast.get());
                 
@@ -139,63 +168,77 @@ int main(int argc, char* argv[]) {
             } catch (const ParseError& e) {
                 report_error(src, e.line, e.what());
             } catch (const JitThrow& e) {
-                report_error(src, e.line, "[?§Ìñâ ?úÍ∞Ñ ?§Î•ò] " + e.message);
+                report_error(src, e.line, "[Runtime Error] " + e.message);
             } catch (const std::exception& e) {
-                std::cerr << "\033[1;31m[Í∏∞Ì? ?§Î•ò]\033[0m " << e.what() << "\n";
+                std::cerr << "\033[1;31m[Internal Error]\033[0m " << e.what() << "\n";
             }
         }
         return 0;
     }
 
-    // ?Ä?Ä 3. ?®Ïùº ?åÏùº ?§Ìñâ Î™®Îìú (?åÏùº ?§ÌîÑ Î∞?Î≤§ÏπòÎßàÌÅ¨ ?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä
+    // ==== 3. File Execution (with optional benchmark) ====
     std::ifstream f(filename);
     if (!f) {
-        std::cerr << "[?§Î•ò] ?åÏùº???????ÜÏäµ?àÎã§: " << filename << "\n";
+        std::cerr << "[Error] Cannot open file: " << filename << "\n";
         return 1;
     }
     src = std::string((std::istreambuf_iterator<char>(f)), {});
     f.close();
 
     try {
-        // [?åÏã±]
+        // [Parse]
         auto parse_start = std::chrono::high_resolution_clock::now();
         Parser parser;
         auto ast = parser.parse_source(src);
         auto parse_end = std::chrono::high_resolution_clock::now();
 
-        // [ÏµúÏ†Å??Ïª¥Ìåå??
+        // [TypeCheck] - NEW: integrated into pipeline
+        auto tc_start = std::chrono::high_resolution_clock::now();
+        int type_errors = run_typecheck(
+            static_cast<const SuraBlock*>(ast.get()), strict_mode);
+        auto tc_end = std::chrono::high_resolution_clock::now();
+
+        if (strict_mode && type_errors > 0) {
+            std::cerr << "\033[1;31m[strict] " << type_errors 
+                      << " type error(s) found. Execution stopped.\033[0m\n";
+            return 1;
+        }
+
+        // [Compile]
         auto compile_start = std::chrono::high_resolution_clock::now();
         JitCompiler compiler;
         JitChunk chunk = compiler.compile(ast.get());
         auto compile_end = std::chrono::high_resolution_clock::now();
 
         if (dump_bytecode) {
-            std::cout << "========== Î∞îÏù¥?∏ÏΩî???§ÌîÑ ?úÏûë ==========\n";
+            std::cout << "========== Bytecode Dump ==========\n";
             JitVM::dump(chunk);
-            std::cout << "========== Î∞îÏù¥?∏ÏΩî???§ÌîÑ Ï¢ÖÎ£å ==========\n\n";
+            std::cout << "========== End Dump ==========\n\n";
         }
 
-        // [?§Ìñâ]
+        // [Execute]
         auto exec_start = std::chrono::high_resolution_clock::now();
         JitVM vm;
         vm.run(chunk);
         auto exec_end = std::chrono::high_resolution_clock::now();
 
-        // [Î≤§ÏπòÎßàÌÅ¨ Í≤∞Í≥º]
+        // [Benchmark]
         if (bench_mode) {
             auto parse_us   = std::chrono::duration_cast<std::chrono::microseconds>(parse_end - parse_start).count();
+            auto tc_us      = std::chrono::duration_cast<std::chrono::microseconds>(tc_end - tc_start).count();
             auto compile_us = std::chrono::duration_cast<std::chrono::microseconds>(compile_end - compile_start).count();
             auto exec_us    = std::chrono::duration_cast<std::chrono::microseconds>(exec_end - exec_start).count();
-            auto total_us   = parse_us + compile_us + exec_us;
+            auto total_us   = parse_us + tc_us + compile_us + exec_us;
 
-            std::cout << "\n?ê‚ïê JIT Î≤§ÏπòÎßàÌÅ¨ Ï≤òÎ¶¨ ?µÍ≥Ñ ?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê\n"
-                      << "  ?åÏã±:    " << parse_us   / 1000.0 << " ms\n"
-                      << "  Ïª¥Ìåå??  " << compile_us / 1000.0 << " ms\n"
-                      << "  ?§Ìñâ:    " << exec_us    / 1000.0 << " ms\n"
-                      << "  ?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä?Ä\n"
-                      << "  ?©Í≥Ñ:    " << total_us   / 1000.0 << " ms\n"
-                      << "  Î∞îÏù¥?∏ÏΩî?? " << chunk.code.size() << " Î™ÖÎ†π??n"
-                      << "?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê?ê‚ïê\n";
+            std::cout << "\n=== JIT Benchmark Results ===\n"
+                      << "  Parse:     " << parse_us   / 1000.0 << " ms\n"
+                      << "  TypeCheck: " << tc_us      / 1000.0 << " ms\n"
+                      << "  Compile:   " << compile_us / 1000.0 << " ms\n"
+                      << "  Execute:   " << exec_us    / 1000.0 << " ms\n"
+                      << "  ----------------------------\n"
+                      << "  Total:     " << total_us   / 1000.0 << " ms\n"
+                      << "  Bytecode:  " << chunk.code.size() << " instructions\n"
+                      << "============================\n";
         }
 
     } catch (const LexError& e) {
@@ -203,9 +246,9 @@ int main(int argc, char* argv[]) {
     } catch (const ParseError& e) {
         report_error(src, e.line, e.what());
     } catch (const JitThrow& e) {
-        report_error(src, e.line, "[?§Ìñâ ?úÍ∞Ñ ?§Î•ò] " + e.message);
+        report_error(src, e.line, "[Runtime Error] " + e.message);
     } catch (const std::exception& e) {
-        std::cerr << "\033[1;31m[Í∏∞Ì? ?§Î•ò]\033[0m " << e.what() << "\n";
+        std::cerr << "\033[1;31m[Internal Error]\033[0m " << e.what() << "\n";
         return 1;
     }
 

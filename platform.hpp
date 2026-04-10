@@ -9,6 +9,10 @@
 
 #ifdef SURA_WINDOWS
     #include <windows.h>
+    #undef TRUE
+    #undef FALSE
+    #undef IN
+    #undef OUT
     #include <conio.h>
 #else
     #include <termios.h>

@@ -6,4 +6,7 @@
 // ================================================================
 #include "value.hpp"
 
-std::vector<GCObject*> GC::objects;
+std::vector<GCObject*>& GC::get_objects() {
+    static std::vector<GCObject*> objects;
+    return objects;
+}

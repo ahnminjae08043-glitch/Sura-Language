@@ -1,53 +1,70 @@
-CXX      = C:/msys64/mingw64/bin/g++.exe
+﻿CXX      = g++
 CXXFLAGS = -std=c++17 -Wall -O2
-INCLUDES = -IC:/msys64/mingw64/include
-LIBS     = -LC:/msys64/mingw64/lib -lsfml-graphics -lsfml-window -lsfml-system
+INCLUDES =
+LIBS     =
 
-# 플랫폼별 출력 파일 이름
+# Platform detection
 ifeq ($(OS),Windows_NT)
-    TARGET     = SuraEngine2.exe
-    JIT_TARGET = SuraJIT.exe
+    TARGET     = SuraEngine.exe
     RM         = del /Q
+    # Windows: use MSYS2 paths if available
+    ifneq ($(wildcard C:/msys64/mingw64/bin/g++.exe),)
+        CXX      = C:/msys64/mingw64/bin/g++.exe
+        INCLUDES = -IC:/msys64/mingw64/include
+    endif
 else
-    TARGET     = SuraEngine2
-    JIT_TARGET = SuraJIT
-    RM         = rm -f
+    UNAME_S := $(shell uname -s)
+    TARGET  = SuraEngine
+    RM      = rm -f
+    ifeq ($(UNAME_S),Darwin)
+        # macOS: use Homebrew paths if available
+        CXXFLAGS += -stdlib=libc++
+    endif
+    ifeq ($(UNAME_S),Linux)
+        # Linux: standard paths
+        LIBS += -lpthread
+    endif
 endif
 
-HEADERS     = platform.hpp lexer.hpp ast.hpp value.hpp parser.hpp compiler.hpp jit.hpp typechecker.hpp interpreter.hpp
-JIT_HEADERS = platform.hpp lexer.hpp ast.hpp value.hpp parser.hpp jit.hpp
+# Architecture detection
+UNAME_M := $(shell uname -m 2>/dev/null || echo x86_64)
+ifeq ($(UNAME_M),aarch64)
+    CXXFLAGS += -march=armv8-a
+endif
+ifeq ($(UNAME_M),arm64)
+    CXXFLAGS += -march=armv8-a
+endif
 
-.PHONY: all clean run jit jit-run jit-test
+HEADERS = platform.hpp lexer.hpp ast.hpp value.hpp parser.hpp \
+          compiler.hpp jit.hpp typechecker.hpp jit_op.hpp \
+          jit_compiler.hpp jit_vm.hpp
+SOURCES = main.cpp gc.cpp
 
-all: $(TARGET) $(JIT_TARGET)
+.PHONY: all clean run test bench dump repl
 
-# ── 풀 엔진 (SFML 포함) ─────────────────────────────────────────
-$(TARGET): main2.cpp $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) main2.cpp -o $(TARGET) $(LIBS)
-	@echo 빌드 완료: $(TARGET)
+all: $(TARGET)
 
-# ── JIT 컴파일러 (SFML 불필요, 독립 실행) ────────────────────────
-jit: $(JIT_TARGET)
-
-$(JIT_TARGET): sura_jit.cpp $(JIT_HEADERS)
-	$(CXX) $(CXXFLAGS) sura_jit.cpp -o $(JIT_TARGET)
-	@echo JIT 빌드 완료: $(JIT_TARGET)
+$(TARGET): $(SOURCES) $(HEADERS)
+	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SOURCES) -o $(TARGET) $(LIBS)
+	@echo Build complete: $(TARGET)
 
 clean:
-	$(RM) $(TARGET) $(JIT_TARGET)
+	$(RM) $(TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
 
-# ── JIT 테스트 ────────────────────────────────────────────────────
-jit-run: $(JIT_TARGET)
-	./$(JIT_TARGET) --repl
+repl: $(TARGET)
+	./$(TARGET) --repl
 
-jit-test: $(JIT_TARGET)
-	./$(JIT_TARGET) test_jit.sura
+test: $(TARGET)
+	./$(TARGET) test_jit.sura
 
-jit-bench: $(JIT_TARGET)
-	./$(JIT_TARGET) --bench test_jit.sura
+bench: $(TARGET)
+	./$(TARGET) --bench test_jit.sura
 
-jit-dump: $(JIT_TARGET)
-	./$(JIT_TARGET) --dump test_jit.sura
+dump: $(TARGET)
+	./$(TARGET) --dump test_jit.sura
+
+strict-test: $(TARGET)
+	./$(TARGET) --strict test_type_error.sura

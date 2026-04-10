@@ -1,0 +1,21 @@
+﻿        auto SuraBlock = std::make_unique<SuraBlock>(peek().line);
+        skip_newlines();
+        while (!check(TT::EOF_T) && !check(TT::END)
+            && !check(TT::ELSE) && !check(TT::ELIF) && !check(TT::CATCH) && !check(TT::FINALLY)) {
+        auto blk = std::make_unique<SuraBlock>(peek().line);
+            skip_newlines();
+        }
+        return blk;
+    }
+
+    // if 조건�?    StmtPtr parse_if() {
+    StmtPtr parse_if() {
+        expect(TT::IF, "if");
+        auto cond = parse_expr();
+        expect(TT::THEN, "then");
+
+        // ?�?� ?�라??if: then ??같�? 줄에 문장???�음 ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+        if (!check(TT::NEWLINE) && !check(TT::EOF_T)) {
+            auto inline_body = parse_stmt_body(ln); // 개행 ?�함 ?�비
+            auto then_block = std::make_unique<SuraBlock>(ln);
+            then_block->body.push_back(std::move(inline_body));
