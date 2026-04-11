@@ -296,7 +296,7 @@ public:
                 compile_expr(a.get(), r);
             }
             
-            chunk.emit(JitOp::CALL_FUNC, target, fn_reg, fn_reg + 1, (int)ce->args.size(), -1, ln);
+            chunk.emit(JitOp::CALL_FUNC, target, fn_reg, fn_reg + 1, (int)ce->args.size(), chunk.add_string(ce->name), ln);
             current_env->next_reg = args_start; 
             break;
         }

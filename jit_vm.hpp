@@ -9,12 +9,12 @@
 
 
 struct CallFrame {
-    std::vector<Value> registers;
-    GCClosure* closure = nullptr;
+    size_t   reg_base    = 0; // offset into JitVM::value_stack
+    size_t   reg_count   = 0;
+    GCClosure* closure   = nullptr;
     size_t ip = 0;
     size_t end_ip = 0;
     const JitChunk* chunk = nullptr;
-    // try/catch support
     bool   in_try        = false;
     size_t catch_ip      = (size_t)-1;
     uint16_t catch_var_reg = 0;
@@ -28,15 +28,24 @@ struct JitThrow { std::string message; int line; };
 
 
 class JitVM {
+    // ── Pre-allocated value stack: eliminates per-call heap allocation ──
+    static constexpr size_t STACK_CAPACITY = 1 << 17; // 128K values = 1MB
+    std::vector<Value> value_stack;
+    size_t stack_top = 0;
+
     std::vector<Value> globals;
-    std::vector<GCUpvalue*> open_upvalues; 
-    
+    std::vector<GCUpvalue*> open_upvalues;
+
     std::unordered_map<std::string, JitFuncInfo> rt_functions;
     std::unordered_map<std::string, JitClassInfo> rt_classes;
-    
+
     int lambda_counter = 0;
     std::vector<CallFrame*> active_frames;
     size_t gc_threshold = 1024;
+
+public:
+    JitVM() : value_stack(STACK_CAPACITY, Value::nil()) {}
+private:
 
     void run_gc() {
         
@@ -51,13 +60,9 @@ class JitVM {
         }
 
         
-        for (auto* frame : active_frames) {
-            for (auto& v : frame->registers) {
-                v.mark_value();
-            }
-        }
+        // Mark all live values in the single value stack
+        for (size_t i = 0; i < stack_top; ++i) value_stack[i].mark_value();
 
-        
         for (auto* frame : active_frames) {
             if (frame->chunk) {
                 for (auto v : frame->chunk->constants) { Value temp = v; temp.mark_value(); }
@@ -104,6 +109,16 @@ class JitVM {
         }
     }
 
+    // ── Helper: alloc N registers on the value stack ──────────────────
+    size_t alloc_frame_regs(size_t count, int line) {
+        size_t base = stack_top;
+        if (base + count > STACK_CAPACITY)
+            throw JitThrow{"\ucf5c \uc2a4\ud0dd \uc624\ubc84\ud50c\ub85c\uc6b0", line};
+        std::fill(value_stack.begin() + base, value_stack.begin() + base + count, Value::nil());
+        stack_top = base + count;
+        return base;
+    }
+
 public:
     static void dump(const JitChunk& chunk) {
         std::cout << "--- bytecode dump ---\n";
@@ -118,22 +133,23 @@ public:
     }
 
     Value run(const JitChunk& main_chunk) {
-        CallFrame frame;
-        frame.registers.resize(main_chunk.max_regs > 0 ? main_chunk.max_regs : 256, Value::nil());
-        frame.chunk = &main_chunk;
-        frame.ip = 0;
-        frame.end_ip = main_chunk.code.size();
-        
-        if (globals.size() < main_chunk.global_names.size()) {
+        size_t count = main_chunk.max_regs > 0 ? main_chunk.max_regs : 256;
+        size_t base  = alloc_frame_regs(count, 0);
+
+        if (globals.size() < main_chunk.global_names.size())
             globals.resize(main_chunk.global_names.size(), Value::nil());
-        }
+
+        CallFrame frame;
+        frame.reg_base  = base;
+        frame.reg_count = count;
+        frame.chunk     = &main_chunk;
+        frame.ip        = 0;
+        frame.end_ip    = main_chunk.code.size();
 
         try {
             return execute_frame(frame);
-        } catch (JitReturn& r) {
-            return r.value;
         } catch (JitThrow& t) {
-            throw; 
+            throw;
         } catch (std::exception& e) {
             std::cerr << "C++ Exception: " << e.what() << "\n";
         }
@@ -175,14 +191,19 @@ private:
     }
 
     Value execute_frame(CallFrame& frame) {
-        // RAII: automatically remove frame from active_frames on any exit path
+        // RAII: close upvalues, restore stack_top, remove from active_frames
         struct FrameGuard {
-            std::vector<CallFrame*>& frames;
-            FrameGuard(std::vector<CallFrame*>& f, CallFrame* fr) : frames(f) { frames.push_back(fr); }
-            ~FrameGuard() { frames.pop_back(); }
-        } frame_guard(active_frames, &frame);
+            JitVM& vm; CallFrame* fr; std::vector<CallFrame*>& frames;
+            FrameGuard(JitVM& v, CallFrame* f, std::vector<CallFrame*>& af)
+                : vm(v), fr(f), frames(af) { frames.push_back(fr); }
+            ~FrameGuard() {
+                vm.close_upvalues(&vm.value_stack[fr->reg_base]);
+                vm.stack_top = fr->reg_base; // free this frame's registers
+                frames.pop_back();
+            }
+        } frame_guard(*this, &frame, active_frames);
 
-        auto* R = frame.registers.data();
+        Value* R = &value_stack[frame.reg_base];
         const auto& chunk = *frame.chunk;
 
         int instruction_counter = 0;
@@ -299,7 +320,7 @@ private:
 
             case JitOp::PRINT: {
                 std::string out;
-                int reg_limit = (int)frame.registers.size();
+                int reg_limit = (int)frame.reg_count;
                 for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
                     out += R[a+i].to_str();
                 std::cout << out << "\n";
@@ -307,7 +328,7 @@ private:
             }
             case JitOp::PRINT_NO_NL: {
                 std::string out;
-                int reg_limit = (int)frame.registers.size();
+                int reg_limit = (int)frame.reg_count;
                 for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
                     out += R[a+i].to_str();
                 std::cout << out;
@@ -418,35 +439,37 @@ private:
             }
             case JitOp::CALL_FUNC: {
                 Value fn_val = R[b];
-                if (!fn_val.is_closure()) throw JitThrow{"Not a function: " + fn_val.to_str(), inst.line};
+                if (!fn_val.is_closure()) {
+                    // Typo detection: suggest closest known name
+                    std::string name = (inst.str_idx >= 0) ? chunk.get_string(inst.str_idx) : fn_val.to_str();
+                    std::vector<std::string> known = chunk.global_names;
+                    known.insert(known.end(), {"print", "input", "exit", "clock", "type"});
+                    std::string sug = sura_suggest(name, known);
+                    std::string msg = "'" + name + "' \uc740(\ub294) \ud568\uc218\uac00 \uc544\ub2d9\ub2c8\ub2e4";
+                    if (!sug.empty()) msg += "\n  \u2192 '" + sug + "' \uc744(\ub97c) \uc4f0\ub824\uace0 \ud558\uc154\ub098\uc694?";
+                    throw JitThrow{msg, inst.line};
+                }
                 GCClosure* closure = fn_val.as_closure();
                 if (closure->func_idx < 0 || (size_t)closure->func_idx >= chunk.func_table.size())
-                    throw JitThrow{"?????함수 ?????CALL_FUNC)", inst.line};
-                auto& fi = chunk.func_table[closure->func_idx];
-                
+                    throw JitThrow{"invalid func_idx (CALL_FUNC)", inst.line};
+                const auto& fi = chunk.func_table[closure->func_idx];
+
+                size_t new_count = fi.max_regs > 0 ? fi.max_regs : 32;
+                size_t new_base  = alloc_frame_regs(new_count, inst.line);
+                Value* NR = &value_stack[new_base];
+                for (size_t i = 0; i < fi.params.size(); ++i)
+                    NR[i] = (i < (size_t)inst.operand) ? R[inst.c + i] : fi.defaults[i];
+
                 CallFrame new_frame;
-                new_frame.registers.resize(fi.max_regs > 0 ? fi.max_regs : 256, Value::nil());
-                new_frame.closure = closure;
-                new_frame.chunk = frame.chunk;
-                new_frame.ip = fi.entry_ip;
-                new_frame.end_ip = fi.end_ip;
-                
-                for (size_t i=0; i<fi.params.size(); ++i) {
-                    Value arg = (i < (size_t)inst.operand) ? R[inst.c + i] : fi.defaults[i];
-                    new_frame.registers[i] = arg;
-                }
-                
-                try { 
-                    Value ret = execute_frame(new_frame);
-                    close_upvalues(new_frame.registers.data());
-                    R[a] = ret;
-                } catch (JitReturn& r) { 
-                    close_upvalues(new_frame.registers.data());
-                    R[a] = r.value; 
-                } catch (...) {
-                    close_upvalues(new_frame.registers.data());
-                    throw;
-                }
+                new_frame.reg_base  = new_base;
+                new_frame.reg_count = new_count;
+                new_frame.closure   = closure;
+                new_frame.chunk     = frame.chunk;
+                new_frame.ip        = fi.entry_ip;
+                new_frame.end_ip    = fi.end_ip;
+
+                R[a] = execute_frame(new_frame);
+                // FrameGuard in execute_frame closed upvalues + restored stack_top
                 break;
             }
             case JitOp::CALL_BUILTIN: {
@@ -637,20 +660,19 @@ private:
                 } else if (R[b].is_inst()) {
                     auto mi = find_method(R[b].as_inst()->class_name, meth);
                     if (mi) {
+                        size_t new_count = mi->max_regs > 0 ? mi->max_regs : 32;
+                        size_t new_base  = alloc_frame_regs(new_count, inst.line);
+                        Value* NR2 = &value_stack[new_base];
+                        NR2[0] = R[b]; // self
+                        for (size_t i = 0; i < mi->params.size(); ++i)
+                            NR2[i+1] = (i < (size_t)nargs) ? R[b+1+i] : mi->defaults[i];
                         CallFrame new_frame;
-                        new_frame.registers.resize(mi->max_regs > 0 ? mi->max_regs : 256, Value::nil());
-                        new_frame.chunk = frame.chunk;
-                        new_frame.ip = mi->entry_ip;
-                        new_frame.end_ip = mi->end_ip;
-                        new_frame.registers[0] = R[b];
-                        for (size_t i = 0; i < mi->params.size(); ++i) {
-                            Value arg = (i < (size_t)nargs) ? R[b+1+i] : mi->defaults[i];
-                            new_frame.registers[i+1] = arg;
-                        }
-                        try { execute_frame(new_frame); R[a] = Value::nil(); }
-                        catch (JitReturn& r) { R[a] = r.value; }
-                        catch (...) { close_upvalues(new_frame.registers.data()); throw; }
-                        close_upvalues(new_frame.registers.data());
+                        new_frame.reg_base  = new_base;
+                        new_frame.reg_count = new_count;
+                        new_frame.chunk     = frame.chunk;
+                        new_frame.ip        = mi->entry_ip;
+                        new_frame.end_ip    = mi->end_ip;
+                        R[a] = execute_frame(new_frame);
                     } else R[a] = Value::nil();
                 } else {
                     R[a] = Value::nil();
@@ -664,28 +686,28 @@ private:
                 
                 if (rt_classes.count(cls)) idata->fields = rt_classes[cls].field_defaults;
 
-                auto ctor = find_method(cls, "생성자"); if (!ctor) ctor = find_method(cls, "init");
+                auto ctor = find_method(cls, "\uc0dd\uc131\uc790"); if (!ctor) ctor = find_method(cls, "init");
                 if (ctor) {
-                    CallFrame new_frame;
-                    new_frame.registers.resize(ctor->max_regs > 0 ? ctor->max_regs : 256, Value::nil());
-                    new_frame.chunk = frame.chunk; new_frame.ip = ctor->entry_ip; new_frame.end_ip = ctor->end_ip;
-                    new_frame.registers[0] = inst_val; 
-                    for (size_t i=0; i<ctor->params.size(); ++i) {
-                        Value arg = (i < (size_t)inst.operand) ? R[b+i] : ctor->defaults[i];
-                        new_frame.registers[i+1] = arg;
-                    }
-                    try { execute_frame(new_frame); } catch (JitReturn&) {}
-                    close_upvalues(new_frame.registers.data());
+                    size_t ctor_count = ctor->max_regs > 0 ? ctor->max_regs : 32;
+                    size_t ctor_base  = alloc_frame_regs(ctor_count, inst.line);
+                    Value* CR = &value_stack[ctor_base];
+                    CR[0] = inst_val;
+                    for (size_t i = 0; i < ctor->params.size(); ++i)
+                        CR[i+1] = (i < (size_t)inst.operand) ? R[b+i] : ctor->defaults[i];
+                    CallFrame ctor_frame;
+                    ctor_frame.reg_base  = ctor_base;
+                    ctor_frame.reg_count = ctor_count;
+                    ctor_frame.chunk     = frame.chunk;
+                    ctor_frame.ip        = ctor->entry_ip;
+                    ctor_frame.end_ip    = ctor->end_ip;
+                    execute_frame(ctor_frame);
                 }
                 R[a] = inst_val;
                 break;
             }
-            case JitOp::RETURN_VAL:
-                throw JitReturn{R[a]};
-            case JitOp::RETURN_NONE:
-                throw JitReturn{Value::nil()};
-            case JitOp::OP_THROW:
-                throw JitThrow{R[a].to_str(), inst.line};
+            case JitOp::RETURN_VAL:  return R[a];
+            case JitOp::RETURN_NONE: return Value::nil();
+            case JitOp::OP_THROW:    throw JitThrow{R[a].to_str(), inst.line};
             case JitOp::TRY_BEGIN:
                 // a=catch_var_reg, operand=catch_ip
                 frame.in_try      = true;
@@ -730,13 +752,11 @@ private:
             } // end switch
             } catch (JitThrow& t) {
                 if (frame.in_try) {
-                    // caught: jump to catch block, store error message
-                    frame.registers[frame.catch_var_reg] = Value(t.message);
-                    frame.ip    = frame.catch_ip;
+                    R[frame.catch_var_reg] = Value(t.message);
+                    frame.ip     = frame.catch_ip;
                     frame.in_try = false;
-                    R = frame.registers.data(); // re-sync pointer after potential resize
                 } else {
-                    throw; // not in try block, propagate up
+                    throw;
                 }
             }
         }
