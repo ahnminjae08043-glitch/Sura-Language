@@ -113,52 +113,59 @@ public:
 
 
 
-enum class VType : uint8_t {
-    NIL,
-    BOOL,
-    NUMBER,
-    OBJECT
-};
+// ── NaN-boxing: all Values are exactly 8 bytes ────────────────────────
+// Encoding (bit layout of uint64_t bits_):
+//   Number : (bits & NBQNAN) != NBQNAN  — any valid double + canonical NaN
+//   NIL    : bits == NBQNAN             (0x7FFC000000000000)
+//   FALSE  : bits == NBQNAN|1           (0x7FFC000000000001)
+//   TRUE   : bits == NBQNAN|2           (0x7FFC000000000002)
+//   Object : (bits & NBOBJ) == NBOBJ    (sign bit + NBQNAN + 48-bit ptr)
+//
+// Why NBQNAN=0x7FFC? Arithmetic NaN from x87/SSE = 0x7FF8...(bit50=0).
+// Our sentinel has bit50=1 → no collision. Any input NaN is canonicalized.
+static constexpr uint64_t NBQNAN  = 0x7FFC000000000000ULL;
+static constexpr uint64_t NBSIGN  = 0x8000000000000000ULL;
+static constexpr uint64_t NBOBJ   = NBQNAN | NBSIGN;      // 0xFFFC000000000000
+static constexpr uint64_t NBNIL   = NBQNAN;
+static constexpr uint64_t NBFALSE = NBQNAN | 1;
+static constexpr uint64_t NBTRUE  = NBQNAN | 2;
+static constexpr uint64_t NBPMASK = ~NBOBJ;                // lower 50 bits = pointer
 
 class Value {
-    VType type_;
-    union {
-        double    num;
-        bool      boolean;
-        GCObject* obj;
-    } data_;
-
+    uint64_t bits_;
 public:
-    Value() : type_(VType::NIL) { data_.obj = nullptr; }
+    // ── Constructors ──────────────────────────────────────────────────
+    Value() : bits_(NBNIL) {}
 
-    explicit Value(double v) : type_(VType::NUMBER) { data_.num = v; }
-    explicit Value(float v)  : type_(VType::NUMBER) { data_.num = (double)v; }
-    explicit Value(int v)    : type_(VType::NUMBER) { data_.num = (double)v; }
-    explicit Value(long v)   : type_(VType::NUMBER) { data_.num = (double)v; }
-    explicit Value(long long v) : type_(VType::NUMBER) { data_.num = (double)v; }
-    
-    explicit Value(bool b) : type_(VType::BOOL) { data_.boolean = b; }
-
-    explicit Value(GCObject* ptr) : type_(VType::OBJECT) { data_.obj = ptr; }
-
+    explicit Value(double v) {
+        // Normalize any NaN to canonical 0x7FF8... (avoids sentinel collision)
+        if (__builtin_expect(v != v, 0)) { bits_ = 0x7FF8000000000000ULL; return; }
+        memcpy(&bits_, &v, 8);
+    }
+    explicit Value(float v)      : Value((double)v) {}
+    explicit Value(int v)        : Value((double)v) {}
+    explicit Value(long v)       : Value((double)v) {}
+    explicit Value(long long v)  : Value((double)v) {}
+    explicit Value(bool b)       : bits_(b ? NBTRUE : NBFALSE) {}
+    explicit Value(GCObject* p)  : bits_(p ? NBOBJ | (uint64_t)(uintptr_t)p : NBNIL) {}
     explicit Value(const std::string& s) : Value((GCObject*)GC::allocate<GCString>(s)) {}
-    explicit Value(const char* s) : Value(std::string(s ? s : "")) {}
+    explicit Value(const char* s)        : Value(std::string(s ? s : "")) {}
 
-    
-    static Value nil() { return Value(); }
-    static Value make_array() { return Value((GCObject*)GC::allocate<GCArray>()); }
-    static Value make_dict() { return Value((GCObject*)GC::allocate<GCDict>()); }
-    static Value make_closure(const std::string& fn_name) { return Value((GCObject*)GC::allocate<GCClosure>(fn_name)); }
-    static Value make_inst(const std::string& cls_name) { return Value((GCObject*)GC::allocate<GCInstance>(cls_name)); }
+    // ── Factory helpers ───────────────────────────────────────────────
+    static Value nil()          { return Value(); }
+    static Value make_array()   { return Value((GCObject*)GC::allocate<GCArray>()); }
+    static Value make_dict()    { return Value((GCObject*)GC::allocate<GCDict>()); }
+    static Value make_closure(const std::string& n) { return Value((GCObject*)GC::allocate<GCClosure>(n)); }
+    static Value make_inst(const std::string& n)    { return Value((GCObject*)GC::allocate<GCInstance>(n)); }
 
-    
-    bool is_num()  const { return type_ == VType::NUMBER; }
-    bool is_nil()  const { return type_ == VType::NIL; }
-    bool is_bool() const { return type_ == VType::BOOL; }
-    bool is_obj()  const { return type_ == VType::OBJECT && data_.obj != nullptr; }
-    
-    GCObject* as_obj() const { return (type_ == VType::OBJECT) ? data_.obj : nullptr; }
-    
+    // ── Type checks ───────────────────────────────────────────────────
+    bool is_num()  const { return (bits_ & NBQNAN) != NBQNAN; }
+    bool is_nil()  const { return bits_ == NBNIL; }
+    bool is_bool() const { return (bits_ == NBFALSE) | (bits_ == NBTRUE); }
+    bool is_obj()  const { return (bits_ & NBOBJ)  == NBOBJ; }
+
+    GCObject* as_obj() const { return reinterpret_cast<GCObject*>(bits_ & NBPMASK); }
+
     bool is_str()     const { return is_obj() && as_obj()->obj_type == ObjType::STRING; }
     bool is_arr()     const { return is_obj() && as_obj()->obj_type == ObjType::ARRAY; }
     bool is_dict()    const { return is_obj() && as_obj()->obj_type == ObjType::DICT; }
@@ -166,14 +173,14 @@ public:
     bool is_upvalue() const { return is_obj() && as_obj()->obj_type == ObjType::UPVALUE; }
     bool is_inst()    const { return is_obj() && as_obj()->obj_type == ObjType::INSTANCE; }
 
-    
-    double as_num() const { return is_num() ? data_.num : 0.0; }
-    bool as_bool() const { return is_bool() ? data_.boolean : false; }
-    std::string as_str() const { return is_str() ? static_cast<GCString*>(as_obj())->str : ""; }
-    GCArray* as_arr() const { return is_arr() ? static_cast<GCArray*>(as_obj()) : nullptr; }
-    GCDict* as_dict() const { return is_dict() ? static_cast<GCDict*>(as_obj()) : nullptr; }
-    GCClosure* as_closure() const { return is_closure() ? static_cast<GCClosure*>(as_obj()) : nullptr; }
-    GCUpvalue* as_upvalue() const;
+    // ── Accessors ─────────────────────────────────────────────────────
+    double      as_num()  const { double v; memcpy(&v, &bits_, 8); return v; }
+    bool        as_bool() const { return bits_ == NBTRUE; }
+    std::string as_str()  const { return is_str() ? static_cast<GCString*>(as_obj())->str : ""; }
+    GCArray*    as_arr()  const { return is_arr()  ? static_cast<GCArray*>(as_obj())    : nullptr; }
+    GCDict*     as_dict() const { return is_dict() ? static_cast<GCDict*>(as_obj())     : nullptr; }
+    GCClosure*  as_closure() const { return is_closure() ? static_cast<GCClosure*>(as_obj()) : nullptr; }
+    GCUpvalue*  as_upvalue() const;
     GCInstance* as_inst() const { return is_inst() ? static_cast<GCInstance*>(as_obj()) : nullptr; }
 
     void mark_value() {
@@ -189,8 +196,8 @@ public:
     
     bool truthy() const {
         if (is_nil()) return false;
-        if (is_bool()) return data_.boolean;
-        if (is_num()) return data_.num != 0.0;
+        if (is_bool()) return as_bool();
+        if (is_num()) return as_num() != 0.0;
         if (is_str()) return !as_str().empty();
         if (is_arr()) return !as_arr()->elements.empty();
         if (is_dict()) return !as_dict()->elements.empty();
@@ -262,11 +269,9 @@ public:
     Value negate() const { return is_num() ? Value(-as_num()) : nil(); }
 
     bool eq(const Value& r) const {
+        if (bits_ == r.bits_) return true;           // fast path: nil, bool, same ptr
         if (is_num() && r.is_num()) return as_num() == r.as_num();
-        if (is_nil() && r.is_nil()) return true;
-        if (is_bool() && r.is_bool()) return as_bool() == r.as_bool();
         if (is_str() && r.is_str()) return as_str() == r.as_str();
-        if (is_obj() && r.is_obj()) return as_obj() == r.as_obj();
         return false;
     }
     bool neq(const Value& r) const { return !eq(r); }
