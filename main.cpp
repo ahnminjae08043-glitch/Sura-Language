@@ -120,11 +120,16 @@ int main(int argc, char* argv[]) {
             std::string src = line;
 
             auto needs_block = [](const std::string& s) {
-                if (s.find("if ") == 0 || s.find("while ") == 0 ||
-                    s.find("repeat ") == 0 || s.find("for ") == 0 ||
-                    s.find("func ") == 0 || s.find("class ") == 0 ||
-                    s.find("try") == 0) return true;
-                return false;
+                // 키워드 뒤에 공백이 없는 경우도 처리 (try_xxx 오탐 방지)
+                auto starts_kw = [&](const char* kw) {
+                    size_t len = strlen(kw);
+                    if (s.size() < len) return false;
+                    if (s.substr(0, len) != kw) return false;
+                    return s.size() == len || s[len] == ' ' || s[len] == '\n' || s[len] == '\t';
+                };
+                return starts_kw("if") || starts_kw("while") || starts_kw("repeat") ||
+                       starts_kw("for") || starts_kw("func") || starts_kw("class") ||
+                       starts_kw("try");
             };
 
             if (needs_block(line)) {

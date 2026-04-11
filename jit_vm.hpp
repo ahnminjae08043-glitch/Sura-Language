@@ -183,24 +183,39 @@ private:
                 if (GC::objects.size() > gc_threshold) run_gc();
             }
 
-            
-            auto& inst = const_cast<JitInst&>(chunk.code[frame.ip++]);
+            // Inline caching: ic_cache is mutable so no const_cast needed
+            const JitInst& inst = chunk.code[frame.ip++];
             uint16_t a = inst.a, b = inst.b, c = inst.c;
 
             switch (inst.op) {
-            case JitOp::LOAD_CONST: R[a] = chunk.constants[inst.operand]; break;
+            case JitOp::LOAD_CONST:
+                if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size())
+                    throw JitThrow{"?�수 ?????벗어?? ?�버리??(LOAD_CONST)", inst.line};
+                R[a] = chunk.constants[inst.operand];
+                break;
             case JitOp::LOAD_NIL:   R[a] = Value::nil(); break;
             case JitOp::LOAD_BOOL:  R[a] = Value(inst.operand != 0); break;
             case JitOp::MOVE:       R[a] = R[b]; break;
-            
-            case JitOp::LOAD_GLOBAL: R[a] = globals[inst.operand]; break;
-            case JitOp::STORE_GLOBAL: globals[inst.operand] = R[a]; break;
+
+            case JitOp::LOAD_GLOBAL:
+                if (inst.operand < 0 || (size_t)inst.operand >= globals.size())
+                    { R[a] = Value::nil(); break; }
+                R[a] = globals[inst.operand];
+                break;
+            case JitOp::STORE_GLOBAL:
+                if (inst.operand < 0 || (size_t)inst.operand >= globals.size()) break;
+                globals[inst.operand] = R[a];
+                break;
             case JitOp::LOAD_UPVAL: {
+                if (!frame.closure || inst.operand < 0 || (size_t)inst.operand >= frame.closure->upvalues.size())
+                    throw JitThrow{"Upvalue ?????범위 벗어??(LOAD_UPVAL)", inst.line};
                 GCUpvalue* uv = frame.closure->upvalues[inst.operand];
                 R[a] = uv->location ? *(uv->location) : uv->closed;
                 break;
             }
             case JitOp::STORE_UPVAL: {
+                if (!frame.closure || inst.operand < 0 || (size_t)inst.operand >= frame.closure->upvalues.size())
+                    throw JitThrow{"Upvalue ?????범위 벗어??(STORE_UPVAL)", inst.line};
                 GCUpvalue* uv = frame.closure->upvalues[inst.operand];
                 if (uv->location) *(uv->location) = R[a];
                 else uv->closed = R[a];
@@ -234,13 +249,20 @@ private:
             case JitOp::JUMP_IF_TRUE:  if (R[a].truthy()) frame.ip = inst.operand; break;
             
             case JitOp::MAKE_LAMBDA: {
+                if (inst.operand < 0 || (size_t)inst.operand >= chunk.func_table.size())
+                    throw JitThrow{"?????함수 ?????MAKE_LAMBDA)", inst.line};
                 auto& fi = chunk.func_table[inst.operand];
                 std::string fname = fi.name.empty() ? "<lambda>" : fi.name;
                 GCClosure* closure = GC::allocate<GCClosure>(fname);
                 closure->func_idx = inst.operand;
                 for (auto& up : fi.upvalues) {
-                    if (up.is_local) closure->upvalues.push_back(capture_upvalue(&R[up.index]));
-                    else closure->upvalues.push_back(frame.closure->upvalues[up.index]);
+                    if (up.is_local) {
+                        closure->upvalues.push_back(capture_upvalue(&R[up.index]));
+                    } else {
+                        if (!frame.closure || up.index < 0 || (size_t)up.index >= frame.closure->upvalues.size())
+                            throw JitThrow{"Upvalue ?????범위 벗어??(MAKE_LAMBDA)", inst.line};
+                        closure->upvalues.push_back(frame.closure->upvalues[up.index]);
+                    }
                 }
                 R[a] = Value((GCObject*)closure);
                 break;
@@ -266,13 +288,17 @@ private:
 
             case JitOp::PRINT: {
                 std::string out;
-                for (int i=0; i<inst.operand; ++i) out += R[a+i].to_str();
+                int reg_limit = (int)frame.registers.size();
+                for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
+                    out += R[a+i].to_str();
                 std::cout << out << "\n";
                 break;
             }
             case JitOp::PRINT_NO_NL: {
                 std::string out;
-                for (int i=0; i<inst.operand; ++i) out += R[a+i].to_str();
+                int reg_limit = (int)frame.registers.size();
+                for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
+                    out += R[a+i].to_str();
                 std::cout << out;
                 break;
             }
@@ -380,9 +406,11 @@ private:
                 break;
             }
             case JitOp::CALL_FUNC: {
-                Value fn_val = R[b]; 
+                Value fn_val = R[b];
                 if (!fn_val.is_closure()) throw JitThrow{"Not a function: " + fn_val.to_str(), inst.line};
                 GCClosure* closure = fn_val.as_closure();
+                if (closure->func_idx < 0 || (size_t)closure->func_idx >= chunk.func_table.size())
+                    throw JitThrow{"?????함수 ?????CALL_FUNC)", inst.line};
                 auto& fi = chunk.func_table[closure->func_idx];
                 
                 CallFrame new_frame;
@@ -453,6 +481,7 @@ private:
                         }
                         try { execute_frame(new_frame); R[a] = Value::nil(); }
                         catch (JitReturn& r) { R[a] = r.value; }
+                        catch (...) { close_upvalues(new_frame.registers.data()); throw; }
                         close_upvalues(new_frame.registers.data());
                     } else R[a] = Value::nil();
                 } else R[a] = Value::nil();

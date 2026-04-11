@@ -81,7 +81,12 @@ public:
     template<typename T, typename... Args>
     static T* allocate(Args&&... args) {
         T* obj = new T(std::forward<Args>(args)...);
-        get_objects().push_back(obj);
+        try {
+            get_objects().push_back(obj);
+        } catch (...) {
+            delete obj;
+            throw;
+        }
         return obj;
     }
 

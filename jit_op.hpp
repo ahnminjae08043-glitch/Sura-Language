@@ -32,7 +32,7 @@ struct JitInst {
     int         operand; // JUMP offset
     int         str_idx;
     int         line;
-    int         ic_cache; // Inline Caching ?�용 (?�드 ?�프???�?�용)
+    mutable int ic_cache; // Inline Caching ?�용 (?�드 ?�프???�?�용, mutable: const ?�조?�서?? ?�기 ?�용)
 
     JitInst(JitOp op, uint16_t a = 0, uint16_t b = 0, uint16_t c = 0, 
             int operand = 0, int str_idx = -1, int line = 0)
