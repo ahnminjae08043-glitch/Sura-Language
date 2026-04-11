@@ -620,6 +620,193 @@ public:
             current_env->next_reg -= 1;
             break;
         }
+        case NK::REPEAT: {
+            // repeat N do ... end
+            auto* rs = static_cast<const RepeatStmt*>(s);
+            ScopeGuard g(current_env);
+
+            uint16_t count_reg = alloc_reg();
+            uint16_t iter_reg  = alloc_reg();
+            compile_expr(rs->count.get(), count_reg);
+            chunk.emit(JitOp::LOAD_CONST, iter_reg, 0, 0, chunk.add_const(Value(0.0)), -1, ln);
+
+            loop_stack.push_back({});
+            size_t loop_start = chunk.current_addr();
+            loop_stack.back().continue_target = loop_start;
+
+            // cond: iter < count
+            uint16_t cond_reg = alloc_reg();
+            chunk.emit(JitOp::CMP_LT, cond_reg, iter_reg, count_reg, 0, -1, ln);
+            size_t exit_jump = chunk.emit(JitOp::JUMP_IF_FALSE, cond_reg, 0, 0, 0, -1, ln);
+            current_env->next_reg -= 1; // free cond_reg
+
+            compile_stmt(rs->body.get());
+
+            // iter += 1
+            uint16_t one_reg = alloc_reg();
+            chunk.emit(JitOp::LOAD_CONST, one_reg, 0, 0, chunk.add_const(Value(1.0)), -1, ln);
+            chunk.emit(JitOp::ADD, iter_reg, iter_reg, one_reg, 0, -1, ln);
+            current_env->next_reg -= 1;
+
+            chunk.emit(JitOp::JUMP, 0, 0, 0, (int)loop_start, -1, ln);
+            chunk.patch_jump(exit_jump, (int)chunk.current_addr());
+
+            for (auto addr : loop_stack.back().break_patches) chunk.patch_jump(addr, (int)chunk.current_addr());
+            loop_stack.pop_back();
+            break;
+        }
+        case NK::FOR: {
+            // for i in from to step do ... end
+            auto* fs = static_cast<const ForStmt*>(s);
+            ScopeGuard g(current_env);
+
+            // Allocate the loop var as a local register
+            uint16_t i_reg    = alloc_reg();
+            current_env->locals[fs->var] = i_reg;
+            uint16_t to_reg   = alloc_reg();
+            uint16_t step_reg = alloc_reg();
+
+            compile_expr(fs->from.get(), i_reg);
+            compile_expr(fs->to.get(), to_reg);
+            if (fs->step) {
+                compile_expr(fs->step.get(), step_reg);
+            } else {
+                chunk.emit(JitOp::LOAD_CONST, step_reg, 0, 0, chunk.add_const(Value(1.0)), -1, ln);
+            }
+
+            loop_stack.push_back({});
+            size_t loop_start = chunk.current_addr();
+            loop_stack.back().continue_target = loop_start;
+
+            // cond: i <= to  (forward loop; step direction not checked for simplicity)
+            uint16_t cond_reg = alloc_reg();
+            chunk.emit(JitOp::CMP_LTE, cond_reg, i_reg, to_reg, 0, -1, ln);
+            size_t exit_jump = chunk.emit(JitOp::JUMP_IF_FALSE, cond_reg, 0, 0, 0, -1, ln);
+            current_env->next_reg -= 1;
+
+            compile_stmt(fs->body.get());
+
+            // i += step
+            chunk.emit(JitOp::ADD, i_reg, i_reg, step_reg, 0, -1, ln);
+            chunk.emit(JitOp::JUMP, 0, 0, 0, (int)loop_start, -1, ln);
+            chunk.patch_jump(exit_jump, (int)chunk.current_addr());
+
+            for (auto addr : loop_stack.back().break_patches) chunk.patch_jump(addr, (int)chunk.current_addr());
+            loop_stack.pop_back();
+            break;
+        }
+        case NK::FOREACH: {
+            // for x in collection do ... end
+            // for k, v in dict do ... end
+            auto* fe = static_cast<const ForeachStmt*>(s);
+            ScopeGuard g(current_env);
+
+            uint16_t coll_reg = alloc_reg();
+            compile_expr(fe->collection.get(), coll_reg);
+
+            bool has_kv = !fe->var2.empty();
+            if (has_kv) {
+                // dict key-value iteration: extract keys array, then iterate
+                uint16_t keys_reg = alloc_reg();
+                chunk.emit(JitOp::DICT_KEYS, keys_reg, coll_reg, 0, 0, -1, ln);
+
+                uint16_t iter_reg = alloc_reg();
+                chunk.emit(JitOp::LOAD_CONST, iter_reg, 0, 0, chunk.add_const(Value(0.0)), -1, ln);
+
+                uint16_t key_reg = alloc_reg();
+                current_env->locals[fe->var] = key_reg;
+                uint16_t val_reg = alloc_reg();
+                current_env->locals[fe->var2] = val_reg;
+
+                loop_stack.push_back({});
+                size_t loop_start = chunk.current_addr();
+                loop_stack.back().continue_target = loop_start;
+
+                size_t exit_placeholder = chunk.current_addr(); // FOREACH_NEXT will jump here
+                // FOREACH_NEXT: key_reg = keys_reg[iter_reg], iter_reg++, or jump exit
+                size_t foreach_inst = chunk.emit(JitOp::FOREACH_NEXT, key_reg, iter_reg, keys_reg, 0, -1, ln);
+
+                // val_reg = coll_reg[key_reg]
+                chunk.emit(JitOp::INDEX_GET, val_reg, coll_reg, key_reg, 0, -1, ln);
+
+                compile_stmt(fe->body.get());
+
+                chunk.emit(JitOp::JUMP, 0, 0, 0, (int)loop_start, -1, ln);
+                size_t exit_addr = chunk.current_addr();
+                chunk.patch_jump(foreach_inst, (int)exit_addr);
+
+                for (auto addr : loop_stack.back().break_patches) chunk.patch_jump(addr, (int)exit_addr);
+                loop_stack.pop_back();
+            } else {
+                // single-var iteration: array, string
+                uint16_t iter_reg = alloc_reg();
+                chunk.emit(JitOp::LOAD_CONST, iter_reg, 0, 0, chunk.add_const(Value(0.0)), -1, ln);
+
+                uint16_t elem_reg = alloc_reg();
+                current_env->locals[fe->var] = elem_reg;
+
+                loop_stack.push_back({});
+                size_t loop_start = chunk.current_addr();
+                loop_stack.back().continue_target = loop_start;
+
+                size_t foreach_inst = chunk.emit(JitOp::FOREACH_NEXT, elem_reg, iter_reg, coll_reg, 0, -1, ln);
+
+                compile_stmt(fe->body.get());
+
+                chunk.emit(JitOp::JUMP, 0, 0, 0, (int)loop_start, -1, ln);
+                size_t exit_addr = chunk.current_addr();
+                chunk.patch_jump(foreach_inst, (int)exit_addr);
+
+                for (auto addr : loop_stack.back().break_patches) chunk.patch_jump(addr, (int)exit_addr);
+                loop_stack.pop_back();
+            }
+            break;
+        }
+        case NK::THROW: {
+            auto* ts = static_cast<const ThrowStmt*>(s);
+            uint16_t msg_reg = alloc_reg();
+            compile_expr(ts->msg.get(), msg_reg);
+            chunk.emit(JitOp::OP_THROW, msg_reg, 0, 0, 0, -1, ln);
+            current_env->next_reg -= 1;
+            break;
+        }
+        case NK::TRY: {
+            // try ... catch e ... finally ...
+            auto* ts = static_cast<const TryStmt*>(s);
+
+            // Allocate register for the catch variable
+            ScopeGuard catch_scope(current_env);
+            uint16_t catch_var_reg = alloc_reg();
+            current_env->locals[ts->catch_var] = catch_var_reg;
+
+            // Emit TRY_BEGIN: operand will be patched to catch_ip
+            size_t try_begin_inst = chunk.emit(JitOp::TRY_BEGIN, catch_var_reg, 0, 0, 0, -1, ln);
+
+            // Compile try block
+            compile_stmt(ts->try_block.get());
+
+            // TRY_END: no exception path
+            chunk.emit(JitOp::TRY_END, 0, 0, 0, 0, -1, ln);
+
+            // Jump over catch block
+            size_t skip_catch = chunk.emit(JitOp::JUMP, 0, 0, 0, 0, -1, ln);
+
+            // Patch TRY_BEGIN to here (catch block start)
+            size_t catch_addr = chunk.current_addr();
+            chunk.patch_jump(try_begin_inst, (int)catch_addr);
+
+            // Compile catch block
+            if (ts->catch_block) compile_stmt(ts->catch_block.get());
+
+            size_t after_catch = chunk.current_addr();
+            chunk.patch_jump(skip_catch, (int)after_catch);
+
+            // Compile finally block (runs on both paths - duplicated)
+            // Note: full finally semantics (running on exception path too) would need
+            // additional VM support. This handles the non-exception finally path.
+            if (ts->finally_block) compile_stmt(ts->finally_block.get());
+            break;
+        }
         case NK::USE:
             chunk.emit(JitOp::USE_LIB, 0, 0, 0, 0, chunk.add_string(static_cast<const UseStmt*>(s)->lib), ln);
             break;

@@ -10,10 +10,14 @@
 
 struct CallFrame {
     std::vector<Value> registers;
-    GCClosure* closure = nullptr; 
+    GCClosure* closure = nullptr;
     size_t ip = 0;
     size_t end_ip = 0;
     const JitChunk* chunk = nullptr;
+    // try/catch support
+    bool   in_try        = false;
+    size_t catch_ip      = (size_t)-1;
+    uint16_t catch_var_reg = 0;
 };
 
 
@@ -74,9 +78,9 @@ class JitVM {
         }
 
         
-        size_t before = GC::objects.size();
+        size_t before = GC::get_objects().size();
         GC::sweep();
-        size_t after = GC::objects.size();
+        size_t after = GC::get_objects().size();
         gc_threshold = std::max((size_t)1024, after * 2);
     }
 
@@ -171,22 +175,29 @@ private:
     }
 
     Value execute_frame(CallFrame& frame) {
-        active_frames.push_back(&frame);
+        // RAII: automatically remove frame from active_frames on any exit path
+        struct FrameGuard {
+            std::vector<CallFrame*>& frames;
+            FrameGuard(std::vector<CallFrame*>& f, CallFrame* fr) : frames(f) { frames.push_back(fr); }
+            ~FrameGuard() { frames.pop_back(); }
+        } frame_guard(active_frames, &frame);
+
         auto* R = frame.registers.data();
         const auto& chunk = *frame.chunk;
-        
+
         int instruction_counter = 0;
 
         while (frame.ip < frame.end_ip) {
             if (++instruction_counter > 1000) {
                 instruction_counter = 0;
-                if (GC::objects.size() > gc_threshold) run_gc();
+                if (GC::get_objects().size() > gc_threshold) run_gc();
             }
 
             // Inline caching: ic_cache is mutable so no const_cast needed
             const JitInst& inst = chunk.code[frame.ip++];
             uint16_t a = inst.a, b = inst.b, c = inst.c;
 
+            try {
             switch (inst.op) {
             case JitOp::LOAD_CONST:
                 if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size())
@@ -465,18 +476,175 @@ private:
                 break;
             }
             case JitOp::METHOD_CALL: {
-                if (R[b].is_inst()) {
-                    auto mi = find_method(R[b].as_inst()->class_name, chunk.get_string(inst.str_idx));
+                const std::string& meth = chunk.get_string(inst.str_idx);
+                int nargs = inst.operand;
+                // Built-in array methods
+                if (R[b].is_arr()) {
+                    GCArray* arr = R[b].as_arr();
+                    if (meth == "push" || meth == "append") {
+                        if (nargs >= 1) arr->elements.push_back(R[b+1]);
+                        R[a] = Value::nil();
+                    } else if (meth == "pop") {
+                        if (!arr->elements.empty()) { R[a] = arr->elements.back(); arr->elements.pop_back(); }
+                        else R[a] = Value::nil();
+                    } else if (meth == "len" || meth == "size" || meth == "length") {
+                        R[a] = Value((double)arr->elements.size());
+                    } else if (meth == "remove") {
+                        int idx = nargs >= 1 ? (int)R[b+1].to_num() : -1;
+                        if (idx < 0) idx += (int)arr->elements.size();
+                        if (idx >= 0 && idx < (int)arr->elements.size()) {
+                            R[a] = arr->elements[idx];
+                            arr->elements.erase(arr->elements.begin() + idx);
+                        } else R[a] = Value::nil();
+                    } else if (meth == "contains" || meth == "has") {
+                        bool found = false;
+                        if (nargs >= 1) for (auto& el : arr->elements) if (el.eq(R[b+1])) { found = true; break; }
+                        R[a] = Value(found);
+                    } else if (meth == "join") {
+                        std::string sep = (nargs >= 1) ? R[b+1].to_str() : "";
+                        std::string out;
+                        for (size_t i = 0; i < arr->elements.size(); ++i) {
+                            if (i > 0) out += sep;
+                            out += arr->elements[i].to_str();
+                        }
+                        R[a] = Value(out);
+                    } else if (meth == "slice") {
+                        int from = nargs >= 1 ? (int)R[b+1].to_num() : 0;
+                        int to   = nargs >= 2 ? (int)R[b+2].to_num() : (int)arr->elements.size();
+                        if (from < 0) from += (int)arr->elements.size();
+                        if (to   < 0) to   += (int)arr->elements.size();
+                        from = std::max(0, std::min(from, (int)arr->elements.size()));
+                        to   = std::max(from, std::min(to, (int)arr->elements.size()));
+                        Value nv = Value::make_array();
+                        nv.as_arr()->elements.insert(nv.as_arr()->elements.end(),
+                            arr->elements.begin() + from, arr->elements.begin() + to);
+                        R[a] = nv;
+                    } else if (meth == "sort") {
+                        std::sort(arr->elements.begin(), arr->elements.end(),
+                            [](const Value& x, const Value& y) { return x.lt(y); });
+                        R[a] = Value::nil();
+                    } else if (meth == "reverse") {
+                        std::reverse(arr->elements.begin(), arr->elements.end());
+                        R[a] = Value::nil();
+                    } else if (meth == "clear") {
+                        arr->elements.clear(); R[a] = Value::nil();
+                    } else if (meth == "insert") {
+                        if (nargs >= 2) {
+                            int idx = (int)R[b+1].to_num();
+                            if (idx < 0) idx += (int)arr->elements.size();
+                            idx = std::max(0, std::min(idx, (int)arr->elements.size()));
+                            arr->elements.insert(arr->elements.begin() + idx, R[b+2]);
+                        }
+                        R[a] = Value::nil();
+                    } else {
+                        R[a] = Value::nil();
+                    }
+                // Built-in string methods
+                } else if (R[b].is_str()) {
+                    std::string s = R[b].as_str();
+                    if (meth == "len" || meth == "size" || meth == "length") {
+                        R[a] = Value((double)s.size());
+                    } else if (meth == "upper") {
+                        std::string u = s;
+                        for (char& ch : u) ch = (char)toupper((unsigned char)ch);
+                        R[a] = Value(u);
+                    } else if (meth == "lower") {
+                        std::string l = s;
+                        for (char& ch : l) ch = (char)tolower((unsigned char)ch);
+                        R[a] = Value(l);
+                    } else if (meth == "trim") {
+                        size_t st = s.find_first_not_of(" \t\n\r");
+                        size_t en = s.find_last_not_of(" \t\n\r");
+                        R[a] = (st == std::string::npos) ? Value(std::string("")) : Value(s.substr(st, en - st + 1));
+                    } else if (meth == "contains" || meth == "has") {
+                        std::string needle = nargs >= 1 ? R[b+1].to_str() : "";
+                        R[a] = Value(s.find(needle) != std::string::npos);
+                    } else if (meth == "startswith") {
+                        std::string pre = nargs >= 1 ? R[b+1].to_str() : "";
+                        R[a] = Value(s.size() >= pre.size() && s.substr(0, pre.size()) == pre);
+                    } else if (meth == "endswith") {
+                        std::string suf = nargs >= 1 ? R[b+1].to_str() : "";
+                        R[a] = Value(s.size() >= suf.size() && s.substr(s.size() - suf.size()) == suf);
+                    } else if (meth == "find" || meth == "index") {
+                        std::string needle = nargs >= 1 ? R[b+1].to_str() : "";
+                        auto pos = s.find(needle);
+                        R[a] = (pos != std::string::npos) ? Value((double)pos) : Value(-1.0);
+                    } else if (meth == "replace") {
+                        if (nargs >= 2) {
+                            std::string from = R[b+1].to_str(), to = R[b+2].to_str();
+                            std::string res; size_t p = 0;
+                            while (true) {
+                                size_t f = s.find(from, p);
+                                if (f == std::string::npos) { res += s.substr(p); break; }
+                                res += s.substr(p, f - p) + to;
+                                p = f + from.size();
+                            }
+                            R[a] = Value(res);
+                        } else R[a] = R[b];
+                    } else if (meth == "split") {
+                        std::string sep = nargs >= 1 ? R[b+1].to_str() : " ";
+                        Value arr = Value::make_array();
+                        if (sep.empty()) {
+                            for (char ch : s) arr.as_arr()->elements.push_back(Value(std::string(1, ch)));
+                        } else {
+                            size_t p = 0;
+                            while (true) {
+                                size_t f = s.find(sep, p);
+                                if (f == std::string::npos) { arr.as_arr()->elements.push_back(Value(s.substr(p))); break; }
+                                arr.as_arr()->elements.push_back(Value(s.substr(p, f - p)));
+                                p = f + sep.size();
+                            }
+                        }
+                        R[a] = arr;
+                    } else if (meth == "slice" || meth == "substr") {
+                        int from = nargs >= 1 ? (int)R[b+1].to_num() : 0;
+                        int to   = nargs >= 2 ? (int)R[b+2].to_num() : (int)s.size();
+                        if (from < 0) from += (int)s.size();
+                        if (to   < 0) to   += (int)s.size();
+                        from = std::max(0, std::min(from, (int)s.size()));
+                        to   = std::max(from, std::min(to, (int)s.size()));
+                        R[a] = Value(s.substr(from, to - from));
+                    } else if (meth == "to_num" || meth == "tonumber") {
+                        try { R[a] = Value(std::stod(s)); } catch (...) { R[a] = Value::nil(); }
+                    } else {
+                        R[a] = Value::nil();
+                    }
+                // Built-in dict methods
+                } else if (R[b].is_dict()) {
+                    GCDict* dict = R[b].as_dict();
+                    if (meth == "len" || meth == "size" || meth == "length") {
+                        R[a] = Value((double)dict->elements.size());
+                    } else if (meth == "has" || meth == "contains") {
+                        std::string key = nargs >= 1 ? R[b+1].to_str() : "";
+                        R[a] = Value(dict->elements.count(key) > 0);
+                    } else if (meth == "keys") {
+                        Value arr = Value::make_array();
+                        for (auto& [k, v] : dict->elements) arr.as_arr()->elements.push_back(Value(k));
+                        R[a] = arr;
+                    } else if (meth == "values") {
+                        Value arr = Value::make_array();
+                        for (auto& [k, v] : dict->elements) arr.as_arr()->elements.push_back(v);
+                        R[a] = arr;
+                    } else if (meth == "remove" || meth == "delete") {
+                        if (nargs >= 1) dict->elements.erase(R[b+1].to_str());
+                        R[a] = Value::nil();
+                    } else if (meth == "clear") {
+                        dict->elements.clear(); R[a] = Value::nil();
+                    } else {
+                        R[a] = Value::nil();
+                    }
+                // User-defined class method
+                } else if (R[b].is_inst()) {
+                    auto mi = find_method(R[b].as_inst()->class_name, meth);
                     if (mi) {
                         CallFrame new_frame;
                         new_frame.registers.resize(mi->max_regs > 0 ? mi->max_regs : 256, Value::nil());
                         new_frame.chunk = frame.chunk;
                         new_frame.ip = mi->entry_ip;
                         new_frame.end_ip = mi->end_ip;
-
-                        new_frame.registers[0] = R[b]; 
-                        for (size_t i=0; i<mi->params.size(); ++i) {
-                            Value arg = (i < (size_t)inst.operand) ? R[b+1+i] : mi->defaults[i];
+                        new_frame.registers[0] = R[b];
+                        for (size_t i = 0; i < mi->params.size(); ++i) {
+                            Value arg = (i < (size_t)nargs) ? R[b+1+i] : mi->defaults[i];
                             new_frame.registers[i+1] = arg;
                         }
                         try { execute_frame(new_frame); R[a] = Value::nil(); }
@@ -484,7 +652,9 @@ private:
                         catch (...) { close_upvalues(new_frame.registers.data()); throw; }
                         close_upvalues(new_frame.registers.data());
                     } else R[a] = Value::nil();
-                } else R[a] = Value::nil();
+                } else {
+                    R[a] = Value::nil();
+                }
                 break;
             }
             case JitOp::NEW_INSTANCE: {
@@ -510,24 +680,66 @@ private:
                 R[a] = inst_val;
                 break;
             }
-            case JitOp::RETURN_VAL: { 
-                Value ret = R[a]; 
-                active_frames.pop_back(); 
-                throw JitReturn{ret}; 
-            }
-            case JitOp::RETURN_NONE: { 
-                active_frames.pop_back(); 
-                throw JitReturn{Value::nil()}; 
-            }
-            case JitOp::OP_THROW: {
-                active_frames.pop_back();
+            case JitOp::RETURN_VAL:
+                throw JitReturn{R[a]};
+            case JitOp::RETURN_NONE:
+                throw JitReturn{Value::nil()};
+            case JitOp::OP_THROW:
                 throw JitThrow{R[a].to_str(), inst.line};
+            case JitOp::TRY_BEGIN:
+                // a=catch_var_reg, operand=catch_ip
+                frame.in_try      = true;
+                frame.catch_ip    = (size_t)inst.operand;
+                frame.catch_var_reg = a;
+                break;
+            case JitOp::TRY_END:
+                frame.in_try = false;
+                break;
+            case JitOp::FOREACH_NEXT: {
+                // a=value_reg, b=iter_reg (index), c=collection_reg, operand=exit_jump
+                if (R[c].is_arr()) {
+                    int idx = (int)R[b].to_num();
+                    auto* arr = R[c].as_arr();
+                    if (idx >= (int)arr->elements.size()) { frame.ip = (size_t)inst.operand; break; }
+                    R[a] = arr->elements[idx];
+                    R[b] = Value((double)(idx + 1));
+                } else if (R[c].is_str()) {
+                    int idx = (int)R[b].to_num();
+                    const std::string& s = R[c].as_str();
+                    if (idx >= (int)s.size()) { frame.ip = (size_t)inst.operand; break; }
+                    R[a] = Value(std::string(1, s[idx]));
+                    R[b] = Value((double)(idx + 1));
+                } else {
+                    frame.ip = (size_t)inst.operand;
+                }
+                break;
+            }
+            case JitOp::DICT_KEYS: {
+                // a=keys_array_reg, b=dict_reg
+                Value keys = Value::make_array();
+                if (R[b].is_dict()) {
+                    auto* dict = R[b].as_dict();
+                    for (auto& [k, v] : dict->elements)
+                        keys.as_arr()->elements.push_back(Value(k));
+                }
+                R[a] = keys;
+                break;
             }
             case JitOp::HALT: break;
             default: break;
+            } // end switch
+            } catch (JitThrow& t) {
+                if (frame.in_try) {
+                    // caught: jump to catch block, store error message
+                    frame.registers[frame.catch_var_reg] = Value(t.message);
+                    frame.ip    = frame.catch_ip;
+                    frame.in_try = false;
+                    R = frame.registers.data(); // re-sync pointer after potential resize
+                } else {
+                    throw; // not in try block, propagate up
+                }
             }
         }
-        active_frames.pop_back();
         return Value::nil();
     }
 };
