@@ -36,7 +36,6 @@ static int run_typecheck(const SuraBlock* ast, bool strict_mode) {
 }
 
 int main(int argc, char* argv[]) {
-int main(int argc, char* argv[]) {
 
     auto report_error = [&](const std::string& source, int line, const std::string& msg) {
         std::cerr << "\n\033[1;31m" << msg << "\033[0m\n";
