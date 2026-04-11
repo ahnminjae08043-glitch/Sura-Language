@@ -270,6 +270,7 @@ class Lexer {
             if (src[pos] == '\n') throw LexError("문자열이 닫히지 않았습니다.", line);
             if (src[pos] == '\\') {
                 pos++;
+                if (at_end()) throw LexError("문자열이 닫히지 않았습니다.", line);
                 switch (src[pos]) {
                     case 'n':  s += '\n'; break;
                     case 't':  s += '\t'; break;
@@ -317,7 +318,8 @@ class Lexer {
         std::string s;
         while (!at_end()) {
             unsigned char c = (unsigned char)src[pos];
-            if (isalnum(c) || c == '_') {
+            if (isalnum(c) || c == '_' || c >= 0x80) {
+                // 0x80 이상은 UTF-8 다중 바이트 문자 (한국어 등)
                 s += src[pos++];
             } else {
                 break;
@@ -370,7 +372,8 @@ public:
             }
 
             
-            if (isalpha((unsigned char)c) || c == '_') {
+            if (isalpha((unsigned char)c) || c == '_' || (unsigned char)c >= 0x80) {
+                // 0x80 이상은 UTF-8 다중 바이트 문자 (한국어 식별자 지원)
                 tokens.push_back(read_ident());
                 line_has_token = true; continue;
             }
