@@ -105,11 +105,21 @@ inline int sura_distance(const std::string& s1, const std::string& s2) {
 
 inline std::string sura_suggest(const std::string& input, const std::vector<std::string>& options) {
     if (input.empty()) return "";
+    // 소문자 변환 (대소문자 무시: Prnit → prnit → print)
+    std::string lower_input = input;
+    for (char& c : lower_input) c = (char)tolower((unsigned char)c);
+
     std::string best = "";
     int min_dist = 999;
+    // 길이에 따라 허용 편집거리 조정: 짧은 단어는 엄격하게, 긴 단어는 여유있게
+    int max_dist = (int)lower_input.size() <= 3 ? 1
+                 : (int)lower_input.size() <= 5 ? 2
+                 : 3;
     for (const auto& opt : options) {
-        int d = sura_distance(input, opt);
-        if (d < min_dist && d <= 2) {
+        std::string lower_opt = opt;
+        for (char& c : lower_opt) c = (char)tolower((unsigned char)c);
+        int d = sura_distance(lower_input, lower_opt);
+        if (d < min_dist && d <= max_dist) {
             min_dist = d;
             best = opt;
         }

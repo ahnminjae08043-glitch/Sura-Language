@@ -62,10 +62,11 @@ class Parser {
 
     Token expect(TT t, const std::string& what) {
         if (!check(t)) {
-            std::string msg = "'" + what + "' ?�요 ???�??'" + peek().type_str() + "' ?�음";
+            std::string msg = "'" + what + "' 가 필요한데 '" + peek().type_str() + "' 가 왔습니다";
             if (peek().type == TT::IDENT) {
                 std::string sug = sura_suggest(peek().value, get_all_keywords());
-                if (!sug.empty()) msg += " (?�시 '" + sug + "'�??�력?�시???�나??)";
+                if (!sug.empty() && peek().value != sug)
+                    msg += "\n  → 혹시 '" + sug + "' 을(를) 쓰려고 하셨나요?";
             }
             throw ParseError(msg, peek().line, peek().value);
         }
@@ -704,16 +705,13 @@ class Parser {
         if (!is_builtin) {
             std::string sug = sura_suggest(cmd_name, BUILTINS);
             if (sug.empty()) sug = sura_suggest(cmd_name, KWS);
-            
-            if (!sug.empty()) {
-                
-                
-                if (cmd_name != sug) {
-                     
-                     
-                     
-                     
-                }
+
+            if (!sug.empty() && cmd_name != sug) {
+                throw ParseError(
+                    "'" + cmd_name + "' 은(는) 알 수 없는 명령어입니다.\n"
+                    "  → 혹시 '" + sug + "' 을(를) 쓰려고 하셨나요?",
+                    ln, cmd_name
+                );
             }
         }
 
@@ -888,7 +886,6 @@ class Parser {
                 return std::make_unique<ExprStmt>(std::move(sc), ln);
             }
             default: {
-                
                 TT t = peek().type;
                 if (t == TT::NUM || t == TT::STR || t == TT::TRUE || t == TT::FALSE
                     || t == TT::LPAREN || t == TT::MINUS || t == TT::NOT
@@ -897,7 +894,18 @@ class Parser {
                     eat_newline();
                     return std::make_unique<ExprStmt>(std::move(expr), ln);
                 }
-                throw ParseError("문장 ?�싱 ?�패 ??'" + peek().value + "'", ln);
+                {
+                    std::string tok = peek().value;
+                    std::string sug = sura_suggest(tok, get_all_keywords());
+                    if (!sug.empty() && tok != sug) {
+                        throw ParseError(
+                            "'" + tok + "' 은(는) 알 수 없는 키워드입니다.\n"
+                            "  → 혹시 '" + sug + "' 을(를) 쓰려고 하셨나요?",
+                            ln, tok
+                        );
+                    }
+                }
+                throw ParseError("문장 파싱 실패 — '" + peek().value + "'", ln);
             }
         }
     }

@@ -9,15 +9,16 @@
 
 
 struct CallFrame {
-    std::vector<Value> registers;
-    GCClosure* closure = nullptr;
+    size_t   reg_base    = 0; // offset into JitVM::value_stack
+    size_t   reg_count   = 0;
+    GCClosure* closure   = nullptr;
     size_t ip = 0;
     size_t end_ip = 0;
     const JitChunk* chunk = nullptr;
-    // try/catch support
     bool   in_try        = false;
     size_t catch_ip      = (size_t)-1;
     uint16_t catch_var_reg = 0;
+    uint16_t ret_reg     = (uint16_t)-1; // register in PARENT frame for return value
 };
 
 
@@ -28,15 +29,33 @@ struct JitThrow { std::string message; int line; };
 
 
 class JitVM {
+    // ── Pre-allocated value stack: eliminates per-call heap allocation ──
+    static constexpr size_t STACK_CAPACITY = 1 << 17; // 128K values = 1MB
+    std::vector<Value> value_stack;
+    size_t stack_top = 0;
+
     std::vector<Value> globals;
-    std::vector<GCUpvalue*> open_upvalues; 
-    
+    std::vector<GCUpvalue*> open_upvalues;
+
     std::unordered_map<std::string, JitFuncInfo> rt_functions;
     std::unordered_map<std::string, JitClassInfo> rt_classes;
-    
+
     int lambda_counter = 0;
-    std::vector<CallFrame*> active_frames;
+    // ── Pre-allocated frame pool: raw array avoids vector push_back overhead ──
+    static constexpr size_t FRAME_CAPACITY = 512;
+    CallFrame frame_pool[FRAME_CAPACITY];
+    size_t    frame_top = 0;
+    // call_stack view used by GC (points into frame_pool)
+    struct CallStackView {
+        CallFrame* data; size_t* size;
+        CallFrame* begin() { return data; }
+        CallFrame* end()   { return data + *size; }
+    } call_stack{frame_pool, &frame_top};
     size_t gc_threshold = 1024;
+
+public:
+    JitVM() : value_stack(STACK_CAPACITY, Value::nil()) {}
+private:
 
     void run_gc() {
         
@@ -51,23 +70,19 @@ class JitVM {
         }
 
         
-        for (auto* frame : active_frames) {
-            for (auto& v : frame->registers) {
-                v.mark_value();
-            }
-        }
+        // Mark all live values in the single value stack
+        for (size_t i = 0; i < stack_top; ++i) value_stack[i].mark_value();
 
-        
-        for (auto* frame : active_frames) {
-            if (frame->chunk) {
-                for (auto v : frame->chunk->constants) { Value temp = v; temp.mark_value(); }
-                for (auto& ci : frame->chunk->class_table) {
+        for (auto& cf : call_stack) {
+            if (cf.chunk) {
+                for (auto v : cf.chunk->constants) { Value temp = v; temp.mark_value(); }
+                for (auto& ci : cf.chunk->class_table) {
                     for (auto v : ci.field_defaults) { Value temp = v; temp.mark_value(); }
                     for (auto& [mname, mi] : ci.methods) {
                         for (auto v : mi.defaults) { Value temp = v; temp.mark_value(); }
                     }
                 }
-                for (auto& fi : frame->chunk->func_table) {
+                for (auto& fi : cf.chunk->func_table) {
                     for (auto v : fi.defaults) { Value temp = v; temp.mark_value(); }
                 }
             }
@@ -104,6 +119,23 @@ class JitVM {
         }
     }
 
+    // ── Helper: alloc N registers on the value stack ──────────────────
+    size_t alloc_frame_regs(size_t count, int line) {
+        size_t base = stack_top;
+        if (base + count > STACK_CAPACITY)
+            throw JitThrow{"\ucf5c \uc2a4\ud0dd \uc624\ubc84\ud50c\ub85c\uc6b0", line};
+        // 0.0 bits (all zeros) is safe for GC: not an object pointer (NBOBJ = 0xFFFC...).
+        memset(&value_stack[base], 0, count * sizeof(Value));
+        stack_top = base + count;
+        return base;
+    }
+    // Fast version: skip fill (caller must write all used registers before GC)
+    size_t alloc_frame_regs_fast(size_t count) {
+        size_t base = stack_top;
+        stack_top = base + count;
+        return base;
+    }
+
 public:
     static void dump(const JitChunk& chunk) {
         std::cout << "--- bytecode dump ---\n";
@@ -118,22 +150,23 @@ public:
     }
 
     Value run(const JitChunk& main_chunk) {
-        CallFrame frame;
-        frame.registers.resize(main_chunk.max_regs > 0 ? main_chunk.max_regs : 256, Value::nil());
-        frame.chunk = &main_chunk;
-        frame.ip = 0;
-        frame.end_ip = main_chunk.code.size();
-        
-        if (globals.size() < main_chunk.global_names.size()) {
+        size_t count = main_chunk.max_regs > 0 ? main_chunk.max_regs : 256;
+        size_t base  = alloc_frame_regs(count, 0);
+
+        if (globals.size() < main_chunk.global_names.size())
             globals.resize(main_chunk.global_names.size(), Value::nil());
-        }
+
+        CallFrame frame;
+        frame.reg_base  = base;
+        frame.reg_count = count;
+        frame.chunk     = &main_chunk;
+        frame.ip        = 0;
+        frame.end_ip    = main_chunk.code.size();
 
         try {
             return execute_frame(frame);
-        } catch (JitReturn& r) {
-            return r.value;
         } catch (JitThrow& t) {
-            throw; 
+            throw;
         } catch (std::exception& e) {
             std::cerr << "C++ Exception: " << e.what() << "\n";
         }
@@ -174,282 +207,338 @@ private:
         return nullptr;
     }
 
-    Value execute_frame(CallFrame& frame) {
-        // RAII: automatically remove frame from active_frames on any exit path
-        struct FrameGuard {
-            std::vector<CallFrame*>& frames;
-            FrameGuard(std::vector<CallFrame*>& f, CallFrame* fr) : frames(f) { frames.push_back(fr); }
-            ~FrameGuard() { frames.pop_back(); }
-        } frame_guard(active_frames, &frame);
+    // ── Iterative VM entry point ──────────────────────────────────────
+    // Pushes initial_frame onto call_stack and dispatches iteratively.
+    // CALL_FUNC/METHOD_CALL push new frames; RETURN_VAL/NONE pop them.
+    // No C++ recursion for Sura function calls.
+    Value execute_frame(CallFrame& initial_frame) {
+        size_t entry_depth = frame_top;
+        initial_frame.ret_reg = (uint16_t)-1;
+        frame_pool[frame_top++] = initial_frame;
 
-        auto* R = frame.registers.data();
-        const auto& chunk = *frame.chunk;
+        // Working pointers — updated on every frame switch
+        CallFrame* fp = &frame_pool[frame_top-1];
+        Value* R      = &value_stack[fp->reg_base];
+        const auto& chunk = *fp->chunk;        // all frames share one chunk
+        const JitInst* code = chunk.code.data();
+        int gc_tick = 0;
 
-        int instruction_counter = 0;
+        // ── Local ip cache: avoids heap pointer deref on every instruction ──
+        size_t lip  = fp->ip;
+        size_t lend = fp->end_ip;
+        // Sync working pointers from fp (called after every frame switch)
+        #define _LOAD_FRAME() do { lip=fp->ip; lend=fp->end_ip; R=&value_stack[fp->reg_base]; } while(0)
+        // Save lip back into fp (called before frame push so parent ip is preserved)
+        #define _SAVE_IP() do { fp->ip = lip; } while(0)
 
-        while (frame.ip < frame.end_ip) {
-            if (++instruction_counter > 1000) {
-                instruction_counter = 0;
-                if (GC::get_objects().size() > gc_threshold) run_gc();
-            }
-
-            // Inline caching: ic_cache is mutable so no const_cast needed
-            const JitInst& inst = chunk.code[frame.ip++];
+        // ── Computed-goto dispatch (GCC/Clang) ────────────────────────
+#ifdef __GNUC__
+        const JitInst* cur = nullptr;
+        uint16_t a = 0, b = 0, c = 0;
+        #define inst (*cur)
+        // Hot dispatch: no gc_tick here — checked only at call/jump sites
+        #define _NEXT() do { \
+            if (__builtin_expect(lip >= lend, 0)) goto _dispatch_exit; \
+            cur = code + lip++; a = cur->a; b = cur->b; c = cur->c; \
+            goto *_dt[(uint8_t)cur->op]; \
+        } while(0)
+        // GC tick: checked only at CALL/JUMP sites (not every instruction)
+        #define _GC_TICK() do { \
+            if (__builtin_expect(++gc_tick > 10000, 0)) { \
+                gc_tick = 0; if (GC::get_objects().size() > gc_threshold) run_gc(); \
+            } \
+        } while(0)
+        static const void* const _dt[] = {
+            &&_L_LOAD_CONST,  &&_L_LOAD_NIL,    &&_L_LOAD_BOOL,   &&_L_MOVE,
+            &&_L_LOAD_GLOBAL, &&_L_STORE_GLOBAL, &&_L_LOAD_UPVAL,  &&_L_STORE_UPVAL,
+            &&_L_ADD,         &&_L_SUB,          &&_L_MUL,         &&_L_DIV,    &&_L_MOD,
+            &&_L_BIT_AND,     &&_L_BIT_OR,       &&_L_BIT_XOR,     &&_L_LSHIFT, &&_L_RSHIFT,
+            &&_L_CMP_EQ,      &&_L_CMP_NEQ,      &&_L_CMP_LT,      &&_L_CMP_LTE,
+            &&_L_CMP_GT,      &&_L_CMP_GTE,
+            &&_L_NEG,         &&_L_BIT_NOT,      &&_L_LOGICAL_NOT,
+            &&_L_JUMP,        &&_L_JUMP_IF_FALSE, &&_L_JUMP_IF_TRUE,
+            &&_L_CALL_FUNC,   &&_L_CALL_BUILTIN, &&_L_METHOD_CALL, &&_L_SUPER_CALL,
+            &&_L_RETURN_VAL,  &&_L_RETURN_NONE,
+            &&_L_MAKE_ARRAY,  &&_L_MAKE_DICT,    &&_L_INDEX_GET,   &&_L_INDEX_SET,
+            &&_L_DOT_GET,     &&_L_DOT_SET,      &&_L_OP_IN,
+            &&_L_NEW_INSTANCE,&&_L_DEF_FUNC,     &&_L_MAKE_LAMBDA, &&_L_DEF_CLASS,
+            &&_L_TRY_BEGIN,   &&_L_TRY_END,      &&_L_OP_THROW,
+            &&_L_FOREACH_NEXT,&&_L_DICT_KEYS,
+            &&_L_PRINT,       &&_L_PRINT_NO_NL,  &&_L_USE_LIB,    &&_L_HALT,   &&_L_NOP,
+        };
+        #define _CASE(op) _L_##op: {
+        #define _END_CASE } _NEXT();
+        _NEXT();   // first dispatch
+#else
+        #define _CASE(op) case JitOp::op: {
+        #define _END_CASE break; }
+        #define _GC_TICK() do { \
+            if (__builtin_expect(++gc_tick > 10000, 0)) { \
+                gc_tick = 0; if (GC::get_objects().size() > gc_threshold) run_gc(); \
+            } \
+        } while(0)
+_reenter:
+        try {
+        while (lip < lend) {
+            const JitInst& inst = code[lip++];
             uint16_t a = inst.a, b = inst.b, c = inst.c;
-
-            try {
             switch (inst.op) {
-            case JitOp::LOAD_CONST:
+#endif
+            // ──────────────────────────────────────────────────────────
+            _CASE(LOAD_CONST)
                 if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size())
-                    throw JitThrow{"?�수 ?????벗어?? ?�버리??(LOAD_CONST)", inst.line};
+                    throw JitThrow{"LOAD_CONST out of range", inst.line};
                 R[a] = chunk.constants[inst.operand];
-                break;
-            case JitOp::LOAD_NIL:   R[a] = Value::nil(); break;
-            case JitOp::LOAD_BOOL:  R[a] = Value(inst.operand != 0); break;
-            case JitOp::MOVE:       R[a] = R[b]; break;
+            _END_CASE
+            _CASE(LOAD_NIL)   R[a] = Value::nil();            _END_CASE
+            _CASE(LOAD_BOOL)  R[a] = Value(inst.operand != 0);_END_CASE
+            _CASE(MOVE)       R[a] = R[b];                    _END_CASE
 
-            case JitOp::LOAD_GLOBAL:
-                if (inst.operand < 0 || (size_t)inst.operand >= globals.size())
-                    { R[a] = Value::nil(); break; }
-                R[a] = globals[inst.operand];
-                break;
-            case JitOp::STORE_GLOBAL:
-                if (inst.operand < 0 || (size_t)inst.operand >= globals.size()) break;
-                globals[inst.operand] = R[a];
-                break;
-            case JitOp::LOAD_UPVAL: {
-                if (!frame.closure || inst.operand < 0 || (size_t)inst.operand >= frame.closure->upvalues.size())
-                    throw JitThrow{"Upvalue ?????범위 벗어??(LOAD_UPVAL)", inst.line};
-                GCUpvalue* uv = frame.closure->upvalues[inst.operand];
-                R[a] = uv->location ? *(uv->location) : uv->closed;
-                break;
-            }
-            case JitOp::STORE_UPVAL: {
-                if (!frame.closure || inst.operand < 0 || (size_t)inst.operand >= frame.closure->upvalues.size())
-                    throw JitThrow{"Upvalue ?????범위 벗어??(STORE_UPVAL)", inst.line};
-                GCUpvalue* uv = frame.closure->upvalues[inst.operand];
-                if (uv->location) *(uv->location) = R[a];
-                else uv->closed = R[a];
-                break;
-            }
-            
-            case JitOp::ADD: R[a] = R[b] + R[c]; break;
-            case JitOp::SUB: R[a] = R[b] - R[c]; break;
-            case JitOp::MUL: R[a] = R[b] * R[c]; break;
-            case JitOp::DIV: R[a] = R[b] / R[c]; break;
-            case JitOp::MOD: R[a] = R[b].mod(R[c]); break;
-            case JitOp::NEG: R[a] = R[b].negate(); break;
-            
-            case JitOp::CMP_EQ:  R[a] = Value(R[b].eq(R[c])); break;
-            case JitOp::CMP_NEQ: R[a] = Value(R[b].neq(R[c])); break;
-            case JitOp::CMP_LT:  R[a] = Value(R[b].lt(R[c])); break;
-            case JitOp::CMP_LTE: R[a] = Value(R[b].lte(R[c])); break;
-            case JitOp::CMP_GT:  R[a] = Value(R[b].gt(R[c])); break;
-            case JitOp::CMP_GTE: R[a] = Value(R[b].gte(R[c])); break;
-            
-            case JitOp::LOGICAL_NOT: R[a] = R[b].logical_not(); break;
-            case JitOp::BIT_AND: R[a] = Value((double)((long long)R[b].to_num() & (long long)R[c].to_num())); break;
-            case JitOp::BIT_OR:  R[a] = Value((double)((long long)R[b].to_num() | (long long)R[c].to_num())); break;
-            case JitOp::BIT_XOR: R[a] = Value((double)((long long)R[b].to_num() ^ (long long)R[c].to_num())); break;
-            case JitOp::BIT_NOT: R[a] = Value((double)(~(long long)R[b].to_num())); break;
-            case JitOp::LSHIFT:  R[a] = Value((double)((long long)R[b].to_num() << (long long)R[c].to_num())); break;
-            case JitOp::RSHIFT:  R[a] = Value((double)((long long)R[b].to_num() >> (long long)R[c].to_num())); break;
+            _CASE(LOAD_GLOBAL)
+                R[a] = (inst.operand >= 0 && (size_t)inst.operand < globals.size())
+                       ? globals[inst.operand] : Value::nil();
+            _END_CASE
+            _CASE(STORE_GLOBAL)
+                if (inst.operand >= 0 && (size_t)inst.operand < globals.size())
+                    globals[inst.operand] = R[a];
+            _END_CASE
+            _CASE(LOAD_UPVAL)
+                if (!fp->closure || inst.operand < 0 || (size_t)inst.operand >= fp->closure->upvalues.size())
+                    throw JitThrow{"Upvalue LOAD_UPVAL out of range", inst.line};
+                { GCUpvalue* uv = fp->closure->upvalues[inst.operand];
+                  R[a] = uv->location ? *(uv->location) : uv->closed; }
+            _END_CASE
+            _CASE(STORE_UPVAL)
+                if (!fp->closure || inst.operand < 0 || (size_t)inst.operand >= fp->closure->upvalues.size())
+                    throw JitThrow{"Upvalue STORE_UPVAL out of range", inst.line};
+                { GCUpvalue* uv = fp->closure->upvalues[inst.operand];
+                  if (uv->location) *(uv->location) = R[a]; else uv->closed = R[a]; }
+            _END_CASE
 
-            case JitOp::JUMP: frame.ip = inst.operand; break;
-            case JitOp::JUMP_IF_FALSE: if (!R[a].truthy()) frame.ip = inst.operand; break;
-            case JitOp::JUMP_IF_TRUE:  if (R[a].truthy()) frame.ip = inst.operand; break;
+            // ── Arithmetic ────────────────────────────────────────────
+            _CASE(ADD) R[a] = R[b] + R[c]; _END_CASE
+            _CASE(SUB) R[a] = R[b] - R[c]; _END_CASE
+            _CASE(MUL) R[a] = R[b] * R[c]; _END_CASE
+            _CASE(DIV) R[a] = R[b] / R[c]; _END_CASE
+            _CASE(MOD) R[a] = R[b].mod(R[c]); _END_CASE
+            _CASE(NEG) R[a] = R[b].negate();  _END_CASE
+
+            // ── Compare ───────────────────────────────────────────────
+            _CASE(CMP_EQ)  R[a] = Value(R[b].eq(R[c]));  _END_CASE
+            _CASE(CMP_NEQ) R[a] = Value(R[b].neq(R[c])); _END_CASE
+            _CASE(CMP_LT)  R[a] = Value(R[b].lt(R[c]));  _END_CASE
+            _CASE(CMP_LTE) R[a] = Value(R[b].lte(R[c])); _END_CASE
+            _CASE(CMP_GT)  R[a] = Value(R[b].gt(R[c]));  _END_CASE
+            _CASE(CMP_GTE) R[a] = Value(R[b].gte(R[c])); _END_CASE
+
+            // ── Bitwise / logic ───────────────────────────────────────
+            _CASE(LOGICAL_NOT) R[a] = R[b].logical_not(); _END_CASE
+            _CASE(BIT_AND) R[a]=Value((double)((long long)R[b].to_num()&(long long)R[c].to_num())); _END_CASE
+            _CASE(BIT_OR)  R[a]=Value((double)((long long)R[b].to_num()|(long long)R[c].to_num())); _END_CASE
+            _CASE(BIT_XOR) R[a]=Value((double)((long long)R[b].to_num()^(long long)R[c].to_num())); _END_CASE
+            _CASE(BIT_NOT) R[a]=Value((double)(~(long long)R[b].to_num())); _END_CASE
+            _CASE(LSHIFT)  R[a]=Value((double)((long long)R[b].to_num()<<(long long)R[c].to_num())); _END_CASE
+            _CASE(RSHIFT)  R[a]=Value((double)((long long)R[b].to_num()>>(long long)R[c].to_num())); _END_CASE
+
+            // ── Control flow ──────────────────────────────────────────
+            _CASE(JUMP)           lip = (size_t)inst.operand; _GC_TICK();             _END_CASE
+            _CASE(JUMP_IF_FALSE)  if (!R[a].truthy()) { lip = (size_t)inst.operand; _GC_TICK(); } _END_CASE
+            _CASE(JUMP_IF_TRUE)   if (R[a].truthy())  { lip = (size_t)inst.operand; _GC_TICK(); } _END_CASE
             
-            case JitOp::MAKE_LAMBDA: {
+            _CASE(MAKE_LAMBDA) {
                 if (inst.operand < 0 || (size_t)inst.operand >= chunk.func_table.size())
-                    throw JitThrow{"?????함수 ?????MAKE_LAMBDA)", inst.line};
-                auto& fi = chunk.func_table[inst.operand];
-                std::string fname = fi.name.empty() ? "<lambda>" : fi.name;
-                GCClosure* closure = GC::allocate<GCClosure>(fname);
-                closure->func_idx = inst.operand;
-                for (auto& up : fi.upvalues) {
+                    throw JitThrow{"invalid func_idx MAKE_LAMBDA", inst.line};
+                const auto& fi2 = chunk.func_table[inst.operand];
+                std::string fname = fi2.name.empty() ? "<lambda>" : fi2.name;
+                GCClosure* clos = GC::allocate<GCClosure>(fname);
+                clos->func_idx = inst.operand;
+                for (const auto& up : fi2.upvalues) {
                     if (up.is_local) {
-                        closure->upvalues.push_back(capture_upvalue(&R[up.index]));
+                        clos->upvalues.push_back(capture_upvalue(&R[up.index]));
                     } else {
-                        if (!frame.closure || up.index < 0 || (size_t)up.index >= frame.closure->upvalues.size())
-                            throw JitThrow{"Upvalue ?????범위 벗어??(MAKE_LAMBDA)", inst.line};
-                        closure->upvalues.push_back(frame.closure->upvalues[up.index]);
+                        if (!fp->closure || up.index < 0 || (size_t)up.index >= fp->closure->upvalues.size())
+                            throw JitThrow{"Upvalue MAKE_LAMBDA out of range", inst.line};
+                        clos->upvalues.push_back(fp->closure->upvalues[up.index]);
                     }
                 }
-                R[a] = Value((GCObject*)closure);
-                break;
-            }
-            case JitOp::DEF_CLASS: {
+                R[a] = Value((GCObject*)clos);
+            } _END_CASE
+            _CASE(DEF_CLASS) {
                 JitClassInfo ci = chunk.class_table[inst.operand];
                 if (!ci.parent.empty() && rt_classes.count(ci.parent)) {
                     JitClassInfo& p = rt_classes[ci.parent];
                     std::vector<Value> new_defs = p.field_defaults;
-                    std::unordered_map<std::string, int> new_idx = p.field_indices; 
-                    int offset = p.field_defaults.size();
-                    for (auto& [k, v] : ci.field_indices) { 
+                    std::unordered_map<std::string, int> new_idx = p.field_indices;
+                    int offset = (int)p.field_defaults.size();
+                    for (auto& [k, v] : ci.field_indices) {
                         new_idx[k] = offset + v;
                         new_defs.push_back(ci.field_defaults[v]);
                     }
                     ci.field_defaults = new_defs;
-                    ci.field_indices = new_idx;
+                    ci.field_indices  = new_idx;
                 }
-                
                 rt_classes[chunk.global_names[inst.str_idx]] = ci;
-                break;
-            }
+            } _END_CASE
 
-            case JitOp::PRINT: {
+            _CASE(PRINT) {
                 std::string out;
-                int reg_limit = (int)frame.registers.size();
-                for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
-                    out += R[a+i].to_str();
+                int lim = (int)fp->reg_count;
+                for (int i = 0; i < inst.operand && (int)(a+i) < lim; ++i) out += R[a+i].to_str();
                 std::cout << out << "\n";
-                break;
-            }
-            case JitOp::PRINT_NO_NL: {
+            } _END_CASE
+            _CASE(PRINT_NO_NL) {
                 std::string out;
-                int reg_limit = (int)frame.registers.size();
-                for (int i=0; i<inst.operand && (int)(a+i) < reg_limit; ++i)
-                    out += R[a+i].to_str();
+                int lim = (int)fp->reg_count;
+                for (int i = 0; i < inst.operand && (int)(a+i) < lim; ++i) out += R[a+i].to_str();
                 std::cout << out;
-                break;
-            }
+            } _END_CASE
 
-            case JitOp::MAKE_ARRAY: {
+            _CASE(MAKE_ARRAY) {
                 Value arr = Value::make_array();
-                for (int i=0; i<inst.operand; ++i) arr.as_arr()->elements.push_back(R[b+i]);
+                for (int i = 0; i < inst.operand; ++i) arr.as_arr()->elements.push_back(R[b+i]);
                 R[a] = arr;
-                break;
-            }
-            case JitOp::MAKE_DICT: {
+            } _END_CASE
+            _CASE(MAKE_DICT) {
                 Value dict = Value::make_dict();
-                for (int i=0; i<inst.operand; ++i) 
-                    dict.dict_set(R[b + i*2].to_str(), R[b + i*2 + 1]);
+                for (int i = 0; i < inst.operand; ++i)
+                    dict.dict_set(R[b+i*2].to_str(), R[b+i*2+1]);
                 R[a] = dict;
-                break;
-            }
+            } _END_CASE
 
-            case JitOp::INDEX_GET: {
-                if (R[b].is_arr()) R[a] = R[b].arr_get((int)R[c].to_num());
+            _CASE(INDEX_GET) {
+                if      (R[b].is_arr())  R[a] = R[b].arr_get((int)R[c].to_num());
                 else if (R[b].is_dict()) R[a] = R[b].dict_get(R[c].to_str());
                 else if (R[b].is_str()) {
                     int i = (int)R[c].to_num();
-                    if (i < 0) i += (int)R[b].as_str().size();
-                    R[a] = (i>=0 && i<(int)R[b].as_str().size()) ? Value(std::string(1, R[b].as_str()[i])) : Value::nil();
+                    const std::string& s = R[b].as_str();
+                    if (i < 0) i += (int)s.size();
+                    R[a] = (i>=0 && i<(int)s.size()) ? Value(std::string(1,s[i])) : Value::nil();
                 } else R[a] = Value::nil();
-                break;
-            }
-            case JitOp::INDEX_SET: {
-                if (R[a].is_arr()) R[a].arr_set((int)R[b].to_num(), R[c]);
+            } _END_CASE
+            _CASE(INDEX_SET) {
+                if      (R[a].is_arr())  R[a].arr_set((int)R[b].to_num(), R[c]);
                 else if (R[a].is_dict()) R[a].dict_set(R[b].to_str(), R[c]);
-                break;
-            }
+            } _END_CASE
             
             
-            case JitOp::DOT_GET: {
+            _CASE(DOT_GET) {
                 const std::string& prop = chunk.get_string(inst.str_idx);
                 if (R[b].is_inst()) {
-                    GCInstance* inst_obj = R[b].as_inst();
-                    
-                    if (inst.ic_cache != -1 && inst_obj->fields.size() > (size_t)inst.ic_cache) {
-                        R[a] = inst_obj->fields[inst.ic_cache];
+                    GCInstance* iobj = R[b].as_inst();
+                    if (inst.ic_cache != -1 && iobj->fields.size() > (size_t)inst.ic_cache) {
+                        R[a] = iobj->fields[inst.ic_cache];
                     } else {
-                        
                         int offset = -1;
-                        if (rt_classes.count(inst_obj->class_name)) {
-                            auto& c = rt_classes[inst_obj->class_name];
-                            if (c.field_indices.count(prop)) offset = c.field_indices[prop];
+                        if (rt_classes.count(iobj->class_name)) {
+                            auto& cl = rt_classes[iobj->class_name];
+                            if (cl.field_indices.count(prop)) offset = cl.field_indices[prop];
                         }
                         if (offset != -1) {
-                            if (rt_classes.count(inst_obj->class_name) && inst_obj->fields.size() < rt_classes[inst_obj->class_name].field_defaults.size()) {
-                                inst_obj->fields.resize(rt_classes[inst_obj->class_name].field_defaults.size(), Value::nil());
-                            }
-                            R[a] = inst_obj->fields[offset];
-                            inst.ic_cache = offset; 
-                        } else {
-                            R[a] = Value::nil();
-                        }
+                            auto& cl2 = rt_classes[iobj->class_name];
+                            if (iobj->fields.size() < cl2.field_defaults.size())
+                                iobj->fields.resize(cl2.field_defaults.size(), Value::nil());
+                            R[a] = iobj->fields[offset];
+                            inst.ic_cache = offset;
+                        } else R[a] = Value::nil();
                     }
                 } else if (R[b].is_dict()) R[a] = R[b].dict_get(prop);
                 else R[a] = Value::nil();
-                break;
-            }
-            case JitOp::DOT_SET: {
+            } _END_CASE
+            _CASE(DOT_SET) {
                 const std::string& prop = chunk.get_string(inst.str_idx);
                 if (R[a].is_inst()) {
-                    GCInstance* inst_obj = R[a].as_inst();
-                    if (inst.ic_cache != -1 && inst_obj->fields.size() > (size_t)inst.ic_cache) {
-                        inst_obj->fields[inst.ic_cache] = R[b];
+                    GCInstance* iobj = R[a].as_inst();
+                    if (inst.ic_cache != -1 && iobj->fields.size() > (size_t)inst.ic_cache) {
+                        iobj->fields[inst.ic_cache] = R[b];
                     } else {
                         int offset = -1;
-                        if (rt_classes.count(inst_obj->class_name)) {
-                            auto& c = rt_classes[inst_obj->class_name];
-                            if (c.field_indices.count(prop)) offset = c.field_indices[prop];
+                        if (rt_classes.count(iobj->class_name)) {
+                            auto& cl = rt_classes[iobj->class_name];
+                            if (cl.field_indices.count(prop)) offset = cl.field_indices[prop];
                         }
                         if (offset != -1) {
-                            inst_obj->fields[offset] = R[b];
+                            iobj->fields[offset] = R[b];
                             inst.ic_cache = offset;
-                        } else {
-                            if (rt_classes.count(inst_obj->class_name)) {
-                                auto& c = rt_classes[inst_obj->class_name];
-                                offset = c.field_indices.size();
-                                c.field_indices[prop] = offset;
-                                c.field_defaults.push_back(Value::nil());
-                                
-                                if (inst_obj->fields.size() < c.field_defaults.size()) {
-                                    inst_obj->fields.resize(c.field_defaults.size(), Value::nil());
-                                }
-                                inst_obj->fields[offset] = R[b];
-                                inst.ic_cache = offset;
-                            }
+                        } else if (rt_classes.count(iobj->class_name)) {
+                            auto& cl = rt_classes[iobj->class_name];
+                            offset = (int)cl.field_indices.size();
+                            cl.field_indices[prop] = offset;
+                            cl.field_defaults.push_back(Value::nil());
+                            if (iobj->fields.size() < cl.field_defaults.size())
+                                iobj->fields.resize(cl.field_defaults.size(), Value::nil());
+                            iobj->fields[offset] = R[b];
+                            inst.ic_cache = offset;
                         }
-                    }
+                    }  // closes else { from ic_cache miss
                 } else if (R[a].is_dict()) R[a].dict_set(prop, R[b]);
-                break;
-            }
-            
+            } _END_CASE
 
-            case JitOp::OP_IN: {
-                if (R[c].is_arr() && R[c].as_arr()) {
-                    bool f=false; for(auto& el: R[c].as_arr()->elements) if(R[b].eq(el)){f=true;break;}
+            _CASE(OP_IN) {
+                if (R[c].is_arr()) {
+                    bool f=false;
+                    for (auto& el : R[c].as_arr()->elements) if (R[b].eq(el)){f=true;break;}
                     R[a] = Value(f);
                 } else if (R[c].is_dict()) R[a] = Value(R[c].dict_has(R[b].to_str()));
                 else R[a] = Value::nil();
-                break;
-            }
-            case JitOp::CALL_FUNC: {
+            } _END_CASE
+            _CASE(CALL_FUNC) {
+                _GC_TICK();
                 Value fn_val = R[b];
-                if (!fn_val.is_closure()) throw JitThrow{"Not a function: " + fn_val.to_str(), inst.line};
-                GCClosure* closure = fn_val.as_closure();
-                if (closure->func_idx < 0 || (size_t)closure->func_idx >= chunk.func_table.size())
-                    throw JitThrow{"?????함수 ?????CALL_FUNC)", inst.line};
-                auto& fi = chunk.func_table[closure->func_idx];
-                
-                CallFrame new_frame;
-                new_frame.registers.resize(fi.max_regs > 0 ? fi.max_regs : 256, Value::nil());
-                new_frame.closure = closure;
-                new_frame.chunk = frame.chunk;
-                new_frame.ip = fi.entry_ip;
-                new_frame.end_ip = fi.end_ip;
-                
-                for (size_t i=0; i<fi.params.size(); ++i) {
-                    Value arg = (i < (size_t)inst.operand) ? R[inst.c + i] : fi.defaults[i];
-                    new_frame.registers[i] = arg;
-                }
-                
-                try { 
-                    Value ret = execute_frame(new_frame);
-                    close_upvalues(new_frame.registers.data());
-                    R[a] = ret;
-                } catch (JitReturn& r) { 
-                    close_upvalues(new_frame.registers.data());
-                    R[a] = r.value; 
-                } catch (...) {
-                    close_upvalues(new_frame.registers.data());
-                    throw;
-                }
-                break;
-            }
-            case JitOp::CALL_BUILTIN: {
+                if (!fn_val.is_closure()) {
+                    // Check if it's a built-in called as a function expression
+                    std::string name = (inst.str_idx >= 0) ? chunk.get_string(inst.str_idx) : "";
+                    if (name == "clock") {
+                        auto now = std::chrono::steady_clock::now().time_since_epoch();
+                        R[a] = Value(std::chrono::duration<double>(now).count());
+                    } else if (name == "exit") {
+                        exit(0);
+                    } else if (name == "type") {
+                        R[a] = Value(R[inst.c].is_num() ? std::string("number") :
+                                     R[inst.c].is_str() ? std::string("string") :
+                                     R[inst.c].is_bool() ? std::string("bool") :
+                                     R[inst.c].is_nil() ? std::string("nil") :
+                                     R[inst.c].is_arr() ? std::string("array") :
+                                     R[inst.c].is_dict() ? std::string("dict") :
+                                     R[inst.c].is_closure() ? std::string("function") : std::string("object"));
+                    } else {
+                        // Typo detection: suggest closest known name
+                        if (name.empty()) name = fn_val.to_str();
+                        std::vector<std::string> known = chunk.global_names;
+                        known.insert(known.end(), {"print", "input", "exit", "clock", "type"});
+                        std::string sug = sura_suggest(name, known);
+                        std::string msg = "'" + name + "' \uc740(\ub294) \ud568\uc218\uac00 \uc544\ub2d9\ub2c8\ub2e4";
+                        if (!sug.empty()) msg += "\n  \u2192 '" + sug + "' \uc744(\ub97c) \uc4f0\ub824\uace0 \ud558\uc154\ub098\uc694?";
+                        throw JitThrow{msg, inst.line};
+                    }
+                    // _END_CASE will call _NEXT(); just fall through
+                } else {
+                    GCClosure* closure = fn_val.as_closure();
+                    if (closure->func_idx < 0 || (size_t)closure->func_idx >= chunk.func_table.size())
+                        throw JitThrow{"invalid func_idx (CALL_FUNC)", inst.line};
+                    const auto& fi = chunk.func_table[closure->func_idx];
+
+                    size_t new_count = fi.max_regs > 0 ? fi.max_regs : 32;
+                    size_t new_base  = alloc_frame_regs(new_count, inst.line);
+                    Value* NR = &value_stack[new_base];
+                    for (size_t i = 0; i < fi.params.size(); ++i)
+                        NR[i] = (i < (size_t)inst.operand) ? R[inst.c + i] : fi.defaults[i];
+
+                    // ── Iterative call: write directly to frame_pool slot ──
+                    _SAVE_IP();
+                    { CallFrame& nf = frame_pool[frame_top++];
+                    nf.reg_base  = new_base;
+                    nf.reg_count = new_count;
+                    nf.closure   = closure;
+                    nf.chunk     = fp->chunk;
+                    nf.ip        = fi.entry_ip;
+                    nf.end_ip    = fi.end_ip;
+                    nf.ret_reg   = a;
+                    nf.in_try    = false; }
+                    fp = &frame_pool[frame_top-1];
+                    _LOAD_FRAME();
+                } // closes else (is_closure)
+            } _END_CASE
+            _CASE(CALL_BUILTIN) {
                 std::string full_name = chunk.get_string(inst.str_idx);
                 size_t sep = full_name.find('\0');
                 std::string cmd = full_name.substr(0, sep);
@@ -473,9 +562,8 @@ private:
                     if (!sug.empty()) msg += " (?�시 '" + sug + "'�??�력?�시???�나??)";
                     throw JitThrow{msg, inst.line};
                 }
-                break;
-            }
-            case JitOp::METHOD_CALL: {
+            } _END_CASE
+            _CASE(METHOD_CALL) {
                 const std::string& meth = chunk.get_string(inst.str_idx);
                 int nargs = inst.operand;
                 // Built-in array methods
@@ -635,111 +723,169 @@ private:
                     }
                 // User-defined class method
                 } else if (R[b].is_inst()) {
+                    _GC_TICK();
                     auto mi = find_method(R[b].as_inst()->class_name, meth);
                     if (mi) {
-                        CallFrame new_frame;
-                        new_frame.registers.resize(mi->max_regs > 0 ? mi->max_regs : 256, Value::nil());
-                        new_frame.chunk = frame.chunk;
-                        new_frame.ip = mi->entry_ip;
-                        new_frame.end_ip = mi->end_ip;
-                        new_frame.registers[0] = R[b];
-                        for (size_t i = 0; i < mi->params.size(); ++i) {
-                            Value arg = (i < (size_t)nargs) ? R[b+1+i] : mi->defaults[i];
-                            new_frame.registers[i+1] = arg;
-                        }
-                        try { execute_frame(new_frame); R[a] = Value::nil(); }
-                        catch (JitReturn& r) { R[a] = r.value; }
-                        catch (...) { close_upvalues(new_frame.registers.data()); throw; }
-                        close_upvalues(new_frame.registers.data());
+                        size_t new_count = mi->max_regs > 0 ? mi->max_regs : 32;
+                        size_t new_base  = alloc_frame_regs(new_count, inst.line);
+                        Value* NR2 = &value_stack[new_base];
+                        NR2[0] = R[b]; // self
+                        for (size_t i = 0; i < mi->params.size(); ++i)
+                            NR2[i+1] = (i < (size_t)nargs) ? R[b+1+i] : mi->defaults[i];
+                        // ── Iterative method call ──
+                        _SAVE_IP();
+                        { CallFrame& mf = frame_pool[frame_top++];
+                        mf.reg_base  = new_base;
+                        mf.reg_count = new_count;
+                        mf.chunk     = fp->chunk;
+                        mf.ip        = mi->entry_ip;
+                        mf.end_ip    = mi->end_ip;
+                        mf.ret_reg   = a;
+                        mf.in_try    = false; }
+                        fp = &frame_pool[frame_top-1];
+                        _LOAD_FRAME();
                     } else R[a] = Value::nil();
                 } else {
                     R[a] = Value::nil();
                 }
-                break;
-            }
-            case JitOp::NEW_INSTANCE: {
+            } _END_CASE
+            _CASE(NEW_INSTANCE) {
                 std::string cls = chunk.get_string(inst.str_idx);
                 Value inst_val = Value::make_inst(cls);
                 GCInstance* idata = inst_val.as_inst();
-                
-                if (rt_classes.count(cls)) idata->fields = rt_classes[cls].field_defaults;
 
-                auto ctor = find_method(cls, "생성자"); if (!ctor) ctor = find_method(cls, "init");
+                if (rt_classes.count(cls)) idata->fields = rt_classes[cls].field_defaults;
+                R[a] = inst_val;  // store BEFORE ctor so ctor return is discarded
+
+                auto ctor = find_method(cls, "\uc0dd\uc131\uc790"); if (!ctor) ctor = find_method(cls, "init");
                 if (ctor) {
-                    CallFrame new_frame;
-                    new_frame.registers.resize(ctor->max_regs > 0 ? ctor->max_regs : 256, Value::nil());
-                    new_frame.chunk = frame.chunk; new_frame.ip = ctor->entry_ip; new_frame.end_ip = ctor->end_ip;
-                    new_frame.registers[0] = inst_val; 
-                    for (size_t i=0; i<ctor->params.size(); ++i) {
-                        Value arg = (i < (size_t)inst.operand) ? R[b+i] : ctor->defaults[i];
-                        new_frame.registers[i+1] = arg;
-                    }
-                    try { execute_frame(new_frame); } catch (JitReturn&) {}
-                    close_upvalues(new_frame.registers.data());
+                    size_t ctor_count = ctor->max_regs > 0 ? ctor->max_regs : 32;
+                    size_t ctor_base  = alloc_frame_regs(ctor_count, inst.line);
+                    Value* CR = &value_stack[ctor_base];
+                    CR[0] = inst_val;
+                    for (size_t i = 0; i < ctor->params.size(); ++i)
+                        CR[i+1] = (i < (size_t)inst.operand) ? R[b+i] : ctor->defaults[i];
+                    // ── Iterative ctor call: discard return value ──
+                    _SAVE_IP();
+                    { CallFrame& cf = frame_pool[frame_top++];
+                    cf.reg_base  = ctor_base;
+                    cf.reg_count = ctor_count;
+                    cf.chunk     = fp->chunk;
+                    cf.ip        = ctor->entry_ip;
+                    cf.end_ip    = ctor->end_ip;
+                    cf.ret_reg   = (uint16_t)-1;
+                    cf.in_try    = false; }
+                    fp = &frame_pool[frame_top-1];
+                    _LOAD_FRAME();
                 }
-                R[a] = inst_val;
-                break;
-            }
-            case JitOp::RETURN_VAL:
-                throw JitReturn{R[a]};
-            case JitOp::RETURN_NONE:
-                throw JitReturn{Value::nil()};
-            case JitOp::OP_THROW:
-                throw JitThrow{R[a].to_str(), inst.line};
-            case JitOp::TRY_BEGIN:
+            } _END_CASE
+            _CASE(RETURN_VAL) {
+                Value result = R[a];
+                uint16_t save_ret = fp->ret_reg;
+                if (!open_upvalues.empty()) close_upvalues(&value_stack[fp->reg_base]);
+                stack_top = fp->reg_base;
+                (--frame_top);
+                if (frame_top <= entry_depth) return result;
+                fp = &frame_pool[frame_top-1];
+                _LOAD_FRAME();
+                if (save_ret != (uint16_t)-1) R[save_ret] = result;
+            } _END_CASE
+            _CASE(RETURN_NONE) {
+                uint16_t save_ret = fp->ret_reg;
+                if (!open_upvalues.empty()) close_upvalues(&value_stack[fp->reg_base]);
+                stack_top = fp->reg_base;
+                (--frame_top);
+                if (frame_top <= entry_depth) return Value::nil();
+                fp = &frame_pool[frame_top-1];
+                _LOAD_FRAME();
+                if (save_ret != (uint16_t)-1) R[save_ret] = Value::nil();
+            } _END_CASE
+            _CASE(OP_THROW) {
+                if (fp->in_try) {
+                    R[fp->catch_var_reg] = R[a];
+                    lip = fp->catch_ip;
+                    fp->in_try = false;
+                } else {
+                    throw JitThrow{R[a].to_str(), inst.line};
+                }
+            } _END_CASE
+            _CASE(TRY_BEGIN) {
                 // a=catch_var_reg, operand=catch_ip
-                frame.in_try      = true;
-                frame.catch_ip    = (size_t)inst.operand;
-                frame.catch_var_reg = a;
-                break;
-            case JitOp::TRY_END:
-                frame.in_try = false;
-                break;
-            case JitOp::FOREACH_NEXT: {
+                fp->in_try        = true;
+                fp->catch_ip      = (size_t)inst.operand;
+                fp->catch_var_reg = a;
+            } _END_CASE
+            _CASE(TRY_END) { fp->in_try = false; } _END_CASE
+            _CASE(FOREACH_NEXT) {
                 // a=value_reg, b=iter_reg (index), c=collection_reg, operand=exit_jump
                 if (R[c].is_arr()) {
                     int idx = (int)R[b].to_num();
                     auto* arr = R[c].as_arr();
-                    if (idx >= (int)arr->elements.size()) { frame.ip = (size_t)inst.operand; break; }
-                    R[a] = arr->elements[idx];
-                    R[b] = Value((double)(idx + 1));
+                    if (idx < (int)arr->elements.size()) {
+                        R[a] = arr->elements[idx];
+                        R[b] = Value((double)(idx + 1));
+                    } else { lip = (size_t)inst.operand; }
                 } else if (R[c].is_str()) {
                     int idx = (int)R[b].to_num();
                     const std::string& s = R[c].as_str();
-                    if (idx >= (int)s.size()) { frame.ip = (size_t)inst.operand; break; }
-                    R[a] = Value(std::string(1, s[idx]));
-                    R[b] = Value((double)(idx + 1));
-                } else {
-                    frame.ip = (size_t)inst.operand;
-                }
-                break;
-            }
-            case JitOp::DICT_KEYS: {
+                    if (idx < (int)s.size()) {
+                        R[a] = Value(std::string(1, s[idx]));
+                        R[b] = Value((double)(idx + 1));
+                    } else { lip = (size_t)inst.operand; }
+                } else { lip = (size_t)inst.operand; }
+            } _END_CASE
+            _CASE(DICT_KEYS) {
                 // a=keys_array_reg, b=dict_reg
                 Value keys = Value::make_array();
                 if (R[b].is_dict()) {
-                    auto* dict = R[b].as_dict();
-                    for (auto& [k, v] : dict->elements)
+                    for (auto& [k, v] : R[b].as_dict()->elements)
                         keys.as_arr()->elements.push_back(Value(k));
                 }
                 R[a] = keys;
-                break;
-            }
-            case JitOp::HALT: break;
-            default: break;
+            } _END_CASE
+            _CASE(HALT)      { return Value::nil(); } _END_CASE
+            _CASE(SUPER_CALL){ } _END_CASE
+            _CASE(DEF_FUNC)  { } _END_CASE
+            _CASE(USE_LIB)   { } _END_CASE
+            _CASE(NOP)       { } _END_CASE
+#ifdef __GNUC__
+        _dispatch_exit: {
+            // ip exhausted without explicit RETURN — treat as RETURN_NONE
+            uint16_t save_ret = fp->ret_reg;
+            if (!open_upvalues.empty()) close_upvalues(&value_stack[fp->reg_base]);
+            stack_top = fp->reg_base;
+            (--frame_top);
+            if (frame_top <= entry_depth) return Value::nil();
+            fp = &frame_pool[frame_top-1];
+            _LOAD_FRAME();
+            if (save_ret != (uint16_t)-1) R[save_ret] = Value::nil();
+            _NEXT();
+        }
+#else
             } // end switch
             } catch (JitThrow& t) {
-                if (frame.in_try) {
-                    // caught: jump to catch block, store error message
-                    frame.registers[frame.catch_var_reg] = Value(t.message);
-                    frame.ip    = frame.catch_ip;
-                    frame.in_try = false;
-                    R = frame.registers.data(); // re-sync pointer after potential resize
+                if (fp->in_try) {
+                    R[fp->catch_var_reg] = Value(t.message);
+                    lip = fp->catch_ip;
+                    lend = fp->end_ip;
+                    fp->in_try = false;
                 } else {
-                    throw; // not in try block, propagate up
+                    throw;
                 }
             }
+        } // end while
+        // ip exhausted — treat as RETURN_NONE
+        {
+            uint16_t save_ret = fp->ret_reg;
+            if (!open_upvalues.empty()) close_upvalues(&value_stack[fp->reg_base]);
+            stack_top = fp->reg_base;
+            (--frame_top);
+            if (frame_top <= entry_depth) return Value::nil();
+            fp = &frame_pool[frame_top-1];
+            _LOAD_FRAME();
+            if (save_ret != (uint16_t)-1) R[save_ret] = Value::nil();
+            goto _reenter;
         }
-        return Value::nil();
+#endif
     }
 };
