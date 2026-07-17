@@ -1,0 +1,47 @@
+# This file exercises compiler features needed by future kernel and driver
+# code. It is a UEFI application test, not a complete operating system.
+
+struct PciConfigHeader packed do
+  vendor_id: u16
+  device_id: u16
+  command: u16
+  status: u16
+  revision: u8
+  class_code: u8
+end
+
+boot_counter: u64 is 0
+pci_header is static.struct(PciConfigHeader)
+page_buffer is static.zero(4096, 4096)
+interrupt_stub is static.bytes([250, 244, 235, 252], 16)
+driver_name is static.utf8("sura-device")
+
+func add_pair(left: u64, right: u64) -> u64 do
+  return left + right
+end
+
+func identity(value: u64) -> u64 do
+  return value
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global boot_counter
+  boot_counter += 1
+
+  header: ptr[PciConfigHeader] is pci_header
+  header.command is 7
+  vendor: u16 is header.vendor_id
+
+  old_count: u64 is atomic.fetch_add64(addr_of(boot_counter), 1)
+  cpu_leaf: u32 is cpu.cpuid_eax(0)
+  nested: u64 is add_pair(1, identity(2))
+  header_bytes: usize is sizeof(PciConfigHeader)
+  command_offset: usize is offset_of(PciConfigHeader, command)
+  second_header: ptr is ptr.index(pci_header, 1, header_bytes)
+
+  if vendor == 0 and old_count >= 0 and cpu_leaf >= 0 and nested == 3 and command_offset == 4 and second_header > 0 then
+    atomic.fence()
+  end
+
+  return 0
+end

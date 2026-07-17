@@ -222,9 +222,11 @@ if (nativePerformance.schema !== "sura.native.performance.v1" || nativePerforman
     !Array.isArray(nativePerformance.baselines) || nativePerformance.baselines.length < 2) {
   throw new Error("native performance record does not match the current language version");
 }
-if (releaseEvidence.schema !== "sura.release.evidence_gate.v1" || releaseEvidence.passed !== true ||
-    releaseEvidence.passed_count !== releaseEvidence.required_count) {
-  throw new Error("release evidence gate is not current or did not pass");
+if (releaseEvidence.schema !== "sura.release.evidence_gate.v1" ||
+    typeof releaseEvidence.passed !== "boolean" ||
+    releaseEvidence.passed_count + releaseEvidence.failed_count !== releaseEvidence.required_count ||
+    releaseEvidence.passed !== (releaseEvidence.failed_count === 0)) {
+  throw new Error("release evidence gate counts or status are inconsistent");
 }
 const currentVec2Perf = nativePerformance.baselines.find((item) => item.id === "vec2");
 const currentVec3Perf = nativePerformance.baselines.find((item) => item.id === "vec3");
@@ -530,6 +532,20 @@ const machineFacts = {
       runtime_parity_with_native: false,
     },
   },
+  freestanding: {
+    status: "experimental compiler target; not a complete operating system",
+    target: "uefi-x86_64",
+    output: "position-independent PE32+ EFI application",
+    hosted_runtime_dependencies: [],
+    entry_order: ["efi_main", "kernel_main", "main", "synthetic top-level entry"],
+    scalar_types: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "ptr", "ptr[StructName]"],
+    static_data: ["static.zero", "static.bytes", "static.u8", "static.u16", "static.u32", "static.u64", "static.utf8", "static.utf16", "static.struct"],
+    layout: ["typed struct fields", "natural alignment", "struct Name packed", "sizeof", "alignof", "offset_of", "typed pointer field load/store"],
+    low_level: ["raw memory 8/16/32/64", "port I/O 8/16/32", "control registers", "MSR", "GDT", "IDT", "INVLPG", "CPUID", "RDTSC/RDTSCP", "XGETBV"],
+    atomics: ["load", "store", "exchange", "compare_exchange", "fetch_add", "fetch_sub", "fences"],
+    verification: ["tests/os_target_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura"],
+    not_implemented: ["interrupt-function ABI", "application-processor startup", "kernel libraries", "drivers", "filesystem", "boot-image builder", "ARM64 freestanding backend"],
+  },
   interop: {
     ffi_abi: "1.2.0",
     plugin_abi: "1.1.0",
@@ -656,6 +672,7 @@ const navItems = [
   ["interop", "FFI·Plugin·Python"],
   ["packages", "패키지·개발 도구"],
   ["targets", "JS·WASM 타깃"],
+  ["freestanding", "OS 개발 기능"],
   ["release", "빌드와 배포"],
   ["performance", "성능과 검증 기록"],
   ["machine", "구조화 데이터"],
@@ -987,6 +1004,23 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
   paragraph("WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics " + targetAudit.wasm.partial + "개 node가 partial 상태입니다. 전체 audit status는 " + code(targetAudit.status) + "입니다.")
 ));
 
+sections.push(section("freestanding", "OS 개발용 freestanding 기능",
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. 현재 결과물은 OS가 아니라 앞으로 커널과 드라이버를 작성하기 위한 컴파일러 기능입니다. 이 기능은 현재 저장소의 개발 소스에 있으며 기존 공개 설치 파일에는 아직 포함되지 않았습니다.") +
+  pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
+  table(["영역", "현재 구현"], [
+    ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
+    ["정적 데이터", code("static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct")],
+    ["메모리 레이아웃", "typed struct field, natural 또는 packed layout, " + code("sizeof/alignof/offset_of")],
+    ["포인터", code("ptr.add/index/field/align_up/align_down/is_aligned") + "와 width-correct field load/store"],
+    ["저수준 CPU", "raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV"],
+    ["원자 연산", "8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence"],
+    ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
+  ]) +
+  paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
+  pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
+  paragraph("아직 없는 기능은 전용 interrupt 함수 ABI와 saved-register frame, application-processor 시작, page table·allocator·scheduler·syscall 라이브러리, 장치 드라이버, filesystem, boot-image builder, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+));
+
 sections.push(section("release", "빌드와 배포",
   table(["출력", "내용"], [
     [code(".sura.bc"), code("--compile") + "이 만드는 SURB v3 register bytecode; " + version + " runtime은 v2와 v3를 읽음"],
@@ -1005,7 +1039,7 @@ sections.push(section("release", "빌드와 배포",
 sections.push(section("performance", "성능과 검증 기록",
   table(["검증", "결과"], [
     ["core suite", verificationManifest.results.core_vm + "; " + verificationManifest.results.core_jit],
-    ["release evidence", releaseEvidence.passed_count + "/" + releaseEvidence.required_count + " PASS"],
+    ["release evidence", releaseEvidence.passed_count + "/" + releaseEvidence.required_count + (releaseEvidence.passed ? " PASS" : " · incomplete")],
     ["goal audit", goalAudit.passed_count + "/" + goalAudit.required_count + " · " + goalAudit.progress_percent + "% · " + goalAudit.status],
     ["target lowering", "JS full " + targetAudit.js.full + ", ignored " + targetAudit.js.ignored + "; WASM full " + targetAudit.wasm.full + ", partial " + targetAudit.wasm.partial + ", ignored " + targetAudit.wasm.ignored],
     ["bytecode validation", verificationManifest.results.bytecode_validation],

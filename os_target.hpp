@@ -11,6 +11,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -196,10 +197,36 @@ struct LoopPatchState {
     std::vector<size_t> continues;
 };
 
+struct FreestandingFieldLayout {
+    size_t offset = 0;
+    size_t size = 0;
+    size_t alignment = 1;
+    TypeAnnot type;
+};
+
+struct FreestandingStructLayout {
+    size_t size = 0;
+    size_t alignment = 1;
+    bool packed = false;
+    std::unordered_map<std::string, FreestandingFieldLayout> fields;
+};
+
+struct FreestandingGlobal {
+    size_t data_offset = 0;
+    size_t size = 0;
+    unsigned scalar_width = 0;
+    bool address_value = false;
+    bool mutable_scalar = false;
+    TypeAnnot type;
+};
+
 class UefiX64Compiler {
     static constexpr uint32_t text_rva = 0x1000;
     static constexpr size_t image_handle_data_offset = 0;
     static constexpr size_t system_table_data_offset = 8;
+    static constexpr size_t temporary_slot_count = 16;
+    static constexpr size_t argument_bank_width = 6;
+    static constexpr size_t argument_bank_count = 8;
 
     X64Emitter x;
     std::vector<uint8_t> data = std::vector<uint8_t>(16, 0);
@@ -207,13 +234,22 @@ class UefiX64Compiler {
     std::vector<CallPatch> call_patches;
     std::unordered_map<std::string, size_t> function_offsets;
     std::unordered_map<std::string, const FuncDef*> functions;
+    std::unordered_map<std::string, const ClassDef*> struct_defs;
+    std::unordered_map<std::string, FreestandingStructLayout> struct_layouts;
+    std::unordered_set<std::string> layouts_in_progress;
+    std::unordered_map<std::string, FreestandingGlobal> globals;
+    std::unordered_set<const Stmt*> top_level_global_statements;
     std::vector<LoopPatchState> loops;
     std::vector<size_t> return_patches;
     std::unordered_map<std::string, int32_t> slots;
+    std::unordered_map<std::string, TypeAnnot> local_types;
+    std::unordered_set<std::string> function_globals;
     std::unordered_map<const Stmt*, int32_t> repeat_slots;
     std::vector<int32_t> scratch_slots;
     size_t gop_guid_data_offset = std::numeric_limits<size_t>::max();
     size_t next_slot = 0;
+    size_t temporary_depth = 0;
+    size_t call_argument_depth = 0;
     uint32_t frame_size = 0;
     const FuncDef* current_function = nullptr;
     bool current_is_entry = false;
@@ -222,12 +258,180 @@ class UefiX64Compiler {
         throw SuraOsCompileError(message, node ? node->line : 0);
     }
 
-    int32_t allocate_slot(const std::string& name) {
+    static size_t align_up_size(size_t value, size_t alignment) {
+        return (value + alignment - 1U) & ~(alignment - 1U);
+    }
+
+    static bool is_power_of_two(size_t value) {
+        return value && (value & (value - 1U)) == 0;
+    }
+
+    static std::string annotated_type_name(const TypeAnnot& type) {
+        if (!type.source_name.empty()) return type.source_name;
+        if (!type.class_name.empty()) return type.class_name;
+        switch (type.kind) {
+            case SType::BOOL: return "bool";
+            case SType::NUMBER: return "u64";
+            default: return {};
+        }
+    }
+
+    static bool pointer_pointee(const TypeAnnot& type, std::string& pointee) {
+        const std::string name = annotated_type_name(type);
+        constexpr const char prefix[] = "ptr[";
+        if (name.size() <= sizeof(prefix) ||
+            name.compare(0, sizeof(prefix) - 1, prefix) != 0 ||
+            name.back() != ']') {
+            return false;
+        }
+        pointee = name.substr(sizeof(prefix) - 1,
+                              name.size() - sizeof(prefix));
+        return !pointee.empty();
+    }
+
+    static bool signed_scalar_type(const TypeAnnot& type) {
+        const std::string name = annotated_type_name(type);
+        return name == "i8" || name == "i16" || name == "i32" ||
+               name == "i64" || name == "isize";
+    }
+
+    bool primitive_type_layout(const TypeAnnot& type, size_t& size,
+                               size_t& alignment) const {
+        const std::string name = annotated_type_name(type);
+        if (name == "i8" || name == "u8" || name == "bool") {
+            size = alignment = 1;
+            return true;
+        }
+        if (name == "i16" || name == "u16") {
+            size = alignment = 2;
+            return true;
+        }
+        if (name == "i32" || name == "u32") {
+            size = alignment = 4;
+            return true;
+        }
+        if (name == "i64" || name == "u64" || name == "isize" ||
+            name == "usize" || name == "ptr" ||
+            name.rfind("ptr[", 0) == 0) {
+            size = alignment = 8;
+            return true;
+        }
+        return false;
+    }
+
+    const FreestandingStructLayout& ensure_struct_layout(
+        const std::string& name, const Node* origin) {
+        auto ready = struct_layouts.find(name);
+        if (ready != struct_layouts.end()) return ready->second;
+        auto definition = struct_defs.find(name);
+        if (definition == struct_defs.end()) {
+            fail(origin, "unknown freestanding struct type '" + name + "'");
+        }
+        if (!layouts_in_progress.insert(name).second) {
+            fail(origin, "freestanding struct '" + name +
+                         "' contains itself by value; use ptr[" + name + "]");
+        }
+
+        const ClassDef* def = definition->second;
+        FreestandingStructLayout layout;
+        layout.packed = def->packed_layout;
+        size_t cursor = 0;
+        for (const std::string& field_name : def->field_order) {
+            auto type_it = def->field_types.find(field_name);
+            if (type_it == def->field_types.end() || !type_it->second.present) {
+                layouts_in_progress.erase(name);
+                fail(def, "freestanding struct field '" + name + "." +
+                          field_name + "' requires an explicit type");
+            }
+            const TypeAnnot& field_type = type_it->second;
+            size_t field_size = 0;
+            size_t field_alignment = 1;
+            if (!primitive_type_layout(field_type, field_size, field_alignment)) {
+                const std::string nested = annotated_type_name(field_type);
+                const auto& nested_layout = ensure_struct_layout(nested, def);
+                field_size = nested_layout.size;
+                field_alignment = nested_layout.alignment;
+            }
+            if (layout.packed) field_alignment = 1;
+            cursor = align_up_size(cursor, field_alignment);
+            layout.fields.emplace(
+                field_name,
+                FreestandingFieldLayout{cursor, field_size, field_alignment,
+                                         field_type});
+            cursor += field_size;
+            layout.alignment = std::max(layout.alignment, field_alignment);
+        }
+        if (cursor == 0) {
+            layouts_in_progress.erase(name);
+            fail(def, "freestanding struct '" + name +
+                      "' must contain at least one typed field");
+        }
+        layout.size = align_up_size(cursor, layout.alignment);
+        layouts_in_progress.erase(name);
+        auto inserted = struct_layouts.emplace(name, std::move(layout));
+        return inserted.first->second;
+    }
+
+    const FreestandingFieldLayout& require_field(
+        const std::string& struct_name, const std::string& field_name,
+        const Node* origin) {
+        const auto& layout = ensure_struct_layout(struct_name, origin);
+        auto field = layout.fields.find(field_name);
+        if (field == layout.fields.end()) {
+            fail(origin, "freestanding struct '" + struct_name +
+                         "' has no field '" + field_name + "'");
+        }
+        return field->second;
+    }
+
+    size_t append_zero_data(size_t size, size_t alignment,
+                            const Node* origin) {
+        if (!is_power_of_two(alignment) || alignment > (1U << 20)) {
+            fail(origin, "static-data alignment must be a power of two no "
+                         "greater than 1048576");
+        }
+        if (size == 0 || size > (64U << 20) ||
+            data.size() > (64U << 20) - size) {
+            fail(origin, "a static object must contain 1..67108864 bytes and "
+                         "the total static-data limit is 64 MiB");
+        }
+        while (data.size() % alignment) data.push_back(0);
+        const size_t offset = data.size();
+        data.resize(data.size() + size, 0);
+        return offset;
+    }
+
+    static void write_data_integer(std::vector<uint8_t>& destination,
+                                   size_t offset, unsigned width,
+                                   uint64_t value) {
+        for (unsigned i = 0; i < width; ++i) {
+            destination.at(offset + i) =
+                static_cast<uint8_t>(value >> (i * 8));
+        }
+    }
+
+    int32_t allocate_slot(const std::string& name,
+                          const TypeAnnot* type = nullptr) {
+        if (type && type->present) local_types[name] = *type;
         auto found = slots.find(name);
         if (found != slots.end()) return found->second;
         const int32_t disp = -static_cast<int32_t>((++next_slot) * 8);
         slots.emplace(name, disp);
         return disp;
+    }
+
+    size_t reserve_temporaries(size_t count, const Node* origin) {
+        if (count > temporary_slot_count ||
+            temporary_depth > temporary_slot_count - count) {
+            fail(origin, "freestanding intrinsic expressions are nested too deeply");
+        }
+        const size_t base = temporary_depth;
+        temporary_depth += count;
+        return base;
+    }
+
+    void release_temporaries(size_t count) {
+        temporary_depth -= count;
     }
 
     int32_t require_slot(const Ident* ident) const {
@@ -238,15 +442,59 @@ class UefiX64Compiler {
         return found->second;
     }
 
+    void scan_global_declarations(const SuraBlock* block) {
+        if (!block) return;
+        for (const auto& holder : block->body) {
+            const Stmt* stmt = holder.get();
+            if (!stmt) continue;
+            switch (stmt->kind) {
+                case NK::GLOBAL_DECL: {
+                    auto* declaration =
+                        static_cast<const GlobalDeclStmt*>(stmt);
+                    for (const std::string& name : declaration->names) {
+                        if (globals.find(name) == globals.end()) {
+                            fail(stmt, "global '" + name +
+                                       "' has no top-level static declaration");
+                        }
+                        function_globals.insert(name);
+                    }
+                    break;
+                }
+                case NK::IF: {
+                    auto* value = static_cast<const IfStmt*>(stmt);
+                    scan_global_declarations(value->then_block.get());
+                    scan_global_declarations(value->else_block.get());
+                    break;
+                }
+                case NK::WHILE:
+                    scan_global_declarations(
+                        static_cast<const WhileStmt*>(stmt)->body.get());
+                    break;
+                case NK::REPEAT:
+                    scan_global_declarations(
+                        static_cast<const RepeatStmt*>(stmt)->body.get());
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     void scan_locals(const SuraBlock* block) {
         if (!block) return;
         for (const auto& holder : block->body) {
             const Stmt* stmt = holder.get();
             if (!stmt) continue;
             switch (stmt->kind) {
-                case NK::ASSIGN:
-                    allocate_slot(static_cast<const AssignStmt*>(stmt)->name);
+                case NK::ASSIGN: {
+                    auto* assignment = static_cast<const AssignStmt*>(stmt);
+                    if (function_globals.find(assignment->name) ==
+                        function_globals.end()) {
+                        allocate_slot(assignment->name,
+                                      &assignment->type_annot);
+                    }
                     break;
+                }
                 case NK::IF: {
                     auto* value = static_cast<const IfStmt*>(stmt);
                     scan_locals(value->then_block.get());
@@ -320,6 +568,145 @@ class UefiX64Compiler {
         rip_data_disp({0x48, 0x8d, 0x05}, data_offset);
     }
 
+    void load_memory_rax(unsigned width, bool is_signed = false) {
+        if (width == 8) {
+            if (is_signed) x.bytes({0x48, 0x0f, 0xbe, 0x00});
+            else x.bytes({0x0f, 0xb6, 0x00});
+        } else if (width == 16) {
+            if (is_signed) x.bytes({0x48, 0x0f, 0xbf, 0x00});
+            else x.bytes({0x0f, 0xb7, 0x00});
+        } else if (width == 32) {
+            if (is_signed) x.bytes({0x48, 0x63, 0x00});
+            else x.bytes({0x8b, 0x00});
+        } else if (width == 64) {
+            x.bytes({0x48, 0x8b, 0x00});
+        } else {
+            throw SuraOsCompileError("unsupported freestanding memory width");
+        }
+    }
+
+    void store_rax_to_rcx(unsigned width) {
+        if (width == 8) x.bytes({0x88, 0x01});
+        else if (width == 16) x.bytes({0x66, 0x89, 0x01});
+        else if (width == 32) x.bytes({0x89, 0x01});
+        else if (width == 64) x.bytes({0x48, 0x89, 0x01});
+        else throw SuraOsCompileError("unsupported freestanding memory width");
+    }
+
+    void load_global_rax(const std::string& name, const Node* origin) {
+        auto found = globals.find(name);
+        if (found == globals.end()) {
+            fail(origin, "unknown freestanding global '" + name + "'");
+        }
+        const FreestandingGlobal& global = found->second;
+        if (global.address_value) {
+            address_of_data_rax(global.data_offset);
+            return;
+        }
+        const bool is_signed = signed_scalar_type(global.type);
+        if (global.scalar_width == 8) {
+            rip_data_disp(is_signed
+                              ? std::initializer_list<uint8_t>{
+                                    0x48, 0x0f, 0xbe, 0x05}
+                              : std::initializer_list<uint8_t>{
+                                    0x0f, 0xb6, 0x05},
+                          global.data_offset);
+        } else if (global.scalar_width == 16) {
+            rip_data_disp(is_signed
+                              ? std::initializer_list<uint8_t>{
+                                    0x48, 0x0f, 0xbf, 0x05}
+                              : std::initializer_list<uint8_t>{
+                                    0x0f, 0xb7, 0x05},
+                          global.data_offset);
+        } else if (global.scalar_width == 32) {
+            rip_data_disp(is_signed
+                              ? std::initializer_list<uint8_t>{
+                                    0x48, 0x63, 0x05}
+                              : std::initializer_list<uint8_t>{
+                                    0x8b, 0x05},
+                          global.data_offset);
+        } else if (global.scalar_width == 64) {
+            rip_data_disp({0x48, 0x8b, 0x05}, global.data_offset);
+        } else {
+            fail(origin, "global '" + name + "' has an invalid scalar width");
+        }
+    }
+
+    void store_global_rax(const std::string& name, const Node* origin) {
+        auto found = globals.find(name);
+        if (found == globals.end()) {
+            fail(origin, "unknown freestanding global '" + name + "'");
+        }
+        const FreestandingGlobal& global = found->second;
+        if (!global.mutable_scalar || global.address_value) {
+            fail(origin, "static object '" + name +
+                         "' is an address; modify its memory through mem or a "
+                         "typed pointer");
+        }
+        if (global.scalar_width == 8) {
+            rip_data_disp({0x88, 0x05}, global.data_offset);
+        } else if (global.scalar_width == 16) {
+            rip_data_disp({0x66, 0x89, 0x05}, global.data_offset);
+        } else if (global.scalar_width == 32) {
+            rip_data_disp({0x89, 0x05}, global.data_offset);
+        } else if (global.scalar_width == 64) {
+            rip_data_disp({0x48, 0x89, 0x05}, global.data_offset);
+        } else {
+            fail(origin, "global '" + name + "' has an invalid scalar width");
+        }
+    }
+
+    void address_of_named_rax(const Ident* ident) {
+        auto local = slots.find(ident->name);
+        if (local != slots.end()) {
+            x.bytes({0x48, 0x8d, 0x85});
+            x.d(static_cast<uint32_t>(local->second));
+            return;
+        }
+        auto global = globals.find(ident->name);
+        if (global != globals.end()) {
+            address_of_data_rax(global->second.data_offset);
+            return;
+        }
+        fail(ident, "unknown freestanding local or global '" +
+                    ident->name + "'");
+    }
+
+    const TypeAnnot& identifier_type(const Ident* ident) const {
+        auto local = local_types.find(ident->name);
+        if (local != local_types.end()) return local->second;
+        auto global = globals.find(ident->name);
+        if (global != globals.end()) return global->second.type;
+        fail(ident, "unknown typed freestanding value '" + ident->name + "'");
+    }
+
+    const FreestandingFieldLayout& typed_pointer_field(
+        const Ident* pointer, const std::string& field_name,
+        const Node* origin) {
+        std::string struct_name;
+        if (!pointer_pointee(identifier_type(pointer), struct_name)) {
+            fail(origin, "'" + pointer->name +
+                         "' must have a ptr[StructName] annotation for field access");
+        }
+        return require_field(struct_name, field_name, origin);
+    }
+
+    const FreestandingFieldLayout& compile_field_address(
+        const DotAccess* access) {
+        if (!access->obj || access->obj->kind != NK::IDENT) {
+            fail(access, "freestanding structured field access currently "
+                         "requires a named ptr[StructName] value");
+        }
+        auto* pointer = static_cast<const Ident*>(access->obj.get());
+        const auto& field = typed_pointer_field(pointer, access->prop, access);
+        compile_expr(pointer);
+        if (field.offset) {
+            x.bytes({0x48, 0x05});
+            x.d(static_cast<uint32_t>(field.offset));
+        }
+        return field;
+    }
+
     static bool integral_literal(const Expr* expr, uint64_t& out) {
         if (!expr || expr->kind != NK::NUM_LIT) return false;
         const double value = static_cast<const NumLit*>(expr)->value;
@@ -363,6 +750,319 @@ class UefiX64Compiler {
         if (!digit_seen) return false;
         out = value;
         return true;
+    }
+
+    bool constant_integer(const Expr* expr, uint64_t& out) {
+        if (!expr) return false;
+        if (integral_literal(expr, out)) return true;
+        if (expr->kind == NK::BOOL_LIT) {
+            out = static_cast<const BoolLit*>(expr)->value ? 1 : 0;
+            return true;
+        }
+        if (expr->kind == NK::NIL_LIT) {
+            out = 0;
+            return true;
+        }
+        if (expr->kind == NK::UNARY_OP) {
+            auto* unary = static_cast<const UnaryOp*>(expr);
+            uint64_t value = 0;
+            if (!constant_integer(unary->operand.get(), value)) return false;
+            if (unary->op == "-") out = 0 - value;
+            else if (unary->op == "~") out = ~value;
+            else if (unary->op == "not" || unary->op == "!") out = !value;
+            else return false;
+            return true;
+        }
+        if (expr->kind == NK::BIN_OP) {
+            auto* binary = static_cast<const BinOp*>(expr);
+            uint64_t left = 0;
+            uint64_t right = 0;
+            if (!constant_integer(binary->left.get(), left) ||
+                !constant_integer(binary->right.get(), right)) {
+                return false;
+            }
+            const std::string& op = binary->op;
+            if (op == "+") out = left + right;
+            else if (op == "-") out = left - right;
+            else if (op == "*") out = left * right;
+            else if (op == "/" && right) out = left / right;
+            else if (op == "%" && right) out = left % right;
+            else if (op == "&" || op == "and") out = left & right;
+            else if (op == "|" || op == "or") out = left | right;
+            else if (op == "^") out = left ^ right;
+            else if (op == "<<" && right < 64) out = left << right;
+            else if (op == ">>" && right < 64) out = left >> right;
+            else if (op == "==") out = left == right;
+            else if (op == "!=") out = left != right;
+            else if (op == "<") out = static_cast<int64_t>(left) <
+                                      static_cast<int64_t>(right);
+            else if (op == "<=") out = static_cast<int64_t>(left) <=
+                                       static_cast<int64_t>(right);
+            else if (op == ">") out = static_cast<int64_t>(left) >
+                                      static_cast<int64_t>(right);
+            else if (op == ">=") out = static_cast<int64_t>(left) >=
+                                       static_cast<int64_t>(right);
+            else return false;
+            return true;
+        }
+
+        std::string raw_name;
+        const std::vector<ExprPtr>* args_ptr = nullptr;
+        if (!flatten_call(expr, raw_name, args_ptr)) return false;
+        const std::string name = canonical_intrinsic(raw_name);
+        const auto& args = *args_ptr;
+        if ((name == "u64" || name == "ptr" || name == "usize") &&
+            args.size() == 1 && args[0]->kind == NK::STR_LIT) {
+            return parse_integer_text(
+                static_cast<const StrLit*>(args[0].get())->value, out);
+        }
+        if ((name == "sizeof" || name == "alignof") && args.size() == 1 &&
+            args[0]->kind == NK::IDENT) {
+            const std::string type_name =
+                static_cast<const Ident*>(args[0].get())->name;
+            const auto& layout = ensure_struct_layout(type_name, expr);
+            out = name == "sizeof" ? layout.size : layout.alignment;
+            return true;
+        }
+        if (name == "offset_of" && args.size() == 2 &&
+            args[0]->kind == NK::IDENT && args[1]->kind == NK::IDENT) {
+            const std::string type_name =
+                static_cast<const Ident*>(args[0].get())->name;
+            const std::string field_name =
+                static_cast<const Ident*>(args[1].get())->name;
+            out = require_field(type_name, field_name, expr).offset;
+            return true;
+        }
+        return false;
+    }
+
+    uint64_t require_constant_integer(const Expr* expr,
+                                      const std::string& description) {
+        uint64_t value = 0;
+        if (!constant_integer(expr, value)) {
+            fail(expr, description + " must be a compile-time integer");
+        }
+        return value;
+    }
+
+    static TypeAnnot inferred_type(const std::string& name) {
+        TypeAnnot type;
+        type.present = true;
+        type.kind = SType::NUMBER;
+        type.source_name = name;
+        return type;
+    }
+
+    FreestandingGlobal build_static_initializer(const AssignStmt* assignment,
+                                                 const std::string& name,
+                                                 const std::vector<ExprPtr>& args,
+                                                 const Expr* origin) {
+        FreestandingGlobal global;
+        global.address_value = true;
+        global.mutable_scalar = false;
+        global.type = assignment->type_annot;
+
+        const auto alignment_argument =
+            [&](size_t index, size_t fallback) -> size_t {
+                if (args.size() <= index) return fallback;
+                const uint64_t value = require_constant_integer(
+                    args[index].get(), "static-data alignment");
+                if (value > std::numeric_limits<size_t>::max()) {
+                    fail(args[index].get(), "static-data alignment is too large");
+                }
+                return static_cast<size_t>(value);
+            };
+
+        if (name == "static_zero") {
+            if (args.empty() || args.size() > 2) {
+                fail(origin, "static.zero(size, alignment?) expects one or two arguments");
+            }
+            const uint64_t requested =
+                require_constant_integer(args[0].get(), "static.zero() size");
+            if (requested > std::numeric_limits<size_t>::max()) {
+                fail(args[0].get(), "static.zero() size is too large");
+            }
+            global.size = static_cast<size_t>(requested);
+            global.data_offset = append_zero_data(
+                global.size, alignment_argument(1, 1), origin);
+            return global;
+        }
+
+        if (name == "static_struct") {
+            if (args.empty() || args.size() > 2 ||
+                args[0]->kind != NK::IDENT) {
+                fail(origin, "static.struct(Type, count?) expects a struct type name");
+            }
+            const std::string type_name =
+                static_cast<const Ident*>(args[0].get())->name;
+            const auto& layout = ensure_struct_layout(type_name, origin);
+            const uint64_t count = args.size() == 2
+                ? require_constant_integer(args[1].get(), "static.struct() count")
+                : 1;
+            if (!count || count > std::numeric_limits<size_t>::max() /
+                                     layout.size) {
+                fail(origin, "static.struct() count is out of range");
+            }
+            global.size = layout.size * static_cast<size_t>(count);
+            global.data_offset =
+                append_zero_data(global.size, layout.alignment, origin);
+            if (!global.type.present) {
+                global.type = inferred_type("ptr[" + type_name + "]");
+            }
+            return global;
+        }
+
+        if (name == "static_utf8") {
+            if (args.size() != 1 || args[0]->kind != NK::STR_LIT) {
+                fail(origin, "static.utf8() expects one string literal");
+            }
+            const std::string& text =
+                static_cast<const StrLit*>(args[0].get())->value;
+            global.size = text.size() + 1;
+            global.data_offset = append_zero_data(global.size, 1, origin);
+            std::copy(text.begin(), text.end(),
+                      data.begin() + static_cast<std::ptrdiff_t>(global.data_offset));
+            return global;
+        }
+
+        if (name == "static_utf16") {
+            if (args.size() != 1 || args[0]->kind != NK::STR_LIT) {
+                fail(origin, "static.utf16() expects one string literal");
+            }
+            const auto units = utf8_to_utf16(
+                static_cast<const StrLit*>(args[0].get())->value);
+            global.size = (units.size() + 1) * 2;
+            global.data_offset = append_zero_data(global.size, 2, origin);
+            for (size_t i = 0; i < units.size(); ++i) {
+                write_data_integer(data, global.data_offset + i * 2, 2,
+                                   units[i]);
+            }
+            return global;
+        }
+
+        unsigned element_width = 0;
+        if (name == "static_u8" || name == "static_bytes") element_width = 1;
+        else if (name == "static_u16") element_width = 2;
+        else if (name == "static_u32") element_width = 4;
+        else if (name == "static_u64") element_width = 8;
+        if (element_width) {
+            if (args.empty() || args.size() > 2 ||
+                args[0]->kind != NK::ARRAY_LIT) {
+                fail(origin, raw_name_for_error(name) +
+                             " expects an array literal and optional alignment");
+            }
+            auto* array = static_cast<const ArrayLit*>(args[0].get());
+            if (array->elements.empty()) {
+                fail(origin, "static arrays must contain at least one element");
+            }
+            if (array->elements.size() >
+                (64U << 20) / element_width) {
+                fail(origin, "static array is too large");
+            }
+            global.size = array->elements.size() * element_width;
+            global.data_offset = append_zero_data(
+                global.size, alignment_argument(1, element_width), origin);
+            const uint64_t maximum =
+                element_width == 8
+                    ? std::numeric_limits<uint64_t>::max()
+                    : ((uint64_t{1} << (element_width * 8)) - 1U);
+            for (size_t i = 0; i < array->elements.size(); ++i) {
+                const uint64_t value = require_constant_integer(
+                    array->elements[i].get(), "static array element");
+                if (value > maximum) {
+                    fail(array->elements[i].get(),
+                         "static array element does not fit its width");
+                }
+                write_data_integer(data,
+                                   global.data_offset + i * element_width,
+                                   element_width, value);
+            }
+            return global;
+        }
+
+        fail(origin, "unknown static-data initializer '" + name + "'");
+    }
+
+    static std::string raw_name_for_error(const std::string& canonical) {
+        std::string result = canonical;
+        std::replace(result.begin(), result.end(), '_', '.');
+        return result + "()";
+    }
+
+    void build_top_level_declarations(const SuraBlock* root) {
+        globals.clear();
+        top_level_global_statements.clear();
+        for (const auto& holder : root->body) {
+            if (!holder || holder->kind != NK::ASSIGN) continue;
+            auto* assignment = static_cast<const AssignStmt*>(holder.get());
+            if (globals.find(assignment->name) != globals.end()) {
+                fail(assignment, "duplicate top-level static declaration '" +
+                                 assignment->name + "'");
+            }
+
+            FreestandingGlobal global;
+            std::string raw_name;
+            const std::vector<ExprPtr>* args = nullptr;
+            if (flatten_call(assignment->value.get(), raw_name, args) &&
+                canonical_intrinsic(raw_name).rfind("static_", 0) == 0) {
+                global = build_static_initializer(
+                    assignment, canonical_intrinsic(raw_name), *args,
+                    assignment->value.get());
+            } else {
+                global.type = assignment->type_annot;
+                if (!global.type.present) {
+                    global.type = inferred_type(
+                        assignment->value &&
+                                assignment->value->kind == NK::BOOL_LIT
+                            ? "bool"
+                            : "u64");
+                }
+                size_t scalar_size = 0;
+                size_t scalar_alignment = 0;
+                if (!primitive_type_layout(global.type, scalar_size,
+                                           scalar_alignment) ||
+                    scalar_size > 8) {
+                    fail(assignment, "top-level scalar '" + assignment->name +
+                                     "' requires a fixed-width scalar or pointer type");
+                }
+                const uint64_t value = require_constant_integer(
+                    assignment->value.get(),
+                    "top-level initializer for '" + assignment->name + "'");
+                if (scalar_size < 8) {
+                    const unsigned bits =
+                        static_cast<unsigned>(scalar_size * 8);
+                    bool fits = false;
+                    if (signed_scalar_type(global.type)) {
+                        const int64_t signed_value =
+                            static_cast<int64_t>(value);
+                        const int64_t minimum =
+                            -(int64_t{1} << (bits - 1));
+                        const int64_t maximum =
+                            (int64_t{1} << (bits - 1)) - 1;
+                        fits = signed_value >= minimum &&
+                               signed_value <= maximum;
+                    } else {
+                        fits = value <=
+                               ((uint64_t{1} << bits) - 1U);
+                    }
+                    if (!fits) {
+                        fail(assignment->value.get(),
+                             "top-level initializer does not fit '" +
+                                 annotated_type_name(global.type) + "'");
+                    }
+                }
+                global.size = scalar_size;
+                global.scalar_width = static_cast<unsigned>(scalar_size * 8);
+                global.address_value = false;
+                global.mutable_scalar = true;
+                global.data_offset =
+                    append_zero_data(scalar_size, scalar_alignment, assignment);
+                write_data_integer(data, global.data_offset,
+                                   static_cast<unsigned>(scalar_size), value);
+            }
+            globals.emplace(assignment->name, std::move(global));
+            top_level_global_statements.insert(holder.get());
+        }
     }
 
     bool flatten_call(const Expr* expr, std::string& name,
@@ -410,9 +1110,28 @@ class UefiX64Compiler {
             case NK::NIL_LIT:
                 x.bytes({0x31, 0xc0});
                 return;
-            case NK::IDENT:
-                x.mov_rax_rbp(require_slot(static_cast<const Ident*>(expr)));
+            case NK::IDENT: {
+                auto* ident = static_cast<const Ident*>(expr);
+                auto local = slots.find(ident->name);
+                if (local != slots.end()) {
+                    x.mov_rax_rbp(local->second);
+                } else {
+                    load_global_rax(ident->name, ident);
+                }
                 return;
+            }
+            case NK::DOT_ACCESS: {
+                const auto& field =
+                    compile_field_address(static_cast<const DotAccess*>(expr));
+                if (field.size != 1 && field.size != 2 &&
+                    field.size != 4 && field.size != 8) {
+                    fail(expr, "embedded struct fields cannot be loaded as a "
+                               "single scalar; use a ptr[NestedStruct] field");
+                }
+                load_memory_rax(static_cast<unsigned>(field.size * 8),
+                                signed_scalar_type(field.type));
+                return;
+            }
             case NK::UNARY_OP: {
                 auto* unary = static_cast<const UnaryOp*>(expr);
                 compile_expr(unary->operand.get());
@@ -428,9 +1147,12 @@ class UefiX64Compiler {
             case NK::BIN_OP: {
                 auto* binary = static_cast<const BinOp*>(expr);
                 compile_expr(binary->left.get());
-                x.b(0x50); // push rax
+                // Keep a spill slot plus alignment padding so a function call
+                // inside the right operand still sees the Win64-required
+                // 16-byte aligned stack.
+                x.bytes({0x50, 0x48, 0x83, 0xec, 0x08});
                 compile_expr(binary->right.get());
-                x.b(0x59); // pop rcx (left)
+                x.bytes({0x48, 0x83, 0xc4, 0x08, 0x59});
                 const std::string& op = binary->op;
                 if (op == "+") x.bytes({0x48, 0x01, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "-") x.bytes({0x48, 0x29, 0xc1, 0x48, 0x89, 0xc8});
@@ -468,24 +1190,34 @@ class UefiX64Compiler {
         }
     }
 
-    void save_call_args(const std::vector<ExprPtr>& args) {
-        if (args.size() > scratch_slots.size()) {
+    size_t save_call_args(const std::vector<ExprPtr>& args) {
+        if (args.size() > argument_bank_width) {
             fail(current_function, "freestanding calls support at most " +
-                 std::to_string(scratch_slots.size()) + " arguments");
+                 std::to_string(argument_bank_width) + " arguments");
         }
+        if (call_argument_depth >= argument_bank_count) {
+            fail(current_function,
+                 "freestanding call expressions are nested more than eight levels");
+        }
+        const size_t base =
+            temporary_slot_count +
+            call_argument_depth * argument_bank_width;
+        ++call_argument_depth;
         for (size_t i = 0; i < args.size(); ++i) {
             compile_expr(args[i].get());
-            x.mov_rbp_rax(scratch_slots[i]);
+            x.mov_rbp_rax(scratch_slots[base + i]);
         }
+        --call_argument_depth;
+        return base;
     }
 
-    void load_call_args(size_t count) {
-        if (count > 0) x.mov_reg_rbp(1, scratch_slots[0]);
-        if (count > 1) x.mov_reg_rbp(2, scratch_slots[1]);
-        if (count > 2) x.mov_reg_rbp(8, scratch_slots[2]);
-        if (count > 3) x.mov_reg_rbp(9, scratch_slots[3]);
+    void load_call_args(size_t count, size_t base = 0) {
+        if (count > 0) x.mov_reg_rbp(1, scratch_slots[base]);
+        if (count > 1) x.mov_reg_rbp(2, scratch_slots[base + 1]);
+        if (count > 2) x.mov_reg_rbp(8, scratch_slots[base + 2]);
+        if (count > 3) x.mov_reg_rbp(9, scratch_slots[base + 3]);
         for (size_t i = 4; i < count; ++i) {
-            x.mov_rax_rbp(scratch_slots[i]);
+            x.mov_rax_rbp(scratch_slots[base + i]);
             x.bytes({0x48, 0x89, 0x84, 0x24});
             x.d(static_cast<uint32_t>(32 + (i - 4) * 8));
         }
@@ -499,13 +1231,13 @@ class UefiX64Compiler {
                          (min_args == max_args ? "" : ".." + std::to_string(max_args)) +
                          " argument(s)");
         }
-        save_call_args(args);
+        const size_t argument_base = save_call_args(args);
         load_system_table_rax();
         x.bytes({0x48, 0x8b, 0x80});
         x.d(table_offset);
         x.bytes({0x4c, 0x8b, 0x98});
         x.d(function_offset);
-        load_call_args(args.size());
+        load_call_args(args.size(), argument_base);
         x.bytes({0x41, 0xff, 0xd3}); // call r11
     }
 
@@ -528,14 +1260,104 @@ class UefiX64Compiler {
             return;
         }
 
+        if (name == "sizeof" || name == "alignof" ||
+            name == "offset_of") {
+            uint64_t value = 0;
+            if (!constant_integer(origin, value)) {
+                fail(origin, raw_name +
+                             "() requires compile-time struct and field names");
+            }
+            x.mov_rax_imm(value);
+            return;
+        }
+
         if (name == "addr_of") {
             if (args.size() != 1 || args[0]->kind != NK::IDENT) {
-                fail(origin, "addr_of() requires one local variable name");
+                fail(origin, "addr_of() requires one local or static global name");
             }
-            const int32_t disp =
-                require_slot(static_cast<const Ident*>(args[0].get()));
-            x.bytes({0x48, 0x8d, 0x85});
-            x.d(static_cast<uint32_t>(disp));
+            address_of_named_rax(static_cast<const Ident*>(args[0].get()));
+            return;
+        }
+
+        if (name.rfind("static_", 0) == 0) {
+            fail(origin, raw_name +
+                         "() may only initialize a top-level static declaration");
+        }
+
+        if (name == "ptr_add") {
+            if (args.size() != 2) {
+                fail(origin, "ptr.add(address, byte_offset) expects two values");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.bytes({0x48, 0x01, 0xc8}); // add rax,rcx
+            release_temporaries(1);
+            return;
+        }
+        if (name == "ptr_index") {
+            if (args.size() != 3) {
+                fail(origin, "ptr.index(address, index, element_size) expects three values");
+            }
+            const size_t temporary = reserve_temporaries(2, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            compile_expr(args[2].get());
+            x.mov_reg_rbp(1, scratch_slots[temporary + 1]);
+            x.bytes({0x48, 0x0f, 0xaf, 0xc8}); // imul rcx,rax
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x48, 0x01, 0xc8});
+            release_temporaries(2);
+            return;
+        }
+        if (name == "ptr_field") {
+            if (args.size() != 3 || args[1]->kind != NK::IDENT ||
+                args[2]->kind != NK::IDENT) {
+                fail(origin, "ptr.field(address, StructType, field) expects "
+                             "an address and two names");
+            }
+            const std::string type_name =
+                static_cast<const Ident*>(args[1].get())->name;
+            const std::string field_name =
+                static_cast<const Ident*>(args[2].get())->name;
+            const size_t offset =
+                require_field(type_name, field_name, origin).offset;
+            compile_expr(args[0].get());
+            if (offset) {
+                x.bytes({0x48, 0x05});
+                x.d(static_cast<uint32_t>(offset));
+            }
+            return;
+        }
+        if (name == "ptr_align_up" || name == "ptr_align_down" ||
+            name == "ptr_is_aligned") {
+            if (args.size() != 2) {
+                fail(origin, raw_name + "(value, alignment) expects two values");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            if (name == "ptr_align_down") {
+                x.bytes({0x48, 0xf7, 0xd8}); // neg rax
+                x.mov_reg_rbp(1, scratch_slots[temporary]);
+                x.bytes({0x48, 0x21, 0xc8}); // and rax,rcx
+            } else if (name == "ptr_align_up") {
+                x.bytes({0x48, 0x89, 0xc2, 0x48, 0xff, 0xca});
+                x.mov_reg_rbp(1, scratch_slots[temporary]);
+                x.bytes({0x48, 0x01, 0xd1, 0x48, 0xf7, 0xd8,
+                         0x48, 0x21, 0xc8});
+            } else {
+                x.bytes({0x48, 0xff, 0xc8}); // dec rax
+                x.mov_reg_rbp(1, scratch_slots[temporary]);
+                x.bytes({0x48, 0x85, 0xc8, 0x0f, 0x94, 0xc0,
+                         0x0f, 0xb6, 0xc0});
+            }
+            release_temporaries(1);
             return;
         }
 
@@ -553,15 +1375,140 @@ class UefiX64Compiler {
         const auto memory_read = [&](unsigned width) {
             if (args.size() != 1) fail(origin, "memory read expects one address");
             compile_expr(args[0].get());
-            if (width == 8) x.bytes({0x0f, 0xb6, 0x00});
-            else if (width == 16) x.bytes({0x0f, 0xb7, 0x00});
-            else if (width == 32) x.bytes({0x8b, 0x00});
-            else x.bytes({0x48, 0x8b, 0x00});
+            load_memory_rax(width);
         };
         if (name == "mem_read8") { memory_read(8); return; }
         if (name == "mem_read16") { memory_read(16); return; }
         if (name == "mem_read32") { memory_read(32); return; }
         if (name == "mem_read64") { memory_read(64); return; }
+
+        const auto atomic_load = [&](unsigned width) {
+            if (args.size() != 1) {
+                fail(origin, "atomic load expects one address");
+            }
+            compile_expr(args[0].get());
+            load_memory_rax(width);
+        };
+        if (name == "atomic_load" || name == "atomic_load64") {
+            atomic_load(64); return;
+        }
+        if (name == "atomic_load8") { atomic_load(8); return; }
+        if (name == "atomic_load16") { atomic_load(16); return; }
+        if (name == "atomic_load32") { atomic_load(32); return; }
+
+        const auto atomic_exchange = [&](unsigned width) {
+            if (args.size() != 2) {
+                fail(origin, "atomic exchange expects address and value");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            if (width == 8) {
+                x.bytes({0x86, 0x01, 0x0f, 0xb6, 0xc0});
+            } else if (width == 16) {
+                x.bytes({0x66, 0x87, 0x01, 0x0f, 0xb7, 0xc0});
+            } else if (width == 32) {
+                x.bytes({0x87, 0x01});
+            } else {
+                x.bytes({0x48, 0x87, 0x01});
+            }
+            release_temporaries(1);
+        };
+        if (name == "atomic_exchange" || name == "atomic_exchange64") {
+            atomic_exchange(64); return;
+        }
+        if (name == "atomic_exchange8") { atomic_exchange(8); return; }
+        if (name == "atomic_exchange16") { atomic_exchange(16); return; }
+        if (name == "atomic_exchange32") { atomic_exchange(32); return; }
+
+        const auto atomic_compare_exchange = [&](unsigned width) {
+            if (args.size() != 3) {
+                fail(origin, "atomic compare_exchange expects address, "
+                             "expected, and desired");
+            }
+            const size_t temporary = reserve_temporaries(2, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            compile_expr(args[2].get());
+            x.bytes({0x48, 0x89, 0xc2}); // rdx = desired
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.mov_rax_rbp(scratch_slots[temporary + 1]); // rax = expected
+            if (width == 8) {
+                x.bytes({0xf0, 0x0f, 0xb0, 0x11, 0x0f, 0xb6, 0xc0});
+            } else if (width == 16) {
+                x.bytes({0x66, 0xf0, 0x0f, 0xb1, 0x11,
+                         0x0f, 0xb7, 0xc0});
+            } else if (width == 32) {
+                x.bytes({0xf0, 0x0f, 0xb1, 0x11});
+            } else {
+                x.bytes({0xf0, 0x48, 0x0f, 0xb1, 0x11});
+            }
+            release_temporaries(2);
+        };
+        if (name == "atomic_compare_exchange" ||
+            name == "atomic_compare_exchange64") {
+            atomic_compare_exchange(64); return;
+        }
+        if (name == "atomic_compare_exchange8") {
+            atomic_compare_exchange(8); return;
+        }
+        if (name == "atomic_compare_exchange16") {
+            atomic_compare_exchange(16); return;
+        }
+        if (name == "atomic_compare_exchange32") {
+            atomic_compare_exchange(32); return;
+        }
+
+        const auto atomic_fetch_add = [&](unsigned width, bool subtract) {
+            if (args.size() != 2) {
+                fail(origin, "atomic fetch_add/fetch_sub expects address and value");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            if (subtract) x.bytes({0x48, 0xf7, 0xd8});
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            if (width == 8) {
+                x.bytes({0xf0, 0x0f, 0xc0, 0x01, 0x0f, 0xb6, 0xc0});
+            } else if (width == 16) {
+                x.bytes({0x66, 0xf0, 0x0f, 0xc1, 0x01,
+                         0x0f, 0xb7, 0xc0});
+            } else if (width == 32) {
+                x.bytes({0xf0, 0x0f, 0xc1, 0x01});
+            } else {
+                x.bytes({0xf0, 0x48, 0x0f, 0xc1, 0x01});
+            }
+            release_temporaries(1);
+        };
+        if (name == "atomic_fetch_add" || name == "atomic_fetch_add64") {
+            atomic_fetch_add(64, false); return;
+        }
+        if (name == "atomic_fetch_add8") {
+            atomic_fetch_add(8, false); return;
+        }
+        if (name == "atomic_fetch_add16") {
+            atomic_fetch_add(16, false); return;
+        }
+        if (name == "atomic_fetch_add32") {
+            atomic_fetch_add(32, false); return;
+        }
+        if (name == "atomic_fetch_sub" || name == "atomic_fetch_sub64") {
+            atomic_fetch_add(64, true); return;
+        }
+        if (name == "atomic_fetch_sub8") {
+            atomic_fetch_add(8, true); return;
+        }
+        if (name == "atomic_fetch_sub16") {
+            atomic_fetch_add(16, true); return;
+        }
+        if (name == "atomic_fetch_sub32") {
+            atomic_fetch_add(32, true); return;
+        }
 
         const auto port_read = [&](unsigned width) {
             if (args.size() != 1) fail(origin, "port input expects one port");
@@ -580,6 +1527,42 @@ class UefiX64Compiler {
         if (name == "cpu_read_cr3") { x.bytes({0x0f, 0x20, 0xd8}); return; }
         if (name == "cpu_read_cr4") { x.bytes({0x0f, 0x20, 0xe0}); return; }
         if (name == "cpu_read_flags") { x.bytes({0x9c, 0x58}); return; }
+        if (name == "cpu_rdtsc" || name == "cpu_rdtscp") {
+            if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
+            if (name == "cpu_rdtsc") x.bytes({0x0f, 0x31});
+            else x.bytes({0x0f, 0x01, 0xf9});
+            x.bytes({0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            return;
+        }
+        if (name == "cpu_xgetbv") {
+            if (args.size() != 1) {
+                fail(origin, "cpu.xgetbv(index) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x89, 0xc1, 0x0f, 0x01, 0xd0,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            return;
+        }
+        if (name == "cpu_cpuid_eax" || name == "cpu_cpuid_ebx" ||
+            name == "cpu_cpuid_ecx" || name == "cpu_cpuid_edx") {
+            if (args.empty() || args.size() > 2) {
+                fail(origin, raw_name + "(leaf, subleaf?) expects one or two values");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            if (args.size() == 2) compile_expr(args[1].get());
+            else x.bytes({0x31, 0xc0});
+            x.bytes({0x89, 0xc1}); // ecx = subleaf
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x53, 0x0f, 0xa2}); // preserve nonvolatile rbx; cpuid
+            if (name == "cpu_cpuid_ebx") x.bytes({0x89, 0xd8});
+            else if (name == "cpu_cpuid_ecx") x.bytes({0x89, 0xc8});
+            else if (name == "cpu_cpuid_edx") x.bytes({0x89, 0xd0});
+            x.b(0x5b);
+            release_temporaries(1);
+            return;
+        }
 
         if (name == "cpu_read_msr") {
             if (args.size() != 1) fail(origin, "cpu.read_msr() expects an MSR index");
@@ -615,15 +1598,17 @@ class UefiX64Compiler {
         }
         if (name == "uefi_exit_boot_services") {
             if (args.size() != 1) fail(origin, "uefi.exit_boot_services() expects a map key");
+            const size_t temporary = reserve_temporaries(2, origin);
             compile_expr(args[0].get());
-            x.mov_rbp_rax(scratch_slots[1]);
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
             load_image_handle_rax();
-            x.mov_rbp_rax(scratch_slots[0]);
+            x.mov_rbp_rax(scratch_slots[temporary]);
             load_system_table_rax();
             x.bytes({0x48, 0x8b, 0x40, 0x60, 0x4c, 0x8b, 0x98});
             x.d(232);
-            load_call_args(2);
+            load_call_args(2, temporary);
             x.bytes({0x41, 0xff, 0xd3});
+            release_temporaries(2);
             return;
         }
 
@@ -632,26 +1617,27 @@ class UefiX64Compiler {
             name == "uefi_gop_width" || name == "uefi_gop_height" ||
             name == "uefi_gop_stride" || name == "uefi_gop_pixel_format") {
             if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
+            const size_t temporary = reserve_temporaries(6, origin);
 
             // LocateProtocol(&GOP_GUID, nil, &gop). The last scratch slot is
             // stable addressable storage for the returned interface pointer.
             x.bytes({0x31, 0xc0});
-            x.mov_rbp_rax(scratch_slots[5]);
+            x.mov_rbp_rax(scratch_slots[temporary + 5]);
             address_of_data_rax(ensure_gop_guid());
-            x.mov_rbp_rax(scratch_slots[0]);
+            x.mov_rbp_rax(scratch_slots[temporary]);
             x.bytes({0x31, 0xc0});
-            x.mov_rbp_rax(scratch_slots[1]);
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
             x.bytes({0x48, 0x8d, 0x85});
-            x.d(static_cast<uint32_t>(scratch_slots[5]));
-            x.mov_rbp_rax(scratch_slots[2]);
+            x.d(static_cast<uint32_t>(scratch_slots[temporary + 5]));
+            x.mov_rbp_rax(scratch_slots[temporary + 2]);
 
             load_system_table_rax();
             x.bytes({0x48, 0x8b, 0x40, 0x60, 0x4c, 0x8b, 0x98});
             x.d(320);
-            load_call_args(3);
+            load_call_args(3, temporary);
             x.bytes({0x41, 0xff, 0xd3, 0x48, 0x85, 0xc0});
             const size_t status_failure = x.rel32({0x0f, 0x85});
-            x.mov_rax_rbp(scratch_slots[5]);
+            x.mov_rax_rbp(scratch_slots[temporary + 5]);
             x.bytes({0x48, 0x85, 0xc0});
             const size_t null_failure = x.rel32({0x0f, 0x84});
 
@@ -680,6 +1666,7 @@ class UefiX64Compiler {
                 x.patch_rel32(null_failure, failure);
                 x.patch_rel32(mode_failure, failure);
                 (void)end;
+                release_temporaries(6);
                 return;
             }
             const size_t success = x.rel32({0xe9});
@@ -689,13 +1676,21 @@ class UefiX64Compiler {
             x.patch_rel32(mode_failure, failure);
             x.bytes({0x31, 0xc0});
             x.patch_rel32(success, x.pos());
+            release_temporaries(6);
             return;
         }
 
         auto user = functions.find(raw_name);
         if (user != functions.end()) {
-            save_call_args(args);
-            load_call_args(args.size());
+            if (args.size() != user->second->params.size()) {
+                fail(origin, "freestanding function '" + raw_name +
+                             "' expects " +
+                             std::to_string(user->second->params.size()) +
+                             " argument(s), got " +
+                             std::to_string(args.size()));
+            }
+            const size_t argument_base = save_call_args(args);
+            load_call_args(args.size(), argument_base);
             const size_t patch = x.rel32({0xe8});
             call_patches.push_back({patch, raw_name, origin->line});
             return;
@@ -752,17 +1747,15 @@ class UefiX64Compiler {
         }
         if (name == "uefi_set_color") {
             if (args.size() != 2) fail(expr, "uefi.set_color(foreground, background) expects two values");
+            const size_t temporary = reserve_temporaries(1, expr);
             compile_expr(args[0].get());
-            x.mov_rbp_rax(scratch_slots[0]);
-            compile_expr(args[1].get());
-            x.bytes({0x48, 0xc1, 0xe0, 0x04});
-            x.mov_rax_rbp(scratch_slots[0]);
-            // Re-evaluate background without losing foreground.
+            x.mov_rbp_rax(scratch_slots[temporary]);
             compile_expr(args[1].get());
             x.bytes({0x48, 0xc1, 0xe0, 0x04});
             x.bytes({0x48, 0x0b, 0x85});
-            x.d(static_cast<uint32_t>(scratch_slots[0]));
+            x.d(static_cast<uint32_t>(scratch_slots[temporary]));
             x.bytes({0x48, 0x89, 0xc2});
+            release_temporaries(1);
             load_system_table_rax();
             x.bytes({0x48, 0x8b, 0x48, 0x40, 0x48, 0x8b, 0x41, 0x28,
                      0xff, 0xd0});
@@ -784,29 +1777,62 @@ class UefiX64Compiler {
 
         const auto memory_write = [&](unsigned width) {
             if (args.size() != 2) fail(expr, "memory write expects address and value");
+            const size_t temporary = reserve_temporaries(1, expr);
             compile_expr(args[0].get());
-            x.mov_rbp_rax(scratch_slots[0]);
+            x.mov_rbp_rax(scratch_slots[temporary]);
             compile_expr(args[1].get());
-            x.mov_reg_rbp(1, scratch_slots[0]);
-            if (width == 8) x.bytes({0x88, 0x01});
-            else if (width == 16) x.bytes({0x66, 0x89, 0x01});
-            else if (width == 32) x.bytes({0x89, 0x01});
-            else x.bytes({0x48, 0x89, 0x01});
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            store_rax_to_rcx(width);
+            release_temporaries(1);
         };
         if (name == "mem_write8") { memory_write(8); return true; }
         if (name == "mem_write16") { memory_write(16); return true; }
         if (name == "mem_write32") { memory_write(32); return true; }
         if (name == "mem_write64") { memory_write(64); return true; }
 
+        const auto atomic_store = [&](unsigned width) {
+            if (args.size() != 2) {
+                fail(expr, "atomic store expects address and value");
+            }
+            const size_t temporary = reserve_temporaries(1, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            // xchg with memory is implicitly locked and therefore provides
+            // sequentially consistent store semantics on x86-64.
+            if (width == 8) x.bytes({0x86, 0x01});
+            else if (width == 16) x.bytes({0x66, 0x87, 0x01});
+            else if (width == 32) x.bytes({0x87, 0x01});
+            else x.bytes({0x48, 0x87, 0x01});
+            release_temporaries(1);
+        };
+        if (name == "atomic_store" || name == "atomic_store64") {
+            atomic_store(64); return true;
+        }
+        if (name == "atomic_store8") { atomic_store(8); return true; }
+        if (name == "atomic_store16") { atomic_store(16); return true; }
+        if (name == "atomic_store32") { atomic_store(32); return true; }
+        if (name == "atomic_fence" || name == "atomic_load_fence" ||
+            name == "atomic_store_fence") {
+            if (!args.empty()) fail(expr, raw_name + "() takes no arguments");
+            if (name == "atomic_load_fence") x.bytes({0x0f, 0xae, 0xe8});
+            else if (name == "atomic_store_fence") x.bytes({0x0f, 0xae, 0xf8});
+            else x.bytes({0x0f, 0xae, 0xf0});
+            return true;
+        }
+
         const auto port_write = [&](unsigned width) {
             if (args.size() != 2) fail(expr, "port output expects port and value");
+            const size_t temporary = reserve_temporaries(1, expr);
             compile_expr(args[0].get());
-            x.mov_rbp_rax(scratch_slots[0]);
+            x.mov_rbp_rax(scratch_slots[temporary]);
             compile_expr(args[1].get());
-            x.mov_reg_rbp(2, scratch_slots[0]);
+            x.mov_reg_rbp(2, scratch_slots[temporary]);
             if (width == 8) x.b(0xee);
             else if (width == 16) x.bytes({0x66, 0xef});
             else x.b(0xef);
+            release_temporaries(1);
         };
         if (name == "io_out8") { port_write(8); return true; }
         if (name == "io_out16") { port_write(16); return true; }
@@ -832,11 +1858,6 @@ class UefiX64Compiler {
             x.b(0xfb);
             return true;
         }
-        if (name == "cpu_iret") {
-            if (!args.empty()) fail(expr, "cpu.iret() takes no arguments");
-            x.bytes({0x48, 0xcf});
-            return true;
-        }
         if (name == "cpu_load_gdt" || name == "cpu_load_idt" ||
             name == "cpu_invalidate_page") {
             if (args.size() != 1) fail(expr, name + "() expects one address");
@@ -858,12 +1879,14 @@ class UefiX64Compiler {
         }
         if (name == "cpu_write_msr") {
             if (args.size() != 2) fail(expr, "cpu.write_msr(index, value) expects two values");
+            const size_t temporary = reserve_temporaries(1, expr);
             compile_expr(args[0].get());
-            x.mov_rbp_rax(scratch_slots[0]);
+            x.mov_rbp_rax(scratch_slots[temporary]);
             compile_expr(args[1].get());
             x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
-            x.mov_reg_rbp(1, scratch_slots[0]);
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
             x.bytes({0x0f, 0x30});
+            release_temporaries(1);
             return true;
         }
         return false;
@@ -871,7 +1894,13 @@ class UefiX64Compiler {
 
     void compile_block(const SuraBlock* block) {
         if (!block) return;
-        for (const auto& stmt : block->body) compile_stmt(stmt.get());
+        for (const auto& stmt : block->body) {
+            if (top_level_global_statements.find(stmt.get()) !=
+                top_level_global_statements.end()) {
+                continue;
+            }
+            compile_stmt(stmt.get());
+        }
     }
 
     void compile_stmt(const Stmt* stmt) {
@@ -880,17 +1909,31 @@ class UefiX64Compiler {
             case NK::ASSIGN: {
                 auto* assignment = static_cast<const AssignStmt*>(stmt);
                 compile_expr(assignment->value.get());
-                x.mov_rbp_rax(slots.at(assignment->name));
+                if (function_globals.find(assignment->name) !=
+                    function_globals.end()) {
+                    store_global_rax(assignment->name, assignment);
+                } else {
+                    auto local = slots.find(assignment->name);
+                    if (local == slots.end()) {
+                        fail(assignment, "unknown freestanding local '" +
+                                         assignment->name + "'");
+                    }
+                    x.mov_rbp_rax(local->second);
+                }
                 return;
             }
             case NK::IN_PLACE: {
                 auto* update = static_cast<const InPlaceStmt*>(stmt);
+                const bool is_global =
+                    function_globals.find(update->name) !=
+                    function_globals.end();
                 auto found = slots.find(update->name);
-                if (found == slots.end()) fail(stmt, "unknown freestanding local '" + update->name + "'");
-                x.mov_rax_rbp(found->second);
-                x.b(0x50);
+                if (is_global) load_global_rax(update->name, update);
+                else if (found != slots.end()) x.mov_rax_rbp(found->second);
+                else fail(stmt, "unknown freestanding local '" + update->name + "'");
+                x.bytes({0x50, 0x48, 0x83, 0xec, 0x08});
                 compile_expr(update->value.get());
-                x.b(0x59);
+                x.bytes({0x48, 0x83, 0xc4, 0x08, 0x59});
                 if (update->op == "+") x.bytes({0x48, 0x01, 0xc1});
                 else if (update->op == "-") x.bytes({0x48, 0x29, 0xc1});
                 else if (update->op == "&") x.bytes({0x48, 0x21, 0xc1});
@@ -898,7 +1941,34 @@ class UefiX64Compiler {
                 else if (update->op == "^") x.bytes({0x48, 0x31, 0xc1});
                 else fail(stmt, "unsupported freestanding in-place operator");
                 x.bytes({0x48, 0x89, 0xc8});
-                x.mov_rbp_rax(found->second);
+                if (is_global) store_global_rax(update->name, update);
+                else x.mov_rbp_rax(found->second);
+                return;
+            }
+            case NK::DOT_ASSIGN: {
+                auto* assignment =
+                    static_cast<const DotAssignStmt*>(stmt);
+                Ident pointer(assignment->obj_name, assignment->line);
+                const auto& field = typed_pointer_field(
+                    &pointer, assignment->prop, assignment);
+                if (field.size != 1 && field.size != 2 &&
+                    field.size != 4 && field.size != 8) {
+                    fail(assignment, "embedded struct fields cannot be assigned "
+                                     "as a scalar");
+                }
+                const size_t temporary =
+                    reserve_temporaries(1, assignment);
+                compile_expr(assignment->value.get());
+                x.mov_rbp_rax(scratch_slots[temporary]);
+                compile_expr(&pointer);
+                if (field.offset) {
+                    x.bytes({0x48, 0x05});
+                    x.d(static_cast<uint32_t>(field.offset));
+                }
+                x.bytes({0x48, 0x89, 0xc1}); // rcx = field address
+                x.mov_rax_rbp(scratch_slots[temporary]);
+                store_rax_to_rcx(static_cast<unsigned>(field.size * 8));
+                release_temporaries(1);
                 return;
             }
             case NK::EXPR_STMT: {
@@ -1000,6 +2070,7 @@ class UefiX64Compiler {
                 return;
             }
             case NK::FUNC_DEF:
+            case NK::CLASS_DEF:
             case NK::USE:
             case NK::IMPORT:
             case NK::GLOBAL_DECL:
@@ -1016,19 +2087,40 @@ class UefiX64Compiler {
         current_function = function;
         current_is_entry = is_entry;
         slots.clear();
+        local_types.clear();
+        function_globals.clear();
         repeat_slots.clear();
         scratch_slots.clear();
         return_patches.clear();
         next_slot = 0;
+        temporary_depth = 0;
+        call_argument_depth = 0;
 
+        scan_global_declarations(body);
         if (function) {
             if (function->params.size() > 6) {
                 fail(function, "freestanding functions support at most six parameters");
             }
-            for (const std::string& param : function->params) allocate_slot(param);
+            if (is_entry && function->params.size() > 2) {
+                fail(function, "a UEFI entry function accepts at most image_handle "
+                               "and system_table");
+            }
+            for (size_t i = 0; i < function->params.size(); ++i) {
+                const TypeAnnot* type =
+                    i < function->param_types.size()
+                        ? &function->param_types[i]
+                        : nullptr;
+                allocate_slot(function->params[i], type);
+            }
         }
         scan_locals(body);
-        for (unsigned i = 0; i < 6; ++i) {
+        // Nested intrinsic temporary cells plus independent argument banks.
+        // Separate ranges prevent nested expressions from overwriting values
+        // that an outer expression or call has already evaluated.
+        for (unsigned i = 0;
+             i < temporary_slot_count +
+                     argument_bank_width * argument_bank_count;
+             ++i) {
             scratch_slots.push_back(allocate_slot("__sura_arg_" + std::to_string(i)));
         }
 
@@ -1166,12 +2258,36 @@ public:
     SuraOsCompileResult compile(const SuraBlock* root) {
         if (!root) throw SuraOsCompileError("missing Sura AST for OS target");
         functions.clear();
+        struct_defs.clear();
+        struct_layouts.clear();
+        layouts_in_progress.clear();
         for (const auto& stmt : root->body) {
             if (stmt && stmt->kind == NK::FUNC_DEF) {
                 auto* function = static_cast<const FuncDef*>(stmt.get());
                 if (!functions.emplace(function->name, function).second) {
                     fail(function, "duplicate freestanding function '" + function->name + "'");
                 }
+                for (const auto& default_value : function->defaults) {
+                    if (default_value) {
+                        fail(function, "default function arguments are not yet "
+                                       "available in the freestanding target");
+                    }
+                }
+            } else if (stmt && stmt->kind == NK::CLASS_DEF) {
+                auto* definition = static_cast<const ClassDef*>(stmt.get());
+                if (definition->value_struct &&
+                    !struct_defs.emplace(definition->name, definition).second) {
+                    fail(definition, "duplicate freestanding struct '" +
+                                     definition->name + "'");
+                }
+            }
+        }
+        build_top_level_declarations(root);
+        for (const auto& global : globals) {
+            if (functions.find(global.first) != functions.end() ||
+                struct_defs.find(global.first) != struct_defs.end()) {
+                fail(root, "top-level static declaration '" + global.first +
+                           "' conflicts with a function or struct name");
             }
         }
 

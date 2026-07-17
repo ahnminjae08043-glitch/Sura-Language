@@ -122,6 +122,16 @@ class Parser {
             throw ParseError("syntax error", peek().line);
         std::string tname = advance().value;
         ta.source_name = tname;
+        // A pointer annotation keeps its pointee spelling as frontend
+        // metadata while remaining a scalar NUMBER in hosted Sura:
+        //     device: ptr[PciHeader]
+        // The freestanding backend uses the metadata for checked field
+        // offsets and width-correct loads/stores.
+        if (tname == "ptr" && match(TT::LBRACKET)) {
+            const std::string pointee = expect(TT::IDENT, "type name").value;
+            expect(TT::RBRACKET, "]");
+            ta.source_name = "ptr[" + pointee + "]";
+        }
         // Sura stores all scalar numeric values in one NUMBER runtime
         // representation. Keep familiar spelling aliases semantic aliases too;
         // treating `int` as a class made valid programs fail strict checking.
@@ -855,11 +865,18 @@ class Parser {
         int ln = peek().line;
         expect(TT::STRUCT, "struct");
         std::string name = expect(TT::IDENT, "identifier").value;
+        bool packed_layout = false;
+        if (check(TT::IDENT) && peek().value == "packed") {
+            advance();
+            packed_layout = true;
+        }
         expect(TT::DO, "do");
         eat_newline();
         skip_newlines();
 
         auto cd = std::make_unique<ClassDef>(std::move(name), std::string(), ln);
+        cd->value_struct = true;
+        cd->packed_layout = packed_layout;
         std::vector<std::string> field_order; // preserve declaration order for init
         bool user_init_present = false;
 
@@ -886,14 +903,17 @@ class Parser {
                 eat_newline();
                 cd->add_method(mname, std::move(params), std::move(defaults), std::move(body));
             } else {
-                // Field: `NAME [is default]`
+                // Field: `NAME [: TYPE] [is default]`
                 std::string fname = expect(TT::IDENT, "identifier").value;
+                TypeAnnot field_type;
+                if (match(TT::COLON)) field_type = parse_type_annot();
                 ExprPtr def;
                 bool explicit_default = match(TT::IS);
                 if (explicit_default) def = parse_expr();
                 else def = std::make_unique<NilLit>(ln);
                 field_order.push_back(fname);
-                cd->add_field(fname, std::move(def), explicit_default);
+                cd->add_field(fname, std::move(def), explicit_default,
+                              std::move(field_type));
                 if (check(TT::COMMA)) advance();
                 eat_newline();
             }

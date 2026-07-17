@@ -932,6 +932,8 @@ static void write_ast_stmt_json(std::ostream& out, const Stmt* stmt) {
             write_json_string(out, cd->name);
             out << ",\"parent\":";
             write_json_string(out, cd->parent);
+            out << ",\"value_struct\":" << (cd->value_struct ? "true" : "false");
+            out << ",\"packed_layout\":" << (cd->packed_layout ? "true" : "false");
             out << ",\"fields\":[";
             size_t field_i = 0;
             for (const auto& field_name : cd->field_order) {
@@ -941,6 +943,11 @@ static void write_ast_stmt_json(std::ostream& out, const Stmt* stmt) {
                 if (field_i++) out << ",";
                 out << "{\"name\":";
                 write_json_string(out, item.first);
+                out << ",\"type\":";
+                auto type = cd->field_types.find(field_name);
+                write_ast_type_json(out, type == cd->field_types.end()
+                                             ? TypeAnnot{}
+                                             : type->second);
                 out << ",\"default\":";
                 write_ast_expr_json(out, item.second.get());
                 out << "}";

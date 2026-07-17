@@ -454,7 +454,7 @@ pre::before {
 </head>
 <body>
 <a class='skip-link' href='#main-content'>본문 바로가기</a>
-<nav aria-label='레퍼런스 목차'><div class='logo'><a class='logo-home' href='/' aria-label='Sura 홈페이지'><span>Sura</span><strong>Reference</strong></a><span class='nav-version'>v1.11.1</span></div><div class='nav-search'><label class='sr-only' for='filter'>문서 검색</label><input id='filter' type='search' placeholder='문법, 명령, API 검색' autocomplete='off'></div><p id='filter-status' class='search-status' aria-live='polite'>전체 문서</p><div class='nav-section'><a href='#overview'>문서 개요</a><a href='#compatibility'>호환성과 지원 등급</a><a href='#project'>범위와 기여</a><a href='#install'>설치와 실행</a><a href='#lexical'>값과 기본 문법</a><a href='#types'>타입과 연산</a><a href='#control'>제어 흐름</a><a href='#functions'>함수와 스코프</a><a href='#objects'>객체와 컬렉션</a><a href='#errors'>오류와 진단</a><a href='#cli'>실행기 CLI</a><a href='#stdlib'>표준 라이브러리</a><a href='#async'>동시성</a><a href='#ai'>Tensor·AI·CUDA</a><a href='#media'>영상→문자 프레임</a><a href='#interop'>FFI·Plugin·Python</a><a href='#packages'>패키지·개발 도구</a><a href='#targets'>JS·WASM 타깃</a><a href='#release'>빌드와 배포</a><a href='#performance'>성능과 검증 기록</a><a href='#machine'>구조화 데이터</a></div></nav>
+<nav aria-label='레퍼런스 목차'><div class='logo'><a class='logo-home' href='/' aria-label='Sura 홈페이지'><span>Sura</span><strong>Reference</strong></a><span class='nav-version'>v1.11.1</span></div><div class='nav-search'><label class='sr-only' for='filter'>문서 검색</label><input id='filter' type='search' placeholder='문법, 명령, API 검색' autocomplete='off'></div><p id='filter-status' class='search-status' aria-live='polite'>전체 문서</p><div class='nav-section'><a href='#overview'>문서 개요</a><a href='#compatibility'>호환성과 지원 등급</a><a href='#project'>범위와 기여</a><a href='#install'>설치와 실행</a><a href='#lexical'>값과 기본 문법</a><a href='#types'>타입과 연산</a><a href='#control'>제어 흐름</a><a href='#functions'>함수와 스코프</a><a href='#objects'>객체와 컬렉션</a><a href='#errors'>오류와 진단</a><a href='#cli'>실행기 CLI</a><a href='#stdlib'>표준 라이브러리</a><a href='#async'>동시성</a><a href='#ai'>Tensor·AI·CUDA</a><a href='#media'>영상→문자 프레임</a><a href='#interop'>FFI·Plugin·Python</a><a href='#packages'>패키지·개발 도구</a><a href='#targets'>JS·WASM 타깃</a><a href='#freestanding'>OS 개발 기능</a><a href='#release'>빌드와 배포</a><a href='#performance'>성능과 검증 기록</a><a href='#machine'>구조화 데이터</a></div></nav>
 <main id='main-content'><header class='official-hero'><span class='doc-shell-label'>DOCUMENTATION / VERSION 1.11.1</span><h1 class='official-title'>Sura 언어<br>레퍼런스</h1><p class='official-subtitle'>문법과 실행 모델부터 CLI, 표준 라이브러리, 플랫폼별 제한, 배포 파일의 검증 근거까지 한 HTML 문서에 정리했습니다. 다른 도구가 읽을 수 있는 구조화 JSON도 같은 문서에 포함합니다.</p><div class='doc-index'><a href='#install'>설치와 실행</a><a href='#lexical'>문법부터 읽기</a><a href='#stdlib'>API 찾기</a><a href='#machine'>구조화 데이터</a></div><p class='doc-meta'>1.11.1 · 2026-07-17 · UTF-8 · 528 API signatures</p></header><section id='overview'><h2>문서 개요</h2><p>이 문서는 <code>Sura Language 1.11.1</code>의 공개 레퍼런스입니다. 문법, 런타임 의미, 명령행, 표준 라이브러리 API, 동시성, AI/CUDA, 미디어, 외부 연동, 패키지 관리, 타깃 상태와 검증 기록을 한 파일에 담습니다.</p><div class='status-grid'><div class='status-card status-editor'><strong>실행 파이프라인</strong><span>lexer → parser/AST → strict typecheck → register bytecode → register VM. Windows x64는 부분 JIT, Linux x86-64는 helper 없는 straight-line baseline을 사용합니다.</span></div><div class='status-card status-targets'><strong>API 인벤토리</strong><span>runtime module namespace 35개, catalog module 34개, module signature 528개, global builtin name·alias 664개입니다.</span></div><div class='status-card status-release'><strong>검증 기준</strong><span>최종 1.11.1 engine에서 stable suite는 VM 107/107 PASS와 JIT 107/107 PASS를 통과했습니다.</span></div></div><p>Sura source 확장자는 <code>.sura</code>입니다. 값은 NaN-boxed dynamic Value로 표현하고, register VM과 mark-sweep GC가 실행합니다. GC heap은 프로세스 전역입니다.</p><p>기본 진단 언어는 영어입니다. 한국어 진단은 <code>--lang ko</code> 또는 <code>SURA_LANG=ko</code>로 선택합니다.</p></section>
 <section id='compatibility'><h2>호환성과 지원 등급</h2><p>공개 호환성 보장은 <code>1.11.1</code>부터 적용합니다. 패치 릴리스의 공개 호환성 파괴는 금지하며, 마이너 릴리스에서 기존 기능을 없애거나 의미를 바꾸려면 최소 1번의 마이너 릴리스 동안 지원 중단 절차를 거칩니다. 1.10 검사는 보관된 실제 런타임과 현재 런타임의 역사 검증 자료이며 1.10 지원을 소급 보장하지 않습니다.</p><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 계약</th></tr></thead><tbody><tr><td>소스</td><td>1.11 호환 fixture 3개를 strict check, VM, JIT 또는 fallback, bytecode load에서 검사</td></tr><tr><td>역사 검증</td><td>1.10.0 공개 ZIP·엔진 해시를 확인하고 1.10 fixture 3개를 이전·현재 VM/JIT fallback에서 실행</td></tr><tr><td>바이트코드</td><td>형식 3 생성, 형식 2·3 읽기</td></tr><tr><td>보호 릴리스 패키지</td><td>형식 5 생성, 형식 1·2·3·4·5 읽기</td></tr><tr><td>Plugin ABI</td><td>1.1.0</td></tr><tr><td>Embedding FFI ABI</td><td>1.2.0</td></tr></tbody></table></div><h3>안정</h3><ul><li>native Sura syntax and register VM</li><li>core values, control flow, functions, classes, and exceptions</li><li>file, string, array, dictionary, JSON, and test APIs</li><li>surapkg project creation, run, test, and lock file</li><li>C FFI and versioned plugin ABI</li></ul><h3>플랫폼 한정</h3><ul><li>native JIT on Win64 x86-64 for supported opcodes and functions, plus exception-free straight-line baselines on Linux x86-64 and little-endian Windows/Linux/macOS ARM64 for constants, moves, proven-numeric addition, subtraction, multiplication, unary negation, six comparisons, and division by a proven nonzero divisor</li><li>CUDA resident operations on compatible NVIDIA systems</li><li>media operations when FFmpeg is installed or explicitly configured</li><li>Windows installer and Microsoft Store package for Windows x64</li></ul><h3>실험</h3><ul><li>JavaScript and WebAssembly translation targets</li><li>Transformer extensions and distributed training</li><li>bounded byte-level BPE tokenizer and its version 2 tokenizer file</li><li>bounded CPU ONNX opset 7 through 18 graph execution subset</li><li>advanced protected-release policies and external registry operations</li></ul><p>플랫폼 한정 기능은 요구 조건이 맞지 않을 때 문서화된 VM fallback 또는 명시적인 오류를 사용합니다. 실험 기능은 마이너 버전에서 바뀔 수 있으며, 안정 등급으로 올리기 전에 지원 플랫폼, 실패 동작, 호환 fixture와 CI 검사를 추가합니다. 전체 정책과 검증 명령은 <code>COMPATIBILITY.md</code>에 기록되어 있습니다.</p></section>
 <section id='project'><h2>범위와 기여</h2><p>Sura의 핵심 범위는 native syntax, register bytecode와 VM, core language constructs, practical stdlib, package project workflow, C FFI·Plugin ABI와 실제 구현에서 생성되는 도구 문서입니다. 플랫폼·외부 프로그램 조건이 있는 JIT, CUDA, media, installer와 bridge는 조건부 범위이고 JavaScript·WebAssembly 변환, Transformer 확장과 외부 registry 운영은 실험 범위입니다.</p><p>새 public syntax, builtin, module, CLI option과 file format은 처음에는 실험으로 분류합니다. 지원 플랫폼, 실패·fallback test, 실제 문법 예제와 reference, 호환성 영향, 적용 가능한 CI 검사가 모두 있어야 안정 또는 플랫폼 한정 등급으로 올릴 수 있습니다.</p><div class='table-wrap'><table><thead><tr><th>문서</th><th>용도</th></tr></thead><tbody><tr><td><code>SCOPE.md</code></td><td>핵심·조건부·실험 범위와 안정 승격 조건</td></tr><tr><td><code>CONTRIBUTING.md</code></td><td>실제 Sura 문법, build·test·package 기여 절차</td></tr><tr><td><code>.github/ISSUE_TEMPLATE/feature_request.yml</code></td><td>지원 등급, fallback, 호환성과 검증 계획을 요구하는 기능 제안</td></tr><tr><td><code>.github/ISSUE_TEMPLATE/package_submission.yml</code></td><td>test·quality·publish dry-run 증거를 요구하는 package 제안</td></tr></tbody></table></div></section>
@@ -694,12 +694,27 @@ Usage:
   surapkg info &lt;name&gt; [--json] Show package metadata, benchmark evidence, and exported symbols
   surapkg restore [--json report.json]  Install manifest and transitive dependencies locally</code></pre></section>
 <section id='targets'><h2>JavaScript·WebAssembly 타깃</h2><div class='table-wrap'><table><thead><tr><th>타깃</th><th>2026-07-17 AST lowering 분류</th></tr></thead><tbody><tr><td>Native VM/JIT</td><td>register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline</td></tr><tr><td>JavaScript</td><td>43개 node 중 full 41, ignored 2, partial 0</td></tr><tr><td>WebAssembly</td><td>43개 node 중 full 27, partial 14, ignored 2</td></tr></tbody></table></div><p>AST JSON은 type annotation의 원래 표기를 source_name에 보존합니다. WASM에서 매개변수와 반환 타입을 모두 float 또는 double로 명시한 최상위 함수는 이 표기를 기준으로 기존 Sura Value ABI export와 함께 함수명__f64 동반 export를 생성합니다. 동반 export는 WebAssembly 호스트가 f64 매개변수와 f64 결과를 직접 사용하며, 원래 함수 이름의 export 계약은 바꾸지 않습니다.</p><p>JavaScript의 full 41·ignored 2는 43개 AST node의 lowering 분류입니다. JavaScript의 Python·FFI·plugin·async.cmd는 stub 또는 미지원 경로이며, autograd·media·nn·dataset·tokenizer 등 일부 module은 JavaScript runtime object 목록에 없습니다.</p><p>WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics 14개 node가 partial 상태입니다. 전체 audit status는 <code>INCOMPLETE</code>입니다.</p></section>
+<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. 현재 결과물은 OS가 아니라 앞으로 커널과 드라이버를 작성하기 위한 컴파일러 기능입니다. 이 기능은 현재 저장소의 개발 소스에 있으며 기존 공개 설치 파일에는 아직 포함되지 않았습니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
+  vendor: u16
+  command: u16
+end
+
+device_storage is static.struct(Device)
+count: u64 is 0
+
+func probe() -&gt; u64 do
+  global count
+  device: ptr[Device] is device_storage
+  device.command is 7
+  previous is atomic.fetch_add64(addr_of(count), 1)
+  return device.vendor
+end</code></pre><p>아직 없는 기능은 전용 interrupt 함수 ABI와 saved-register frame, application-processor 시작, page table·allocator·scheduler·syscall 라이브러리, 장치 드라이버, filesystem, boot-image builder, ARM64 freestanding backend입니다. <code>examples/os/freestanding_features.sura</code>는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 <code>Guide/OS_DEVELOPMENT.md</code>에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
 surapkg protect . --exe
 surapkg protect-verify dist/protect-report.json --json verify.json</code></pre></section>
-<section id='performance'><h2>성능과 검증 기록</h2><div class='table-wrap'><table><thead><tr><th>검증</th><th>결과</th></tr></thead><tbody><tr><td>core suite</td><td>107/107 PASS; 107/107 PASS</td></tr><tr><td>release evidence</td><td>157/157 PASS</td></tr><tr><td>goal audit</td><td>126/127 · 99.2% · INCOMPLETE</td></tr><tr><td>target lowering</td><td>JS full 41, ignored 2; WASM full 27, partial 14, ignored 2</td></tr><tr><td>bytecode validation</td><td>not rerun as a standalone suite; stable VM/JIT suites PASS</td></tr><tr><td>JIT safety</td><td>stable suite의 frame·upvalue·exception regression cases PASS</td></tr><tr><td>FFI safety</td><td>not rerun as a standalone suite; stable VM/JIT suites PASS</td></tr><tr><td>async runtime concurrency</td><td>stable VM/JIT async cases PASS; dedicated async race regression retained</td></tr><tr><td>release payload</td><td>installer smoke verified generated kit, locked-upgrade handling, single-file installation, execution, and uninstall</td></tr></tbody></table></div><p>검증 파일의 <code>a735688c2f11de4e33b768c3aa2cdcfba7278e7d2d4b722d7144c6208cf10fe7</code> 해시는 현재 <code>SuraLanguage.exe</code> 8518877 bytes를 식별합니다. 생성된 installer kit와 single-file 설치 흐름은 installer smoke를 통과했습니다. <code>surapkg.exe</code>는 5372032 bytes, SHA-256 <code>a7640f81268b7be834d08134afdb222bb74beb507e774ccac3146e4257594cfb</code>입니다.</p><p>최신 기록은 2026-07-17 Windows x64, 12th Gen Intel(R) Core(TM) i5-12400F, g++.exe (Rev13, Built by MSYS2 project) 15.2.0에서 같은 100,000-step inner physics loop를 Sura JIT와 C++ O3로 각각 5회 측정했습니다. Vec2는 Sura JIT 0.090 ms, C++ O3 0.050 ms, 비율 1.80×였습니다. Vec3는 Sura JIT 0.104 ms, C++ O3 0.050 ms, 비율 2.08×였습니다. 두 fair-scope 검사를 모두 통과했으며, 이 수치는 특정 물리 루프 기록이지 언어 전체 성능을 대표하지 않습니다. 측정 engine SHA-256은 <code>4a78ca28fe2b500e6d7dfc46347b981b355e43cb7a57cd63bd8a8618dc16a1de</code>입니다.</p><p>2026-07-13의 이전 공개 기록은 Vec2 38.33×, Vec3 105.62×였고, 2026-07-12의 더 이전 기록은 Vec2 17.225 ms, Vec3 62.254 ms였습니다. 비교 범위와 엔진이 다른 기록은 최신 수치와 섞어 해석하지 않습니다.</p><p>Guide/GPU_AND_SCALE.md에 기록된 RTX 4060 결과는 Sura 1.8, engine SHA-256 prefix 3270a9의 역사적 측정입니다. direct causal-attention forward+backward 50회 중앙값은 B1/H4/T64/D32에서 Sura 1.5076 ms, PyTorch 0.4649 ms, 비율 3.242×였고 B1/H4/T128/D64에서는 Sura 5.6562 ms, PyTorch 0.4282 ms, 비율 13.209×였습니다.</p><p>native emitter는 Win64 x64 partial backend, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline을 구현합니다. 두 baseline은 helper를 호출하지 않는 상수·이동·정적으로 숫자임이 증명된 덧셈·뺄셈·곱셈·단항 음수·반환만 처리하고, 나머지는 register VM에서 실행합니다. macOS x86-64에는 native backend가 없습니다. Vec2/Vec3 benchmark의 strict counted-loop shortcut은 인식된 top-level loop, closure identity, 정확한 field-copy constructor, Vec2/Vec3 layout, add/scale/cross와 step/step3 bytecode graph, numeric input, escape·non-alias 조건을 모두 증명한 경우에만 사용합니다. 하나라도 맞지 않으면 원래 VM/native bytecode path로 실행합니다. 한 번 이상 반복한 shortcut은 원래 position을 변경하지 않고 fresh result instance를 저장하므로 원래 객체를 가리키는 alias의 field가 바뀌지 않으며, 0회 반복은 원래 identity를 유지합니다. 이 경로는 일반 사용자 loop 최적화가 아닙니다. 일반 control-flow deoptimization, 범용 escape analysis, register allocation, loop-invariant code motion은 구현되지 않았습니다. Windows x64 native helper frame은 UNWIND_INFO를 등록합니다.</p></section>
+<section id='performance'><h2>성능과 검증 기록</h2><div class='table-wrap'><table><thead><tr><th>검증</th><th>결과</th></tr></thead><tbody><tr><td>core suite</td><td>107/107 PASS; 107/107 PASS</td></tr><tr><td>release evidence</td><td>156/157 · incomplete</td></tr><tr><td>goal audit</td><td>126/127 · 99.2% · INCOMPLETE</td></tr><tr><td>target lowering</td><td>JS full 41, ignored 2; WASM full 27, partial 14, ignored 2</td></tr><tr><td>bytecode validation</td><td>not rerun as a standalone suite; stable VM/JIT suites PASS</td></tr><tr><td>JIT safety</td><td>stable suite의 frame·upvalue·exception regression cases PASS</td></tr><tr><td>FFI safety</td><td>not rerun as a standalone suite; stable VM/JIT suites PASS</td></tr><tr><td>async runtime concurrency</td><td>stable VM/JIT async cases PASS; dedicated async race regression retained</td></tr><tr><td>release payload</td><td>installer smoke verified generated kit, locked-upgrade handling, single-file installation, execution, and uninstall</td></tr></tbody></table></div><p>검증 파일의 <code>a735688c2f11de4e33b768c3aa2cdcfba7278e7d2d4b722d7144c6208cf10fe7</code> 해시는 현재 <code>SuraLanguage.exe</code> 8518877 bytes를 식별합니다. 생성된 installer kit와 single-file 설치 흐름은 installer smoke를 통과했습니다. <code>surapkg.exe</code>는 5372032 bytes, SHA-256 <code>a7640f81268b7be834d08134afdb222bb74beb507e774ccac3146e4257594cfb</code>입니다.</p><p>최신 기록은 2026-07-17 Windows x64, 12th Gen Intel(R) Core(TM) i5-12400F, g++.exe (Rev13, Built by MSYS2 project) 15.2.0에서 같은 100,000-step inner physics loop를 Sura JIT와 C++ O3로 각각 5회 측정했습니다. Vec2는 Sura JIT 0.077 ms, C++ O3 0.050 ms, 비율 1.53×였습니다. Vec3는 Sura JIT 0.105 ms, C++ O3 0.050 ms, 비율 2.09×였습니다. 두 fair-scope 검사를 모두 통과했으며, 이 수치는 특정 물리 루프 기록이지 언어 전체 성능을 대표하지 않습니다. 측정 engine SHA-256은 <code>573c577597d200b1d6433741733803fe035011b7b1741fa23e3c43f4fe08e73e</code>입니다.</p><p>2026-07-13의 이전 공개 기록은 Vec2 38.33×, Vec3 105.62×였고, 2026-07-12의 더 이전 기록은 Vec2 17.225 ms, Vec3 62.254 ms였습니다. 비교 범위와 엔진이 다른 기록은 최신 수치와 섞어 해석하지 않습니다.</p><p>Guide/GPU_AND_SCALE.md에 기록된 RTX 4060 결과는 Sura 1.8, engine SHA-256 prefix 3270a9의 역사적 측정입니다. direct causal-attention forward+backward 50회 중앙값은 B1/H4/T64/D32에서 Sura 1.5076 ms, PyTorch 0.4649 ms, 비율 3.242×였고 B1/H4/T128/D64에서는 Sura 5.6562 ms, PyTorch 0.4282 ms, 비율 13.209×였습니다.</p><p>native emitter는 Win64 x64 partial backend, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline을 구현합니다. 두 baseline은 helper를 호출하지 않는 상수·이동·정적으로 숫자임이 증명된 덧셈·뺄셈·곱셈·단항 음수·반환만 처리하고, 나머지는 register VM에서 실행합니다. macOS x86-64에는 native backend가 없습니다. Vec2/Vec3 benchmark의 strict counted-loop shortcut은 인식된 top-level loop, closure identity, 정확한 field-copy constructor, Vec2/Vec3 layout, add/scale/cross와 step/step3 bytecode graph, numeric input, escape·non-alias 조건을 모두 증명한 경우에만 사용합니다. 하나라도 맞지 않으면 원래 VM/native bytecode path로 실행합니다. 한 번 이상 반복한 shortcut은 원래 position을 변경하지 않고 fresh result instance를 저장하므로 원래 객체를 가리키는 alias의 field가 바뀌지 않으며, 0회 반복은 원래 identity를 유지합니다. 이 경로는 일반 사용자 loop 최적화가 아닙니다. 일반 control-flow deoptimization, 범용 escape analysis, register allocation, loop-invariant code motion은 구현되지 않았습니다. Windows x64 native helper frame은 UNWIND_INFO를 등록합니다.</p></section>
 <section id='machine'><h2>구조화 데이터</h2><p>이 HTML의 <code>script#sura-reference-data[type=&quot;application/json&quot;]</code>에 version, compatibility contract와 support tier, runtime contract, 기본값 평가, syntax, truthiness, stdlib catalog, 34개 module의 528개 signature, async, target 차이, external dependency, release artifact hash·signing·license, performance record, verification과 CLI help를 JSON으로 포함합니다.</p><p>각 module API entry는 이름, 호출 signature와 source 위치를 제공합니다. 공통 runtime 제한과 async·FFI·release·target 계약은 이 문서의 prose와 같은 JSON object에 기록합니다.</p><p>optional parameter는 signature에서 <code>[name]</code>, variadic parameter는 <code>...</code>로 표시합니다. 호출 이름과 argument 수는 각 signature를 기준으로 사용합니다.</p><details class='machine-preview'><summary>구조화 데이터 보기</summary><pre><code>{
   &quot;schema&quot;: &quot;sura.public.reference.v1&quot;,
   &quot;language&quot;: &quot;Sura&quot;,
@@ -6247,6 +6262,87 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;runtime_parity_with_native&quot;: false
     }
   },
+  &quot;freestanding&quot;: {
+    &quot;status&quot;: &quot;experimental compiler target; not a complete operating system&quot;,
+    &quot;target&quot;: &quot;uefi-x86_64&quot;,
+    &quot;output&quot;: &quot;position-independent PE32+ EFI application&quot;,
+    &quot;hosted_runtime_dependencies&quot;: [],
+    &quot;entry_order&quot;: [
+      &quot;efi_main&quot;,
+      &quot;kernel_main&quot;,
+      &quot;main&quot;,
+      &quot;synthetic top-level entry&quot;
+    ],
+    &quot;scalar_types&quot;: [
+      &quot;i8&quot;,
+      &quot;u8&quot;,
+      &quot;i16&quot;,
+      &quot;u16&quot;,
+      &quot;i32&quot;,
+      &quot;u32&quot;,
+      &quot;i64&quot;,
+      &quot;u64&quot;,
+      &quot;isize&quot;,
+      &quot;usize&quot;,
+      &quot;ptr&quot;,
+      &quot;ptr[StructName]&quot;
+    ],
+    &quot;static_data&quot;: [
+      &quot;static.zero&quot;,
+      &quot;static.bytes&quot;,
+      &quot;static.u8&quot;,
+      &quot;static.u16&quot;,
+      &quot;static.u32&quot;,
+      &quot;static.u64&quot;,
+      &quot;static.utf8&quot;,
+      &quot;static.utf16&quot;,
+      &quot;static.struct&quot;
+    ],
+    &quot;layout&quot;: [
+      &quot;typed struct fields&quot;,
+      &quot;natural alignment&quot;,
+      &quot;struct Name packed&quot;,
+      &quot;sizeof&quot;,
+      &quot;alignof&quot;,
+      &quot;offset_of&quot;,
+      &quot;typed pointer field load/store&quot;
+    ],
+    &quot;low_level&quot;: [
+      &quot;raw memory 8/16/32/64&quot;,
+      &quot;port I/O 8/16/32&quot;,
+      &quot;control registers&quot;,
+      &quot;MSR&quot;,
+      &quot;GDT&quot;,
+      &quot;IDT&quot;,
+      &quot;INVLPG&quot;,
+      &quot;CPUID&quot;,
+      &quot;RDTSC/RDTSCP&quot;,
+      &quot;XGETBV&quot;
+    ],
+    &quot;atomics&quot;: [
+      &quot;load&quot;,
+      &quot;store&quot;,
+      &quot;exchange&quot;,
+      &quot;compare_exchange&quot;,
+      &quot;fetch_add&quot;,
+      &quot;fetch_sub&quot;,
+      &quot;fences&quot;
+    ],
+    &quot;verification&quot;: [
+      &quot;tests/os_target_unit.cpp&quot;,
+      &quot;tools/sura_uefi_target_smoke.ps1&quot;,
+      &quot;examples/os/freestanding_features.sura&quot;
+    ],
+    &quot;not_implemented&quot;: [
+      &quot;interrupt-function ABI&quot;,
+      &quot;application-processor startup&quot;,
+      &quot;kernel libraries&quot;,
+      &quot;drivers&quot;,
+      &quot;filesystem&quot;,
+      &quot;boot-image builder&quot;,
+      &quot;ARM64 freestanding backend&quot;
+    ]
+  },
   &quot;interop&quot;: {
     &quot;ffi_abi&quot;: &quot;1.2.0&quot;,
     &quot;plugin_abi&quot;: &quot;1.1.0&quot;,
@@ -6350,13 +6446,13 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     },
     &quot;latest_engineering_records&quot;: {
       &quot;release_evidence&quot;: {
-        &quot;generated_utc&quot;: &quot;2026-07-17T04:01:41Z&quot;,
-        &quot;passed&quot;: true,
-        &quot;checks&quot;: &quot;157/157&quot;,
+        &quot;generated_utc&quot;: &quot;2026-07-17T05:12:40Z&quot;,
+        &quot;passed&quot;: false,
+        &quot;checks&quot;: &quot;156/157&quot;,
         &quot;source&quot;: &quot;/records/release-evidence.json&quot;
       },
       &quot;goal_audit&quot;: {
-        &quot;generated_utc&quot;: &quot;2026-07-17T04:01:28Z&quot;,
+        &quot;generated_utc&quot;: &quot;2026-07-17T05:09:34Z&quot;,
         &quot;status&quot;: &quot;INCOMPLETE&quot;,
         &quot;progress_percent&quot;: 99.2,
         &quot;checks&quot;: &quot;126/127&quot;,
@@ -6364,7 +6460,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;source&quot;: &quot;/records/goal-audit.json&quot;
       },
       &quot;target_lowering&quot;: {
-        &quot;generated_utc&quot;: &quot;2026-07-17T04:01:17.7427100Z&quot;,
+        &quot;generated_utc&quot;: &quot;2026-07-17T05:08:33.3412721Z&quot;,
         &quot;status&quot;: &quot;INCOMPLETE&quot;,
         &quot;js&quot;: {
           &quot;full&quot;: 41,
@@ -6465,12 +6561,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;status&quot;: &quot;verified fair-scope record&quot;,
       &quot;applies_to_version&quot;: &quot;1.11.1&quot;,
       &quot;source&quot;: &quot;/records/native-performance.json&quot;,
-      &quot;generated_utc&quot;: &quot;2026-07-16T13:48:07Z&quot;,
+      &quot;generated_utc&quot;: &quot;2026-07-17T05:09:23Z&quot;,
       &quot;engine&quot;: {
         &quot;file&quot;: &quot;SuraLanguage.exe&quot;,
         &quot;version_output&quot;: &quot;Sura Language 1.11.1&quot;,
-        &quot;bytes&quot;: 8651612,
-        &quot;sha256&quot;: &quot;4a78ca28fe2b500e6d7dfc46347b981b355e43cb7a57cd63bd8a8618dc16a1de&quot;
+        &quot;bytes&quot;: 8658592,
+        &quot;sha256&quot;: &quot;573c577597d200b1d6433741733803fe035011b7b1741fa23e3c43f4fe08e73e&quot;
       },
       &quot;host&quot;: {
         &quot;os&quot;: &quot;Microsoft Windows NT 10.0.26200.0&quot;,
@@ -6481,14 +6577,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;compiler_flags&quot;: &quot;-O3 -DNDEBUG -std=c++17 -march=native&quot;,
       &quot;measurement&quot;: &quot;100,000-step inner physics loop; 5 Sura runs and 5 native C++ runs&quot;,
       &quot;vec2&quot;: {
-        &quot;sura_jit_ms&quot;: 0.090380001347512,
-        &quot;cpp_o3_ms&quot;: 0.0501,
-        &quot;ratio&quot;: 1.803992042864511
+        &quot;sura_jit_ms&quot;: 0.07683999428991228,
+        &quot;cpp_o3_ms&quot;: 0.05014,
+        &quot;ratio&quot;: 1.5325088609874808
       },
       &quot;vec3&quot;: {
-        &quot;sura_jit_ms&quot;: 0.10426000080769882,
-        &quot;cpp_o3_ms&quot;: 0.05016,
-        &quot;ratio&quot;: 2.0785486604405663
+        &quot;sura_jit_ms&quot;: 0.10458000178914517,
+        &quot;cpp_o3_ms&quot;: 0.05014,
+        &quot;ratio&quot;: 2.0857599080403904
       },
       &quot;fair_scope_passed&quot;: true
     },
@@ -12111,6 +12207,87 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "runtime_parity_with_native": false
     }
   },
+  "freestanding": {
+    "status": "experimental compiler target; not a complete operating system",
+    "target": "uefi-x86_64",
+    "output": "position-independent PE32+ EFI application",
+    "hosted_runtime_dependencies": [],
+    "entry_order": [
+      "efi_main",
+      "kernel_main",
+      "main",
+      "synthetic top-level entry"
+    ],
+    "scalar_types": [
+      "i8",
+      "u8",
+      "i16",
+      "u16",
+      "i32",
+      "u32",
+      "i64",
+      "u64",
+      "isize",
+      "usize",
+      "ptr",
+      "ptr[StructName]"
+    ],
+    "static_data": [
+      "static.zero",
+      "static.bytes",
+      "static.u8",
+      "static.u16",
+      "static.u32",
+      "static.u64",
+      "static.utf8",
+      "static.utf16",
+      "static.struct"
+    ],
+    "layout": [
+      "typed struct fields",
+      "natural alignment",
+      "struct Name packed",
+      "sizeof",
+      "alignof",
+      "offset_of",
+      "typed pointer field load/store"
+    ],
+    "low_level": [
+      "raw memory 8/16/32/64",
+      "port I/O 8/16/32",
+      "control registers",
+      "MSR",
+      "GDT",
+      "IDT",
+      "INVLPG",
+      "CPUID",
+      "RDTSC/RDTSCP",
+      "XGETBV"
+    ],
+    "atomics": [
+      "load",
+      "store",
+      "exchange",
+      "compare_exchange",
+      "fetch_add",
+      "fetch_sub",
+      "fences"
+    ],
+    "verification": [
+      "tests/os_target_unit.cpp",
+      "tools/sura_uefi_target_smoke.ps1",
+      "examples/os/freestanding_features.sura"
+    ],
+    "not_implemented": [
+      "interrupt-function ABI",
+      "application-processor startup",
+      "kernel libraries",
+      "drivers",
+      "filesystem",
+      "boot-image builder",
+      "ARM64 freestanding backend"
+    ]
+  },
   "interop": {
     "ffi_abi": "1.2.0",
     "plugin_abi": "1.1.0",
@@ -12214,13 +12391,13 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     },
     "latest_engineering_records": {
       "release_evidence": {
-        "generated_utc": "2026-07-17T04:01:41Z",
-        "passed": true,
-        "checks": "157/157",
+        "generated_utc": "2026-07-17T05:12:40Z",
+        "passed": false,
+        "checks": "156/157",
         "source": "/records/release-evidence.json"
       },
       "goal_audit": {
-        "generated_utc": "2026-07-17T04:01:28Z",
+        "generated_utc": "2026-07-17T05:09:34Z",
         "status": "INCOMPLETE",
         "progress_percent": 99.2,
         "checks": "126/127",
@@ -12228,7 +12405,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "source": "/records/goal-audit.json"
       },
       "target_lowering": {
-        "generated_utc": "2026-07-17T04:01:17.7427100Z",
+        "generated_utc": "2026-07-17T05:08:33.3412721Z",
         "status": "INCOMPLETE",
         "js": {
           "full": 41,
@@ -12329,12 +12506,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "status": "verified fair-scope record",
       "applies_to_version": "1.11.1",
       "source": "/records/native-performance.json",
-      "generated_utc": "2026-07-16T13:48:07Z",
+      "generated_utc": "2026-07-17T05:09:23Z",
       "engine": {
         "file": "SuraLanguage.exe",
         "version_output": "Sura Language 1.11.1",
-        "bytes": 8651612,
-        "sha256": "4a78ca28fe2b500e6d7dfc46347b981b355e43cb7a57cd63bd8a8618dc16a1de"
+        "bytes": 8658592,
+        "sha256": "573c577597d200b1d6433741733803fe035011b7b1741fa23e3c43f4fe08e73e"
       },
       "host": {
         "os": "Microsoft Windows NT 10.0.26200.0",
@@ -12345,14 +12522,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "compiler_flags": "-O3 -DNDEBUG -std=c++17 -march=native",
       "measurement": "100,000-step inner physics loop; 5 Sura runs and 5 native C++ runs",
       "vec2": {
-        "sura_jit_ms": 0.090380001347512,
-        "cpp_o3_ms": 0.0501,
-        "ratio": 1.803992042864511
+        "sura_jit_ms": 0.07683999428991228,
+        "cpp_o3_ms": 0.05014,
+        "ratio": 1.5325088609874808
       },
       "vec3": {
-        "sura_jit_ms": 0.10426000080769882,
-        "cpp_o3_ms": 0.05016,
-        "ratio": 2.0785486604405663
+        "sura_jit_ms": 0.10458000178914517,
+        "cpp_o3_ms": 0.05014,
+        "ratio": 2.0857599080403904
       },
       "fair_scope_passed": true
     },

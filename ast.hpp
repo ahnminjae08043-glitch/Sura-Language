@@ -404,9 +404,15 @@ struct MethodEntry {
 struct ClassDef : Stmt {
     std::string name;
     std::string parent; 
+    // `struct` declarations are also used by the freestanding backend as
+    // concrete memory layouts. Hosted execution still treats them as normal
+    // Sura value classes.
+    bool value_struct = false;
+    bool packed_layout = false;
 
     std::map<std::string, ExprPtr>     field_defaults;
     std::map<std::string, bool>        field_has_explicit_default;
+    std::map<std::string, TypeAnnot>   field_types;
     // Maps keep lookup stable; this vector preserves the source declaration
     // order used by executable field initializers and public AST output.
     std::vector<std::string>           field_order;
@@ -438,9 +444,12 @@ struct ClassDef : Stmt {
         methods[mname] = std::move(me);
     }
 
-    void add_field(std::string fname, ExprPtr default_val, bool explicit_default = true) {
+    void add_field(std::string fname, ExprPtr default_val,
+                   bool explicit_default = true,
+                   TypeAnnot field_type = {}) {
         if (field_defaults.find(fname) == field_defaults.end()) field_order.push_back(fname);
         field_has_explicit_default[fname] = explicit_default;
+        field_types[fname] = std::move(field_type);
         field_defaults[std::move(fname)] = std::move(default_val);
     }
 };
