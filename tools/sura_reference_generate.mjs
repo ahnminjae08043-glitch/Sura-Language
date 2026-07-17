@@ -541,7 +541,12 @@ const machineFacts = {
     scalar_types: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "ptr", "ptr[StructName]"],
     static_data: ["static.zero", "static.bytes", "static.u8", "static.u16", "static.u32", "static.u64", "static.utf8", "static.utf16", "static.struct"],
     layout: ["typed struct fields", "natural alignment", "struct Name packed", "sizeof", "alignof", "offset_of", "typed pointer field load/store"],
-    low_level: ["raw memory 8/16/32/64", "port I/O 8/16/32", "control registers", "MSR", "GDT", "IDT", "INVLPG", "CPUID", "RDTSC/RDTSCP", "XGETBV"],
+    low_level: ["raw memory 8/16/32/64", "port I/O 8/16/32", "control registers", "MSR", "GDT", "IDT", "INVLPG", "CPUID", "RDTSC/RDTSCP", "XGETBV/XSETBV"],
+    cpu_state: {
+      tss: ["RSP0..2", "IST1..7", "I/O-map offset", "checked 16-byte GDT TSS descriptor", "LTR/STR"],
+      descriptors: ["direct table+size LGDT/LIDT", "CS/DS/ES/SS reload"],
+      extended_state: ["FNINIT", "CLTS", "FXSAVE64/FXRSTOR64", "XSAVE64/XRSTOR64", "SWAPGS", "STAC/CLAC", "WBINVD"],
+    },
     atomics: ["load", "store", "exchange", "compare_exchange", "fetch_add", "fetch_sub", "fences"],
     interrupts: {
       declarations: ["func name(frame: ptr[Frame]) interrupt do", "func name(frame: ptr[Frame]) interrupt_error do"],
@@ -551,7 +556,7 @@ const machineFacts = {
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
     verification: ["tests/os_target_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura"],
-    not_implemented: ["application-processor startup", "TSS/IST management", "FPU/SIMD interrupt state policy", "user/kernel swapgs policy", "kernel libraries", "drivers", "filesystem", "boot-image builder", "ARM64 freestanding backend"],
+    not_implemented: ["application-processor startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "kernel libraries", "drivers", "filesystem", "boot-image builder", "ARM64 freestanding backend"],
   },
   interop: {
     ffi_abi: "1.2.0",
@@ -1019,15 +1024,16 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["정적 데이터", code("static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct")],
     ["메모리 레이아웃", "typed struct field, natural 또는 packed layout, " + code("sizeof/alignof/offset_of")],
     ["포인터", code("ptr.add/index/field/align_up/align_down/is_aligned") + "와 width-correct field load/store"],
-    ["저수준 CPU", "raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV"],
+    ["저수준 CPU", "raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV"],
     ["원자 연산", "8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence"],
     ["인터럽트 ABI", code("interrupt/interrupt_error") + " 함수, general-purpose register frame, error-code normalization, checked IDT gate, " + code("iretq")],
+    ["CPU별 상태", "TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
-  paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 현재 wrapper는 integer register만 저장하며 TSS/IST, FPU/SIMD state, user/kernel swapgs 정책은 아직 없습니다.") +
-  paragraph("아직 없는 기능은 application-processor 시작, TSS/IST와 FPU/SIMD interrupt 정책, page table·allocator·scheduler·syscall 라이브러리, 장치 드라이버, filesystem, boot-image builder, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+  paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.") +
+  paragraph("아직 없는 기능은 application-processor 시작, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, page table·allocator·scheduler·syscall 라이브러리, 장치 드라이버, filesystem, boot-image builder, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

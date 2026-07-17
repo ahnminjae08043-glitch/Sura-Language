@@ -153,10 +153,16 @@ CPU control:
 - `cpu.write_cr0/cr3/cr4(value)`
 - `cpu.read_flags()`, `cpu.write_flags(value)`
 - `cpu.read_msr(index)`, `cpu.write_msr(index, value)`
-- `cpu.load_gdt(address)`, `cpu.load_idt(address)`
+- `cpu.load_gdt/load_idt(descriptor_address)`
+- `cpu.load_gdt/load_idt(table, byte_size)`
+- `cpu.reload_segments(code_selector, data_selector)`
+- `cpu.load_task_register(selector)`, `cpu.read_task_register()`
 - `cpu.invalidate_page(address)`
 - `cpu.cpuid_eax/ebx/ecx/edx(leaf, subleaf?)`
-- `cpu.rdtsc()`, `cpu.rdtscp()`, `cpu.xgetbv(index)`
+- `cpu.rdtsc()`, `cpu.rdtscp()`, `cpu.xgetbv(index)`, `cpu.xsetbv(index, value)`
+- `cpu.swapgs()`, `cpu.stac()`, `cpu.clac()`, `cpu.wbinvd()`
+- `cpu.fninit()`, `cpu.clts()`
+- `cpu.fxsave/fxrstor(area)`, `cpu.xsave/xrstor(area, state_mask)`
 
 Atomic operations:
 
@@ -196,7 +202,7 @@ end
 ```
 
 `interrupt` is for vectors whose hardware frame has no error code.
-`interrupt_error` is for vectors 8, 10–14, 17, 21, 29, and 30. The compiler
+`interrupt_error` is for vectors 8, 10-14, 17, 21, 29, and 30. The compiler
 adds a synthetic zero for the first form, saves all general-purpose registers,
 clears the direction flag for calls, aligns the handler stack, restores the
 registers, discards the real or synthetic error code, and emits `iretq`.
@@ -235,6 +241,56 @@ The current wrapper saves integer registers only. Kernel code must add an
 FPU/SIMD state policy before handlers use floating-point or vector operations.
 User-mode entry also still needs a `swapgs` policy and validated kernel stack.
 
+## TSS, IST, and extended CPU state
+
+The backend can build and activate the x86-64 structures needed for
+per-CPU kernel and interrupt stacks:
+
+```sura
+gdt is static.zero(128, 16)
+tss is static.zero(104, 16)
+kernel_stack is static.zero(16384, 16)
+fault_stack is static.zero(16384, 16)
+
+cpu.tss_set_rsp(tss, 0, ptr.add(kernel_stack, 16384))
+cpu.tss_set_ist(tss, 1, ptr.add(fault_stack, 16384))
+cpu.tss_set_iomap(tss, 104)
+cpu.gdt_set_tss(gdt, 3, tss, 103)
+cpu.load_gdt(gdt, 128)
+cpu.reload_segments(8, 16)
+cpu.load_task_register(24)
+```
+
+`cpu.gdt_set_tss` writes a present, ring-0, available 64-bit TSS descriptor
+occupying two GDT entries. Its index and limit are compile-time integers. When
+the GDT and TSS are named static objects, the compiler rejects descriptors
+that exceed either object. `cpu.tss_set_rsp` accepts privilege level 0-2;
+`cpu.tss_set_ist` accepts IST index 1-7. A 104-byte TSS with I/O-map offset 104
+contains no usable I/O permission bitmap.
+
+The two-argument `load_gdt/load_idt` forms construct the 10-byte pseudo
+descriptor on the current stack and execute `lgdt/lidt`. The one-argument
+forms remain available when code has already built a pseudo descriptor.
+`reload_segments` performs a far return to reload `CS`, then loads `DS`, `ES`,
+and `SS`. It deliberately does not modify `FS` or `GS`.
+
+FPU/SIMD state policy remains explicit:
+
+```sura
+cpu.fninit()
+cpu.fxsave(fx_area)
+cpu.fxrstor(fx_area)
+cpu.xsetbv(0, enabled_xcr0_bits)
+cpu.xsave(xsave_area, enabled_xcr0_bits)
+cpu.xrstor(xsave_area, enabled_xcr0_bits)
+```
+
+Kernel code must check CPUID support, configure CR0/CR4 and XCR0 in the
+architecturally required order, obtain the required XSAVE area size from
+CPUID leaf `0xD`, and provide correctly aligned storage before using these
+instructions. `stac/clac` require SMAP support and `swapgs` is only a
+primitive; entry code must still enforce when it is safe to exchange GS bases.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -246,7 +302,8 @@ Strings are supported for firmware console output and static data.
 Still required for a complete self-hosted OS environment:
 
 - multiprocessor discovery and application-processor startup
-- TSS/IST management, FPU/SIMD interrupt state, and user/kernel `swapgs` policy
+- automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
+- user/kernel entry validation and `swapgs` policy
 - page-table, allocator, scheduler, syscall, and driver libraries
 - FAT reader and boot-image builder
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+

@@ -1538,11 +1538,19 @@ class UefiX64Compiler {
         if (name == "io_in16") { port_read(16); return; }
         if (name == "io_in32") { port_read(32); return; }
 
-        if (name == "cpu_read_cr0") { x.bytes({0x0f, 0x20, 0xc0}); return; }
-        if (name == "cpu_read_cr2") { x.bytes({0x0f, 0x20, 0xd0}); return; }
-        if (name == "cpu_read_cr3") { x.bytes({0x0f, 0x20, 0xd8}); return; }
-        if (name == "cpu_read_cr4") { x.bytes({0x0f, 0x20, 0xe0}); return; }
-        if (name == "cpu_read_flags") { x.bytes({0x9c, 0x58}); return; }
+        if (name == "cpu_read_cr0" || name == "cpu_read_cr2" ||
+            name == "cpu_read_cr3" || name == "cpu_read_cr4" ||
+            name == "cpu_read_flags" ||
+            name == "cpu_read_task_register") {
+            if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
+            if (name == "cpu_read_cr0") x.bytes({0x0f, 0x20, 0xc0});
+            else if (name == "cpu_read_cr2") x.bytes({0x0f, 0x20, 0xd0});
+            else if (name == "cpu_read_cr3") x.bytes({0x0f, 0x20, 0xd8});
+            else if (name == "cpu_read_cr4") x.bytes({0x0f, 0x20, 0xe0});
+            else if (name == "cpu_read_flags") x.bytes({0x9c, 0x58});
+            else x.bytes({0x31, 0xc0, 0x0f, 0x00, 0xc8}); // xor eax,eax; str ax
+            return;
+        }
         if (name == "cpu_rdtsc" || name == "cpu_rdtscp") {
             if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
             if (name == "cpu_rdtsc") x.bytes({0x0f, 0x31});
@@ -1859,6 +1867,114 @@ class UefiX64Compiler {
         if (name == "io_out16") { port_write(16); return true; }
         if (name == "io_out32") { port_write(32); return true; }
 
+        if (name == "cpu_gdt_set_tss") {
+            if (args.size() != 4) {
+                fail(expr, "cpu.gdt_set_tss(table, index, tss, limit) "
+                           "expects four values");
+            }
+            const uint64_t index = require_constant_integer(
+                args[1].get(), "TSS GDT index");
+            const uint64_t limit = require_constant_integer(
+                args[3].get(), "TSS limit");
+            if (index == 0 || index > 8190) {
+                fail(args[1].get(), "TSS GDT index must be 1..8190");
+            }
+            if (limit > 0xfffff) {
+                fail(args[3].get(), "TSS limit must fit 20 bits");
+            }
+            if (args[0]->kind == NK::IDENT) {
+                const std::string& table_name =
+                    static_cast<const Ident*>(args[0].get())->name;
+                const auto table = globals.find(table_name);
+                if (table != globals.end() && table->second.address_value &&
+                    index * 8 + 16 > table->second.size) {
+                    fail(args[0].get(), "TSS descriptor exceeds static GDT '" +
+                                        table_name + "'");
+                }
+            }
+            if (args[2]->kind == NK::IDENT) {
+                const std::string& tss_name =
+                    static_cast<const Ident*>(args[2].get())->name;
+                const auto tss = globals.find(tss_name);
+                if (tss != globals.end() && tss->second.address_value &&
+                    limit + 1 > tss->second.size) {
+                    fail(args[2].get(), "TSS limit exceeds static object '" +
+                                        tss_name + "'");
+                }
+            }
+
+            const size_t temporary = reserve_temporaries(2, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[2].get());
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            x.mov_reg_rbp(10, scratch_slots[temporary]); // r10 = GDT base
+            x.bytes({0x49, 0x81, 0xc2}); // add r10, index * 8
+            x.d(static_cast<uint32_t>(index * 8));
+            x.mov_reg_rbp(11, scratch_slots[temporary + 1]); // r11 = TSS base
+
+            x.bytes({0x66, 0x41, 0xc7, 0x02});
+            x.b(static_cast<uint8_t>(limit));
+            x.b(static_cast<uint8_t>(limit >> 8));
+            x.bytes({0x66, 0x45, 0x89, 0x5a, 0x02});
+            x.bytes({0x4c, 0x89, 0xd8, 0x48, 0xc1, 0xe8, 0x10,
+                     0x41, 0x88, 0x42, 0x04});
+            x.bytes({0x41, 0xc6, 0x42, 0x05, 0x89}); // present, available TSS
+            x.bytes({0x41, 0xc6, 0x42, 0x06,
+                     static_cast<uint8_t>((limit >> 16) & 0x0f)});
+            x.bytes({0x48, 0xc1, 0xe8, 0x08, 0x41, 0x88, 0x42, 0x07});
+            x.bytes({0x4c, 0x89, 0xd8, 0x48, 0xc1, 0xe8, 0x20,
+                     0x41, 0x89, 0x42, 0x08});
+            x.bytes({0x41, 0xc7, 0x42, 0x0c, 0x00, 0x00, 0x00, 0x00});
+            release_temporaries(2);
+            return true;
+        }
+
+        if (name == "cpu_tss_set_rsp" || name == "cpu_tss_set_ist") {
+            if (args.size() != 3) {
+                fail(expr, raw_name + "(tss, index, stack_top) expects "
+                           "three values");
+            }
+            const uint64_t index = require_constant_integer(
+                args[1].get(),
+                name == "cpu_tss_set_rsp" ? "TSS privilege level"
+                                           : "TSS IST index");
+            if (name == "cpu_tss_set_rsp" && index > 2) {
+                fail(args[1].get(), "TSS RSP privilege level must be 0..2");
+            }
+            if (name == "cpu_tss_set_ist" &&
+                (index == 0 || index > 7)) {
+                fail(args[1].get(), "TSS IST index must be 1..7");
+            }
+            const uint8_t offset = static_cast<uint8_t>(
+                name == "cpu_tss_set_rsp" ? 4 + index * 8
+                                           : 28 + index * 8);
+            const size_t temporary = reserve_temporaries(1, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[2].get());
+            x.mov_reg_rbp(10, scratch_slots[temporary]);
+            x.bytes({0x49, 0x89, 0x42, offset});
+            release_temporaries(1);
+            return true;
+        }
+
+        if (name == "cpu_tss_set_iomap") {
+            if (args.size() != 2) {
+                fail(expr, "cpu.tss_set_iomap(tss, offset) expects two values");
+            }
+            const uint64_t offset = require_constant_integer(
+                args[1].get(), "TSS I/O-map offset");
+            if (offset > 0xffff) {
+                fail(args[1].get(), "TSS I/O-map offset must fit 16 bits");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x66, 0xc7, 0x40, 0x66,
+                     static_cast<uint8_t>(offset),
+                     static_cast<uint8_t>(offset >> 8)});
+            return true;
+        }
+
         if (name == "cpu_idt_set_gate") {
             if (args.size() != 6) {
                 fail(expr, "cpu.idt_set_gate(table, vector, handler, selector, "
@@ -1879,6 +1995,16 @@ class UefiX64Compiler {
             if (ist > 7) fail(args[4].get(), "IDT IST index must be 0..7");
             if (attributes > 0xff) {
                 fail(args[5].get(), "IDT attributes must fit 8 bits");
+            }
+            if (args[0]->kind == NK::IDENT) {
+                const std::string& table_name =
+                    static_cast<const Ident*>(args[0].get())->name;
+                const auto table = globals.find(table_name);
+                if (table != globals.end() && table->second.address_value &&
+                    vector * 16 + 16 > table->second.size) {
+                    fail(args[0].get(), "IDT vector exceeds static table '" +
+                                        table_name + "'");
+                }
             }
             std::string handler_call;
             const std::vector<ExprPtr>* handler_args = nullptr;
@@ -1962,13 +2088,86 @@ class UefiX64Compiler {
             x.b(0xfb);
             return true;
         }
+        if (name == "cpu_swapgs" || name == "cpu_stac" ||
+            name == "cpu_clac" || name == "cpu_wbinvd" ||
+            name == "cpu_clts" || name == "cpu_fninit") {
+            if (!args.empty()) fail(expr, raw_name + "() takes no arguments");
+            if (name == "cpu_swapgs") x.bytes({0x0f, 0x01, 0xf8});
+            else if (name == "cpu_stac") x.bytes({0x0f, 0x01, 0xcb});
+            else if (name == "cpu_clac") x.bytes({0x0f, 0x01, 0xca});
+            else if (name == "cpu_wbinvd") x.bytes({0x0f, 0x09});
+            else if (name == "cpu_clts") x.bytes({0x0f, 0x06});
+            else x.bytes({0xdb, 0xe3});
+            return true;
+        }
+        if (name == "cpu_load_task_register") {
+            if (args.size() != 1) {
+                fail(expr, "cpu.load_task_register(selector) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x0f, 0x00, 0xd8}); // ltr ax
+            return true;
+        }
+        if (name == "cpu_reload_segments") {
+            if (args.size() != 2) {
+                fail(expr, "cpu.reload_segments(code_selector, data_selector) "
+                           "expects two values");
+            }
+            const uint64_t code_selector = require_constant_integer(
+                args[0].get(), "code selector");
+            const uint64_t data_selector = require_constant_integer(
+                args[1].get(), "data selector");
+            if (code_selector > 0xffff || data_selector > 0xffff) {
+                fail(expr, "segment selectors must fit 16 bits");
+            }
+            x.b(0xb8);
+            x.d(static_cast<uint32_t>(code_selector));
+            x.b(0x50);
+            x.bytes({0x48, 0x8d, 0x05, 0x03, 0x00, 0x00, 0x00,
+                     0x50, 0x48, 0xcb}); // far return to the next instruction
+            x.b(0xb8);
+            x.d(static_cast<uint32_t>(data_selector));
+            x.bytes({0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xd0});
+            return true;
+        }
         if (name == "cpu_load_gdt" || name == "cpu_load_idt" ||
             name == "cpu_invalidate_page") {
-            if (args.size() != 1) fail(expr, name + "() expects one address");
+            if (name == "cpu_invalidate_page") {
+                if (args.size() != 1) {
+                    fail(expr, "cpu.invalidate_page() expects one address");
+                }
+                compile_expr(args[0].get());
+                x.bytes({0x0f, 0x01, 0x38});
+                return true;
+            }
+            if (args.size() != 1 && args.size() != 2) {
+                fail(expr, raw_name +
+                           "(descriptor_address) or (table, size) expected");
+            }
+            if (args.size() == 1) {
+                compile_expr(args[0].get());
+                if (name == "cpu_load_gdt") x.bytes({0x0f, 0x01, 0x10});
+                else x.bytes({0x0f, 0x01, 0x18});
+                return true;
+            }
+            const uint64_t size = require_constant_integer(
+                args[1].get(),
+                name == "cpu_load_gdt" ? "GDT byte size" : "IDT byte size");
+            if (size == 0 || size > 65536) {
+                fail(args[1].get(), "descriptor-table size must be 1..65536");
+            }
             compile_expr(args[0].get());
-            if (name == "cpu_load_gdt") x.bytes({0x0f, 0x01, 0x10});
-            else if (name == "cpu_load_idt") x.bytes({0x0f, 0x01, 0x18});
-            else x.bytes({0x0f, 0x01, 0x38});
+            x.bytes({0x49, 0x89, 0xc2, 0x48, 0x83, 0xec, 0x10,
+                     0x66, 0xc7, 0x04, 0x24});
+            x.b(static_cast<uint8_t>(size - 1));
+            x.b(static_cast<uint8_t>((size - 1) >> 8));
+            x.bytes({0x4c, 0x89, 0x54, 0x24, 0x02});
+            if (name == "cpu_load_gdt") {
+                x.bytes({0x0f, 0x01, 0x14, 0x24});
+            } else {
+                x.bytes({0x0f, 0x01, 0x1c, 0x24});
+            }
+            x.bytes({0x48, 0x83, 0xc4, 0x10});
             return true;
         }
         if (name == "cpu_write_cr0" || name == "cpu_write_cr3" ||
@@ -1990,6 +2189,44 @@ class UefiX64Compiler {
             x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
             x.mov_reg_rbp(1, scratch_slots[temporary]);
             x.bytes({0x0f, 0x30});
+            release_temporaries(1);
+            return true;
+        }
+        if (name == "cpu_xsetbv") {
+            if (args.size() != 2) {
+                fail(expr, "cpu.xsetbv(index, value) expects two values");
+            }
+            const size_t temporary = reserve_temporaries(1, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.bytes({0x0f, 0x01, 0xd1});
+            release_temporaries(1);
+            return true;
+        }
+        if (name == "cpu_fxsave" || name == "cpu_fxrstor") {
+            if (args.size() != 1) {
+                fail(expr, raw_name + "(area) expects one address");
+            }
+            compile_expr(args[0].get());
+            if (name == "cpu_fxsave") x.bytes({0x48, 0x0f, 0xae, 0x00});
+            else x.bytes({0x48, 0x0f, 0xae, 0x08});
+            return true;
+        }
+        if (name == "cpu_xsave" || name == "cpu_xrstor") {
+            if (args.size() != 2) {
+                fail(expr, raw_name + "(area, state_mask) expects two values");
+            }
+            const size_t temporary = reserve_temporaries(1, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
+            x.mov_reg_rbp(11, scratch_slots[temporary]);
+            if (name == "cpu_xsave") x.bytes({0x49, 0x0f, 0xae, 0x23});
+            else x.bytes({0x49, 0x0f, 0xae, 0x2b});
             release_temporaries(1);
             return true;
         }

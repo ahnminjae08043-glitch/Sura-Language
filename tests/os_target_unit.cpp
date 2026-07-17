@@ -92,6 +92,20 @@ int main(int argc, char** argv) {
         root->body.push_back(std::make_unique<AssignStmt>(
             "idt_table", method_call("static", "zero", std::move(args)), 1));
     }
+    const auto add_static_zero =
+        [&](const std::string& name, uint64_t size, uint64_t alignment) {
+            std::vector<ExprPtr> args;
+            args.push_back(std::make_unique<NumLit>(
+                static_cast<double>(size), 1));
+            args.push_back(std::make_unique<NumLit>(
+                static_cast<double>(alignment), 1));
+            root->body.push_back(std::make_unique<AssignStmt>(
+                name, method_call("static", "zero", std::move(args)), 1));
+        };
+    add_static_zero("gdt_table", 128, 16);
+    add_static_zero("tss_state", 104, 16);
+    add_static_zero("kernel_stack", 4096, 16);
+    add_static_zero("fpu_state", 4096, 64);
 
     auto helper_body = std::make_unique<SuraBlock>(1);
     {
@@ -202,6 +216,96 @@ int main(int argc, char** argv) {
         entry_body->body.push_back(std::make_unique<ExprStmt>(
             method_call("cpu", "idt_set_gate", std::move(args)), 1));
     }
+    const auto add_cpu_statement =
+        [&](const std::string& method, std::vector<ExprPtr> args = {}) {
+            entry_body->body.push_back(std::make_unique<ExprStmt>(
+                method_call("cpu", method, std::move(args)), 1));
+        };
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("tss_state", 1));
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        args.push_back(std::make_unique<Ident>("kernel_stack", 1));
+        add_cpu_statement("tss_set_rsp", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("tss_state", 1));
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        args.push_back(std::make_unique<Ident>("kernel_stack", 1));
+        add_cpu_statement("tss_set_ist", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("tss_state", 1));
+        args.push_back(std::make_unique<NumLit>(104, 1));
+        add_cpu_statement("tss_set_iomap", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("gdt_table", 1));
+        args.push_back(std::make_unique<NumLit>(3, 1));
+        args.push_back(std::make_unique<Ident>("tss_state", 1));
+        args.push_back(std::make_unique<NumLit>(103, 1));
+        add_cpu_statement("gdt_set_tss", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("gdt_table", 1));
+        args.push_back(std::make_unique<NumLit>(128, 1));
+        add_cpu_statement("load_gdt", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(8, 1));
+        args.push_back(std::make_unique<NumLit>(16, 1));
+        add_cpu_statement("reload_segments", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("idt_table", 1));
+        args.push_back(std::make_unique<NumLit>(4096, 1));
+        add_cpu_statement("load_idt", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(24, 1));
+        add_cpu_statement("load_task_register", std::move(args));
+    }
+    {
+        auto read_tr = method_call("cpu", "read_task_register");
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "task_selector", std::move(read_tr), 1));
+    }
+    add_cpu_statement("fninit");
+    add_cpu_statement("clts");
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("fpu_state", 1));
+        add_cpu_statement("fxsave", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("fpu_state", 1));
+        add_cpu_statement("fxrstor", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        args.push_back(std::make_unique<NumLit>(7, 1));
+        add_cpu_statement("xsetbv", std::move(args));
+    }
+    for (const std::string& method :
+         std::vector<std::string>{"xsave", "xrstor"}) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("fpu_state", 1));
+        args.push_back(std::make_unique<NumLit>(7, 1));
+        add_cpu_statement(method, std::move(args));
+    }
+    add_cpu_statement("stac");
+    add_cpu_statement("clac");
+    add_cpu_statement("swapgs");
+    add_cpu_statement("wbinvd");
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -228,6 +332,17 @@ int main(int argc, char** argv) {
                           {0x66, 0x45, 0x89, 0x1a})); // IDT offset low
     assert(contains_bytes(result.image,
                           {0x6a, 0x00, 0x50, 0x51, 0x52, 0x53})); // no-error wrapper
+    assert(contains_bytes(result.image,
+                          {0x41, 0xc6, 0x42, 0x05, 0x89})); // TSS descriptor
+    assert(contains_bytes(result.image, {0x0f, 0x01, 0x14, 0x24})); // lgdt
+    assert(contains_bytes(result.image, {0x0f, 0x01, 0x1c, 0x24})); // lidt
+    assert(contains_bytes(result.image, {0x0f, 0x00, 0xd8})); // ltr
+    assert(contains_bytes(result.image, {0x0f, 0x00, 0xc8})); // str
+    assert(contains_bytes(result.image, {0x48, 0xcb})); // far return
+    assert(contains_bytes(result.image, {0x0f, 0x01, 0xf8})); // swapgs
+    assert(contains_bytes(result.image, {0x48, 0x0f, 0xae, 0x00})); // fxsave64
+    assert(contains_bytes(result.image, {0x49, 0x0f, 0xae, 0x23})); // xsave64
+    assert(contains_bytes(result.image, {0x0f, 0x01, 0xd1})); // xsetbv
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');

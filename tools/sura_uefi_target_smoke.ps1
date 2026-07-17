@@ -23,6 +23,31 @@ function Test-ByteSequence {
     return $false
 }
 
+function Invoke-ExpectedCompileFailure {
+    param(
+        [string]$EnginePath,
+        [string]$SourcePath,
+        [string]$OutputPath,
+        [string]$Pattern,
+        [string]$Description
+    )
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $compilerOutput = & $EnginePath --target uefi-x86_64 --out $OutputPath $SourcePath 2>&1
+        $compilerExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($compilerExitCode -eq 0) {
+        throw "$Description was accepted"
+    }
+    if (($compilerOutput -join "`n") -notmatch $Pattern) {
+        throw "$Description did not produce the expected diagnostic"
+    }
+}
+
 try {
     if (-not (Test-Path -LiteralPath $Engine)) { throw "Sura engine not found: $Engine" }
     if (-not (Test-Path -LiteralPath $Source)) { throw "Sura UEFI source not found: $Source" }
@@ -100,6 +125,21 @@ try {
     if (-not (Test-ByteSequence $featureBytes ([byte[]](0x6a, 0x00, 0x50, 0x51, 0x52, 0x53)))) {
         throw "Freestanding feature image is missing the normalized no-error interrupt wrapper"
     }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x41, 0xc6, 0x42, 0x05, 0x89)))) {
+        throw "Freestanding feature image is missing the 64-bit TSS descriptor"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0x00, 0xd8)))) {
+        throw "Freestanding feature image is missing LTR"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0x01, 0xf8)))) {
+        throw "Freestanding feature image is missing SWAPGS"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x48, 0x0f, 0xae, 0x00)))) {
+        throw "Freestanding feature image is missing FXSAVE64"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x49, 0x0f, 0xae, 0x23)))) {
+        throw "Freestanding feature image is missing XSAVE64"
+    }
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
@@ -123,21 +163,34 @@ end
         $invalidText,
         (New-Object System.Text.UTF8Encoding($false))
     )
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $invalidOutput = & $Engine --target uefi-x86_64 --out (Join-Path $temp "INVALID.EFI") $invalidSource 2>&1
-        $invalidExitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
-    if ($invalidExitCode -eq 0) {
-        throw "Mismatched interrupt error-code ABI was accepted"
-    }
-    if (($invalidOutput -join "`n") -notmatch "pushes an error code") {
-        throw "Mismatched interrupt ABI did not produce the expected diagnostic"
-    }
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidSource `
+        -OutputPath (Join-Path $temp "INVALID.EFI") `
+        -Pattern "pushes an error code" `
+        -Description "Mismatched interrupt error-code ABI"
+
+    $invalidTssSource = Join-Path $temp "invalid_tss_bounds.sura"
+    $invalidTssText = @'
+gdt is static.zero(16, 16)
+tss is static.zero(104, 16)
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  cpu.gdt_set_tss(gdt, 1, tss, 103)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidTssSource,
+        $invalidTssText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidTssSource `
+        -OutputPath (Join-Path $temp "INVALID_TSS.EFI") `
+        -Pattern "exceeds static GDT" `
+        -Description "Out-of-bounds static TSS descriptor"
 
     "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length) bytes)"
 }

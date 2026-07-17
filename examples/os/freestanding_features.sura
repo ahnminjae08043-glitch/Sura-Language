@@ -40,6 +40,11 @@ last_fault_error: u64 is 0
 pci_header is static.struct(PciConfigHeader)
 page_buffer is static.zero(4096, 4096)
 idt_table is static.zero(4096, 16)
+gdt_table is static.zero(128, 16)
+tss_state is static.zero(104, 16)
+kernel_stack is static.zero(4096, 16)
+fault_stack is static.zero(4096, 16)
+fpu_state is static.zero(4096, 64)
 interrupt_stub is static.bytes([250, 244, 235, 252], 16)
 driver_name is static.utf8("sura-device")
 
@@ -79,9 +84,33 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
 
   cpu.idt_set_gate(idt_table, 32, addr_of(timer_interrupt), 8, 0, 142)
   cpu.idt_set_gate(idt_table, 14, addr_of(page_fault_interrupt), 8, 0, 142)
+  cpu.tss_set_rsp(tss_state, 0, ptr.add(kernel_stack, 4096))
+  cpu.tss_set_ist(tss_state, 1, ptr.add(fault_stack, 4096))
+  cpu.tss_set_iomap(tss_state, 104)
+  cpu.gdt_set_tss(gdt_table, 3, tss_state, 103)
 
   if vendor == 0 and old_count >= 0 and cpu_leaf >= 0 and nested == 3 and command_offset == 4 and second_header > 0 then
     atomic.fence()
+  end
+
+  # These instructions are emitted for compiler verification but deliberately
+  # not executed by this UEFI feature test. A future kernel integration step
+  # will provide valid code/data descriptors and CPU feature policy first.
+  if 0 == 1 then
+    cpu.load_gdt(gdt_table, 128)
+    cpu.reload_segments(8, 16)
+    cpu.load_idt(idt_table, 4096)
+    cpu.load_task_register(24)
+    cpu.fninit()
+    cpu.fxsave(fpu_state)
+    cpu.fxrstor(fpu_state)
+    cpu.xsetbv(0, 7)
+    cpu.xsave(fpu_state, 7)
+    cpu.xrstor(fpu_state, 7)
+    cpu.stac()
+    cpu.clac()
+    cpu.swapgs()
+    cpu.wbinvd()
   end
 
   return 0
