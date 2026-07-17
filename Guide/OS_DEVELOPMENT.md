@@ -764,6 +764,36 @@ the media snapshot. The caller owns every device, context, and buffer and must
 serialize requests. Native post-boot storage still requires drivers such as
 AHCI or NVMe plus DMA, interrupt, timeout, and reset policy.
 
+## FAT32 and virtual filesystem foundation
+
+`stdlib/freestanding/fat32.sura` mounts a FAT32 volume through a
+`BlockDevice`. Mounting checks the boot signature, sector geometry,
+power-of-two cluster size, FAT32 cluster-count range, FAT version, root
+cluster, arithmetic overflow, and volume bounds before accepting the volume.
+It can walk a cluster chain, look up an uppercase space-padded 8.3 name in a
+directory, read a complete regular file, and overwrite an existing regular
+file without changing its size. The overwrite path preserves bytes outside a
+partial final sector and flushes the device.
+
+The FAT32 writer deliberately does not allocate or free clusters. It cannot
+create, resize, delete, or rename files, and it does not support long file
+names, subdirectory path parsing, FAT mirroring repair, FSInfo updates,
+journaling, or concurrent access. A malformed or cyclic cluster chain is
+bounded by the volume cluster count and fails.
+
+`stdlib/freestanding/vfs.sura` supplies a fixed-capacity mount table and file
+dispatch layer. Paths are caller-owned UTF-8 byte buffers with explicit
+lengths. It rejects duplicate mount points, resolves the longest matching
+mount prefix, and dispatches open, read, write, seek, flush, close, and
+filesystem sync through checked callbacks. All mount, filesystem, file, and
+path storage is supplied by the kernel; the library allocates nothing and
+does not provide internal locking.
+
+`examples/os/fat32_features.sura` and `examples/os/vfs_features.sura` force
+these paths through the UEFI x86-64 backend. The smoke gate verifies their
+generated PE32+ images and embedded feature markers. This is compile and
+image verification, not proof that disk I/O has run in QEMU or on hardware.
+
 ## Serial diagnostics and VM boot marker
 
 `stdlib/freestanding/serial.sura` provides polling access to a
@@ -826,7 +856,8 @@ Still required for a complete self-hosted OS environment:
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
 - PCIe ECAM/resource allocation, native storage, and other device-specific drivers
-- FAT reader and persistent filesystem writer
+- partition-table parser and a full persistent filesystem writer with
+  allocation, creation, resizing, deletion, long names, recovery, and locking
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend
 - source-level freestanding debugger and executed CI VM boot coverage

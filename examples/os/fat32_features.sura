@@ -1,0 +1,32 @@
+# Invalid-volume rejection plus compile-only FAT32 read/overwrite coverage.
+
+import "../../stdlib/freestanding/fat32.sura"
+
+fat_device is static.struct(BlockDevice)
+fat_ram_context is static.struct(RamBlockContext)
+fat_volume is static.struct(Fat32Volume)
+fat_file is static.struct(Fat32DirEntry)
+fat_image is static.zero(65536, 4096)
+fat_sector is static.zero(4096, 4096)
+fat_output is static.zero(65536, 4096)
+fat_short_name is static.bytes([75, 69, 82, 78, 69, 76, 32, 32, 66, 73, 78], 1)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura FAT32 feature test")
+  uefi.newline()
+
+  device: ptr[BlockDevice] is fat_device
+  context: ptr[RamBlockContext] is fat_ram_context
+  volume: ptr[Fat32Volume] is fat_volume
+  if not ram_block_bind(device, context, fat_image, 65536, 512, 0) then return 1
+  if fat32_mount(volume, device, 0, fat_sector) then return 2
+
+  if 0 == 1 then
+    file: ptr[Fat32DirEntry] is fat_file
+    mounted: bool is fat32_mount(volume, device, 0, fat_sector)
+    found: bool is fat32_find_root_short(volume, fat_short_name, file, fat_sector)
+    read: bool is fat32_read_file(volume, file, fat_output, 65536, fat_sector)
+    overwritten: bool is fat32_overwrite_file(volume, file, fat_output, file.file_size, fat_sector)
+  end
+  return 0
+end

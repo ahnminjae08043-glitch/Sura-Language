@@ -10,7 +10,9 @@ param(
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
     [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
     [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
-    [string]$BlockSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/block_features.sura")
+    [string]$BlockSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/block_features.sura"),
+    [string]$Fat32Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/fat32_features.sura"),
+    [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -89,6 +91,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $BlockSource)) {
         throw "Sura freestanding block-device source not found: $BlockSource"
+    }
+    if (-not (Test-Path -LiteralPath $Fat32Source)) {
+        throw "Sura freestanding FAT32 source not found: $Fat32Source"
+    }
+    if (-not (Test-Path -LiteralPath $VfsSource)) {
+        throw "Sura freestanding VFS source not found: $VfsSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -478,6 +486,44 @@ try {
         throw "Freestanding block-device feature image is missing the UEFI Block I/O GUID"
     }
 
+    $fat32Efi = Join-Path $temp "FAT32.EFI"
+    $fat32Output = & $Engine --target uefi-x86_64 --out $fat32Efi $Fat32Source 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding FAT32 feature compile failed:`n$($fat32Output -join "`n")"
+    }
+    $fat32Bytes = [System.IO.File]::ReadAllBytes($fat32Efi)
+    if ($fat32Bytes.Length -lt 160000 -or
+        $fat32Bytes[0] -ne 0x4d -or $fat32Bytes[1] -ne 0x5a) {
+        throw "Freestanding FAT32 feature image is invalid"
+    }
+    $fat32Utf16 = [System.Text.Encoding]::Unicode.GetString($fat32Bytes)
+    if ($fat32Utf16 -notmatch "Sura FAT32 feature test") {
+        throw "Freestanding FAT32 feature image is missing its diagnostic"
+    }
+    $fat32ShortName = [System.Text.Encoding]::ASCII.GetBytes("KERNEL  BIN")
+    if (-not (Test-ByteSequence $fat32Bytes $fat32ShortName)) {
+        throw "Freestanding FAT32 feature image is missing its fixed 8.3 lookup name"
+    }
+
+    $vfsEfi = Join-Path $temp "VFS.EFI"
+    $vfsOutput = & $Engine --target uefi-x86_64 --out $vfsEfi $VfsSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding VFS feature compile failed:`n$($vfsOutput -join "`n")"
+    }
+    $vfsBytes = [System.IO.File]::ReadAllBytes($vfsEfi)
+    if ($vfsBytes.Length -lt 14000 -or
+        $vfsBytes[0] -ne 0x4d -or $vfsBytes[1] -ne 0x5a) {
+        throw "Freestanding VFS feature image is invalid"
+    }
+    $vfsUtf16 = [System.Text.Encoding]::Unicode.GetString($vfsBytes)
+    if ($vfsUtf16 -notmatch "Sura VFS feature test") {
+        throw "Freestanding VFS feature image is missing its diagnostic"
+    }
+    $vfsPath = [System.Text.Encoding]::ASCII.GetBytes("/BOOT.BIN")
+    if (-not (Test-ByteSequence $vfsBytes $vfsPath)) {
+        throw "Freestanding VFS feature image is missing its mount-dispatch path"
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -765,7 +811,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

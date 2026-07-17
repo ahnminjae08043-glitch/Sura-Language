@@ -1,0 +1,74 @@
+# Executable fixed-capacity VFS mount and file-dispatch self-check.
+
+import "../../stdlib/freestanding/vfs.sura"
+
+vfs_state is static.struct(VfsState)
+vfs_mounts is static.struct(VfsMount, 4)
+vfs_filesystem is static.struct(VfsFileSystem)
+vfs_file is static.struct(VfsFile)
+vfs_root is static.bytes([47], 1)
+vfs_path is static.bytes([47, 66, 79, 79, 84, 46, 66, 73, 78], 1)
+vfs_buffer is static.zero(512, 16)
+vfs_read_count: u64 is 0
+
+func mock_open(context: ptr, path: ptr, path_length: u64, flags: u64, file_address: ptr) do
+  file: ptr[VfsFile] is file_address
+  if context == 0 or path == 0 or path_length == 0 then return 1
+  file.active is 1
+  file.handle is context
+  file.size is 512
+  file.read_file is addr_of(mock_read)
+  file.write_file is addr_of(mock_write)
+  file.flush_file is addr_of(mock_flush)
+  file.close_file is addr_of(mock_close)
+  return 0
+end
+
+func mock_read(handle: ptr, offset: u64, buffer: ptr, count: u64) do
+  if handle == 0 or buffer == 0 or offset > 512 then return u64("0xffffffffffffffff")
+  available: u64 is 512 - offset
+  if count > available then count is available
+  return count
+end
+
+func mock_write(handle: ptr, offset: u64, buffer: ptr, count: u64) do
+  if handle == 0 or buffer == 0 or offset > 512 then return u64("0xffffffffffffffff")
+  available: u64 is 512 - offset
+  if count > available then count is available
+  return count
+end
+
+func mock_flush(handle: ptr) do
+  if handle == 0 then return 1
+  return 0
+end
+
+func mock_close(handle: ptr) do
+  if handle == 0 then return 1
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura VFS feature test")
+  uefi.newline()
+
+  state: ptr[VfsState] is vfs_state
+  filesystem: ptr[VfsFileSystem] is vfs_filesystem
+  file: ptr[VfsFile] is vfs_file
+  filesystem.context is vfs_buffer
+  filesystem.open_file is addr_of(mock_open)
+  filesystem.sync_filesystem is addr_of(mock_flush)
+  if not vfs_init(state, vfs_mounts, 4) then return 1
+  if not vfs_mount(state, vfs_root, 1, filesystem) then return 2
+  if not vfs_open(state, vfs_path, 9, 3, file) then return 3
+  if not vfs_read(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 4
+  if vfs_read_count != 32 then return 5
+  if not vfs_seek(file, 0) then return 6
+  if not vfs_write(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 7
+  if vfs_read_count != 32 then return 8
+  if not vfs_flush(file) then return 9
+  if not vfs_close(file) then return 10
+  if not vfs_sync_mounts(state) then return 11
+  if not vfs_unmount(state, vfs_root, 1) then return 12
+  return 0
+end

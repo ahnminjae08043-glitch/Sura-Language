@@ -1247,8 +1247,10 @@ int main(int argc, char* argv[]) {
         std::stringstream ss(source);
         std::string l;
         int cur = 1;
+        bool displayed = false;
         while (std::getline(ss, l)) {
             if (cur == line) {
+                displayed = true;
                 std::string line_str = std::to_string(line);
                 size_t pos = token.empty() ? std::string::npos : l.find(token);
                 int col = (pos == std::string::npos) ? 1 : (int)pos + 1;
@@ -1272,7 +1274,16 @@ int main(int argc, char* argv[]) {
             }
             cur++;
         }
-        if (line <= 0) std::cerr << "\n\033[1;31m" << localize_diagnostic(msg) << "\033[0m\n";
+        if (!displayed) {
+            std::string display = localize_diagnostic(msg);
+            if (line > 0 && display.find("(line ") == std::string::npos &&
+                display.find(ko_line_unit) == std::string::npos) {
+                display += is_korean_output()
+                    ? " (" + std::to_string(line) + ko_line_unit + ")"
+                    : " (line " + std::to_string(line) + ")";
+            }
+            std::cerr << "\n\033[1;31m" << display << "\033[0m\n";
+        }
         std::cerr << std::endl;
     };
 

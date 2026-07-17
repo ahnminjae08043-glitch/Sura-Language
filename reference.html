@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.</p><p>GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 16-bit real-mode에서 64-bit Sura entry로 이어지는 AP trampoline과 bounded startup helper, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, checked ring-0 interrupt-frame scheduler와 APIC/PIT/TSC-deadline timer helper, software-interrupt syscall dispatcher, checked ring-3 IRETQ entry와 SYSCALL/SYSRETQ helper, legacy PCI configuration library, checked block-device ABI와 RAM disk 및 boot-stage UEFI Block I/O adapter, checked ACPI MADT discovery, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate가 구현되어 있습니다. 아직 없는 기능은 executed AP-startup coverage와 complete per-AP initialization lifecycle, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, per-process address-space와 executable loader, safe user copy-in/out와 process fault/exit policy, SMP run queue와 load balancing, user-mode preemption, executed timer/context-switch verification, KPTI와 speculative-entry hardening, PCIe ECAM/resource allocation, native storage와 다른 device-specific drivers, partition 및 persistent filesystem, ARM64 freestanding backend입니다. <code>examples/os/freestanding_features.sura</code>, <code>examples/os/memory_kernel.sura</code>, <code>examples/os/scheduler_features.sura</code>, <code>examples/os/preemptive_timer_features.sura</code>, <code>examples/os/syscall_features.sura</code>, <code>examples/os/user_mode_features.sura</code>, <code>examples/os/pci_features.sura</code>, <code>examples/os/block_features.sura</code>, <code>examples/os/acpi_features.sura</code>, <code>examples/os/ap_startup_features.sura</code>, <code>examples/os/qemu_boot_gate.sura</code>는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 <code>Guide/OS_DEVELOPMENT.md</code>에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.</p><p>GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 16-bit real-mode에서 64-bit Sura entry로 이어지는 AP trampoline과 bounded startup helper, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, checked ring-0 interrupt-frame scheduler와 APIC/PIT/TSC-deadline timer helper, software-interrupt syscall dispatcher, checked ring-3 IRETQ entry와 SYSCALL/SYSRETQ helper, legacy PCI configuration library, checked block-device ABI와 RAM disk 및 boot-stage UEFI Block I/O adapter, 제한된 FAT32 reader/same-size overwrite writer, fixed-capacity VFS dispatch, checked ACPI MADT discovery, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate가 구현되어 있습니다. 아직 없는 기능은 executed AP-startup coverage와 complete per-AP initialization lifecycle, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, per-process address-space와 executable loader, safe user copy-in/out와 process fault/exit policy, SMP run queue와 load balancing, user-mode preemption, executed timer/context-switch verification, KPTI와 speculative-entry hardening, PCIe ECAM/resource allocation, native storage와 다른 device-specific drivers, partition-table parser, filesystem allocation/create/resize/delete/long-name/recovery/locking, ARM64 freestanding backend입니다. <code>examples/os/freestanding_features.sura</code>, <code>examples/os/memory_kernel.sura</code>, <code>examples/os/scheduler_features.sura</code>, <code>examples/os/preemptive_timer_features.sura</code>, <code>examples/os/syscall_features.sura</code>, <code>examples/os/user_mode_features.sura</code>, <code>examples/os/pci_features.sura</code>, <code>examples/os/block_features.sura</code>, <code>examples/os/fat32_features.sura</code>, <code>examples/os/vfs_features.sura</code>, <code>examples/os/acpi_features.sura</code>, <code>examples/os/ap_startup_features.sura</code>, <code>examples/os/qemu_boot_gate.sura</code>는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 <code>Guide/OS_DEVELOPMENT.md</code>에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -6653,6 +6653,59 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;compile and image verification only&quot;
       ]
     },
+    &quot;fat32_library&quot;: {
+      &quot;mount_checks&quot;: [
+        &quot;boot signature&quot;,
+        &quot;matching sector geometry&quot;,
+        &quot;power-of-two cluster size&quot;,
+        &quot;FAT32 cluster-count range&quot;,
+        &quot;FAT version and root cluster&quot;,
+        &quot;overflow and volume bounds&quot;
+      ],
+      &quot;operations&quot;: [
+        &quot;cluster-chain traversal&quot;,
+        &quot;uppercase space-padded 8.3 directory lookup&quot;,
+        &quot;complete regular-file read&quot;,
+        &quot;same-size existing-file overwrite&quot;,
+        &quot;flush&quot;
+      ],
+      &quot;library&quot;: &quot;stdlib/freestanding/fat32.sura&quot;,
+      &quot;example&quot;: &quot;examples/os/fat32_features.sura&quot;,
+      &quot;limitations&quot;: [
+        &quot;no cluster allocation/free&quot;,
+        &quot;no create, resize, delete, or rename&quot;,
+        &quot;no long file names&quot;,
+        &quot;no subdirectory path parser&quot;,
+        &quot;no FAT repair or FSInfo update&quot;,
+        &quot;no journaling or locking&quot;,
+        &quot;compile and image verification only&quot;
+      ]
+    },
+    &quot;virtual_filesystem_library&quot;: {
+      &quot;model&quot;: &quot;caller-owned fixed-capacity mount table and file objects&quot;,
+      &quot;paths&quot;: &quot;caller-owned UTF-8 byte buffers with explicit lengths&quot;,
+      &quot;operations&quot;: [
+        &quot;mount&quot;,
+        &quot;unmount&quot;,
+        &quot;longest-prefix resolution&quot;,
+        &quot;open&quot;,
+        &quot;read&quot;,
+        &quot;write&quot;,
+        &quot;seek&quot;,
+        &quot;flush&quot;,
+        &quot;close&quot;,
+        &quot;sync&quot;
+      ],
+      &quot;library&quot;: &quot;stdlib/freestanding/vfs.sura&quot;,
+      &quot;example&quot;: &quot;examples/os/vfs_features.sura&quot;,
+      &quot;limitations&quot;: [
+        &quot;no allocation&quot;,
+        &quot;no internal synchronization&quot;,
+        &quot;no permissions or process ownership&quot;,
+        &quot;no path normalization, current directory, or symbolic links&quot;,
+        &quot;compile and image verification only&quot;
+      ]
+    },
     &quot;serial_and_vm_gate&quot;: {
       &quot;serial&quot;: [
         &quot;16550 initialization&quot;,
@@ -6740,6 +6793,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;examples/os/user_mode_features.sura&quot;,
       &quot;examples/os/pci_features.sura&quot;,
       &quot;examples/os/block_features.sura&quot;,
+      &quot;examples/os/fat32_features.sura&quot;,
+      &quot;examples/os/vfs_features.sura&quot;,
       &quot;examples/os/qemu_boot_gate.sura&quot;,
       &quot;examples/os/acpi_features.sura&quot;,
       &quot;examples/os/ap_startup_features.sura&quot;
@@ -6760,7 +6815,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;executed timer/context-switch verification&quot;,
       &quot;PCIe ECAM and resource allocation&quot;,
       &quot;native storage and other device-specific drivers&quot;,
-      &quot;partition and persistent filesystem support&quot;,
+      &quot;partition-table parsing&quot;,
+      &quot;filesystem allocation, create, resize, delete, long-name, recovery, and locking support&quot;,
       &quot;ARM64 freestanding backend&quot;,
       &quot;source-level freestanding debugger&quot;,
       &quot;executed CI VM boot coverage&quot;
@@ -13021,6 +13077,59 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "compile and image verification only"
       ]
     },
+    "fat32_library": {
+      "mount_checks": [
+        "boot signature",
+        "matching sector geometry",
+        "power-of-two cluster size",
+        "FAT32 cluster-count range",
+        "FAT version and root cluster",
+        "overflow and volume bounds"
+      ],
+      "operations": [
+        "cluster-chain traversal",
+        "uppercase space-padded 8.3 directory lookup",
+        "complete regular-file read",
+        "same-size existing-file overwrite",
+        "flush"
+      ],
+      "library": "stdlib/freestanding/fat32.sura",
+      "example": "examples/os/fat32_features.sura",
+      "limitations": [
+        "no cluster allocation/free",
+        "no create, resize, delete, or rename",
+        "no long file names",
+        "no subdirectory path parser",
+        "no FAT repair or FSInfo update",
+        "no journaling or locking",
+        "compile and image verification only"
+      ]
+    },
+    "virtual_filesystem_library": {
+      "model": "caller-owned fixed-capacity mount table and file objects",
+      "paths": "caller-owned UTF-8 byte buffers with explicit lengths",
+      "operations": [
+        "mount",
+        "unmount",
+        "longest-prefix resolution",
+        "open",
+        "read",
+        "write",
+        "seek",
+        "flush",
+        "close",
+        "sync"
+      ],
+      "library": "stdlib/freestanding/vfs.sura",
+      "example": "examples/os/vfs_features.sura",
+      "limitations": [
+        "no allocation",
+        "no internal synchronization",
+        "no permissions or process ownership",
+        "no path normalization, current directory, or symbolic links",
+        "compile and image verification only"
+      ]
+    },
     "serial_and_vm_gate": {
       "serial": [
         "16550 initialization",
@@ -13108,6 +13217,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "examples/os/user_mode_features.sura",
       "examples/os/pci_features.sura",
       "examples/os/block_features.sura",
+      "examples/os/fat32_features.sura",
+      "examples/os/vfs_features.sura",
       "examples/os/qemu_boot_gate.sura",
       "examples/os/acpi_features.sura",
       "examples/os/ap_startup_features.sura"
@@ -13128,7 +13239,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "executed timer/context-switch verification",
       "PCIe ECAM and resource allocation",
       "native storage and other device-specific drivers",
-      "partition and persistent filesystem support",
+      "partition-table parsing",
+      "filesystem allocation, create, resize, delete, long-name, recovery, and locking support",
       "ARM64 freestanding backend",
       "source-level freestanding debugger",
       "executed CI VM boot coverage"

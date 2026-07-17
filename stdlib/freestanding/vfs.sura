@@ -1,0 +1,310 @@
+# Fixed-capacity virtual filesystem dispatch for freestanding kernels.
+#
+# Paths are caller-owned UTF-8 byte buffers with explicit lengths. Mount and
+# file objects are caller-owned and this library performs no allocation or
+# internal synchronization.
+
+struct VfsFileSystem do
+  context: ptr
+  open_file: ptr
+  sync_filesystem: ptr
+end
+
+struct VfsMount do
+  active: u64
+  path: ptr
+  path_length: u64
+  filesystem: ptr[VfsFileSystem]
+end
+
+struct VfsState do
+  mounts: ptr
+  capacity: u64
+  count: u64
+end
+
+struct VfsFile do
+  active: u64
+  handle: ptr
+  position: u64
+  size: u64
+  flags: u64
+  read_file: ptr
+  write_file: ptr
+  flush_file: ptr
+  close_file: ptr
+end
+
+func vfs_state_valid(state: ptr[VfsState]) do
+  if state == 0 or state.mounts == 0 or state.capacity == 0 then return false
+  if state.count > state.capacity then return false
+  if state.capacity > u64("0xffffffffffffffff") / sizeof(VfsMount) then return false
+  return true
+end
+
+func vfs_file_clear(file: ptr[VfsFile]) do
+  if file == 0 then return false
+  file.active is 0
+  file.handle is 0
+  file.position is 0
+  file.size is 0
+  file.flags is 0
+  file.read_file is 0
+  file.write_file is 0
+  file.flush_file is 0
+  file.close_file is 0
+  return true
+end
+
+func vfs_mount_at(state: ptr[VfsState], index: u64) do
+  if not vfs_state_valid(state) or index >= state.capacity then return 0
+  return ptr.index(state.mounts, index, sizeof(VfsMount))
+end
+
+func vfs_init(state: ptr[VfsState], mounts: ptr, capacity: u64) do
+  if state == 0 or mounts == 0 or capacity == 0 then return false
+  if capacity > u64("0xffffffffffffffff") / sizeof(VfsMount) then return false
+  index: u64 is 0
+  while index < capacity do
+    mount: ptr[VfsMount] is ptr.index(mounts, index, sizeof(VfsMount))
+    mount.active is 0
+    mount.path is 0
+    mount.path_length is 0
+    mount.filesystem is 0
+    index += 1
+  end
+  state.mounts is mounts
+  state.capacity is capacity
+  state.count is 0
+  return true
+end
+
+func vfs_path_equal(left: ptr, right: ptr, length: u64) do
+  if left == 0 or right == 0 then return false
+  index: u64 is 0
+  while index < length do
+    if mem.read8(ptr.add(left, index)) != mem.read8(ptr.add(right, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func vfs_mount_path_valid(path: ptr, path_length: u64) do
+  if path == 0 or path_length == 0 then return false
+  if mem.read8(path) != 47 then return false
+  if path_length == 1 then return true
+  if path_length > 1 and mem.read8(ptr.add(path, path_length - 1)) == 47 then return false
+
+  index: u64 is 0
+  while index < path_length do
+    if mem.read8(ptr.add(path, index)) == 0 then return false
+    index += 1
+  end
+
+  segment_start: u64 is 1
+  index is 1
+  while index <= path_length do
+    boundary: bool is index == path_length
+    if not boundary then
+      boundary is mem.read8(ptr.add(path, index)) == 47
+    end
+    if boundary then
+      segment_length: u64 is index - segment_start
+      if segment_length == 0 then return false
+      if segment_length == 1 and mem.read8(ptr.add(path, segment_start)) == 46 then return false
+      if segment_length == 2 then
+        if mem.read8(ptr.add(path, segment_start)) == 46 and mem.read8(ptr.add(path, segment_start + 1)) == 46 then return false
+      end
+      segment_start is index + 1
+    end
+    index += 1
+  end
+  return true
+end
+
+func vfs_mount(state: ptr[VfsState], path: ptr, path_length: u64, filesystem: ptr[VfsFileSystem]) do
+  if not vfs_state_valid(state) or filesystem == 0 or filesystem.open_file == 0 then return false
+  if not vfs_mount_path_valid(path, path_length) then return false
+
+  free_index: u64 is state.capacity
+  index: u64 is 0
+  while index < state.capacity do
+    mount: ptr[VfsMount] is vfs_mount_at(state, index)
+    if mount.active == 0 then
+      if free_index == state.capacity then
+        free_index is index
+      end
+    else
+      if mount.path_length == path_length and vfs_path_equal(mount.path, path, path_length) then return false
+    end
+    index += 1
+  end
+  if free_index >= state.capacity then return false
+
+  target: ptr[VfsMount] is vfs_mount_at(state, free_index)
+  target.active is 1
+  target.path is path
+  target.path_length is path_length
+  target.filesystem is filesystem
+  state.count is state.count + 1
+  return true
+end
+
+func vfs_unmount(state: ptr[VfsState], path: ptr, path_length: u64) do
+  if not vfs_state_valid(state) or path == 0 then return false
+  if not vfs_mount_path_valid(path, path_length) then return false
+  index: u64 is 0
+  while index < state.capacity do
+    mount: ptr[VfsMount] is vfs_mount_at(state, index)
+    if mount.active != 0 and mount.path_length == path_length then
+      if vfs_path_equal(mount.path, path, path_length) then
+        mount.active is 0
+        mount.path is 0
+        mount.path_length is 0
+        mount.filesystem is 0
+        if state.count > 0 then
+          state.count is state.count - 1
+        end
+        return true
+      end
+    end
+    index += 1
+  end
+  return false
+end
+
+func vfs_mount_matches(mount: ptr[VfsMount], path: ptr, path_length: u64) do
+  if mount == 0 or mount.active == 0 or path == 0 then return false
+  if path_length < mount.path_length then return false
+  if not vfs_path_equal(mount.path, path, mount.path_length) then return false
+  if mount.path_length == 1 then return true
+  if path_length == mount.path_length then return true
+  return mem.read8(ptr.add(path, mount.path_length)) == 47
+end
+
+func vfs_resolve_mount(state: ptr[VfsState], path: ptr, path_length: u64) do
+  if not vfs_state_valid(state) or not vfs_mount_path_valid(path, path_length) then return 0
+  best: ptr is 0
+  best_length: u64 is 0
+  index: u64 is 0
+  while index < state.capacity do
+    mount: ptr[VfsMount] is vfs_mount_at(state, index)
+    if vfs_mount_matches(mount, path, path_length) and mount.path_length > best_length then
+      best is mount
+      best_length is mount.path_length
+    end
+    index += 1
+  end
+  return best
+end
+
+func vfs_open(state: ptr[VfsState], path: ptr, path_length: u64, flags: u64, file: ptr[VfsFile]) do
+  if not vfs_state_valid(state) or file == 0 then return false
+  if (flags & 3) == 0 then return false
+  vfs_file_clear(file)
+  mount_address: ptr is vfs_resolve_mount(state, path, path_length)
+  if mount_address == 0 then return false
+  mount: ptr[VfsMount] is mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.open_file == 0 then return false
+
+  relative_offset: u64 is mount.path_length
+  if relative_offset < path_length and mem.read8(ptr.add(path, relative_offset)) == 47 then
+    relative_offset += 1
+  end
+  relative_length: u64 is path_length - relative_offset
+  status: u64 is call.indirect(filesystem.open_file, filesystem.context, ptr.add(path, relative_offset), relative_length, flags, file)
+  if status != 0 or file.active == 0 or file.handle == 0 then
+    vfs_file_clear(file)
+    return false
+  end
+  file.position is 0
+  file.flags is flags
+  return true
+end
+
+func vfs_read(file: ptr[VfsFile], buffer: ptr, count: u64, bytes_read: ptr) do
+  if bytes_read != 0 then
+    mem.write64(bytes_read, 0)
+  end
+  if file == 0 or file.active == 0 or file.handle == 0 then return false
+  if (file.flags & 1) == 0 or file.read_file == 0 then return false
+  if count == 0 then return true
+  if buffer == 0 then return false
+  if file.position >= file.size then return true
+  available: u64 is file.size - file.position
+  if count > available then count is available
+  result: u64 is call.indirect(file.read_file, file.handle, file.position, buffer, count)
+  if result == u64("0xffffffffffffffff") or result > count then return false
+  if result > u64("0xffffffffffffffff") - file.position then return false
+  file.position is file.position + result
+  if bytes_read != 0 then
+    mem.write64(bytes_read, result)
+  end
+  return true
+end
+
+func vfs_write(file: ptr[VfsFile], buffer: ptr, count: u64, bytes_written: ptr) do
+  if bytes_written != 0 then
+    mem.write64(bytes_written, 0)
+  end
+  if file == 0 or file.active == 0 or file.handle == 0 then return false
+  if (file.flags & 2) == 0 then return false
+  if file.write_file == 0 then return false
+  if count == 0 then return true
+  if buffer == 0 then return false
+  result: u64 is call.indirect(file.write_file, file.handle, file.position, buffer, count)
+  if result == u64("0xffffffffffffffff") or result > count then return false
+  if result > u64("0xffffffffffffffff") - file.position then return false
+  file.position is file.position + result
+  if file.position > file.size then
+    file.size is file.position
+  end
+  if bytes_written != 0 then
+    mem.write64(bytes_written, result)
+  end
+  return true
+end
+
+func vfs_seek(file: ptr[VfsFile], position: u64) do
+  if file == 0 or file.active == 0 then return false
+  if (file.flags & 2) == 0 and position > file.size then return false
+  file.position is position
+  return true
+end
+
+func vfs_flush(file: ptr[VfsFile]) do
+  if file == 0 or file.active == 0 or file.handle == 0 then return false
+  if file.flush_file == 0 then return true
+  return call.indirect(file.flush_file, file.handle) == 0
+end
+
+func vfs_close(file: ptr[VfsFile]) do
+  if file == 0 or file.active == 0 then return false
+  status: u64 is 0
+  if file.close_file != 0 then
+    status is call.indirect(file.close_file, file.handle)
+  end
+  vfs_file_clear(file)
+  return status == 0
+end
+
+func vfs_sync_mounts(state: ptr[VfsState]) do
+  if not vfs_state_valid(state) then return false
+  ok: bool is true
+  index: u64 is 0
+  while index < state.capacity do
+    mount: ptr[VfsMount] is vfs_mount_at(state, index)
+    if mount.active != 0 and mount.filesystem != 0 then
+      filesystem: ptr[VfsFileSystem] is mount.filesystem
+      if filesystem.sync_filesystem != 0 then
+        status: u64 is call.indirect(filesystem.sync_filesystem, filesystem.context)
+        if status != 0 then
+          ok is false
+        end
+      end
+    end
+    index += 1
+  end
+  return ok
+end
