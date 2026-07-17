@@ -1,0 +1,37 @@
+# Executable-memory self-check for the freestanding framebuffer and 5x7 font.
+# Sura OS executes the same libraries against the QEMU GOP framebuffer.
+
+import "../../stdlib/freestanding/font5x7.sura"
+
+framebuffer_front is static.zero(16384, 64)
+framebuffer_back is static.zero(16384, 64)
+framebuffer_front_surface is static.struct(FramebufferSurface)
+framebuffer_back_surface is static.struct(FramebufferSurface)
+framebuffer_font_style is static.struct(BitmapFontStyle)
+framebuffer_label is static.utf8("SURA 2D")
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  front: ptr[FramebufferSurface] is framebuffer_front_surface
+  back: ptr[FramebufferSurface] is framebuffer_back_surface
+  style: ptr[BitmapFontStyle] is framebuffer_font_style
+
+  if not fb_surface_init(front, framebuffer_front, 64, 64, 64, 1) then return 1
+  if not fb_surface_init(back, framebuffer_back, 64, 64, 64, 1) then return 2
+
+  background: u32 is fb_rgb(back, 12, 24, 44)
+  orange: u32 is fb_rgb(back, 255, 102, 35)
+  white: u32 is fb_rgb(back, 242, 247, 252)
+  if not fb_clear(back, background) then return 3
+  if not fb_put_pixel(back, 1, 1, white) then return 4
+  if fb_get_pixel(back, 1, 1) != white then return 5
+  if not fb_fill_rect(back, 4, 4, 20, 12, orange) then return 6
+  if not fb_rect_outline(back, 2, 2, 60, 60, white) then return 7
+  if not fb_line(back, 0, 63, 63, 0, white) then return 8
+  if not fb_draw_app_icon(back, 42, 6, 16, orange, white) then return 9
+  if not font5x7_style_init(style, white, background, 1, 0) then return 10
+  if not font5x7_draw_text(back, 7, 30, framebuffer_label, 16, style) then return 11
+  if fb_sample_hash(back) == 0 then return 12
+  if not fb_present(back, front.pixels) then return 13
+  if fb_get_pixel(front, 1, 1) != white then return 14
+  return 0
+end

@@ -1,0 +1,182 @@
+# Checked 32-bit GOP framebuffer drawing and double-buffer presentation.
+#
+# Pixel format 0 is UEFI PixelRedGreenBlueReserved8BitPerColor.
+# Pixel format 1 is UEFI PixelBlueGreenRedReserved8BitPerColor.
+
+struct FramebufferSurface do
+  pixels: ptr
+  width: u64
+  height: u64
+  stride: u64
+  pixel_format: u64
+  byte_size: u64
+end
+
+func fb_surface_init(surface: ptr[FramebufferSurface], pixels: ptr, width: u64, height: u64, stride: u64, pixel_format: u64) do
+  if surface == 0 or pixels == 0 then return false
+  if width == 0 or height == 0 or stride < width then return false
+  if pixel_format > 1 then return false
+  # Keep the backing surface within the 64 MiB limit used by Sura OS.
+  # Positive bounded operands also keep the multiplication below i64 max.
+  if stride > 16777216 then return false
+  if height > 16777216 / stride then return false
+  row_bytes: u64 is stride * 4
+  required: u64 is row_bytes * height
+
+  surface.pixels is pixels
+  surface.width is width
+  surface.height is height
+  surface.stride is stride
+  surface.pixel_format is pixel_format
+  surface.byte_size is required
+  return true
+end
+
+func fb_rgb(surface: ptr[FramebufferSurface], red: u64, green: u64, blue: u64) do
+  if surface == 0 or red > 255 or green > 255 or blue > 255 then return 0
+  if surface.pixel_format == 0 then
+    return red | (green << 8) | (blue << 16)
+  end
+  return blue | (green << 8) | (red << 16)
+end
+
+func fb_pixel_address(surface: ptr[FramebufferSurface], x: u64, y: u64) do
+  if surface == 0 or x >= surface.width or y >= surface.height then return 0
+  return ptr.add(surface.pixels, (y * surface.stride + x) * 4)
+end
+
+func fb_put_pixel(surface: ptr[FramebufferSurface], x: u64, y: u64, color: u32) do
+  address: ptr is fb_pixel_address(surface, x, y)
+  if address == 0 then return false
+  mem.write32(address, color)
+  return true
+end
+
+func fb_get_pixel(surface: ptr[FramebufferSurface], x: u64, y: u64) do
+  address: ptr is fb_pixel_address(surface, x, y)
+  if address == 0 then return 0
+  return mem.read32(address)
+end
+
+func fb_clear(surface: ptr[FramebufferSurface], color: u32) do
+  if surface == 0 or surface.pixels == 0 then return false
+  count: u64 is surface.stride * surface.height
+  index: u64 is 0
+  while index < count do
+    mem.write32(ptr.add(surface.pixels, index * 4), color)
+    index += 1
+  end
+  return true
+end
+
+func fb_fill_rect(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, color: u32) do
+  if surface == 0 or width == 0 or height == 0 then return false
+  if x >= surface.width or y >= surface.height then return false
+
+  right: u64 is surface.width
+  if width <= surface.width - x then right is x + width
+  bottom: u64 is surface.height
+  if height <= surface.height - y then bottom is y + height
+
+  row: u64 is y
+  while row < bottom do
+    column: u64 is x
+    while column < right do
+      mem.write32(ptr.add(surface.pixels, (row * surface.stride + column) * 4), color)
+      column += 1
+    end
+    row += 1
+  end
+  return true
+end
+
+func fb_hline(surface: ptr[FramebufferSurface], x: u64, y: u64, length: u64, color: u32) do
+  return fb_fill_rect(surface, x, y, length, 1, color)
+end
+
+func fb_vline(surface: ptr[FramebufferSurface], x: u64, y: u64, length: u64, color: u32) do
+  return fb_fill_rect(surface, x, y, 1, length, color)
+end
+
+func fb_rect_outline(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, color: u32) do
+  if width == 0 or height == 0 then return false
+  fb_fill_rect(surface, x, y, width, 1, color)
+  if height > 1 then fb_fill_rect(surface, x, y + height - 1, width, 1, color)
+  fb_fill_rect(surface, x, y, 1, height, color)
+  if width > 1 then fb_fill_rect(surface, x + width - 1, y, 1, height, color)
+  return true
+end
+
+func fb_line(surface: ptr[FramebufferSurface], start_x: i64, start_y: i64, end_x: i64, end_y: i64, color: u32) do
+  x: i64 is start_x
+  y: i64 is start_y
+  dx: i64 is end_x - start_x
+  if dx < 0 then dx is -dx
+  step_x: i64 is 1
+  if start_x > end_x then step_x is -1
+  dy: i64 is end_y - start_y
+  if dy < 0 then dy is -dy
+  dy is -dy
+  step_y: i64 is 1
+  if start_y > end_y then step_y is -1
+  error: i64 is dx + dy
+
+  while true do
+    if x >= 0 and y >= 0 then fb_put_pixel(surface, x, y, color)
+    if x == end_x and y == end_y then return true
+    twice: i64 is error * 2
+    if twice >= dy then
+      error is error + dy
+      x is x + step_x
+    end
+    if twice <= dx then
+      error is error + dx
+      y is y + step_y
+    end
+  end
+  return true
+end
+
+func fb_draw_app_icon(surface: ptr[FramebufferSurface], x: u64, y: u64, size: u64, fill: u32, accent: u32) do
+  if size < 12 then return false
+  fb_fill_rect(surface, x, y, size, size, fill)
+  fb_rect_outline(surface, x, y, size, size, accent)
+  inset: u64 is size / 4
+  fb_fill_rect(surface, x + inset, y + inset, size - inset * 2, 2, accent)
+  fb_fill_rect(surface, x + inset, y + inset + 6, size - inset * 2, 2, accent)
+  fb_fill_rect(surface, x + inset, y + inset + 12, size / 3, 2, accent)
+  return true
+end
+
+func fb_present(backbuffer: ptr[FramebufferSurface], target_pixels: ptr) do
+  if backbuffer == 0 or target_pixels == 0 then return false
+  if backbuffer.pixels == 0 then return false
+  count: u64 is backbuffer.stride * backbuffer.height
+  index: u64 is 0
+  while index + 1 < count do
+    offset: u64 is index * 4
+    mem.write64(ptr.add(target_pixels, offset), mem.read64(ptr.add(backbuffer.pixels, offset)))
+    index += 2
+  end
+  if index < count then
+    mem.write32(ptr.add(target_pixels, index * 4), mem.read32(ptr.add(backbuffer.pixels, index * 4)))
+  end
+  return true
+end
+
+func fb_sample_hash(surface: ptr[FramebufferSurface]) do
+  if surface == 0 or surface.width == 0 or surface.height == 0 then return 0
+  step_x: u64 is surface.width / 23 + 1
+  step_y: u64 is surface.height / 17 + 1
+  hash: u64 is u64("0xcbf29ce484222325")
+  y: u64 is 0
+  while y < surface.height do
+    x: u64 is 0
+    while x < surface.width do
+      hash is (hash ^ fb_get_pixel(surface, x, y)) * u64("0x100000001b3")
+      x += step_x
+    end
+    y += step_y
+  end
+  return hash
+end

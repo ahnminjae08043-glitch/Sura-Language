@@ -1,0 +1,90 @@
+# Compact 5x7 English bitmap font for the freestanding framebuffer.
+# Lowercase ASCII is rendered with the corresponding uppercase glyph.
+
+import "./framebuffer.sura"
+
+struct BitmapFontStyle do
+  foreground: u32
+  background: u32
+  scale: u64
+  opaque: u64
+end
+
+font5x7_data is static.bytes([0, 0, 0, 0, 0, 0, 0, 14, 17, 17, 31, 17, 17, 17, 30, 17, 17, 30, 17, 17, 30, 15, 16, 16, 16, 16, 16, 15, 30, 17, 17, 17, 17, 17, 30, 31, 16, 16, 30, 16, 16, 31, 31, 16, 16, 30, 16, 16, 16, 15, 16, 16, 23, 17, 17, 15, 17, 17, 17, 31, 17, 17, 17, 31, 4, 4, 4, 4, 4, 31, 7, 2, 2, 2, 18, 18, 12, 17, 18, 20, 24, 20, 18, 17, 16, 16, 16, 16, 16, 16, 31, 17, 27, 21, 21, 17, 17, 17, 17, 25, 21, 19, 17, 17, 17, 14, 17, 17, 17, 17, 17, 14, 30, 17, 17, 30, 16, 16, 16, 14, 17, 17, 17, 21, 18, 13, 30, 17, 17, 30, 20, 18, 17, 15, 16, 16, 14, 1, 1, 30, 31, 4, 4, 4, 4, 4, 4, 17, 17, 17, 17, 17, 17, 14, 17, 17, 17, 17, 17, 10, 4, 17, 17, 17, 21, 21, 21, 10, 17, 17, 10, 4, 10, 17, 17, 17, 17, 10, 4, 4, 4, 4, 31, 1, 2, 4, 8, 16, 31, 14, 17, 19, 21, 25, 17, 14, 4, 12, 4, 4, 4, 4, 14, 14, 17, 1, 2, 4, 8, 31, 30, 1, 1, 14, 1, 1, 30, 2, 6, 10, 18, 31, 2, 2, 31, 16, 16, 30, 1, 1, 30, 14, 16, 16, 30, 17, 17, 14, 31, 1, 2, 4, 8, 8, 8, 14, 17, 17, 14, 17, 17, 14, 14, 17, 17, 15, 1, 1, 14, 16, 8, 4, 2, 4, 8, 16, 0, 4, 4, 0, 4, 4, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 1, 2, 2, 4, 8, 8, 16, 14, 17, 1, 2, 4, 0, 4, 4, 4, 4, 4, 4, 0, 4, 2, 4, 8, 8, 8, 4, 2, 8, 4, 2, 2, 2, 4, 8, 14, 8, 8, 8, 8, 8, 14, 14, 2, 2, 2, 2, 2, 14, 0, 4, 4, 31, 4, 4, 0, 0, 31, 0, 31, 0, 0, 0, 25, 26, 4, 8, 22, 6, 0], 1)
+
+func font5x7_glyph_index(character: u64) do
+  value: u64 is character
+  if value >= 97 and value <= 122 then value is value - 32
+  if value == 32 then return 0
+  if value >= 65 and value <= 90 then return value - 64
+  if value >= 48 and value <= 57 then return value - 21
+  if value == 62 then return 37
+  if value == 58 then return 38
+  if value == 46 then return 39
+  if value == 45 then return 40
+  if value == 95 then return 41
+  if value == 47 then return 42
+  if value == 63 then return 43
+  if value == 33 then return 44
+  if value == 40 then return 45
+  if value == 41 then return 46
+  if value == 91 then return 47
+  if value == 93 then return 48
+  if value == 43 then return 49
+  if value == 61 then return 50
+  if value == 37 then return 51
+  return 43
+end
+
+func font5x7_style_init(style: ptr[BitmapFontStyle], foreground: u32, background: u32, scale: u64, opaque: u64) do
+  if style == 0 or scale == 0 or scale > 8 or opaque > 1 then return false
+  style.foreground is foreground
+  style.background is background
+  style.scale is scale
+  style.opaque is opaque
+  return true
+end
+
+func font5x7_draw_char(surface: ptr[FramebufferSurface], x: u64, y: u64, character: u64, style: ptr[BitmapFontStyle]) do
+  if surface == 0 or style == 0 or style.scale == 0 or style.scale > 8 then return false
+  cell_width: u64 is 6 * style.scale
+  cell_height: u64 is 8 * style.scale
+  if style.opaque != 0 then fb_fill_rect(surface, x, y, cell_width, cell_height, style.background)
+
+  glyph: u64 is font5x7_glyph_index(character)
+  row: u64 is 0
+  while row < 7 do
+    bits: u64 is mem.read8(ptr.add(font5x7_data, glyph * 7 + row))
+    column: u64 is 0
+    while column < 5 do
+      mask: u64 is 1 << (4 - column)
+      if (bits & mask) != 0 then
+        fb_fill_rect(surface, x + column * style.scale, y + row * style.scale, style.scale, style.scale, style.foreground)
+      end
+      column += 1
+    end
+    row += 1
+  end
+  return true
+end
+
+func font5x7_draw_text(surface: ptr[FramebufferSurface], x: u64, y: u64, text: ptr, max_length: usize, style: ptr[BitmapFontStyle]) do
+  if surface == 0 or text == 0 or style == 0 or style.scale == 0 then return false
+  origin_x: u64 is x
+  cursor_x: u64 is x
+  cursor_y: u64 is y
+  index: usize is 0
+  while index < max_length do
+    character: u64 is mem.read8(ptr.add(text, index))
+    if character == 0 then return true
+    if character == 10 then
+      cursor_x is origin_x
+      cursor_y += 8 * style.scale
+    else
+      font5x7_draw_char(surface, cursor_x, cursor_y, character, style)
+      cursor_x += 6 * style.scale
+    end
+    index += 1
+  end
+  return false
+end

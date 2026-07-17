@@ -4,6 +4,7 @@ param(
     [string]$Firmware = "",
     [int]$TimeoutSeconds = 30,
     [switch]$Interactive,
+    [switch]$HeadlessInteractive,
     [switch]$CompileOnly
 )
 
@@ -162,6 +163,9 @@ try {
     if ($Interactive -and $CompileOnly) {
         throw "Interactive and CompileOnly cannot be used together"
     }
+    if ($HeadlessInteractive -and -not $Interactive) {
+        throw "HeadlessInteractive requires Interactive"
+    }
     if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
         throw "Sura engine was not found: $Engine"
     }
@@ -191,10 +195,12 @@ try {
             Write-Host "Sura OS interactive shell"
             Write-Host "Type help for commands. Type shutdown to close QEMU."
             $serialPort = Get-OsFreeTcpPort
+            $displayBackend = "gtk"
+            if ($HeadlessInteractive) { $displayBackend = "none" }
             $qemuArguments = @(
                 "-machine", "q35,accel=tcg",
                 "-m", "256M",
-                "-display", "none",
+                "-display", $displayBackend,
                 "-monitor", "none",
                 "-serial", "tcp:127.0.0.1:$serialPort,server=on,wait=off",
                 "-no-reboot",
@@ -308,7 +314,7 @@ try {
         -ExpectedMarker "SURA_OS_SHUTDOWN" `
         -ExpectedExitCode 33 `
         -SerialInputLines @("status", "mem", "shutdown") `
-        -AdditionalExpectedSerialMarkers @("kernel: ready", "free physical pages: ") `
+        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "kernel: ready", "free physical pages: ") `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

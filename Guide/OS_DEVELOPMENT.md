@@ -4,14 +4,20 @@ Sura has an experimental freestanding `uefi-x86_64` target. It emits a
 PE32+ EFI application directly from `.sura` source. The output does not embed
 the Sura VM, garbage collector, Windows API, C runtime, assembler, or linker.
 
-`os/sura_os.sura` is a minimal QEMU/OVMF kernel integration image. It records
-the GOP framebuffer, initializes COM1, obtains the UEFI memory map, exits Boot
-Services, draws to framebuffer memory, and executes a physical-page
-allocate/write/read/free self-check before emitting `SURA_OS_KERNEL_READY`.
-It is not a complete general-purpose operating system. The files in
-`examples/os` remain compiler feature tests and do not form a complete
-filesystem, user environment, or device-driver stack. Test generated images
-in a virtual machine before considering physical hardware.
+`os/sura_os.sura` is an executed QEMU/OVMF kernel integration image with the
+first graphical desktop milestone. It records the GOP framebuffer, allocates a
+backbuffer, initializes COM1, obtains the UEFI memory map, exits Boot Services,
+renders a desktop entirely from freestanding Sura code, presents it to GOP
+memory, and executes a physical-page allocate/write/read/free self-check before
+emitting `SURA_OS_KERNEL_READY`.
+
+It is not a complete general-purpose operating system. The rendered terminal
+does not receive keyboard input yet; the current shell is carried over COM1.
+There is no mouse, interactive window manager, application process, persistent
+desktop filesystem, network stack, or browser. The files in `examples/os`
+remain compiler feature tests and do not form a complete user environment or
+device-driver stack. Test generated images in a virtual machine before
+considering physical hardware.
 
 ## Build
 
@@ -60,15 +66,24 @@ The minimal OS integration has a separate build-and-run gate:
 
 # Attach the current terminal to the post-ExitBootServices COM1 shell:
 .\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe -Interactive
+
+# Keep interactive COM1 but suppress the graphical QEMU window:
+.\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe `
+  -Interactive -HeadlessInteractive
+
+# Capture the actual QEMU framebuffer after the desktop is ready:
+.\tools\sura_os_screenshot.ps1 -Engine .\SuraLanguage.exe
 ```
 
 The executed form uses QEMU TCG rather than host hardware. Success requires
-the post-self-check shell to answer `status` and `mem`, accept `shutdown`,
-emit `SURA_OS_SHUTDOWN`, and produce process exit code 33. Interactive mode
-supports `help`, `status`, `mem`, `about`, and `shutdown`. It uses an ephemeral
-`127.0.0.1` TCP bridge for COM1 so PowerShell retains normal line editing; the
-listener is not bound to an external interface. The gate does not modify host
-firmware variables or boot entries.
+the desktop to emit `SURA_OS_DESKTOP_OK`, the post-self-check shell to answer
+`status` and `mem`, accept `shutdown`, emit `SURA_OS_SHUTDOWN`, and produce
+process exit code 33. Interactive mode supports `help`, `status`, `mem`,
+`about`, and `shutdown`. It uses an ephemeral `127.0.0.1` TCP bridge for COM1
+so PowerShell retains normal line editing; the listener is not bound to an
+external interface. The screenshot gate uses a second loopback-only QMP
+connection and writes `build/os/SuraOS-desktop.ppm`. Neither gate modifies
+host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -200,6 +215,39 @@ as one scalar value. Use a `ptr[NestedStruct]` field for an address.
 The GOP helpers use firmware graphics initialization, so a basic framebuffer
 does not require a vendor-specific NVIDIA, AMD, or Intel driver. Accelerated
 3D still requires a separate GPU driver.
+
+## Framebuffer desktop libraries
+
+`stdlib/freestanding/framebuffer.sura` provides checked 32-bit GOP surface
+operations:
+
+- RGB/BGR pixel conversion for GOP formats 0 and 1
+- clipped pixel, filled rectangle, outline, horizontal and vertical line
+  operations
+- integer Bresenham lines and a basic application-icon primitive
+- a bounded 64 MiB surface contract
+- 64-bit-copy double-buffer presentation and a sampled framebuffer hash
+
+`stdlib/freestanding/font5x7.sura` adds a built-in uppercase 5x7 bitmap font,
+digits, and basic punctuation. Lowercase ASCII maps to the uppercase glyphs.
+Text supports a caller-selected foreground, optional background, and integer
+scale.
+
+The caller owns all surface memory. `fb_surface_init` validates dimensions,
+stride, format, and the 64 MiB size bound, but it cannot discover the actual
+allocation length behind an arbitrary pointer. The caller must provide at
+least `stride * height * 4` writable bytes.
+
+The current OS allocates its backbuffer with UEFI page allocation before
+capturing the final memory map. After `ExitBootServices`, it renders the full
+desktop to that buffer and calls `fb_present` once. The QEMU gate observes
+`SURA_OS_DESKTOP_OK`; `tools/sura_os_screenshot.ps1` additionally captures the
+actual pixels through QMP. This proves the current QEMU render path, not
+hardware GPU acceleration or an interactive window system.
+
+`examples/os/framebuffer_features.sura` independently compiles the surface,
+pixel, rectangle, line, icon, font, hash, and presentation paths into an EFI
+feature image. The OS VM gate is the executed proof for the same libraries.
 
 ## Kernel intrinsics
 

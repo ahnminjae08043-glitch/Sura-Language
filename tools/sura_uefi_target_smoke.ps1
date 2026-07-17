@@ -2,6 +2,7 @@ param(
     [string]$Engine = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuraLanguage.exe"),
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/hello_uefi.sura"),
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
+    [string]$FramebufferSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/framebuffer_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
     [string]$PreemptiveSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/preemptive_timer_features.sura"),
@@ -72,6 +73,9 @@ try {
     if (-not (Test-Path -LiteralPath $Source)) { throw "Sura UEFI source not found: $Source" }
     if (-not (Test-Path -LiteralPath $FeatureSource)) {
         throw "Sura freestanding feature source not found: $FeatureSource"
+    }
+    if (-not (Test-Path -LiteralPath $FramebufferSource)) {
+        throw "Sura framebuffer feature source not found: $FramebufferSource"
     }
     if (-not (Test-Path -LiteralPath $MemorySource)) {
         throw "Sura freestanding memory source not found: $MemorySource"
@@ -296,6 +300,21 @@ try {
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
+    }
+
+    $framebufferEfi = Join-Path $temp "FRAMEBUFFER.EFI"
+    $framebufferOutput = & $Engine --target uefi-x86_64 --out $framebufferEfi $FramebufferSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding framebuffer feature compile failed:`n$($framebufferOutput -join "`n")"
+    }
+    $framebufferBytes = [System.IO.File]::ReadAllBytes($framebufferEfi)
+    if ($framebufferBytes.Length -lt 40000 -or
+        $framebufferBytes[0] -ne 0x4d -or $framebufferBytes[1] -ne 0x5a) {
+        throw "Freestanding framebuffer feature image is invalid"
+    }
+    $framebufferAscii = [System.Text.Encoding]::ASCII.GetString($framebufferBytes)
+    if ($framebufferAscii -notmatch "SURA 2D") {
+        throw "Freestanding framebuffer feature image is missing its bitmap text"
     }
 
     $memoryEfi = Join-Path $temp "MEMORY.EFI"
@@ -1064,7 +1083,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

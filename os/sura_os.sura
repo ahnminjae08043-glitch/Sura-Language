@@ -6,13 +6,22 @@
 
 import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
+import "../stdlib/freestanding/font5x7.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
 os_allocator_bitmap is static.zero(65536, 4096)
 os_memory_map is static.zero(131072, 4096)
+os_front_surface_state is static.struct(FramebufferSurface)
+os_back_surface_state is static.struct(FramebufferSurface)
+os_font_white_large is static.struct(BitmapFontStyle)
+os_font_white_small is static.struct(BitmapFontStyle)
+os_font_orange_large is static.struct(BitmapFontStyle)
+os_font_green_large is static.struct(BitmapFontStyle)
+os_font_muted_small is static.struct(BitmapFontStyle)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
+os_desktop_marker is static.utf8("SURA_OS_DESKTOP_OK")
 os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
 os_shutdown_marker is static.utf8("SURA_OS_SHUTDOWN")
 
@@ -30,13 +39,28 @@ os_shell_prompt is static.utf8("sura> ")
 os_shell_help is static.utf8("commands: help status mem about shutdown")
 os_shell_status is static.utf8("kernel: ready")
 os_shell_memory_prefix is static.utf8("free physical pages: ")
+os_graphics_failure_prefix is static.utf8("graphics failure stage: ")
+os_graphics_mode_prefix is static.utf8("graphics mode: ")
 os_shell_about is static.utf8("Sura OS: freestanding x86-64 kernel running in QEMU")
 os_shell_unknown is static.utf8("unknown command; type help")
+
+os_text_brand is static.utf8("SURA OS")
+os_text_start is static.utf8("SURA")
+os_text_terminal is static.utf8("TERMINAL")
+os_text_terminal_prompt is static.utf8("SURA> STATUS")
+os_text_terminal_ready is static.utf8("KERNEL READY")
+os_text_files is static.utf8("FILES")
+os_text_about_icon is static.utf8("ABOUT")
+os_text_vm is static.utf8("QEMU VM")
 
 os_map_size: usize is 131072
 os_map_key: u64 is 0
 os_descriptor_size: usize is 0
 os_descriptor_version: u32 is 0
+os_backbuffer_address: u64 is 0
+os_backbuffer_pages: u64 is 0
+os_framebuffer_size: u64 is 0
+os_graphics_status: u64 is 0
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -152,28 +176,107 @@ func os_shell_run() do
   return true
 end
 
-func os_paint_header(framebuffer: ptr, width: u32, height: u32, stride: u32, pixel_format: u32) do
-  if framebuffer == 0 or width == 0 or height == 0 or stride < width then
-    return false
-  end
-  if pixel_format > 1 then return false
+func os_draw_desktop(surface: ptr[FramebufferSurface]) do
+  if surface == 0 or surface.width < 640 or surface.height < 400 then return false
 
-  rows: u64 is height
-  if rows > 72 then rows is 72
+  navy: u32 is fb_rgb(surface, 12, 24, 44)
+  navy_light: u32 is fb_rgb(surface, 18, 39, 70)
+  panel: u32 is fb_rgb(surface, 20, 27, 40)
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  titlebar: u32 is fb_rgb(surface, 16, 91, 132)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  orange_light: u32 is fb_rgb(surface, 255, 153, 92)
+  white: u32 is fb_rgb(surface, 242, 247, 252)
+  muted: u32 is fb_rgb(surface, 155, 172, 190)
+  green: u32 is fb_rgb(surface, 94, 211, 132)
+  black: u32 is fb_rgb(surface, 3, 8, 15)
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  orange_large: ptr[BitmapFontStyle] is os_font_orange_large
+  green_large: ptr[BitmapFontStyle] is os_font_green_large
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  font5x7_style_init(white_large, white, panel, 2, 0)
+  font5x7_style_init(white_small, white, panel, 1, 0)
+  font5x7_style_init(orange_large, orange_light, panel, 2, 0)
+  font5x7_style_init(green_large, green, panel, 2, 0)
+  font5x7_style_init(muted_small, muted, panel_light, 1, 0)
 
-  color: u32 is 16744448
-  if pixel_format == 0 then color is 3178496
+  if not fb_clear(surface, navy) then return false
 
-  y: u64 is 0
-  while y < rows do
-    x: u64 is 0
-    while x < width do
-      offset: u64 is (y * stride + x) * 4
-      mem.write32(ptr.add(framebuffer, offset), color)
-      x += 1
+  band_height: u64 is surface.height / 8
+  band: u64 is 0
+  while band < 8 do
+    if (band & 1) == 0 then
+      fb_fill_rect(surface, 0, band * band_height, surface.width, band_height, navy_light)
     end
-    y += 1
+    band += 1
   end
+
+  # Brand mark and desktop icons.
+  fb_fill_rect(surface, 28, 24, 54, 54, orange)
+  fb_rect_outline(surface, 28, 24, 54, 54, white)
+  fb_line(surface, 40, 37, 69, 37, white)
+  fb_line(surface, 69, 37, 40, 65, white)
+  fb_line(surface, 40, 65, 69, 65, white)
+  font5x7_draw_text(surface, 96, 31, os_text_brand, 32, white_large)
+
+  fb_draw_app_icon(surface, 34, 114, 48, titlebar, white)
+  font5x7_draw_text(surface, 36, 168, os_text_files, 16, white_small)
+  fb_draw_app_icon(surface, 34, 206, 48, orange, white)
+  font5x7_draw_text(surface, 36, 260, os_text_about_icon, 16, white_small)
+
+  # Centered terminal window.
+  window_width: u64 is 640
+  if surface.width < 760 then window_width is surface.width - 80
+  window_height: u64 is 330
+  if surface.height < 520 then window_height is surface.height - 150
+  window_x: u64 is (surface.width - window_width) / 2
+  window_y: u64 is (surface.height - window_height - 52) / 2
+  fb_fill_rect(surface, window_x + 8, window_y + 10, window_width, window_height, black)
+  fb_fill_rect(surface, window_x, window_y, window_width, window_height, panel)
+  fb_rect_outline(surface, window_x, window_y, window_width, window_height, muted)
+  fb_fill_rect(surface, window_x, window_y, window_width, 38, titlebar)
+  font5x7_draw_text(surface, window_x + 16, window_y + 11, os_text_terminal, 32, white_large)
+  fb_fill_rect(surface, window_x + window_width - 34, window_y + 8, 24, 22, orange)
+  fb_line(surface, window_x + window_width - 28, window_y + 14, window_x + window_width - 17, window_y + 24, white)
+  fb_line(surface, window_x + window_width - 17, window_y + 14, window_x + window_width - 28, window_y + 24, white)
+  font5x7_draw_text(surface, window_x + 24, window_y + 72, os_text_terminal_prompt, 32, orange_large)
+  font5x7_draw_text(surface, window_x + 24, window_y + 108, os_text_terminal_ready, 32, green_large)
+  font5x7_draw_text(surface, window_x + 24, window_y + 144, os_shell_prompt, 16, white_large)
+  fb_fill_rect(surface, window_x + 24 + 72, window_y + 144, 10, 15, white)
+
+  # Taskbar and start button.
+  taskbar_y: u64 is surface.height - 52
+  fb_fill_rect(surface, 0, taskbar_y, surface.width, 52, panel_light)
+  fb_hline(surface, 0, taskbar_y, surface.width, orange)
+  fb_fill_rect(surface, 10, taskbar_y + 8, 104, 36, titlebar)
+  fb_rect_outline(surface, 10, taskbar_y + 8, 104, 36, orange)
+  font5x7_draw_text(surface, 26, taskbar_y + 19, os_text_start, 16, white_large)
+  fb_fill_rect(surface, 126, taskbar_y + 8, 158, 36, panel)
+  font5x7_draw_text(surface, 140, taskbar_y + 19, os_text_terminal, 16, white_small)
+  font5x7_draw_text(surface, surface.width - 66, taskbar_y + 19, os_text_vm, 16, muted_small)
+  return true
+end
+
+func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, pixel_format: u64) do
+  global os_graphics_status
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  back: ptr[FramebufferSurface] is os_back_surface_state
+  os_graphics_status is 1
+  if not fb_surface_init(front, framebuffer, width, height, stride, pixel_format) then return false
+  os_graphics_status is 2
+  if not fb_surface_init(back, os_backbuffer_address, width, height, stride, pixel_format) then return false
+  os_graphics_status is 3
+  if not os_draw_desktop(back) then return false
+  os_graphics_status is 4
+  background_sample: u32 is fb_get_pixel(back, 2, 2)
+  taskbar_sample: u32 is fb_get_pixel(back, 2, height - 20)
+  if background_sample == taskbar_sample then return false
+  os_graphics_status is 5
+  if fb_sample_hash(back) == 0 then return false
+  os_graphics_status is 6
+  if not fb_present(back, front.pixels) then return false
+  os_graphics_status is 0
   return true
 end
 
@@ -193,7 +296,7 @@ func os_memory_self_test() do
 end
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
-  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version
+  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size
 
   uefi.clear()
   uefi.set_color(15, 0)
@@ -207,6 +310,18 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   framebuffer_height: u32 is uefi.gop_height()
   framebuffer_stride: u32 is uefi.gop_stride()
   framebuffer_format: u32 is uefi.gop_pixel_format()
+  os_framebuffer_size is uefi.gop_framebuffer_size()
+
+  if framebuffer == 0 or os_framebuffer_size == 0 or os_framebuffer_size > 67108864 then
+    os_vm_exit(9)
+    return 9
+  end
+  os_backbuffer_pages is (os_framebuffer_size + 4095) / 4096
+  allocation_status: u64 is uefi.allocate_pages(0, 2, os_backbuffer_pages, addr_of(os_backbuffer_address))
+  if allocation_status != 0 or os_backbuffer_address == 0 then
+    os_vm_exit(10)
+    return 10
+  end
 
   if not serial_init(1016, 1) then
     os_vm_exit(1)
@@ -236,9 +351,26 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     return 3
   end
 
-  if not os_paint_header(framebuffer, framebuffer_width, framebuffer_height, framebuffer_stride, framebuffer_format) then
+  if not os_graphics_start(framebuffer, framebuffer_width, framebuffer_height, framebuffer_stride, framebuffer_format) then
+    os_serial_text(os_graphics_failure_prefix)
+    os_serial_u64(os_graphics_status)
+    serial_write_byte(1016, 10, 1000000)
+    os_serial_text(os_graphics_mode_prefix)
+    os_serial_u64(framebuffer_width)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(framebuffer_height)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(framebuffer_stride)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(framebuffer_format)
+    serial_write_byte(1016, 10, 1000000)
+    os_serial_drain()
     os_vm_exit(7)
     return 7
+  end
+  if not os_serial_line(os_desktop_marker, 18) then
+    os_vm_exit(11)
+    return 11
   end
 
   if not os_memory_self_test() then
