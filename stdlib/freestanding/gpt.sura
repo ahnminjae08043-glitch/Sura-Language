@@ -1,7 +1,7 @@
 # Checked primary and backup GPT reader for the freestanding block-device contract.
 #
 # The caller supplies aligned sector and entry buffers. The implementation
-# verifies the primary header CRC and the complete partition-entry-array CRC
+# verifies the selected header CRC and the complete partition-entry-array CRC
 # before returning any partition.
 
 import "block.sura"

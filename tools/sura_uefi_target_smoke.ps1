@@ -14,7 +14,8 @@ param(
     [string]$Fat32Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/fat32_features.sura"),
     [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura"),
     [string]$GptSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/gpt_features.sura"),
-    [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura")
+    [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura"),
+    [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,6 +106,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $PartitionSource)) {
         throw "Sura freestanding partition source not found: $PartitionSource"
+    }
+    if (-not (Test-Path -LiteralPath $AhciSource)) {
+        throw "Sura freestanding AHCI source not found: $AhciSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -575,6 +579,30 @@ try {
         }
     }
 
+    $ahciEfi = Join-Path $temp "AHCI.EFI"
+    $ahciOutput = & $Engine --target uefi-x86_64 --out $ahciEfi $AhciSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding AHCI feature compile failed:`n$($ahciOutput -join "`n")"
+    }
+    $ahciBytes = [System.IO.File]::ReadAllBytes($ahciEfi)
+    if ($ahciBytes.Length -lt 62000 -or
+        $ahciBytes[0] -ne 0x4d -or $ahciBytes[1] -ne 0x5a) {
+        throw "Freestanding AHCI feature image is invalid"
+    }
+    $ahciUtf16 = [System.Text.Encoding]::Unicode.GetString($ahciBytes)
+    if ($ahciUtf16 -notmatch "Sura AHCI feature test") {
+        throw "Freestanding AHCI feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0xff, 0x0f, 0x00, 0x80)),
+        ([byte[]](0x00, 0x20, 0x10, 0x00)),
+        ([byte[]](0x00, 0x30, 0x10, 0x00))
+    )) {
+        if (-not (Test-ByteSequence $ahciBytes $requiredSequence)) {
+            throw "Freestanding AHCI feature image is missing a required DMA command-layout value"
+        }
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -862,7 +890,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

@@ -761,8 +761,32 @@ device for post-boot I/O. `uefi_block_locate` binds the first matching protocol
 only and does not enumerate handles, select a partition, perform asynchronous
 I/O, or recover a changed removable medium automatically. Rebinding refreshes
 the media snapshot. The caller owns every device, context, and buffer and must
-serialize requests. Native post-boot storage still requires drivers such as
-AHCI or NVMe plus DMA, interrupt, timeout, and reset policy.
+serialize requests.
+
+## Native AHCI SATA foundation
+
+`stdlib/freestanding/ahci.sura` provides a polling AHCI 1.x SATA path that can
+remain usable after `ExitBootServices`. It includes PCI class discovery,
+ABAR extraction and PCI memory/bus-master enablement, BIOS/OS ownership
+handoff, HBA reset, implemented-port and active-SATA discovery, command-engine
+stop/start, caller-owned command-list/FIS/table programming, ATA IDENTIFY,
+48-bit DMA read/write, cache flush, and a `BlockDevice` adapter.
+
+The kernel must map ABAR as uncached MMIO and supply stable, physically
+contiguous command and data buffers with both virtual and physical addresses.
+Transfers are accepted only inside the registered DMA window. The current
+command path uses one command slot and one PRDT entry, so one request is at
+most 4 MiB and 65,535 logical sectors; larger operations must be split by the
+caller. A controller without 64-bit addressing is rejected when any DMA range
+crosses 4 GiB.
+
+This is a polling foundation, not a complete production storage stack. It
+does not implement interrupts, NCQ, multiple outstanding commands, ATAPI,
+port multipliers, hot-plug, TRIM, COMRESET/error recovery, power management,
+IOMMU mapping, or NVMe. `examples/os/ahci_features.sura` checks command-header,
+H2D FIS, and PRDT construction and retains discovery/initialization paths for
+compilation. The generated machine code is checked, but no AHCI command has
+yet been executed in QEMU or on hardware.
 
 ## FAT32 and virtual filesystem foundation
 
@@ -793,7 +817,9 @@ bounded by the volume cluster count and fails.
 
 `stdlib/freestanding/vfs.sura` supplies a fixed-capacity mount table and file
 dispatch layer. Paths are caller-owned UTF-8 byte buffers with explicit
-lengths. It rejects duplicate mount points, resolves the longest matching
+lengths. It accepts canonical absolute paths only: embedded NUL, a trailing or
+repeated separator, and `.` or `..` segments are rejected rather than
+normalized. It rejects duplicate mount points, resolves the longest matching
 mount prefix, and dispatches open, read, write, seek, flush, close, and
 filesystem sync through checked callbacks. All mount, filesystem, file, and
 path storage is supplied by the kernel; the library allocates nothing and
@@ -868,7 +894,8 @@ Still required for a complete self-hosted OS environment:
   timer/context-switch verification
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
-- PCIe ECAM/resource allocation, native storage, and other device-specific drivers
+- PCIe ECAM/resource allocation, NVMe, network, USB, graphics, audio, and
+  other device-specific drivers
 - partition creation/resizing, extended MBR chains, GPT repair, and a full
   persistent filesystem writer with allocation, creation, resizing, deletion,
   long names, recovery, and locking

@@ -1,0 +1,496 @@
+# Polling AHCI 1.x SATA block-device foundation.
+#
+# MMIO must be mapped uncached by the kernel. DMA buffers and their physical
+# addresses are caller-owned, contiguous, and stable for every command.
+# This implementation uses one command slot and one PRDT entry.
+
+import "block.sura"
+import "pci.sura"
+
+struct AhciController do
+  abar: ptr
+  capabilities: u64
+  ports_implemented: u64
+  version: u64
+  command_slots: u64
+  supports_64bit_dma: u64
+end
+
+struct AhciDma do
+  command_list: ptr
+  command_list_physical: u64
+  received_fis: ptr
+  received_fis_physical: u64
+  command_table: ptr
+  command_table_physical: u64
+  command_table_bytes: u64
+  data_virtual: ptr
+  data_physical: u64
+  data_bytes: u64
+end
+
+struct AhciContext do
+  port: ptr
+  dma: ptr[AhciDma]
+  sector_count: u64
+  sector_size: u64
+  command_slot: u64
+  command_slots: u64
+  supports_64bit_dma: u64
+  read_only: u64
+  timeout_spins: u64
+  last_error: u64
+end
+
+struct AhciPortInfo do
+  index: u64
+  port: ptr
+  signature: u64
+  sata_status: u64
+end
+
+func ahci_mmio_read32(base: ptr, offset: u64) do
+  if base == 0 or (offset & 3) != 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func ahci_mmio_write32(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 3) != 0 then return false
+  atomic.store_fence()
+  mem.write32(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func ahci_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func ahci_physical_range_valid(address: u64, byte_count: u64, supports_64bit: u64) do
+  if address == 0 or byte_count == 0 then return false
+  if address > u64("0xffffffffffffffff") - (byte_count - 1) then return false
+  if supports_64bit == 0 and address + byte_count - 1 > u64("0xffffffff") then return false
+  return true
+end
+
+func ahci_dma_valid(dma: ptr[AhciDma], supports_64bit: u64) do
+  if dma == 0 then return false
+  if dma.command_list == 0 or dma.received_fis == 0 or dma.command_table == 0 then return false
+  if dma.data_virtual == 0 or dma.command_table_bytes < 144 or dma.command_table_bytes > 65536 then return false
+  if dma.data_bytes < 512 then return false
+  if dma.data_bytes > 4194304 then return false
+  if not ptr.is_aligned(dma.command_list, 1024) or not ptr.is_aligned(dma.received_fis, 256) then return false
+  if not ptr.is_aligned(dma.command_table, 128) or not ptr.is_aligned(dma.data_virtual, 2) then return false
+  if (dma.command_list_physical & 1023) != 0 or (dma.received_fis_physical & 255) != 0 then return false
+  if (dma.command_table_physical & 127) != 0 or (dma.data_physical & 1) != 0 then return false
+  if not ahci_physical_range_valid(dma.command_list_physical, 1024, supports_64bit) then return false
+  if not ahci_physical_range_valid(dma.received_fis_physical, 256, supports_64bit) then return false
+  if not ahci_physical_range_valid(dma.command_table_physical, dma.command_table_bytes, supports_64bit) then return false
+  return ahci_physical_range_valid(dma.data_physical, dma.data_bytes, supports_64bit)
+end
+
+func ahci_controller_clear(controller: ptr[AhciController]) do
+  if controller == 0 then return false
+  controller.abar is 0
+  controller.capabilities is 0
+  controller.ports_implemented is 0
+  controller.version is 0
+  controller.command_slots is 0
+  controller.supports_64bit_dma is 0
+  return true
+end
+
+func ahci_context_clear(context: ptr[AhciContext]) do
+  if context == 0 then return false
+  context.port is 0
+  context.dma is 0
+  context.sector_count is 0
+  context.sector_size is 0
+  context.command_slot is 0
+  context.command_slots is 0
+  context.supports_64bit_dma is 0
+  context.read_only is 0
+  context.timeout_spins is 0
+  context.last_error is 0
+  return true
+end
+
+func ahci_controller_attach(controller: ptr[AhciController], abar: ptr) do
+  if controller == 0 or abar == 0 then return false
+  ahci_controller_clear(controller)
+  capabilities: u64 is ahci_mmio_read32(abar, 0)
+  ports: u64 is ahci_mmio_read32(abar, 12)
+  version: u64 is ahci_mmio_read32(abar, 16)
+  if capabilities == u64("0xffffffff") or version == u64("0xffffffff") then return false
+  command_slots: u64 is ((capabilities >> 8) & 31) + 1
+  if command_slots == 0 or command_slots > 32 then return false
+  controller.abar is abar
+  controller.capabilities is capabilities
+  controller.ports_implemented is ports
+  controller.version is version
+  controller.command_slots is command_slots
+  controller.supports_64bit_dma is (capabilities >> 31) & 1
+  return true
+end
+
+func ahci_take_bios_ownership(controller: ptr[AhciController], spin_limit: u64) do
+  if controller == 0 or controller.abar == 0 or spin_limit == 0 then return false
+  capabilities2: u64 is ahci_mmio_read32(controller.abar, 36)
+  if (capabilities2 & 1) == 0 then return true
+  bohc: u64 is ahci_mmio_read32(controller.abar, 40)
+  if not ahci_mmio_write32(controller.abar, 40, bohc | 2) then return false
+  spins: u64 is 0
+  while spins < spin_limit do
+    bohc is ahci_mmio_read32(controller.abar, 40)
+    if (bohc & 17) == 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func ahci_controller_reset(controller: ptr[AhciController], spin_limit: u64) do
+  if controller == 0 or controller.abar == 0 or spin_limit == 0 then return false
+  if not ahci_take_bios_ownership(controller, spin_limit) then return false
+  ghc: u64 is ahci_mmio_read32(controller.abar, 4)
+  if not ahci_mmio_write32(controller.abar, 4, ghc | u64("0x80000001")) then return false
+  spins: u64 is 0
+  while spins < spin_limit do
+    if (ahci_mmio_read32(controller.abar, 4) & 1) == 0 then
+      ahci_mmio_write32(controller.abar, 4, ahci_mmio_read32(controller.abar, 4) | u64("0x80000000"))
+      return ahci_controller_attach(controller, controller.abar)
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func ahci_pci_find(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  return pci_find_class(1, 6, 1, true, device)
+end
+
+func ahci_pci_bar_physical(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return 0
+  raw: u64 is pci_bar_value(device.bdf, 5)
+  if raw == 0 or raw == u64("0xffffffff") or pci_bar_is_io(raw) then return 0
+  return pci_bar_address(device.bdf, 5)
+end
+
+func ahci_pci_enable(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return false
+  return pci_enable_command(device.bdf, 6)
+end
+
+func ahci_port_address(controller: ptr[AhciController], index: u64) do
+  if controller == 0 or controller.abar == 0 or index >= 32 then return 0
+  if (controller.ports_implemented & (1 << index)) == 0 then return 0
+  return ptr.add(controller.abar, 256 + index * 128)
+end
+
+func ahci_port_active_sata(controller: ptr[AhciController], index: u64, info: ptr[AhciPortInfo]) do
+  if info == 0 then return false
+  info.index is 0
+  info.port is 0
+  info.signature is 0
+  info.sata_status is 0
+  port: ptr is ahci_port_address(controller, index)
+  if port == 0 then return false
+  status: u64 is ahci_mmio_read32(port, 40)
+  signature: u64 is ahci_mmio_read32(port, 36)
+  if (status & 15) != 3 or ((status >> 8) & 15) != 1 then return false
+  if signature != 257 then return false
+  info.index is index
+  info.port is port
+  info.signature is signature
+  info.sata_status is status
+  return true
+end
+
+func ahci_find_sata_port(controller: ptr[AhciController], start_index: u64, info: ptr[AhciPortInfo]) do
+  if controller == 0 or info == 0 or start_index >= 32 then return false
+  index: u64 is start_index
+  while index < 32 do
+    if ahci_port_active_sata(controller, index, info) then return true
+    index += 1
+  end
+  return false
+end
+
+func ahci_wait_port_clear(port: ptr, register_offset: u64, mask: u64, spin_limit: u64) do
+  if port == 0 or spin_limit == 0 then return false
+  spins: u64 is 0
+  while spins < spin_limit do
+    if (ahci_mmio_read32(port, register_offset) & mask) == 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func ahci_stop_port(port: ptr, spin_limit: u64) do
+  if port == 0 or spin_limit == 0 then return false
+  command: u64 is ahci_mmio_read32(port, 24)
+  if not ahci_mmio_write32(port, 24, command & (~1)) then return false
+  if not ahci_wait_port_clear(port, 24, 32768, spin_limit) then return false
+  command is ahci_mmio_read32(port, 24)
+  if not ahci_mmio_write32(port, 24, command & (~16)) then return false
+  return ahci_wait_port_clear(port, 24, 16384, spin_limit)
+end
+
+func ahci_start_port(port: ptr, spin_limit: u64) do
+  if port == 0 or spin_limit == 0 then return false
+  if not ahci_wait_port_clear(port, 24, 49152, spin_limit) then return false
+  command: u64 is ahci_mmio_read32(port, 24)
+  if not ahci_mmio_write32(port, 24, command | 16) then return false
+  command is ahci_mmio_read32(port, 24)
+  return ahci_mmio_write32(port, 24, command | 1)
+end
+
+func ahci_program_port(context: ptr[AhciContext], port: ptr, dma: ptr[AhciDma], command_slots: u64, supports_64bit: u64, spin_limit: u64) do
+  if context == 0 or port == 0 or command_slots == 0 or command_slots > 32 then return false
+  ahci_context_clear(context)
+  if spin_limit == 0 or not ahci_dma_valid(dma, supports_64bit) then return false
+  if not ahci_stop_port(port, spin_limit) then return false
+  ahci_zero(dma.command_list, 1024)
+  ahci_zero(dma.received_fis, 256)
+  ahci_zero(dma.command_table, dma.command_table_bytes)
+  if not ahci_mmio_write32(port, 0, dma.command_list_physical & u64("0xffffffff")) then return false
+  if not ahci_mmio_write32(port, 4, dma.command_list_physical >> 32) then return false
+  if not ahci_mmio_write32(port, 8, dma.received_fis_physical & u64("0xffffffff")) then return false
+  if not ahci_mmio_write32(port, 12, dma.received_fis_physical >> 32) then return false
+  ahci_mmio_write32(port, 48, u64("0xffffffff"))
+  ahci_mmio_write32(port, 16, u64("0xffffffff"))
+  ahci_mmio_write32(port, 20, 0)
+  context.port is port
+  context.dma is dma
+  context.sector_size is 512
+  context.command_slot is 0
+  context.command_slots is command_slots
+  context.supports_64bit_dma is supports_64bit
+  context.timeout_spins is spin_limit
+  if not ahci_start_port(port, spin_limit) then
+    ahci_context_clear(context)
+    return false
+  end
+  return true
+end
+
+func ahci_translate_dma(context: ptr[AhciContext], buffer: ptr, byte_count: u64) do
+  if context == 0 or context.dma == 0 or buffer == 0 or byte_count == 0 then return 0
+  dma: ptr[AhciDma] is context.dma
+  start: u64 is dma.data_virtual
+  address: u64 is buffer
+  if address < start or address - start > dma.data_bytes then return 0
+  offset: u64 is address - start
+  if byte_count > dma.data_bytes - offset then return 0
+  if dma.data_physical > u64("0xffffffffffffffff") - offset then return 0
+  physical: u64 is dma.data_physical + offset
+  if not ahci_physical_range_valid(physical, byte_count, context.supports_64bit_dma) then return 0
+  return physical
+end
+
+func ahci_prepare_command(context: ptr[AhciContext], command: u64, lba: u64, sector_count: u64, physical: u64, byte_count: u64) do
+  if context == 0 or context.dma == 0 then return false
+  dma: ptr[AhciDma] is context.dma
+  if not ahci_dma_valid(dma, context.supports_64bit_dma) then return false
+  if context.command_slot >= context.command_slots or context.command_slot >= 32 then return false
+  data_command: bool is command == 37 or command == 53 or command == 236
+  if command != 37 and command != 53 and command != 236 and command != 234 then return false
+  if data_command then
+    if byte_count == 0 or byte_count > 4194304 then
+      return false
+    end
+    if sector_count == 0 or sector_count > 65535 then
+      return false
+    end
+    if not ahci_physical_range_valid(physical, byte_count, context.supports_64bit_dma) then
+      return false
+    end
+    if command == 37 or command == 53 then
+      if lba > u64("0x0000ffffffffffff") then return false
+      if sector_count - 1 > u64("0x0000ffffffffffff") - lba then return false
+    end
+  else
+    if byte_count != 0 or sector_count != 0 then
+      return false
+    end
+  end
+  header: ptr is ptr.add(dma.command_list, context.command_slot * 32)
+  ahci_zero(header, 32)
+  ahci_zero(dma.command_table, dma.command_table_bytes)
+  flags: u64 is 5
+  if command == 53 then
+    flags is flags | 64
+  end
+  if data_command then
+    flags is flags | 65536
+  end
+  mem.write32(header, flags)
+  mem.write32(ptr.add(header, 8), dma.command_table_physical & u64("0xffffffff"))
+  mem.write32(ptr.add(header, 12), dma.command_table_physical >> 32)
+
+  fis: ptr is dma.command_table
+  mem.write8(fis, 39)
+  mem.write8(ptr.add(fis, 1), 128)
+  mem.write8(ptr.add(fis, 2), command)
+  if command == 37 or command == 53 then
+    mem.write8(ptr.add(fis, 4), lba & 255)
+    mem.write8(ptr.add(fis, 5), (lba >> 8) & 255)
+    mem.write8(ptr.add(fis, 6), (lba >> 16) & 255)
+    mem.write8(ptr.add(fis, 7), 64)
+    mem.write8(ptr.add(fis, 8), (lba >> 24) & 255)
+    mem.write8(ptr.add(fis, 9), (lba >> 32) & 255)
+    mem.write8(ptr.add(fis, 10), (lba >> 40) & 255)
+    mem.write8(ptr.add(fis, 12), sector_count & 255)
+    mem.write8(ptr.add(fis, 13), (sector_count >> 8) & 255)
+  end
+  if data_command then
+    prdt: ptr is ptr.add(dma.command_table, 128)
+    mem.write32(prdt, physical & u64("0xffffffff"))
+    mem.write32(ptr.add(prdt, 4), physical >> 32)
+    mem.write32(ptr.add(prdt, 12), (byte_count - 1) | u64("0x80000000"))
+  end
+  atomic.fence()
+  return true
+end
+
+func ahci_issue(context: ptr[AhciContext], command: u64, lba: u64, sector_count: u64, physical: u64, byte_count: u64) do
+  if context == 0 or context.port == 0 or context.timeout_spins == 0 then return false
+  context.last_error is 0
+  if not ahci_prepare_command(context, command, lba, sector_count, physical, byte_count) then
+    context.last_error is 1
+    return false
+  end
+  mask: u64 is 1 << context.command_slot
+  if ((ahci_mmio_read32(context.port, 52) | ahci_mmio_read32(context.port, 56)) & mask) != 0 then
+    context.last_error is 2
+    return false
+  end
+  if not ahci_wait_port_clear(context.port, 32, 136, context.timeout_spins) then
+    context.last_error is 3
+    return false
+  end
+  ahci_mmio_write32(context.port, 16, u64("0xffffffff"))
+  current: u64 is ahci_mmio_read32(context.port, 56)
+  if not ahci_mmio_write32(context.port, 56, current | mask) then
+    context.last_error is 4
+    return false
+  end
+  spins: u64 is 0
+  while spins < context.timeout_spins do
+    interrupt_status: u64 is ahci_mmio_read32(context.port, 16)
+    if (interrupt_status & u64("0x40000000")) != 0 then
+      context.last_error is 5
+      return false
+    end
+    if (ahci_mmio_read32(context.port, 56) & mask) == 0 then
+      task_file: u64 is ahci_mmio_read32(context.port, 32)
+      if (task_file & 1) != 0 then
+        context.last_error is 6
+        return false
+      end
+      return true
+    end
+    cpu.pause()
+    spins += 1
+  end
+  context.last_error is 7
+  return false
+end
+
+func ahci_identify(context: ptr[AhciContext]) do
+  if context == 0 or context.dma == 0 then return false
+  dma: ptr[AhciDma] is context.dma
+  if dma.data_bytes < 512 then return false
+  ahci_zero(dma.data_virtual, 512)
+  if not ahci_issue(context, 236, 0, 1, dma.data_physical, 512) then return false
+  capabilities: u64 is mem.read16(ptr.add(dma.data_virtual, 166))
+  sector_count: u64 is 0
+  if (capabilities & 1024) != 0 then
+    sector_count is mem.read64(ptr.add(dma.data_virtual, 200)) & u64("0x0000ffffffffffff")
+  else
+    sector_count is mem.read32(ptr.add(dma.data_virtual, 120))
+  end
+  if sector_count == 0 then return false
+  sector_size: u64 is 512
+  logical_info: u64 is mem.read16(ptr.add(dma.data_virtual, 212))
+  if (logical_info & 53248) == 20480 then
+    words_per_sector: u64 is mem.read32(ptr.add(dma.data_virtual, 234))
+    if words_per_sector > u64("0x7fffffffffffffff") then return false
+    sector_size is words_per_sector * 2
+  end
+  if sector_size < 512 or sector_size > 65536 or not block_power_of_two(sector_size) then return false
+  if sector_size > dma.data_bytes then return false
+  context.sector_count is sector_count
+  context.sector_size is sector_size
+  return true
+end
+
+func ahci_read_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[AhciContext] is context_address
+  if context == 0 or context.sector_size == 0 or count == 0 then return 1
+  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_count: u64 is count * context.sector_size
+  if byte_count > 4194304 or count > 65535 then return 1
+  physical: u64 is ahci_translate_dma(context, buffer, byte_count)
+  if physical == 0 then return 1
+  if ahci_issue(context, 37, lba, count, physical, byte_count) then return 0
+  return 2
+end
+
+func ahci_write_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[AhciContext] is context_address
+  if context == 0 or context.read_only != 0 then return 2
+  if context.sector_size == 0 or count == 0 then return 1
+  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_count: u64 is count * context.sector_size
+  if byte_count > 4194304 or count > 65535 then return 1
+  physical: u64 is ahci_translate_dma(context, buffer, byte_count)
+  if physical == 0 then return 1
+  if ahci_issue(context, 53, lba, count, physical, byte_count) then return 0
+  return 3
+end
+
+func ahci_flush_blocks(context_address: ptr) do
+  context: ptr[AhciContext] is context_address
+  if context == 0 then return 1
+  if ahci_issue(context, 234, 0, 0, 0, 0) then return 0
+  return 2
+end
+
+func ahci_bind_block_device(device: ptr[BlockDevice], context: ptr[AhciContext]) do
+  if device == 0 or context == 0 then return false
+  if context.port == 0 or context.dma == 0 then return false
+  if context.sector_count == 0 or context.sector_size == 0 then return false
+  if not block_device_init(device, context, context.sector_size, context.sector_count, 2, context.read_only) then return false
+  device.read_blocks is addr_of(ahci_read_blocks)
+  device.write_blocks is addr_of(ahci_write_blocks)
+  device.flush_blocks is addr_of(ahci_flush_blocks)
+  return true
+end
+
+func ahci_initialize_disk(device: ptr[BlockDevice], controller: ptr[AhciController], port_index: u64, dma: ptr[AhciDma], context: ptr[AhciContext], spin_limit: u64) do
+  if device == 0 or controller == 0 or context == 0 then return false
+  port: ptr is ahci_port_address(controller, port_index)
+  if port == 0 then return false
+  info_signature: u64 is ahci_mmio_read32(port, 36)
+  status: u64 is ahci_mmio_read32(port, 40)
+  if info_signature != 257 or (status & 15) != 3 or ((status >> 8) & 15) != 1 then return false
+  if not ahci_program_port(context, port, dma, controller.command_slots, controller.supports_64bit_dma, spin_limit) then return false
+  if not ahci_identify(context) then
+    ahci_stop_port(port, spin_limit)
+    ahci_context_clear(context)
+    return false
+  end
+  return ahci_bind_block_device(device, context)
+end

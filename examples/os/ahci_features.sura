@@ -1,0 +1,73 @@
+# Executable AHCI command-header, H2D FIS, and PRDT layout self-check.
+# Hardware discovery and MMIO paths are retained in a non-executing block.
+
+import "../../stdlib/freestanding/ahci.sura"
+
+ahci_controller is static.struct(AhciController)
+ahci_pci_device is static.struct(PciDevice)
+ahci_block_device is static.struct(BlockDevice)
+ahci_context is static.struct(AhciContext)
+ahci_dma is static.struct(AhciDma)
+ahci_port_info is static.struct(AhciPortInfo)
+ahci_command_list is static.zero(1024, 1024)
+ahci_received_fis is static.zero(256, 256)
+ahci_command_table is static.zero(256, 128)
+ahci_data is static.zero(4096, 4096)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura AHCI feature test")
+  uefi.newline()
+
+  context: ptr[AhciContext] is ahci_context
+  dma: ptr[AhciDma] is ahci_dma
+  dma.command_list is ahci_command_list
+  dma.command_list_physical is u64("0x00100000")
+  dma.received_fis is ahci_received_fis
+  dma.received_fis_physical is u64("0x00101000")
+  dma.command_table is ahci_command_table
+  dma.command_table_physical is u64("0x00102000")
+  dma.command_table_bytes is 256
+  dma.data_virtual is ahci_data
+  dma.data_physical is u64("0x00103000")
+  dma.data_bytes is 4096
+  context.dma is dma
+  context.command_slot is 0
+  context.command_slots is 32
+  context.supports_64bit_dma is 1
+
+  if not ahci_prepare_command(context, 37, u64("0x123456789a"), 8, dma.data_physical, 4096) then return 1
+  if mem.read32(ahci_command_list) != 65541 then return 2
+  if mem.read32(ptr.add(ahci_command_list, 8)) != u64("0x00102000") then return 3
+  if mem.read8(ahci_command_table) != 39 or mem.read8(ptr.add(ahci_command_table, 1)) != 128 then return 4
+  if mem.read8(ptr.add(ahci_command_table, 2)) != 37 then return 5
+  if mem.read8(ptr.add(ahci_command_table, 4)) != 154 then return 6
+  if mem.read8(ptr.add(ahci_command_table, 5)) != 120 then return 7
+  if mem.read8(ptr.add(ahci_command_table, 6)) != 86 then return 8
+  if mem.read8(ptr.add(ahci_command_table, 8)) != 52 then return 9
+  if mem.read8(ptr.add(ahci_command_table, 9)) != 18 then return 10
+  if mem.read8(ptr.add(ahci_command_table, 10)) != 0 then return 11
+  if mem.read16(ptr.add(ahci_command_table, 12)) != 8 then return 12
+  if mem.read32(ptr.add(ahci_command_table, 128)) != u64("0x00103000") then return 13
+  if mem.read32(ptr.add(ahci_command_table, 140)) != u64("0x80000fff") then return 14
+
+  if not ahci_prepare_command(context, 53, 1, 1, dma.data_physical, 512) then return 15
+  if mem.read32(ahci_command_list) != 65605 then return 16
+  if mem.read8(ptr.add(ahci_command_table, 2)) != 53 then return 17
+  if not ahci_prepare_command(context, 234, 0, 0, 0, 0) then return 18
+  if mem.read32(ahci_command_list) != 5 then return 19
+
+  if 0 == 1 then
+    controller: ptr[AhciController] is ahci_controller
+    pci_device: ptr[PciDevice] is ahci_pci_device
+    block_device: ptr[BlockDevice] is ahci_block_device
+    info: ptr[AhciPortInfo] is ahci_port_info
+    found: bool is ahci_pci_find(pci_device)
+    abar: u64 is ahci_pci_bar_physical(pci_device)
+    enabled: bool is ahci_pci_enable(pci_device)
+    attached: bool is ahci_controller_attach(controller, abar)
+    reset: bool is ahci_controller_reset(controller, 1000000)
+    port: bool is ahci_find_sata_port(controller, 0, info)
+    initialized: bool is ahci_initialize_disk(block_device, controller, info.index, dma, context, 1000000)
+  end
+  return 0
+end
