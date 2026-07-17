@@ -331,6 +331,10 @@ try {
         $ps2Bytes[0] -ne 0x4d -or $ps2Bytes[1] -ne 0x5a) {
         throw "Freestanding PS/2 feature image is invalid"
     }
+    $ps2Utf16 = [System.Text.Encoding]::Unicode.GetString($ps2Bytes)
+    if ($ps2Utf16 -notmatch "Sura PS/2 feature test") {
+        throw "Freestanding PS/2 feature image is missing its diagnostic"
+    }
 
     $memoryEfi = Join-Path $temp "MEMORY.EFI"
     $memoryOutput = & $Engine --target uefi-x86_64 --out $memoryEfi $MemorySource 2>&1

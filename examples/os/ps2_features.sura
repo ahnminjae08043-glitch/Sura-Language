@@ -7,6 +7,8 @@ ps2_keyboard_state is static.struct(Ps2KeyboardState)
 ps2_mouse_state is static.struct(Ps2MouseState)
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura PS/2 feature test")
+  uefi.newline()
   keyboard: ptr[Ps2KeyboardState] is ps2_keyboard_state
   mouse: ptr[Ps2MouseState] is ps2_mouse_state
   if not ps2_keyboard_reset(keyboard) then return 1
