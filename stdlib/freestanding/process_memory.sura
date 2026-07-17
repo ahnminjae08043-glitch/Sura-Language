@@ -1,0 +1,594 @@
+# Checked x86-64 process address spaces for identity-accessible physical memory.
+#
+# The caller serializes every mutation, keeps the physical allocator alive, and
+# must not destroy an active address space. User mappings are lower-half 4-KiB
+# pages. Intermediate tables and mapped pages are allocated automatically and
+# recorded in caller-owned fixed-capacity buffers.
+
+import "physical_memory.sura"
+import "virtual_memory.sura"
+
+struct ProcessMapping do
+  virtual_address: u64
+  physical_address: u64
+  flags: u64
+end
+
+struct ProcessSpaceBuffers do
+  owned_pages: ptr
+  owned_capacity: u64
+  mappings: ptr
+  mapping_capacity: u64
+end
+
+struct ProcessAddressSpace do
+  root: ptr
+  allocator: ptr[PhysicalAllocator]
+  owned_pages: ptr
+  owned_capacity: u64
+  owned_count: u64
+  mappings: ptr
+  mapping_capacity: u64
+  mapping_count: u64
+  initialized: u64
+end
+
+struct ProcessStack do
+  guard_base: u64
+  guard_pages: u64
+  stack_base: u64
+  stack_top: u64
+  initial_rsp: u64
+  stack_pages: u64
+end
+
+func process_nx_flag() do
+  return u64("0x8000000000000000")
+end
+
+func process_user_limit() do
+  return u64("0x0000800000000000")
+end
+
+func process_user_range_valid(address: u64, byte_count: u64) do
+  limit: u64 is process_user_limit()
+  if address < 4096 or address >= limit then return false
+  if byte_count == 0 then return true
+  return byte_count <= limit - address
+end
+
+func process_nx_supported() do
+  if cpu.cpuid_eax(u64("0x80000000"), 0) < u64("0x80000001") then return false
+  return (cpu.cpuid_edx(u64("0x80000001"), 0) & (1 << 20)) != 0
+end
+
+func process_enable_nx() do
+  if not process_nx_supported() then return false
+  efer: u64 is cpu.read_msr(u64("0xc0000080"))
+  cpu.write_msr(u64("0xc0000080"), efer | (1 << 11))
+  return (cpu.read_msr(u64("0xc0000080")) & (1 << 11)) != 0
+end
+
+func process_zero_bytes(address: ptr, byte_count: u64) do
+  if address == 0 and byte_count != 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(address, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func process_mapping_at(state: ptr[ProcessAddressSpace], index: u64) do
+  if state == 0 or state.mappings == 0 or index >= state.mapping_count then return 0
+  return ptr.index(state.mappings, index, sizeof(ProcessMapping))
+end
+
+func process_find_mapping(state: ptr[ProcessAddressSpace], virtual_page: u64) do
+  if state == 0 or state.initialized == 0 then return 0
+  index: u64 is 0
+  while index < state.mapping_count do
+    mapping: ptr[ProcessMapping] is process_mapping_at(state, index)
+    if mapping.virtual_address == virtual_page then return mapping
+    index += 1
+  end
+  return 0
+end
+
+func process_mapping_access_valid(state: ptr[ProcessAddressSpace], mapping: ptr[ProcessMapping], writable: bool) do
+  if state == 0 or mapping == 0 or state.root == 0 or state.allocator == 0 then return false
+  required: u64 is 5
+  if writable then required is 7
+  if (mapping.flags & required) != required then return false
+  if not process_owned_contains(state, mapping.physical_address) then return false
+  if not pmem_is_managed(state.allocator, mapping.physical_address) then return false
+  if not pmem_is_used(state.allocator, mapping.physical_address) then return false
+  pte: ptr is vmem_walk_pte(state.root, mapping.virtual_address)
+  if pte == 0 then return false
+  entry: u64 is mem.read64(pte)
+  if not paging.present(entry) then return false
+  if paging.entry_address(entry) != mapping.physical_address then return false
+  return (paging.entry_flags(entry) & required) == required
+end
+
+func process_user_access_valid(state: ptr[ProcessAddressSpace], user_address: u64, byte_count: u64, writable: bool) do
+  if state == 0 or state.initialized == 0 then return false
+  if not process_user_range_valid(user_address, byte_count) then return false
+  if byte_count == 0 then return true
+  checked: u64 is 0
+  while checked < byte_count do
+    current: u64 is user_address + checked
+    page: u64 is current & ~4095
+    offset: u64 is current & 4095
+    mapping: ptr[ProcessMapping] is process_find_mapping(state, page)
+    if not process_mapping_access_valid(state, mapping, writable) then return false
+    chunk: u64 is 4096 - offset
+    remaining: u64 is byte_count - checked
+    if chunk > remaining then chunk is remaining
+    checked += chunk
+  end
+  return true
+end
+
+func process_owned_contains(state: ptr[ProcessAddressSpace], physical_page: u64) do
+  if state == 0 or state.owned_pages == 0 then return false
+  index: u64 is 0
+  while index < state.owned_count do
+    if mem.read64(ptr.index(state.owned_pages, index, 8)) == physical_page then return true
+    index += 1
+  end
+  return false
+end
+
+func process_owned_add(state: ptr[ProcessAddressSpace], physical_page: u64) do
+  if state == 0 or physical_page == 0 then return false
+  if state.owned_count >= state.owned_capacity then return false
+  if process_owned_contains(state, physical_page) then return false
+  mem.write64(ptr.index(state.owned_pages, state.owned_count, 8), physical_page)
+  state.owned_count is state.owned_count + 1
+  return true
+end
+
+func process_owned_remove(state: ptr[ProcessAddressSpace], physical_page: u64) do
+  if state == 0 or state.owned_pages == 0 then return false
+  index: u64 is 0
+  while index < state.owned_count do
+    slot: ptr is ptr.index(state.owned_pages, index, 8)
+    if mem.read64(slot) == physical_page then
+      last_index: u64 is state.owned_count - 1
+      if index != last_index then
+        mem.write64(slot, mem.read64(ptr.index(state.owned_pages, last_index, 8)))
+      end
+      mem.write64(ptr.index(state.owned_pages, last_index, 8), 0)
+      state.owned_count is last_index
+      return true
+    end
+    index += 1
+  end
+  return false
+end
+
+func process_release_owned(state: ptr[ProcessAddressSpace], physical_page: u64) do
+  if state == 0 or state.allocator == 0 then return false
+  if not process_owned_contains(state, physical_page) then return false
+  if not pmem_is_managed(state.allocator, physical_page) then return false
+  if not pmem_is_used(state.allocator, physical_page) then return false
+  if not pmem_free(state.allocator, physical_page) then return false
+  return process_owned_remove(state, physical_page)
+end
+
+func process_remove_mapping_at(state: ptr[ProcessAddressSpace], index: u64) do
+  if state == 0 or index >= state.mapping_count then return false
+  last_index: u64 is state.mapping_count - 1
+  target: ptr[ProcessMapping] is process_mapping_at(state, index)
+  if index != last_index then
+    source: ptr[ProcessMapping] is process_mapping_at(state, last_index)
+    target.virtual_address is source.virtual_address
+    target.physical_address is source.physical_address
+    target.flags is source.flags
+  end
+  last: ptr[ProcessMapping] is process_mapping_at(state, last_index)
+  last.virtual_address is 0
+  last.physical_address is 0
+  last.flags is 0
+  state.mapping_count is last_index
+  return true
+end
+
+func process_table_empty(table: ptr) do
+  if table == 0 then return false
+  index: u64 is 0
+  while index < 512 do
+    if paging.read(table, index) != 0 then return false
+    index += 1
+  end
+  return true
+end
+
+func process_table_entry_usable(entry: u64, executable: bool) do
+  if not paging.present(entry) or paging.large(entry) then return false
+  flags: u64 is paging.entry_flags(entry)
+  if (flags & 6) != 6 then return false
+  if executable and (flags & process_nx_flag()) != 0 then return false
+  return true
+end
+
+func process_leaf_flags(writable: bool, executable: bool) do
+  if writable and executable then return 0
+  flags: u64 is 5
+  if writable then flags is flags | 2
+  if not executable then flags is flags | process_nx_flag()
+  return flags
+end
+
+func process_free_unlinked(allocator: ptr[PhysicalAllocator], first: u64, second: u64, third: u64, fourth: u64) do
+  if allocator == 0 then return false
+  if fourth != 0 then pmem_free(allocator, fourth)
+  if third != 0 then pmem_free(allocator, third)
+  if second != 0 then pmem_free(allocator, second)
+  if first != 0 then pmem_free(allocator, first)
+  return true
+end
+
+func process_space_init(state: ptr[ProcessAddressSpace], allocator: ptr[PhysicalAllocator], kernel_root: ptr, buffers: ptr[ProcessSpaceBuffers]) do
+  if state == 0 or allocator == 0 or buffers == 0 then return false
+  if state.initialized != 0 or state.root != 0 then return false
+  if buffers.owned_pages == 0 or buffers.owned_capacity < 4 then return false
+  if buffers.mappings == 0 or buffers.mapping_capacity == 0 then return false
+
+  root_page: u64 is pmem_alloc(allocator)
+  if root_page == 0 then return false
+  process_zero_bytes(root_page, 4096)
+
+  index: u64 is 256
+  while index < 512 do
+    entry: u64 is 0
+    if kernel_root != 0 then entry is paging.read(kernel_root, index)
+    if paging.present(entry) then entry is entry & ~4
+    paging.write(root_page, index, entry)
+    index += 1
+  end
+
+  state.root is root_page
+  state.allocator is allocator
+  state.owned_pages is buffers.owned_pages
+  state.owned_capacity is buffers.owned_capacity
+  state.owned_count is 0
+  state.mappings is buffers.mappings
+  state.mapping_capacity is buffers.mapping_capacity
+  state.mapping_count is 0
+  state.initialized is 1
+  if not process_owned_add(state, root_page) then
+    state.initialized is 0
+    state.root is 0
+    pmem_free(allocator, root_page)
+    return false
+  end
+  return true
+end
+
+func process_space_map_page(state: ptr[ProcessAddressSpace], virtual_page: u64, writable: bool, executable: bool) do
+  if state == 0 or state.initialized == 0 or state.root == 0 then return false
+  if state.allocator == 0 or state.mappings == 0 or state.owned_pages == 0 then return false
+  if (virtual_page & 4095) != 0 or not process_user_range_valid(virtual_page, 4096) then return false
+  if writable and executable then return false
+  if state.owned_count > state.owned_capacity then return false
+  if state.mapping_count > state.mapping_capacity then return false
+  if state.mapping_count >= state.mapping_capacity then return false
+  if process_find_mapping(state, virtual_page) != 0 then return false
+
+  pml4_index: u64 is paging.pml4_index(virtual_page)
+  pdpt_index: u64 is paging.pdpt_index(virtual_page)
+  pd_index: u64 is paging.pd_index(virtual_page)
+  pt_index: u64 is paging.pt_index(virtual_page)
+
+  pdpt: ptr is 0
+  pd: ptr is 0
+  pt: ptr is 0
+  missing_tables: u64 is 0
+
+  pml4_entry: u64 is paging.read(state.root, pml4_index)
+  if paging.present(pml4_entry) then
+    if not process_table_entry_usable(pml4_entry, executable) then return false
+    pdpt is paging.entry_address(pml4_entry)
+    pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
+      if paging.present(pdpt_entry) then
+      if not process_table_entry_usable(pdpt_entry, executable) then return false
+      pd is paging.entry_address(pdpt_entry)
+      pd_entry: u64 is paging.read(pd, pd_index)
+        if paging.present(pd_entry) then
+        if not process_table_entry_usable(pd_entry, executable) then return false
+        pt is paging.entry_address(pd_entry)
+        if paging.read(pt, pt_index) != 0 then
+          return false
+        end
+        else
+          if pd_entry != 0 then return false
+          missing_tables is 1
+        end
+      else
+        if pdpt_entry != 0 then return false
+        missing_tables is 2
+      end
+    else
+      if pml4_entry != 0 then return false
+      missing_tables is 3
+    end
+
+  required_pages: u64 is missing_tables + 1
+  if required_pages > state.owned_capacity - state.owned_count then return false
+  if required_pages > pmem_available_pages(state.allocator) then return false
+
+  new_pdpt: u64 is 0
+  new_pd: u64 is 0
+  new_pt: u64 is 0
+  data_page: u64 is 0
+
+  if pdpt == 0 then
+    new_pdpt is pmem_alloc(state.allocator)
+    if new_pdpt == 0 then return false
+    process_zero_bytes(new_pdpt, 4096)
+    pdpt is new_pdpt
+  end
+  if pd == 0 then
+    new_pd is pmem_alloc(state.allocator)
+    if new_pd == 0 then
+      process_free_unlinked(state.allocator, new_pdpt, 0, 0, 0)
+      return false
+    end
+    process_zero_bytes(new_pd, 4096)
+    pd is new_pd
+  end
+  if pt == 0 then
+    new_pt is pmem_alloc(state.allocator)
+    if new_pt == 0 then
+      process_free_unlinked(state.allocator, new_pdpt, new_pd, 0, 0)
+      return false
+    end
+    process_zero_bytes(new_pt, 4096)
+    pt is new_pt
+  end
+  data_page is pmem_alloc(state.allocator)
+  if data_page == 0 then
+    process_free_unlinked(state.allocator, new_pdpt, new_pd, new_pt, 0)
+    return false
+  end
+  process_zero_bytes(data_page, 4096)
+
+  if new_pdpt != 0 then paging.map(state.root, pml4_index, pdpt, 7)
+  if new_pd != 0 then paging.map(pdpt, pdpt_index, pd, 7)
+  if new_pt != 0 then paging.map(pd, pd_index, pt, 7)
+
+  flags: u64 is process_leaf_flags(writable, executable)
+  paging.map(pt, pt_index, data_page, flags)
+  paging.invalidate(virtual_page)
+
+  if new_pdpt != 0 then process_owned_add(state, new_pdpt)
+  if new_pd != 0 then process_owned_add(state, new_pd)
+  if new_pt != 0 then process_owned_add(state, new_pt)
+  process_owned_add(state, data_page)
+
+  mapping: ptr[ProcessMapping] is ptr.index(state.mappings, state.mapping_count, sizeof(ProcessMapping))
+  mapping.virtual_address is virtual_page
+  mapping.physical_address is data_page
+  mapping.flags is flags
+  state.mapping_count is state.mapping_count + 1
+  return true
+end
+
+func process_space_protect_page(state: ptr[ProcessAddressSpace], virtual_page: u64, writable: bool, executable: bool) do
+  if state == 0 or state.initialized == 0 or writable and executable then return false
+  if (virtual_page & 4095) != 0 or not process_user_range_valid(virtual_page, 4096) then return false
+  mapping: ptr[ProcessMapping] is process_find_mapping(state, virtual_page)
+  if mapping == 0 then return false
+  flags: u64 is process_leaf_flags(writable, executable)
+  if not vmem_protect_4k(state.root, virtual_page, flags) then return false
+  mapping.flags is flags
+  return true
+end
+
+func process_space_unmap_page(state: ptr[ProcessAddressSpace], virtual_page: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  if (virtual_page & 4095) != 0 or not process_user_range_valid(virtual_page, 4096) then return false
+  mapping_index: u64 is 0
+  mapping: ptr[ProcessMapping] is 0
+  while mapping_index < state.mapping_count and mapping == 0 do
+    candidate: ptr[ProcessMapping] is process_mapping_at(state, mapping_index)
+    if candidate.virtual_address == virtual_page then mapping is candidate
+    if mapping == 0 then mapping_index += 1
+  end
+  if mapping == 0 then return false
+
+  pml4_index: u64 is paging.pml4_index(virtual_page)
+  pdpt_index: u64 is paging.pdpt_index(virtual_page)
+  pd_index: u64 is paging.pd_index(virtual_page)
+  pt_index: u64 is paging.pt_index(virtual_page)
+  pml4_entry: u64 is paging.read(state.root, pml4_index)
+  if not process_table_entry_usable(pml4_entry, false) then return false
+  pdpt: ptr is paging.entry_address(pml4_entry)
+  pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
+  if not process_table_entry_usable(pdpt_entry, false) then return false
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_entry: u64 is paging.read(pd, pd_index)
+  if not process_table_entry_usable(pd_entry, false) then return false
+  pt: ptr is paging.entry_address(pd_entry)
+  leaf: u64 is paging.read(pt, pt_index)
+  if not paging.present(leaf) then return false
+  if paging.entry_address(leaf) != mapping.physical_address then return false
+  if not process_owned_contains(state, mapping.physical_address) then return false
+  if not pmem_is_managed(state.allocator, mapping.physical_address) then return false
+  if not pmem_is_used(state.allocator, mapping.physical_address) then return false
+
+  paging.clear(pt, pt_index)
+  paging.invalidate(virtual_page)
+  if not pmem_free(state.allocator, mapping.physical_address) then return false
+  process_owned_remove(state, mapping.physical_address)
+  process_remove_mapping_at(state, mapping_index)
+
+  if process_table_empty(pt) and process_owned_contains(state, pt) then
+    paging.clear(pd, pd_index)
+    process_release_owned(state, pt)
+    if process_table_empty(pd) and process_owned_contains(state, pd) then
+      paging.clear(pdpt, pdpt_index)
+      process_release_owned(state, pd)
+      if process_table_empty(pdpt) and process_owned_contains(state, pdpt) then
+        paging.clear(state.root, pml4_index)
+        process_release_owned(state, pdpt)
+      end
+    end
+  end
+  return true
+end
+
+func process_space_rollback(state: ptr[ProcessAddressSpace], mapping_count: u64) do
+  if state == 0 or state.initialized == 0 or mapping_count > state.mapping_count then return false
+  while state.mapping_count > mapping_count do
+    mapping: ptr[ProcessMapping] is process_mapping_at(state, state.mapping_count - 1)
+    virtual_page: u64 is mapping.virtual_address
+    if not process_space_unmap_page(state, virtual_page) then return false
+  end
+  return true
+end
+
+func process_copy_to_user(state: ptr[ProcessAddressSpace], user_address: u64, source: ptr, byte_count: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  if byte_count == 0 then return process_user_range_valid(user_address, 0)
+  if source == 0 then return false
+  if not process_user_access_valid(state, user_address, byte_count, true) then return false
+
+  copied: u64 is 0
+  while copied < byte_count do
+    current: u64 is user_address + copied
+    page: u64 is current & ~4095
+    offset: u64 is current & 4095
+    mapping: ptr[ProcessMapping] is process_find_mapping(state, page)
+    chunk: u64 is 4096 - offset
+    remaining: u64 is byte_count - copied
+    if chunk > remaining then chunk is remaining
+    index: u64 is 0
+    while index < chunk do
+      value: u64 is mem.read8(ptr.add(source, copied + index))
+      mem.write8(ptr.add(mapping.physical_address, offset + index), value)
+      index += 1
+    end
+    copied += chunk
+  end
+  return true
+end
+
+func process_copy_from_user(state: ptr[ProcessAddressSpace], destination: ptr, user_address: u64, byte_count: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  if byte_count == 0 then return process_user_range_valid(user_address, 0)
+  if destination == 0 then return false
+  if not process_user_access_valid(state, user_address, byte_count, false) then return false
+
+  copied: u64 is 0
+  while copied < byte_count do
+    current: u64 is user_address + copied
+    page: u64 is current & ~4095
+    offset: u64 is current & 4095
+    mapping: ptr[ProcessMapping] is process_find_mapping(state, page)
+    chunk: u64 is 4096 - offset
+    remaining: u64 is byte_count - copied
+    if chunk > remaining then chunk is remaining
+    index: u64 is 0
+    while index < chunk do
+      value: u64 is mem.read8(ptr.add(mapping.physical_address, offset + index))
+      mem.write8(ptr.add(destination, copied + index), value)
+      index += 1
+    end
+    copied += chunk
+  end
+  return true
+end
+
+func process_space_map_stack(state: ptr[ProcessAddressSpace], stack_top: u64, stack_pages: u64, guard_pages: u64, result: ptr[ProcessStack]) do
+  if state == 0 or result == 0 or stack_pages == 0 then return false
+  result.guard_base is 0
+  result.guard_pages is 0
+  result.stack_base is 0
+  result.stack_top is 0
+  result.initial_rsp is 0
+  result.stack_pages is 0
+  if (stack_top & 4095) != 0 or stack_top > process_user_limit() then return false
+  if stack_pages > stack_top / 4096 then return false
+  stack_bytes: u64 is stack_pages * 4096
+  stack_base: u64 is stack_top - stack_bytes
+  if not process_user_range_valid(stack_base, stack_bytes) then return false
+  if guard_pages > stack_base / 4096 then return false
+  guard_bytes: u64 is guard_pages * 4096
+  guard_base: u64 is stack_base - guard_bytes
+  if guard_pages != 0 and not process_user_range_valid(guard_base, guard_bytes) then return false
+
+  page: u64 is guard_base
+  while page < stack_base do
+    if process_find_mapping(state, page) != 0 or vmem_is_mapped(state.root, page) then return false
+    page += 4096
+  end
+
+  snapshot: u64 is state.mapping_count
+  page is stack_base
+  while page < stack_top do
+    if not process_space_map_page(state, page, true, false) then
+      process_space_rollback(state, snapshot)
+      return false
+    end
+    page += 4096
+  end
+
+  result.guard_base is guard_base
+  result.guard_pages is guard_pages
+  result.stack_base is stack_base
+  result.stack_top is stack_top
+  result.initial_rsp is stack_top - 8
+  result.stack_pages is stack_pages
+  return true
+end
+
+func process_space_activate(state: ptr[ProcessAddressSpace]) do
+  if state == 0 or state.initialized == 0 or state.root == 0 then return false
+  paging.activate(state.root)
+  return paging.root() == state.root
+end
+
+func process_space_destroy(state: ptr[ProcessAddressSpace]) do
+  if state == 0 then return false
+  if state.initialized == 0 then return state.root == 0
+  if state.root == 0 or state.allocator == 0 then return false
+  if state.owned_count > state.owned_capacity then return false
+  if state.mapping_count > state.mapping_capacity then return false
+  if paging.root() == state.root then return false
+
+  index: u64 is 0
+  while index < state.owned_count do
+    physical_page: u64 is mem.read64(ptr.index(state.owned_pages, index, 8))
+    if not pmem_is_managed(state.allocator, physical_page) then return false
+    if not pmem_is_used(state.allocator, physical_page) then return false
+    index += 1
+  end
+
+  while state.owned_count > 0 do
+    physical_page: u64 is mem.read64(ptr.index(state.owned_pages, state.owned_count - 1, 8))
+    if not pmem_free(state.allocator, physical_page) then return false
+    mem.write64(ptr.index(state.owned_pages, state.owned_count - 1, 8), 0)
+    state.owned_count is state.owned_count - 1
+  end
+
+  index is 0
+  while index < state.mapping_count do
+    mapping: ptr[ProcessMapping] is process_mapping_at(state, index)
+    mapping.virtual_address is 0
+    mapping.physical_address is 0
+    mapping.flags is 0
+    index += 1
+  end
+  state.mapping_count is 0
+  state.root is 0
+  state.allocator is 0
+  state.owned_pages is 0
+  state.owned_capacity is 0
+  state.mappings is 0
+  state.mapping_capacity is 0
+  state.initialized is 0
+  return true
+end

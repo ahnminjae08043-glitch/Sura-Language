@@ -526,6 +526,84 @@ for acknowledgements before reclaiming a page visible to another CPU.
 mapping, translation verification, unmapping, freeing, and a non-returning
 post-firmware halt path.
 
+## Process address spaces and static ELF64 loading
+
+`stdlib/freestanding/process_memory.sura` builds isolated lower-half user
+address spaces on the physical and virtual memory libraries. The kernel
+supplies a `ProcessSpaceBuffers` object containing fixed-capacity arrays for
+owned physical pages and `ProcessMapping` records. `process_space_init`
+allocates a new PML4, leaves its lower half empty, and copies PML4 entries
+256..511 from the supplied kernel root with the U/S bit cleared. Passing zero
+as the kernel root creates an address space without shared kernel mappings,
+which is useful for the executable feature test but is not sufficient for a
+real ring-3 transition.
+
+The public operations are:
+
+- `process_space_init(state, allocator, kernel_root, buffers)`
+- `process_space_map_page(state, virtual_page, writable, executable)`
+- `process_space_protect_page` and `process_space_unmap_page`
+- `process_space_map_stack(state, top, pages, guard_pages, result)`
+- `process_copy_to_user` and `process_copy_from_user`
+- `process_space_activate`, `process_space_rollback`, and
+  `process_space_destroy`
+- `process_nx_supported()` and `process_enable_nx()`
+
+Mapping accepts nonzero 4-KiB-aligned addresses below
+`0x0000800000000000`. It automatically allocates the missing PDPT, PD, and PT
+pages, refuses large or non-present nonzero conflicts, creates U/S mappings,
+and rejects writable-plus-executable leaves. Non-executable pages carry NX;
+the kernel must call `process_enable_nx` before activating an address space
+that contains them. Unmapping releases the data page and prunes empty
+intermediate tables. Mapping changes invalidate only the local CPU.
+
+The copy helpers validate the complete user range and every recorded PTE
+before copying any byte. They copy through the identity-accessible physical
+page recorded by the address space instead of dereferencing an untrusted user
+virtual address in kernel mode. `process_copy_to_user` also requires writable
+PTEs. These checks are stable only while the caller prevents concurrent
+mapping changes. They do not replace a process fault policy, ownership checks
+for higher-level kernel objects, or remote TLB shootdown.
+
+`process_space_map_stack` maps writable NX stack pages, leaves the requested
+guard pages unmapped, and returns a stack pointer congruent to 8 modulo 16 for
+the current Sura user-entry ABI. `process_space_destroy` refuses to free the
+currently active CR3 and preflights every owned page before releasing the
+address space.
+
+`stdlib/freestanding/elf64.sura` loads a deliberately bounded static
+x86-64 ELF64 subset into a `ProcessAddressSpace`. It accepts little-endian
+System V or Linux `ET_EXEC` images and checks:
+
+- ELF64 magic, class, data encoding, ABI version, x86-64 machine, header
+  sizes, zero x86-64 flags, and at most 128 program headers
+- every program-header table and file range before pointer arithmetic
+- sorted readable `PT_LOAD` segments, `p_filesz <= p_memsz`, power-of-two
+  alignment, and file/virtual page-offset congruence
+- nonzero lower-half memory ranges, no page-overlapping load segments, no
+  W+X segment, and an entry point inside an executable load segment
+- rejection of `PT_INTERP`, `PT_DYNAMIC`, `PT_SHLIB`, `PT_TLS`, and an
+  executable `PT_GNU_STACK`
+
+The loader first validates the complete image, maps zeroed writable NX pages,
+copies file bytes, leaves the `p_memsz - p_filesz` tail zeroed, and then applies
+the final read/write/execute permissions. A failure rolls back only mappings
+created by that load attempt. Two caller-owned `Elf64Segment` scratch objects
+make the parser reentrant when each concurrent load has separate buffers.
+
+`examples/os/process_elf_features.sura` constructs a static ELF64 image,
+checks malformed-size and W+X rejection, loads code and zero-filled memory,
+checks safe copy permissions, creates a guarded user stack, rejects a W+X
+mapping, destroys the address space, and verifies that all physical pages were
+returned. The UEFI smoke gate currently compiles this executable self-check
+and verifies its image; QEMU/OVMF or hardware execution has not yet been
+recorded.
+
+This subset does not implement `ET_DYN`, ASLR, relocations, an ELF
+interpreter, dynamic linking, TLS, demand paging, copy-on-write, shared memory,
+memory-mapped files, PCID, KPTI, remote TLB shootdown, process fault/exit
+policy, signals, or user-mode preemption.
+
 ## Cooperative context primitives
 
 The backend emits a small Win64-compatible integer context switch only when
@@ -694,11 +772,13 @@ frame with RFLAGS `0x202`, disables maskable interrupts for the final
 transition, executes `swapgs`, and enters with `IRETQ`. Success does not
 return; `IRETQ` restores the requested user IF state.
 
-These operations do not create user page tables or mark pages U/S, load an
-executable, validate syscall pointers, copy data across the privilege
-boundary, isolate kernel mappings, mitigate speculative `swapgs` paths, save
-FPU/SIMD state, or define process fault and exit policy. The kernel must keep
-kernel code/data supervisor-only and provide those policies.
+These operations do not automatically select a process address space, validate
+syscall pointers, copy data across the privilege boundary, mitigate
+speculative `swapgs` paths, save FPU/SIMD state, or define process fault and
+exit policy. `process_memory.sura` provides address-space and checked-copy
+building blocks, but each syscall handler must select and apply them according
+to the current process. The kernel must keep kernel code/data supervisor-only
+and provide the remaining policies.
 `examples/os/user_mode_features.sura` is a compile and machine-code feature
 test; ring-3 execution still needs QEMU or hardware verification.
 
@@ -937,11 +1017,11 @@ Still required for a complete self-hosted OS environment:
 - executed AP-startup coverage and complete per-AP descriptor, extended-state,
   scheduler-join, failure-recovery, and temporary-mapping lifecycle
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
-- synchronized/NUMA physical-memory policy, automatic intermediate page-table
-  allocation/reclamation, virtual address-space policy, and remote TLB shootdown
+- synchronized/NUMA physical-memory policy, a complete virtual address-space
+  policy, shared mappings, PCID, and remote TLB shootdown
 - SMP run queues, load balancing, user-mode preemption, and executed
   timer/context-switch verification
-- per-process address spaces and executable loading, user-pointer copy-in/out,
+- dynamic/PIE ELF loading, relocations, TLS, demand paging, copy-on-write,
   process fault/exit policy, KPTI, and speculative-entry hardening
 - PCI/PCIe resource allocation, bridge configuration, MSI/MSI-X, network,
   USB, graphics, audio, and other device-specific drivers

@@ -1,0 +1,129 @@
+# Executable process-address-space, safe-copy, stack, and static ELF64 self-check.
+
+import "../../stdlib/freestanding/elf64.sura"
+
+process_allocator is static.struct(PhysicalAllocator)
+process_space is static.struct(ProcessAddressSpace)
+process_buffers is static.struct(ProcessSpaceBuffers)
+process_stack is static.struct(ProcessStack)
+process_elf_info is static.struct(Elf64Info)
+process_elf_buffers is static.struct(Elf64Buffers)
+process_elf_segment is static.struct(Elf64Segment)
+process_elf_previous is static.struct(Elf64Segment)
+process_kernel_root is static.zero(4096, 4096)
+process_arena is static.zero(131072, 4096)
+process_bitmap is static.zero(16, 16)
+process_owned_pages is static.zero(512, 16)
+process_mappings is static.struct(ProcessMapping, 32)
+process_elf_image is static.zero(8192, 4096)
+process_copy_buffer is static.zero(32, 16)
+process_stack_input is static.bytes([83, 85, 82, 65], 16)
+
+func process_build_test_elf() do
+  process_zero_bytes(process_elf_image, 8192)
+  mem.write8(process_elf_image, 127)
+  mem.write8(ptr.add(process_elf_image, 1), 69)
+  mem.write8(ptr.add(process_elf_image, 2), 76)
+  mem.write8(ptr.add(process_elf_image, 3), 70)
+  mem.write8(ptr.add(process_elf_image, 4), 2)
+  mem.write8(ptr.add(process_elf_image, 5), 1)
+  mem.write8(ptr.add(process_elf_image, 6), 1)
+  mem.write16(ptr.add(process_elf_image, 16), 2)
+  mem.write16(ptr.add(process_elf_image, 18), 62)
+  mem.write32(ptr.add(process_elf_image, 20), 1)
+  mem.write64(ptr.add(process_elf_image, 24), u64("0x0000000000400000"))
+  mem.write64(ptr.add(process_elf_image, 32), 64)
+  mem.write16(ptr.add(process_elf_image, 52), 64)
+  mem.write16(ptr.add(process_elf_image, 54), 56)
+  mem.write16(ptr.add(process_elf_image, 56), 1)
+
+  program: ptr is ptr.add(process_elf_image, 64)
+  mem.write32(program, 1)
+  mem.write32(ptr.add(program, 4), 5)
+  mem.write64(ptr.add(program, 8), 4096)
+  mem.write64(ptr.add(program, 16), u64("0x0000000000400000"))
+  mem.write64(ptr.add(program, 24), u64("0x0000000000400000"))
+  mem.write64(ptr.add(program, 32), 4)
+  mem.write64(ptr.add(program, 40), 4096)
+  mem.write64(ptr.add(program, 48), 4096)
+
+  mem.write8(ptr.add(process_elf_image, 4096), 49)
+  mem.write8(ptr.add(process_elf_image, 4097), 192)
+  mem.write8(ptr.add(process_elf_image, 4098), 195)
+  mem.write8(ptr.add(process_elf_image, 4099), 144)
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura process and ELF64 feature test")
+  uefi.newline()
+
+  allocator: ptr[PhysicalAllocator] is process_allocator
+  space: ptr[ProcessAddressSpace] is process_space
+  buffers: ptr[ProcessSpaceBuffers] is process_buffers
+  stack: ptr[ProcessStack] is process_stack
+  info: ptr[Elf64Info] is process_elf_info
+  elf_buffers: ptr[Elf64Buffers] is process_elf_buffers
+  buffers.owned_pages is process_owned_pages
+  buffers.owned_capacity is 64
+  buffers.mappings is process_mappings
+  buffers.mapping_capacity is 32
+  elf_buffers.segment is process_elf_segment
+  elf_buffers.previous is process_elf_previous
+
+  if not process_build_test_elf() then return 1
+  if not elf64_open(process_elf_image, 8192, info, elf_buffers) then return 2
+  if info.entry != u64("0x0000000000400000") or info.load_pages != 1 then return 3
+
+  program: ptr is ptr.add(process_elf_image, 64)
+  mem.write32(ptr.add(program, 4), 7)
+  if elf64_open(process_elf_image, 8192, info, elf_buffers) then return 4
+  mem.write32(ptr.add(program, 4), 5)
+  mem.write64(ptr.add(program, 32), 4097)
+  if elf64_open(process_elf_image, 8192, info, elf_buffers) then return 5
+  mem.write64(ptr.add(program, 32), 4)
+
+  if not pmem_reset(allocator, process_bitmap, 16, process_arena, 32) then return 6
+  if not pmem_release_range(allocator, process_arena, 32) then return 7
+  initial_free: u64 is pmem_available_pages(allocator)
+  if initial_free != 32 then return 8
+  if not process_space_init(space, allocator, process_kernel_root, buffers) then return 9
+  if not elf64_load_process(process_elf_image, 8192, space, info, elf_buffers) then return 10
+  if info.loaded == 0 or space.mapping_count != 1 then return 11
+
+  code_mapping: ptr[ProcessMapping] is process_find_mapping(space, u64("0x0000000000400000"))
+  if code_mapping == 0 then return 12
+  if (code_mapping.flags & 2) != 0 or (code_mapping.flags & process_nx_flag()) != 0 then return 13
+  if not process_copy_from_user(space, process_copy_buffer, u64("0x0000000000400000"), 8) then return 14
+  if mem.read8(process_copy_buffer) != 49 then return 15
+  if mem.read8(ptr.add(process_copy_buffer, 2)) != 195 then return 16
+  if mem.read8(ptr.add(process_copy_buffer, 4)) != 0 then return 17
+  if process_copy_to_user(space, u64("0x0000000000400000"), process_stack_input, 4) then return 18
+
+  stack_top: u64 is u64("0x0000700000000000")
+  if not process_space_map_stack(space, stack_top, 2, 1, stack) then return 19
+  if stack.initial_rsp != stack_top - 8 or (stack.initial_rsp & 15) != 8 then return 20
+  if process_find_mapping(space, stack.guard_base) != 0 then return 21
+  user_data: u64 is stack_top - 16
+  if not process_copy_to_user(space, user_data, process_stack_input, 4) then return 22
+  process_zero_bytes(process_copy_buffer, 32)
+  if not process_copy_from_user(space, process_copy_buffer, user_data, 4) then return 23
+  if mem.read32(process_copy_buffer) != u64("0x41525553") then return 24
+  edge: u64 is stack_top - 2
+  if process_copy_to_user(space, edge, process_stack_input, 4) then return 25
+  process_zero_bytes(process_copy_buffer, 32)
+  if not process_copy_from_user(space, process_copy_buffer, edge, 2) then return 26
+  if mem.read16(process_copy_buffer) != 0 then return 27
+  if process_space_map_page(space, u64("0x0000000000500000"), true, true) then return 28
+
+  conflict_address: u64 is u64("0x0000010000000000")
+  conflict_index: u64 is paging.pml4_index(conflict_address)
+  paging.write(space.root, conflict_index, 2)
+  if process_space_map_page(space, conflict_address, true, false) then return 29
+  if paging.read(space.root, conflict_index) != 2 then return 30
+  paging.clear(space.root, conflict_index)
+
+  if not process_space_destroy(space) then return 31
+  if pmem_available_pages(allocator) != initial_free then return 32
+  return 0
+end

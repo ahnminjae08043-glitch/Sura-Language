@@ -7,6 +7,7 @@ param(
     [string]$PreemptiveSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/preemptive_timer_features.sura"),
     [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura"),
     [string]$UserModeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_mode_features.sura"),
+    [string]$ProcessElfSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/process_elf_features.sura"),
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
     [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
     [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
@@ -85,6 +86,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $UserModeSource)) {
         throw "Sura freestanding user-mode source not found: $UserModeSource"
+    }
+    if (-not (Test-Path -LiteralPath $ProcessElfSource)) {
+        throw "Sura freestanding process/ELF source not found: $ProcessElfSource"
     }
     if (-not (Test-Path -LiteralPath $PciSource)) {
         throw "Sura freestanding PCI source not found: $PciSource"
@@ -416,6 +420,24 @@ try {
         if (-not (Test-ByteSequence $userModeBytes $requiredSequence)) {
             throw "Freestanding user-mode feature image is missing a required ring-transition sequence"
         }
+    }
+
+    $processElfEfi = Join-Path $temp "PROCESS_ELF.EFI"
+    $processElfOutput = & $Engine --target uefi-x86_64 --out $processElfEfi $ProcessElfSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding process/ELF feature compile failed:`n$($processElfOutput -join "`n")"
+    }
+    $processElfBytes = [System.IO.File]::ReadAllBytes($processElfEfi)
+    if ($processElfBytes.Length -lt 200000 -or
+        $processElfBytes[0] -ne 0x4d -or $processElfBytes[1] -ne 0x5a) {
+        throw "Freestanding process/ELF feature image is invalid"
+    }
+    $processElfUtf16 = [System.Text.Encoding]::Unicode.GetString($processElfBytes)
+    if ($processElfUtf16 -notmatch "Sura process and ELF64 feature test") {
+        throw "Freestanding process/ELF feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $processElfBytes ([byte[]](0x0f, 0x01, 0x38)))) {
+        throw "Freestanding process/ELF feature image is missing local page invalidation"
     }
 
     $pciEfi = Join-Path $temp "PCI.EFI"
@@ -968,7 +990,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

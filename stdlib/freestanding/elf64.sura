@@ -1,0 +1,278 @@
+# Checked static x86-64 ELF64 executable loader.
+#
+# This loader accepts little-endian System V/Linux ET_EXEC images with bounded
+# program-header tables. It maps PT_LOAD pages into ProcessAddressSpace,
+# zero-fills memory beyond p_filesz, and applies final W^X page permissions.
+# Dynamic linking, PT_INTERP, PT_DYNAMIC, TLS, executable stacks, overlapping
+# load pages, and non-readable load segments are rejected.
+
+import "process_memory.sura"
+
+struct Elf64Segment do
+  kind: u64
+  flags: u64
+  file_offset: u64
+  virtual_address: u64
+  file_size: u64
+  memory_size: u64
+  alignment: u64
+  page_start: u64
+  page_end: u64
+end
+
+struct Elf64Info do
+  image: ptr
+  image_size: u64
+  entry: u64
+  program_offset: u64
+  program_count: u64
+  load_segments: u64
+  load_pages: u64
+  lowest_address: u64
+  highest_address: u64
+  loaded: u64
+end
+
+struct Elf64Buffers do
+  segment: ptr[Elf64Segment]
+  previous: ptr[Elf64Segment]
+end
+
+func elf64_range_valid(offset: u64, byte_count: u64, limit: u64) do
+  if offset > limit then return false
+  return byte_count <= limit - offset
+end
+
+func elf64_power_of_two(value: u64) do
+  return value != 0 and (value & (value - 1)) == 0
+end
+
+func elf64_reset_info(info: ptr[Elf64Info]) do
+  if info == 0 then return false
+  info.image is 0
+  info.image_size is 0
+  info.entry is 0
+  info.program_offset is 0
+  info.program_count is 0
+  info.load_segments is 0
+  info.load_pages is 0
+  info.lowest_address is 0
+  info.highest_address is 0
+  info.loaded is 0
+  return true
+end
+
+func elf64_ident_valid(image: ptr, image_size: u64) do
+  if image == 0 or image_size < 64 then return false
+  if mem.read8(image) != 127 then return false
+  if mem.read8(ptr.add(image, 1)) != 69 then return false
+  if mem.read8(ptr.add(image, 2)) != 76 then return false
+  if mem.read8(ptr.add(image, 3)) != 70 then return false
+  if mem.read8(ptr.add(image, 4)) != 2 then return false
+  if mem.read8(ptr.add(image, 5)) != 1 then return false
+  if mem.read8(ptr.add(image, 6)) != 1 then return false
+  os_abi: u64 is mem.read8(ptr.add(image, 7))
+  if os_abi != 0 and os_abi != 3 then return false
+  if mem.read8(ptr.add(image, 8)) != 0 then return false
+  index: u64 is 9
+  while index < 16 do
+    if mem.read8(ptr.add(image, index)) != 0 then return false
+    index += 1
+  end
+  return true
+end
+
+func elf64_read_segment(info: ptr[Elf64Info], index: u64, segment: ptr[Elf64Segment]) do
+  if info == 0 or segment == 0 or index >= info.program_count then return false
+  relative: u64 is index * 56
+  if relative / 56 != index then return false
+  if not elf64_range_valid(info.program_offset, relative + 56, info.image_size) then return false
+  header: ptr is ptr.add(info.image, info.program_offset + relative)
+  segment.kind is mem.read32(header)
+  segment.flags is mem.read32(ptr.add(header, 4))
+  segment.file_offset is mem.read64(ptr.add(header, 8))
+  segment.virtual_address is mem.read64(ptr.add(header, 16))
+  segment.file_size is mem.read64(ptr.add(header, 32))
+  segment.memory_size is mem.read64(ptr.add(header, 40))
+  segment.alignment is mem.read64(ptr.add(header, 48))
+  segment.page_start is 0
+  segment.page_end is 0
+  return true
+end
+
+func elf64_prepare_load(info: ptr[Elf64Info], segment: ptr[Elf64Segment]) do
+  if info == 0 or segment == 0 or segment.kind != 1 then return false
+  if (segment.flags & ~7) != 0 then return false
+  if (segment.flags & 4) == 0 then return false
+  if (segment.flags & 3) == 3 then return false
+  if segment.file_size > segment.memory_size then return false
+  if not elf64_range_valid(segment.file_offset, segment.file_size, info.image_size) then return false
+  if (segment.virtual_address & 4095) != (segment.file_offset & 4095) then return false
+
+  alignment: u64 is segment.alignment
+  if alignment > 1 then
+    if not elf64_power_of_two(alignment) then return false
+    if (segment.virtual_address % alignment) != (segment.file_offset % alignment) then return false
+  end
+  if segment.memory_size == 0 then
+    if segment.file_size != 0 then return false
+    return true
+  end
+  if not process_user_range_valid(segment.virtual_address, segment.memory_size) then return false
+
+  segment.page_start is segment.virtual_address & ~4095
+  memory_end: u64 is segment.virtual_address + segment.memory_size
+  segment.page_end is (memory_end + 4095) & ~4095
+  if segment.page_start < 4096 or segment.page_end > process_user_limit() then return false
+  if segment.page_end <= segment.page_start then return false
+  return true
+end
+
+func elf64_load_pages_overlap(left: ptr[Elf64Segment], right: ptr[Elf64Segment]) do
+  if left == 0 or right == 0 then return true
+  if left.memory_size == 0 or right.memory_size == 0 then return false
+  return left.page_start < right.page_end and right.page_start < left.page_end
+end
+
+func elf64_open(image: ptr, image_size: u64, info: ptr[Elf64Info], buffers: ptr[Elf64Buffers]) do
+  if info == 0 or buffers == 0 then return false
+  if buffers.segment == 0 or buffers.previous == 0 then return false
+  if buffers.segment == buffers.previous then return false
+  elf64_reset_info(info)
+  if not elf64_ident_valid(image, image_size) then return false
+  if mem.read16(ptr.add(image, 16)) != 2 then return false
+  if mem.read16(ptr.add(image, 18)) != 62 then return false
+  if mem.read32(ptr.add(image, 20)) != 1 then return false
+  if mem.read32(ptr.add(image, 48)) != 0 then return false
+  if mem.read16(ptr.add(image, 52)) != 64 then return false
+  if mem.read16(ptr.add(image, 54)) != 56 then return false
+
+  entry: u64 is mem.read64(ptr.add(image, 24))
+  program_offset: u64 is mem.read64(ptr.add(image, 32))
+  program_count: u64 is mem.read16(ptr.add(image, 56))
+  if program_offset < 64 then return false
+  if program_count == 0 or program_count > 128 then return false
+  program_bytes: u64 is program_count * 56
+  if program_bytes / 56 != program_count then return false
+  if not elf64_range_valid(program_offset, program_bytes, image_size) then return false
+
+  info.image is image
+  info.image_size is image_size
+  info.entry is entry
+  info.program_offset is program_offset
+  info.program_count is program_count
+  info.lowest_address is process_user_limit()
+
+  segment: ptr[Elf64Segment] is buffers.segment
+  previous: ptr[Elf64Segment] is buffers.previous
+  previous_virtual: u64 is 0
+  have_previous: u64 is 0
+  entry_executable: u64 is 0
+  index: u64 is 0
+  while index < program_count do
+    if not elf64_read_segment(info, index, segment) then return false
+    if segment.kind == 2 or segment.kind == 3 or segment.kind == 5 or segment.kind == 7 then return false
+    if segment.kind == u64("0x6474e551") and (segment.flags & 1) != 0 then return false
+
+    if segment.kind == 1 then
+      if not elf64_prepare_load(info, segment) then return false
+      if have_previous != 0 and segment.virtual_address < previous_virtual then return false
+      previous_virtual is segment.virtual_address
+      have_previous is 1
+      if segment.memory_size != 0 then
+        earlier: u64 is 0
+        while earlier < index do
+          if not elf64_read_segment(info, earlier, previous) then return false
+          if previous.kind == 1 then
+            if not elf64_prepare_load(info, previous) then return false
+            if elf64_load_pages_overlap(segment, previous) then return false
+          end
+          earlier += 1
+        end
+
+        pages: u64 is (segment.page_end - segment.page_start) / 4096
+        if pages > u64("0xffffffffffffffff") - info.load_pages then return false
+        info.load_pages is info.load_pages + pages
+        info.load_segments is info.load_segments + 1
+        if segment.page_start < info.lowest_address then info.lowest_address is segment.page_start
+        if segment.page_end > info.highest_address then info.highest_address is segment.page_end
+        if (segment.flags & 1) != 0 then
+          segment_end: u64 is segment.virtual_address + segment.memory_size
+          if entry >= segment.virtual_address and entry < segment_end then entry_executable is 1
+        end
+      end
+    end
+    index += 1
+  end
+
+  if info.load_segments == 0 or info.load_pages == 0 then return false
+  if entry_executable == 0 or not process_user_range_valid(entry, 1) then return false
+  return true
+end
+
+func elf64_load_process(image: ptr, image_size: u64, space: ptr[ProcessAddressSpace], info: ptr[Elf64Info], buffers: ptr[Elf64Buffers]) do
+  if space == 0 or space.initialized == 0 or info == 0 or buffers == 0 then return false
+  if not elf64_open(image, image_size, info, buffers) then return false
+  if space.mapping_count > space.mapping_capacity then return false
+  if info.load_pages > space.mapping_capacity - space.mapping_count then return false
+
+  segment: ptr[Elf64Segment] is buffers.segment
+  snapshot: u64 is space.mapping_count
+  index: u64 is 0
+  while index < info.program_count do
+    if not elf64_read_segment(info, index, segment) then
+      process_space_rollback(space, snapshot)
+      return false
+    end
+    if segment.kind == 1 and segment.memory_size != 0 then
+      if not elf64_prepare_load(info, segment) then
+        process_space_rollback(space, snapshot)
+        return false
+      end
+      page: u64 is segment.page_start
+      while page < segment.page_end do
+        if not process_space_map_page(space, page, true, false) then
+          process_space_rollback(space, snapshot)
+          return false
+        end
+        page += 4096
+      end
+      if segment.file_size != 0 then
+        source: ptr is ptr.add(image, segment.file_offset)
+        if not process_copy_to_user(space, segment.virtual_address, source, segment.file_size) then
+          process_space_rollback(space, snapshot)
+          return false
+        end
+      end
+    end
+    index += 1
+  end
+
+  index is 0
+  while index < info.program_count do
+    if not elf64_read_segment(info, index, segment) then
+      process_space_rollback(space, snapshot)
+      return false
+    end
+    if segment.kind == 1 and segment.memory_size != 0 then
+      if not elf64_prepare_load(info, segment) then
+        process_space_rollback(space, snapshot)
+        return false
+      end
+      writable: bool is (segment.flags & 2) != 0
+      executable: bool is (segment.flags & 1) != 0
+      page: u64 is segment.page_start
+      while page < segment.page_end do
+        if not process_space_protect_page(space, page, writable, executable) then
+          process_space_rollback(space, snapshot)
+          return false
+        end
+        page += 4096
+      end
+    end
+    index += 1
+  end
+
+  info.loaded is 1
+  return true
+end
