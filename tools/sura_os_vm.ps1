@@ -247,10 +247,19 @@ try {
                 throw "Could not connect to the QEMU serial bridge"
             }
             $serialStream = $serialClient.GetStream()
-            Start-Sleep -Milliseconds 4000
-            $bootText = Read-OsSerialAvailable $serialStream 600
+            $bootText = ""
+            $bootDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+            while ([DateTime]::UtcNow -lt $bootDeadline -and
+                   -not $bootText.Contains("Sura OS shell ready") -and
+                   -not $qemuProcess.HasExited) {
+                $bootText += Read-OsSerialAvailable $serialStream 250
+            }
             if (-not $bootText.Contains("Sura OS shell ready")) {
-                throw "Sura OS serial shell did not become ready"
+                $exitDetail = ""
+                if ($qemuProcess.HasExited) {
+                    $exitDetail = " (QEMU exit=$($qemuProcess.ExitCode))"
+                }
+                throw "Sura OS serial shell did not become ready within $TimeoutSeconds seconds$exitDetail`n$bootText"
             }
 
             while (-not $qemuProcess.HasExited) {
@@ -272,7 +281,7 @@ try {
             }
             [void](Read-OsSerialTail $serialStream)
             $qemuExitCode = $qemuProcess.ExitCode
-            if ($qemuExitCode -ne 33) {
+            if ($qemuExitCode -ne 33 -and $qemuExitCode -ne 35) {
                 $qemuDiagnostics = $qemuStderrTask.GetAwaiter().GetResult()
                 throw "Interactive QEMU closed with unexpected exit code $qemuExitCode`n$qemuDiagnostics"
             }
