@@ -8,6 +8,8 @@ vfs_filesystem is static.struct(VfsFileSystem)
 vfs_file is static.struct(VfsFile)
 vfs_root is static.bytes([47], 1)
 vfs_path is static.bytes([47, 66, 79, 79, 84, 46, 66, 73, 78], 1)
+vfs_parent_path is static.bytes([47, 46, 46, 47, 88], 1)
+vfs_repeat_path is static.bytes([47, 65, 47, 47, 66], 1)
 vfs_buffer is static.zero(512, 16)
 vfs_read_count: u64 is 0
 
@@ -59,16 +61,18 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   filesystem.open_file is addr_of(mock_open)
   filesystem.sync_filesystem is addr_of(mock_flush)
   if not vfs_init(state, vfs_mounts, 4) then return 1
-  if not vfs_mount(state, vfs_root, 1, filesystem) then return 2
-  if not vfs_open(state, vfs_path, 9, 3, file) then return 3
-  if not vfs_read(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 4
-  if vfs_read_count != 32 then return 5
-  if not vfs_seek(file, 0) then return 6
-  if not vfs_write(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 7
-  if vfs_read_count != 32 then return 8
-  if not vfs_flush(file) then return 9
-  if not vfs_close(file) then return 10
-  if not vfs_sync_mounts(state) then return 11
-  if not vfs_unmount(state, vfs_root, 1) then return 12
+  if vfs_mount_path_valid(vfs_parent_path, 5) then return 2
+  if vfs_mount_path_valid(vfs_repeat_path, 5) then return 3
+  if not vfs_mount(state, vfs_root, 1, filesystem) then return 4
+  if not vfs_open(state, vfs_path, 9, 3, file) then return 5
+  if not vfs_read(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 6
+  if vfs_read_count != 32 then return 7
+  if not vfs_seek(file, 0) then return 8
+  if not vfs_write(file, vfs_buffer, 32, addr_of(vfs_read_count)) then return 9
+  if vfs_read_count != 32 then return 10
+  if not vfs_flush(file) then return 11
+  if not vfs_close(file) then return 12
+  if not vfs_sync_mounts(state) then return 13
+  if not vfs_unmount(state, vfs_root, 1) then return 14
   return 0
 end

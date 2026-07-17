@@ -766,6 +766,16 @@ AHCI or NVMe plus DMA, interrupt, timeout, and reset policy.
 
 ## FAT32 and virtual filesystem foundation
 
+`stdlib/freestanding/gpt.sura` validates a primary or backup GPT header,
+including its CRC32, usable-LBA bounds, disk GUID, entry geometry, and the
+CRC32 of the complete partition-entry array. It copies even sector-spanning
+entries into a caller-owned entry buffer and supports indexed traversal and
+type-GUID lookup. `stdlib/freestanding/partition.sura` adds the four legacy
+MBR primary entries and a unified EFI System Partition lookup. A valid GPT is
+authoritative; the type-0xEF MBR fallback is used only when neither GPT header
+can be validated. Extended MBR/EBR chains, hybrid-disk reconciliation, GPT
+repair, partition creation, and resizing are not implemented.
+
 `stdlib/freestanding/fat32.sura` mounts a FAT32 volume through a
 `BlockDevice`. Mounting checks the boot signature, sector geometry,
 power-of-two cluster size, FAT32 cluster-count range, FAT version, root
@@ -789,10 +799,13 @@ filesystem sync through checked callbacks. All mount, filesystem, file, and
 path storage is supplied by the kernel; the library allocates nothing and
 does not provide internal locking.
 
-`examples/os/fat32_features.sura` and `examples/os/vfs_features.sura` force
-these paths through the UEFI x86-64 backend. The smoke gate verifies their
-generated PE32+ images and embedded feature markers. This is compile and
-image verification, not proof that disk I/O has run in QEMU or on hardware.
+`examples/os/gpt_features.sura`, `examples/os/partition_features.sura`,
+`examples/os/fat32_features.sura`, and `examples/os/vfs_features.sura` force
+these paths through the UEFI x86-64 backend. The GPT example constructs a
+RAM-backed table and checks its CRC and entry lookup; the partition example
+checks the legacy fallback. The smoke gate verifies their generated PE32+
+images and embedded feature markers. This is compile and image verification,
+not proof that disk I/O has run in QEMU or on hardware.
 
 ## Serial diagnostics and VM boot marker
 
@@ -856,8 +869,9 @@ Still required for a complete self-hosted OS environment:
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
 - PCIe ECAM/resource allocation, native storage, and other device-specific drivers
-- partition-table parser and a full persistent filesystem writer with
-  allocation, creation, resizing, deletion, long names, recovery, and locking
+- partition creation/resizing, extended MBR chains, GPT repair, and a full
+  persistent filesystem writer with allocation, creation, resizing, deletion,
+  long names, recovery, and locking
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend
 - source-level freestanding debugger and executed CI VM boot coverage

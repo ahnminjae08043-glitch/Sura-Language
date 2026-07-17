@@ -1,0 +1,70 @@
+# Executable primary-GPT CRC, entry traversal, and type lookup self-check.
+
+import "../../stdlib/freestanding/gpt.sura"
+
+gpt_device is static.struct(BlockDevice)
+gpt_ram_context is static.struct(RamBlockContext)
+gpt_header is static.struct(GptHeader)
+gpt_buffers is static.struct(GptBuffers)
+gpt_partition is static.struct(GptPartition)
+gpt_image is static.zero(131072, 4096)
+gpt_sector is static.zero(65536, 4096)
+gpt_entry is static.zero(4096, 16)
+efi_system_partition_guid is static.bytes([40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59], 8)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura GPT feature test")
+  uefi.newline()
+
+  device: ptr[BlockDevice] is gpt_device
+  ram: ptr[RamBlockContext] is gpt_ram_context
+  header: ptr[GptHeader] is gpt_header
+  buffers: ptr[GptBuffers] is gpt_buffers
+  partition: ptr[GptPartition] is gpt_partition
+  buffers.sector is gpt_sector
+  buffers.sector_capacity is 65536
+  buffers.entry is gpt_entry
+  buffers.entry_capacity is 4096
+  if not ram_block_bind(device, ram, gpt_image, 131072, 512, 0) then return 1
+
+  entry_address: ptr is ptr.add(gpt_image, 1024)
+  gpt_copy_bytes(entry_address, efi_system_partition_guid, 16)
+  mem.write64(ptr.add(entry_address, 16), 1)
+  mem.write64(ptr.add(entry_address, 24), 2)
+  mem.write64(ptr.add(entry_address, 32), 3)
+  mem.write64(ptr.add(entry_address, 40), 10)
+  array_state: u64 is gpt_crc32_update(4294967295, entry_address, 512)
+  array_crc: u64 is (array_state ^ 4294967295) & 4294967295
+
+  header_address: ptr is ptr.add(gpt_image, 512)
+  mem.write8(header_address, 69)
+  mem.write8(ptr.add(header_address, 1), 70)
+  mem.write8(ptr.add(header_address, 2), 73)
+  mem.write8(ptr.add(header_address, 3), 32)
+  mem.write8(ptr.add(header_address, 4), 80)
+  mem.write8(ptr.add(header_address, 5), 65)
+  mem.write8(ptr.add(header_address, 6), 82)
+  mem.write8(ptr.add(header_address, 7), 84)
+  mem.write32(ptr.add(header_address, 8), 65536)
+  mem.write32(ptr.add(header_address, 12), 92)
+  mem.write64(ptr.add(header_address, 24), 1)
+  mem.write64(ptr.add(header_address, 32), 255)
+  mem.write64(ptr.add(header_address, 40), 3)
+  mem.write64(ptr.add(header_address, 48), 253)
+  mem.write64(ptr.add(header_address, 56), 3)
+  mem.write64(ptr.add(header_address, 64), 4)
+  mem.write64(ptr.add(header_address, 72), 2)
+  mem.write32(ptr.add(header_address, 80), 4)
+  mem.write32(ptr.add(header_address, 84), 128)
+  mem.write32(ptr.add(header_address, 88), array_crc)
+  mem.write32(ptr.add(header_address, 16), gpt_header_crc32(header_address, 92))
+
+  if not gpt_load_primary(header, device, buffers, 128) then return 2
+  if not gpt_find_first_used(header, partition, buffers) then return 3
+  if partition.index != 0 or partition.first_lba != 3 or partition.last_lba != 10 then return 4
+  if gpt_partition_sector_count(partition) != 8 then return 5
+  if not gpt_find_type(header, efi_system_partition_guid, partition, buffers) then return 6
+  if not gpt_read_partition(header, 1, partition, buffers) then return 7
+  if partition.used != 0 then return 8
+  return 0
+end

@@ -1,0 +1,130 @@
+# Checked MBR/GPT partition discovery for freestanding kernels.
+#
+# GPT paths validate the header and complete entry-array CRC through gpt.sura.
+# The MBR path handles only the four primary entries, not EBR chains.
+
+import "gpt.sura"
+
+struct DiskPartition do
+  valid: u64
+  scheme: u64
+  index: u64
+  start_lba: u64
+  sector_count: u64
+  attributes: u64
+  type_guid_low: u64
+  type_guid_high: u64
+  unique_guid_low: u64
+  unique_guid_high: u64
+  mbr_type: u64
+  bootable: u64
+end
+
+partition_efi_system_guid is static.bytes([40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59], 8)
+
+func partition_clear(partition: ptr[DiskPartition]) do
+  if partition == 0 then return false
+  partition.valid is 0
+  partition.scheme is 0
+  partition.index is 0
+  partition.start_lba is 0
+  partition.sector_count is 0
+  partition.attributes is 0
+  partition.type_guid_low is 0
+  partition.type_guid_high is 0
+  partition.unique_guid_low is 0
+  partition.unique_guid_high is 0
+  partition.mbr_type is 0
+  partition.bootable is 0
+  return true
+end
+
+func partition_range_valid(device: ptr[BlockDevice], start_lba: u64, sector_count: u64) do
+  if not block_device_valid(device) or sector_count == 0 then return false
+  if start_lba >= device.sector_count then return false
+  return sector_count <= device.sector_count - start_lba
+end
+
+func mbr_read_primary(device: ptr[BlockDevice], index: u64, partition: ptr[DiskPartition], sector_buffer: ptr) do
+  if partition == 0 then return false
+  partition_clear(partition)
+  if not block_device_valid(device) or sector_buffer == 0 then return false
+  if index >= 4 or device.sector_size < 512 then return false
+  if not block_read(device, 0, 1, sector_buffer) then return false
+  if mem.read16(ptr.add(sector_buffer, 510)) != 43605 then return false
+
+  offset: u64 is 446 + index * 16
+  boot: u64 is mem.read8(ptr.add(sector_buffer, offset))
+  type_code: u64 is mem.read8(ptr.add(sector_buffer, offset + 4))
+  start_lba: u64 is mem.read32(ptr.add(sector_buffer, offset + 8))
+  sector_count: u64 is mem.read32(ptr.add(sector_buffer, offset + 12))
+  if boot != 0 and boot != 128 then return false
+  if type_code == 0 or not partition_range_valid(device, start_lba, sector_count) then return false
+
+  partition.valid is 1
+  partition.scheme is 1
+  partition.index is index
+  partition.start_lba is start_lba
+  partition.sector_count is sector_count
+  partition.mbr_type is type_code
+  if boot == 128 then
+    partition.bootable is 1
+  end
+  return true
+end
+
+func mbr_find_type(device: ptr[BlockDevice], type_code: u64, ordinal: u64, partition: ptr[DiskPartition], sector_buffer: ptr) do
+  if partition == 0 or type_code == 0 then return false
+  partition_clear(partition)
+  found: u64 is 0
+  index: u64 is 0
+  while index < 4 do
+    if mbr_read_primary(device, index, partition, sector_buffer) then
+      if partition.mbr_type == type_code then
+        if found == ordinal then return true
+        found += 1
+      end
+    end
+    index += 1
+  end
+  partition_clear(partition)
+  return false
+end
+
+func partition_from_gpt(source: ptr[GptPartition], destination: ptr[DiskPartition]) do
+  if source == 0 or destination == 0 or source.used == 0 then return false
+  if source.first_lba > source.last_lba then return false
+  partition_clear(destination)
+  destination.valid is 1
+  destination.scheme is 2
+  destination.index is source.index
+  destination.start_lba is source.first_lba
+  destination.sector_count is source.last_lba - source.first_lba + 1
+  destination.attributes is source.attributes
+  destination.type_guid_low is source.type_guid_low
+  destination.type_guid_high is source.type_guid_high
+  destination.unique_guid_low is source.unique_guid_low
+  destination.unique_guid_high is source.unique_guid_high
+  return true
+end
+
+# Finds an EFI System Partition using a CRC-checked primary GPT, then its
+# backup GPT, then a legacy MBR type 0xEF primary entry.
+func partition_find_efi_system(device: ptr[BlockDevice], buffers: ptr[GptBuffers], header: ptr[GptHeader], gpt_partition: ptr[GptPartition], partition: ptr[DiskPartition]) do
+  if device == 0 or buffers == 0 or header == 0 or gpt_partition == 0 or partition == 0 then return false
+  partition_clear(partition)
+  opened: bool is gpt_load_primary(header, device, buffers, 16384)
+  if not opened then
+    opened is gpt_load_backup(header, device, buffers, 16384)
+  end
+  if opened then
+    if gpt_find_type(header, partition_efi_system_guid, gpt_partition, buffers) then
+      return partition_from_gpt(gpt_partition, partition)
+    end
+    partition_clear(partition)
+    return false
+  end
+  gpt_clear_header(header)
+  gpt_clear_partition(gpt_partition)
+  return mbr_find_type(device, 239, 0, partition, buffers.sector)
+end

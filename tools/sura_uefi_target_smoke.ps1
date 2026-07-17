@@ -12,7 +12,9 @@ param(
     [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
     [string]$BlockSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/block_features.sura"),
     [string]$Fat32Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/fat32_features.sura"),
-    [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura")
+    [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura"),
+    [string]$GptSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/gpt_features.sura"),
+    [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -97,6 +99,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $VfsSource)) {
         throw "Sura freestanding VFS source not found: $VfsSource"
+    }
+    if (-not (Test-Path -LiteralPath $GptSource)) {
+        throw "Sura freestanding GPT source not found: $GptSource"
+    }
+    if (-not (Test-Path -LiteralPath $PartitionSource)) {
+        throw "Sura freestanding partition source not found: $PartitionSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -524,6 +532,49 @@ try {
         throw "Freestanding VFS feature image is missing its mount-dispatch path"
     }
 
+    $gptEfi = Join-Path $temp "GPT.EFI"
+    $gptOutput = & $Engine --target uefi-x86_64 --out $gptEfi $GptSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding GPT feature compile failed:`n$($gptOutput -join "`n")"
+    }
+    $gptBytes = [System.IO.File]::ReadAllBytes($gptEfi)
+    if ($gptBytes.Length -lt 230000 -or
+        $gptBytes[0] -ne 0x4d -or $gptBytes[1] -ne 0x5a) {
+        throw "Freestanding GPT feature image is invalid"
+    }
+    $gptUtf16 = [System.Text.Encoding]::Unicode.GetString($gptBytes)
+    if ($gptUtf16 -notmatch "Sura GPT feature test") {
+        throw "Freestanding GPT feature image is missing its diagnostic"
+    }
+    $efiSystemGuid = [byte[]](40, 115, 42, 193, 31, 248, 210, 17, 186, 75, 0, 160, 201, 62, 201, 59)
+    if (-not (Test-ByteSequence $gptBytes $efiSystemGuid)) {
+        throw "Freestanding GPT feature image is missing the EFI System Partition GUID"
+    }
+
+    $partitionEfi = Join-Path $temp "PARTITION.EFI"
+    $partitionOutput = & $Engine --target uefi-x86_64 --out $partitionEfi $PartitionSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding partition feature compile failed:`n$($partitionOutput -join "`n")"
+    }
+    $partitionBytes = [System.IO.File]::ReadAllBytes($partitionEfi)
+    if ($partitionBytes.Length -lt 38000 -or
+        $partitionBytes[0] -ne 0x4d -or $partitionBytes[1] -ne 0x5a) {
+        throw "Freestanding partition feature image is invalid"
+    }
+    $partitionUtf16 = [System.Text.Encoding]::Unicode.GetString($partitionBytes)
+    if ($partitionUtf16 -notmatch "Sura partition feature test") {
+        throw "Freestanding partition feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x20, 0x83, 0xb8, 0xed)),
+        ([byte[]](0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11)),
+        ([byte[]](0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b))
+    )) {
+        if (-not (Test-ByteSequence $partitionBytes $requiredSequence)) {
+            throw "Freestanding partition feature image is missing a required GPT sequence"
+        }
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -811,7 +862,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

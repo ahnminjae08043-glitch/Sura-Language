@@ -1,0 +1,374 @@
+# Checked primary and backup GPT reader for the freestanding block-device contract.
+#
+# The caller supplies aligned sector and entry buffers. The implementation
+# verifies the primary header CRC and the complete partition-entry-array CRC
+# before returning any partition.
+
+import "block.sura"
+
+struct GptBuffers do
+  sector: ptr
+  sector_capacity: u64
+  entry: ptr
+  entry_capacity: u64
+end
+
+struct GptHeader do
+  device: ptr[BlockDevice]
+  current_lba: u64
+  backup_lba: u64
+  first_usable_lba: u64
+  last_usable_lba: u64
+  disk_guid_low: u64
+  disk_guid_high: u64
+  entry_lba: u64
+  entry_count: u64
+  entry_size: u64
+  entry_array_bytes: u64
+  entry_array_sectors: u64
+  entry_array_crc32: u64
+end
+
+struct GptPartition do
+  used: u64
+  index: u64
+  type_guid_low: u64
+  type_guid_high: u64
+  unique_guid_low: u64
+  unique_guid_high: u64
+  first_lba: u64
+  last_lba: u64
+  attributes: u64
+end
+
+func gpt_clear_header(header: ptr[GptHeader]) do
+  if header == 0 then return false
+  header.device is 0
+  header.current_lba is 0
+  header.backup_lba is 0
+  header.first_usable_lba is 0
+  header.last_usable_lba is 0
+  header.disk_guid_low is 0
+  header.disk_guid_high is 0
+  header.entry_lba is 0
+  header.entry_count is 0
+  header.entry_size is 0
+  header.entry_array_bytes is 0
+  header.entry_array_sectors is 0
+  header.entry_array_crc32 is 0
+  return true
+end
+
+func gpt_clear_partition(partition: ptr[GptPartition]) do
+  if partition == 0 then return false
+  partition.used is 0
+  partition.index is 0
+  partition.type_guid_low is 0
+  partition.type_guid_high is 0
+  partition.unique_guid_low is 0
+  partition.unique_guid_high is 0
+  partition.first_lba is 0
+  partition.last_lba is 0
+  partition.attributes is 0
+  return true
+end
+
+func gpt_buffers_valid(device: ptr[BlockDevice], buffers: ptr[GptBuffers]) do
+  if not block_device_valid(device) or buffers == 0 then return false
+  if buffers.sector == 0 or buffers.entry == 0 then return false
+  if buffers.sector_capacity < device.sector_size then return false
+  if buffers.entry_capacity < 128 then return false
+  if device.alignment > 1 and not ptr.is_aligned(buffers.sector, device.alignment) then return false
+  return true
+end
+
+func gpt_signature_valid(buffer: ptr) do
+  if buffer == 0 then return false
+  if mem.read8(buffer) != 69 then return false
+  if mem.read8(ptr.add(buffer, 1)) != 70 then return false
+  if mem.read8(ptr.add(buffer, 2)) != 73 then return false
+  if mem.read8(ptr.add(buffer, 3)) != 32 then return false
+  if mem.read8(ptr.add(buffer, 4)) != 80 then return false
+  if mem.read8(ptr.add(buffer, 5)) != 65 then return false
+  if mem.read8(ptr.add(buffer, 6)) != 82 then return false
+  return mem.read8(ptr.add(buffer, 7)) == 84
+end
+
+func gpt_crc32_update(crc: u64, buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return crc
+  index: u64 is 0
+  while index < byte_count do
+    crc is crc ^ mem.read8(ptr.add(buffer, index))
+    bit: u64 is 0
+    while bit < 8 do
+      if (crc & 1) != 0 then
+        crc is (crc >> 1) ^ 3988292384
+      else
+        crc is crc >> 1
+      end
+      bit += 1
+    end
+    crc is crc & 4294967295
+    index += 1
+  end
+  return crc
+end
+
+func gpt_header_crc32(buffer: ptr, byte_count: u64) do
+  if buffer == 0 or byte_count < 20 then return 0
+  crc: u64 is 4294967295
+  index: u64 is 0
+  while index < byte_count do
+    value: u64 is mem.read8(ptr.add(buffer, index))
+    if index >= 16 and index < 20 then
+      value is 0
+    end
+    crc is crc ^ value
+    bit: u64 is 0
+    while bit < 8 do
+      if (crc & 1) != 0 then
+        crc is (crc >> 1) ^ 3988292384
+      else
+        crc is crc >> 1
+      end
+      bit += 1
+    end
+    crc is crc & 4294967295
+    index += 1
+  end
+  return (crc ^ 4294967295) & 4294967295
+end
+
+func gpt_array_crc32(device: ptr[BlockDevice], first_lba: u64, byte_count: u64, sector_buffer: ptr, result: ptr) do
+  if result != 0 then
+    mem.write64(result, 0)
+  end
+  if not block_device_valid(device) or sector_buffer == 0 or result == 0 then return false
+  if byte_count == 0 or first_lba >= device.sector_count then return false
+
+  crc: u64 is 4294967295
+  remaining: u64 is byte_count
+  lba: u64 is first_lba
+  while remaining > 0 do
+    if lba >= device.sector_count then return false
+    if not block_read(device, lba, 1, sector_buffer) then return false
+    take: u64 is device.sector_size
+    if take > remaining then
+      take is remaining
+    end
+    crc is gpt_crc32_update(crc, sector_buffer, take)
+    remaining -= take
+    if remaining > 0 then
+      if lba == u64("0xffffffffffffffff") then return false
+      lba += 1
+    end
+  end
+  mem.write64(result, (crc ^ 4294967295) & 4294967295)
+  return true
+end
+
+func gpt_load_at(header: ptr[GptHeader], device: ptr[BlockDevice], buffers: ptr[GptBuffers], entry_limit: u64, header_lba: u64) do
+  if header == 0 then return false
+  gpt_clear_header(header)
+  if entry_limit == 0 or not gpt_buffers_valid(device, buffers) then return false
+  if device.sector_count < 3 then return false
+  if header_lba != 1 and header_lba != device.sector_count - 1 then return false
+  if not block_read(device, header_lba, 1, buffers.sector) then return false
+  if not gpt_signature_valid(buffers.sector) then return false
+
+  revision: u64 is mem.read32(ptr.add(buffers.sector, 8))
+  header_size: u64 is mem.read32(ptr.add(buffers.sector, 12))
+  stored_header_crc: u64 is mem.read32(ptr.add(buffers.sector, 16))
+  reserved: u64 is mem.read32(ptr.add(buffers.sector, 20))
+  current_lba: u64 is mem.read64(ptr.add(buffers.sector, 24))
+  backup_lba: u64 is mem.read64(ptr.add(buffers.sector, 32))
+  first_usable: u64 is mem.read64(ptr.add(buffers.sector, 40))
+  last_usable: u64 is mem.read64(ptr.add(buffers.sector, 48))
+  disk_guid_low: u64 is mem.read64(ptr.add(buffers.sector, 56))
+  disk_guid_high: u64 is mem.read64(ptr.add(buffers.sector, 64))
+  entry_lba: u64 is mem.read64(ptr.add(buffers.sector, 72))
+  entry_count: u64 is mem.read32(ptr.add(buffers.sector, 80))
+  entry_size: u64 is mem.read32(ptr.add(buffers.sector, 84))
+  stored_array_crc: u64 is mem.read32(ptr.add(buffers.sector, 88))
+
+  if revision != 65536 or header_size != 92 then return false
+  if reserved != 0 or current_lba != header_lba then return false
+  if stored_header_crc != gpt_header_crc32(buffers.sector, header_size) then return false
+  expected_backup: u64 is 1
+  if header_lba == 1 then
+    expected_backup is device.sector_count - 1
+  end
+  if backup_lba != expected_backup or backup_lba == current_lba then return false
+  if first_usable > last_usable or last_usable >= device.sector_count then return false
+  if current_lba >= first_usable and current_lba <= last_usable then return false
+  if backup_lba >= first_usable and backup_lba <= last_usable then return false
+  if disk_guid_low == 0 and disk_guid_high == 0 then return false
+  if entry_lba >= device.sector_count then return false
+  if entry_count == 0 or entry_count > entry_limit then return false
+  if entry_size < 128 or entry_size > buffers.entry_capacity then return false
+  if entry_size > 65536 or (entry_size % 128) != 0 then return false
+  if entry_count > u64("0xffffffffffffffff") / entry_size then return false
+
+  array_bytes: u64 is entry_count * entry_size
+  array_sectors: u64 is 1 + ((array_bytes - 1) / device.sector_size)
+  if array_sectors > device.sector_count - entry_lba then return false
+  array_last: u64 is entry_lba + array_sectors - 1
+  if header_lba == 1 and (entry_lba <= header_lba or array_last >= first_usable) then return false
+  if header_lba != 1 and (entry_lba <= last_usable or array_last >= header_lba) then return false
+
+  computed_array_crc: u64 is 0
+  if not gpt_array_crc32(device, entry_lba, array_bytes, buffers.sector, addr_of(computed_array_crc)) then return false
+  if stored_array_crc != computed_array_crc then return false
+
+  header.device is device
+  header.current_lba is current_lba
+  header.backup_lba is backup_lba
+  header.first_usable_lba is first_usable
+  header.last_usable_lba is last_usable
+  header.disk_guid_low is disk_guid_low
+  header.disk_guid_high is disk_guid_high
+  header.entry_lba is entry_lba
+  header.entry_count is entry_count
+  header.entry_size is entry_size
+  header.entry_array_bytes is array_bytes
+  header.entry_array_sectors is array_sectors
+  header.entry_array_crc32 is stored_array_crc
+  return true
+end
+
+func gpt_load_primary(header: ptr[GptHeader], device: ptr[BlockDevice], buffers: ptr[GptBuffers], entry_limit: u64) do
+  return gpt_load_at(header, device, buffers, entry_limit, 1)
+end
+
+func gpt_load_backup(header: ptr[GptHeader], device: ptr[BlockDevice], buffers: ptr[GptBuffers], entry_limit: u64) do
+  if device == 0 or device.sector_count < 3 then return false
+  return gpt_load_at(header, device, buffers, entry_limit, device.sector_count - 1)
+end
+
+func gpt_header_valid(header: ptr[GptHeader]) do
+  if header == 0 or not block_device_valid(header.device) then return false
+  device: ptr[BlockDevice] is header.device
+  if header.current_lba != 1 and header.current_lba != device.sector_count - 1 then return false
+  expected_backup: u64 is 1
+  if header.current_lba == 1 then
+    expected_backup is device.sector_count - 1
+  end
+  if header.backup_lba != expected_backup then return false
+  if header.entry_lba >= device.sector_count then return false
+  if header.entry_count == 0 or header.entry_size < 128 then return false
+  if header.first_usable_lba > header.last_usable_lba then return false
+  if header.last_usable_lba >= device.sector_count then return false
+  if header.current_lba >= header.first_usable_lba and header.current_lba <= header.last_usable_lba then return false
+  if header.backup_lba >= header.first_usable_lba and header.backup_lba <= header.last_usable_lba then return false
+  if header.disk_guid_low == 0 and header.disk_guid_high == 0 then return false
+  if header.entry_size > 65536 or (header.entry_size % 128) != 0 then return false
+  if header.entry_count > u64("0xffffffffffffffff") / header.entry_size then return false
+  if header.entry_array_bytes != header.entry_count * header.entry_size then return false
+  expected_sectors: u64 is 1 + ((header.entry_array_bytes - 1) / device.sector_size)
+  if header.entry_array_sectors != expected_sectors then return false
+  if header.entry_array_sectors > device.sector_count - header.entry_lba then return false
+  array_last: u64 is header.entry_lba + header.entry_array_sectors - 1
+  if header.current_lba == 1 and (header.entry_lba <= header.current_lba or array_last >= header.first_usable_lba) then return false
+  if header.current_lba != 1 and (header.entry_lba <= header.last_usable_lba or array_last >= header.current_lba) then return false
+  return true
+end
+
+func gpt_copy_bytes(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func gpt_read_partition(header: ptr[GptHeader], index: u64, partition: ptr[GptPartition], buffers: ptr[GptBuffers]) do
+  if partition == 0 then return false
+  gpt_clear_partition(partition)
+  if not gpt_header_valid(header) or buffers == 0 then return false
+  device: ptr[BlockDevice] is header.device
+  if not gpt_buffers_valid(device, buffers) then return false
+  if index >= header.entry_count or buffers.entry_capacity < header.entry_size then return false
+  if index > u64("0xffffffffffffffff") / header.entry_size then return false
+
+  absolute_offset: u64 is index * header.entry_size
+  remaining: u64 is header.entry_size
+  output_offset: u64 is 0
+  while remaining > 0 do
+    sector_delta: u64 is absolute_offset / device.sector_size
+    sector_offset: u64 is absolute_offset % device.sector_size
+    if sector_delta >= header.entry_array_sectors then return false
+    if header.entry_lba > u64("0xffffffffffffffff") - sector_delta then return false
+    if not block_read(device, header.entry_lba + sector_delta, 1, buffers.sector) then return false
+    take: u64 is device.sector_size - sector_offset
+    if take > remaining then
+      take is remaining
+    end
+    if not gpt_copy_bytes(ptr.add(buffers.entry, output_offset), ptr.add(buffers.sector, sector_offset), take) then return false
+    if absolute_offset > u64("0xffffffffffffffff") - take then return false
+    absolute_offset += take
+    output_offset += take
+    remaining -= take
+  end
+
+  type_low: u64 is mem.read64(buffers.entry)
+  type_high: u64 is mem.read64(ptr.add(buffers.entry, 8))
+  if type_low == 0 and type_high == 0 then
+    partition.index is index
+    return true
+  end
+
+  first_lba: u64 is mem.read64(ptr.add(buffers.entry, 32))
+  last_lba: u64 is mem.read64(ptr.add(buffers.entry, 40))
+  if first_lba > last_lba then return false
+  if first_lba < header.first_usable_lba or last_lba > header.last_usable_lba then return false
+
+  partition.used is 1
+  partition.index is index
+  partition.type_guid_low is type_low
+  partition.type_guid_high is type_high
+  partition.unique_guid_low is mem.read64(ptr.add(buffers.entry, 16))
+  partition.unique_guid_high is mem.read64(ptr.add(buffers.entry, 24))
+  if partition.unique_guid_low == 0 and partition.unique_guid_high == 0 then
+    gpt_clear_partition(partition)
+    return false
+  end
+  partition.first_lba is first_lba
+  partition.last_lba is last_lba
+  partition.attributes is mem.read64(ptr.add(buffers.entry, 48))
+  return true
+end
+
+func gpt_find_first_used(header: ptr[GptHeader], partition: ptr[GptPartition], buffers: ptr[GptBuffers]) do
+  if not gpt_header_valid(header) or partition == 0 then return false
+  index: u64 is 0
+  while index < header.entry_count do
+    if not gpt_read_partition(header, index, partition, buffers) then return false
+    if partition.used != 0 then return true
+    index += 1
+  end
+  return false
+end
+
+func gpt_find_type(header: ptr[GptHeader], type_guid: ptr, partition: ptr[GptPartition], buffers: ptr[GptBuffers]) do
+  if not gpt_header_valid(header) or type_guid == 0 or partition == 0 then return false
+  wanted_low: u64 is mem.read64(type_guid)
+  wanted_high: u64 is mem.read64(ptr.add(type_guid, 8))
+  if wanted_low == 0 and wanted_high == 0 then return false
+  index: u64 is 0
+  while index < header.entry_count do
+    if not gpt_read_partition(header, index, partition, buffers) then return false
+    if partition.used != 0 then
+      if partition.type_guid_low == wanted_low and partition.type_guid_high == wanted_high then return true
+    end
+    index += 1
+  end
+  return false
+end
+
+func gpt_partition_sector_count(partition: ptr[GptPartition]) do
+  if partition == 0 or partition.used == 0 then return 0
+  if partition.first_lba > partition.last_lba then return 0
+  return partition.last_lba - partition.first_lba + 1
+end

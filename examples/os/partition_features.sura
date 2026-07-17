@@ -1,0 +1,44 @@
+# Executable legacy-MBR fallback self-check for unified partition discovery.
+# GPT CRC and entry traversal are exercised by gpt_features.sura.
+
+import "../../stdlib/freestanding/partition.sura"
+
+partition_device is static.struct(BlockDevice)
+partition_ram_context is static.struct(RamBlockContext)
+partition_buffers is static.struct(GptBuffers)
+partition_header is static.struct(GptHeader)
+partition_gpt is static.struct(GptPartition)
+partition_result is static.struct(DiskPartition)
+partition_image is static.zero(4096, 4096)
+partition_sector is static.zero(512, 4096)
+partition_entry is static.zero(4096, 16)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura partition feature test")
+  uefi.newline()
+
+  device: ptr[BlockDevice] is partition_device
+  ram: ptr[RamBlockContext] is partition_ram_context
+  buffers: ptr[GptBuffers] is partition_buffers
+  header: ptr[GptHeader] is partition_header
+  gpt_partition: ptr[GptPartition] is partition_gpt
+  result: ptr[DiskPartition] is partition_result
+  buffers.sector is partition_sector
+  buffers.sector_capacity is 512
+  buffers.entry is partition_entry
+  buffers.entry_capacity is 4096
+  if not ram_block_bind(device, ram, partition_image, 4096, 512, 0) then return 1
+
+  mem.write8(ptr.add(partition_image, 446), 128)
+  mem.write8(ptr.add(partition_image, 450), 239)
+  mem.write32(ptr.add(partition_image, 454), 1)
+  mem.write32(ptr.add(partition_image, 458), 7)
+  mem.write16(ptr.add(partition_image, 510), 43605)
+
+  if not mbr_read_primary(device, 0, result, partition_sector) then return 2
+  if result.scheme != 1 or result.start_lba != 1 or result.sector_count != 7 then return 3
+  if result.mbr_type != 239 or result.bootable != 1 then return 4
+  if not partition_find_efi_system(device, buffers, header, gpt_partition, result) then return 5
+  if result.scheme != 1 or result.mbr_type != 239 then return 6
+  return 0
+end
