@@ -3,6 +3,7 @@ param(
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/hello_uefi.sura"),
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
     [string]$FramebufferSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/framebuffer_features.sura"),
+    [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
     [string]$PreemptiveSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/preemptive_timer_features.sura"),
@@ -76,6 +77,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $FramebufferSource)) {
         throw "Sura framebuffer feature source not found: $FramebufferSource"
+    }
+    if (-not (Test-Path -LiteralPath $Ps2Source)) {
+        throw "Sura PS/2 feature source not found: $Ps2Source"
     }
     if (-not (Test-Path -LiteralPath $MemorySource)) {
         throw "Sura freestanding memory source not found: $MemorySource"
@@ -315,6 +319,17 @@ try {
     $framebufferAscii = [System.Text.Encoding]::ASCII.GetString($framebufferBytes)
     if ($framebufferAscii -notmatch "SURA 2D") {
         throw "Freestanding framebuffer feature image is missing its bitmap text"
+    }
+
+    $ps2Efi = Join-Path $temp "PS2.EFI"
+    $ps2Output = & $Engine --target uefi-x86_64 --out $ps2Efi $Ps2Source 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding PS/2 feature compile failed:`n$($ps2Output -join "`n")"
+    }
+    $ps2Bytes = [System.IO.File]::ReadAllBytes($ps2Efi)
+    if ($ps2Bytes.Length -lt 12000 -or
+        $ps2Bytes[0] -ne 0x4d -or $ps2Bytes[1] -ne 0x5a) {
+        throw "Freestanding PS/2 feature image is invalid"
     }
 
     $memoryEfi = Join-Path $temp "MEMORY.EFI"
@@ -1083,7 +1098,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

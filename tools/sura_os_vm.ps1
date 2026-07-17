@@ -314,7 +314,9 @@ try {
         -ExpectedMarker "SURA_OS_SHUTDOWN" `
         -ExpectedExitCode 33 `
         -SerialInputLines @("status", "mem", "shutdown") `
-        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "kernel: ready", "free physical pages: ") `
+        -SerialInputDelayMilliseconds 8000 `
+        -SerialInputIntervalMilliseconds 1000 `
+        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_PS2_READY", "kernel: ready", "free physical pages: ") `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

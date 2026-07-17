@@ -8,6 +8,8 @@ param(
     [string]$ExpectedMarker = "SURA_EXIT_BOOT_SERVICES_OK",
     [int]$ExpectedExitCode = 33,
     [string[]]$SerialInputLines = @(),
+    [int]$SerialInputDelayMilliseconds = 5000,
+    [int]$SerialInputIntervalMilliseconds = 100,
     [string[]]$AdditionalExpectedSerialMarkers = @(),
     [switch]$CompileOnly
 )
@@ -90,6 +92,14 @@ try {
     if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 300) {
         throw "TimeoutSeconds must be 1..300"
     }
+    if ($SerialInputDelayMilliseconds -lt 0 -or
+        $SerialInputDelayMilliseconds -gt $TimeoutSeconds * 1000) {
+        throw "SerialInputDelayMilliseconds must be 0..TimeoutSeconds*1000"
+    }
+    if ($SerialInputIntervalMilliseconds -lt 0 -or
+        $SerialInputIntervalMilliseconds -gt $TimeoutSeconds * 1000) {
+        throw "SerialInputIntervalMilliseconds must be 0..TimeoutSeconds*1000"
+    }
     if ([string]::IsNullOrWhiteSpace($ExpectedEfiText) -or
         [string]::IsNullOrWhiteSpace($ExpectedMarker)) {
         throw "ExpectedEfiText and ExpectedMarker must not be empty"
@@ -167,11 +177,11 @@ try {
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     if ($SerialInputLines.Count -gt 0) {
-        Start-Sleep -Milliseconds 5000
+        Start-Sleep -Milliseconds $SerialInputDelayMilliseconds
         foreach ($line in $SerialInputLines) {
             $process.StandardInput.WriteLine($line)
             $process.StandardInput.Flush()
-            Start-Sleep -Milliseconds 100
+            Start-Sleep -Milliseconds $SerialInputIntervalMilliseconds
         }
         $process.StandardInput.Close()
     }

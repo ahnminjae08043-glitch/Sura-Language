@@ -7,6 +7,7 @@
 import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
 import "../stdlib/freestanding/font5x7.sura"
+import "../stdlib/freestanding/ps2.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
 os_allocator_bitmap is static.zero(65536, 4096)
@@ -18,10 +19,17 @@ os_font_white_small is static.struct(BitmapFontStyle)
 os_font_orange_large is static.struct(BitmapFontStyle)
 os_font_green_large is static.struct(BitmapFontStyle)
 os_font_muted_small is static.struct(BitmapFontStyle)
+os_ps2_keyboard_state is static.struct(Ps2KeyboardState)
+os_ps2_mouse_state is static.struct(Ps2MouseState)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
 os_desktop_marker is static.utf8("SURA_OS_DESKTOP_OK")
+os_ps2_marker is static.utf8("SURA_OS_PS2_READY")
+os_keyboard_marker is static.utf8("SURA_OS_KEYBOARD_OK")
+os_mouse_marker is static.utf8("SURA_OS_MOUSE_OK")
+os_shift_marker is static.utf8("SURA_OS_SHIFT_OK")
+os_mouse_click_marker is static.utf8("SURA_OS_MOUSE_CLICK_OK")
 os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
 os_shutdown_marker is static.utf8("SURA_OS_SHUTDOWN")
 
@@ -41,6 +49,7 @@ os_shell_status is static.utf8("kernel: ready")
 os_shell_memory_prefix is static.utf8("free physical pages: ")
 os_graphics_failure_prefix is static.utf8("graphics failure stage: ")
 os_graphics_mode_prefix is static.utf8("graphics mode: ")
+os_ps2_ports_prefix is static.utf8("PS/2 ports mask: ")
 os_shell_about is static.utf8("Sura OS: freestanding x86-64 kernel running in QEMU")
 os_shell_unknown is static.utf8("unknown command; type help")
 
@@ -52,6 +61,11 @@ os_text_terminal_ready is static.utf8("KERNEL READY")
 os_text_files is static.utf8("FILES")
 os_text_about_icon is static.utf8("ABOUT")
 os_text_vm is static.utf8("QEMU VM")
+os_text_help_result is static.utf8("HELP STATUS MEM ABOUT SHUTDOWN")
+os_text_mem_result is static.utf8("MEMORY COMMAND OK")
+os_text_about_result is static.utf8("FREESTANDING SURA X86-64")
+os_text_unknown_result is static.utf8("UNKNOWN COMMAND")
+os_text_input_unavailable is static.utf8("PS2 INPUT UNAVAILABLE")
 
 os_map_size: usize is 131072
 os_map_key: u64 is 0
@@ -61,6 +75,14 @@ os_backbuffer_address: u64 is 0
 os_backbuffer_pages: u64 is 0
 os_framebuffer_size: u64 is 0
 os_graphics_status: u64 is 0
+os_shell_length: usize is 0
+os_graphics_message: ptr is 0
+os_mouse_x: i64 is 640
+os_mouse_y: i64 is 400
+os_keyboard_reported: u64 is 0
+os_mouse_reported: u64 is 0
+os_shift_reported: u64 is 0
+os_mouse_click_reported: u64 is 0
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -119,21 +141,26 @@ func os_command_equals(buffer: ptr, length: usize, expected: ptr) do
 end
 
 func os_shell_execute(buffer: ptr, length: usize) do
+  global os_graphics_message
   if length == 0 then return true
 
   if os_command_equals(buffer, length, os_command_help) then
+    os_graphics_message is os_text_help_result
     return os_serial_cstr_line(os_shell_help)
   end
   if os_command_equals(buffer, length, os_command_status) then
+    os_graphics_message is os_shell_status
     return os_serial_cstr_line(os_shell_status)
   end
   if os_command_equals(buffer, length, os_command_mem) then
+    os_graphics_message is os_text_mem_result
     allocator: ptr[PhysicalAllocator] is os_allocator_state
     if not os_serial_text(os_shell_memory_prefix) then return false
     if not os_serial_u64(pmem_available_pages(allocator)) then return false
     return serial_write_byte(1016, 10, 1000000)
   end
   if os_command_equals(buffer, length, os_command_about) then
+    os_graphics_message is os_text_about_result
     return os_serial_cstr_line(os_shell_about)
   end
   if os_command_equals(buffer, length, os_command_shutdown) then
@@ -143,37 +170,68 @@ func os_shell_execute(buffer: ptr, length: usize) do
     return true
   end
 
+  os_graphics_message is os_text_unknown_result
   return os_serial_cstr_line(os_shell_unknown)
 end
 
-func os_shell_run() do
-  if not os_serial_cstr_line(os_shell_banner) then return false
-  if not os_serial_text(os_shell_prompt) then return false
-
-  length: usize is 0
-  while true do
-    value: u64 is serial_read_byte(1016, 100000)
-    if value == 65535 then
-      cpu.pause()
-    elif value == 13 then
-      cpu.pause()
-    elif value == 10 then
-      if not serial_write_byte(1016, 10, 1000000) then return false
-      if not os_shell_execute(os_shell_input, length) then return false
-      length is 0
-      if not os_serial_text(os_shell_prompt) then return false
-    elif value == 8 or value == 127 then
-      if length > 0 then
-        length -= 1
-      end
-    elif value >= 32 and value <= 126 then
-      if length < 127 then
-        mem.write8(ptr.add(os_shell_input, length), value)
-        length += 1
-      end
-    end
-  end
+func os_draw_mouse_pointer(surface: ptr[FramebufferSurface]) do
+  if surface == 0 or os_mouse_x < 0 or os_mouse_y < 0 then return false
+  x: i64 is os_mouse_x
+  y: i64 is os_mouse_y
+  white: u32 is fb_rgb(surface, 255, 255, 255)
+  black: u32 is fb_rgb(surface, 3, 8, 15)
+  mouse: ptr[Ps2MouseState] is os_ps2_mouse_state
+  pointer_color: u32 is white
+  if mouse.buttons != 0 then pointer_color is fb_rgb(surface, 255, 102, 35)
+  fb_line(surface, x, y, x, y + 16, black)
+  fb_line(surface, x, y, x + 11, y + 11, black)
+  fb_line(surface, x, y + 16, x + 4, y + 12, black)
+  fb_line(surface, x + 4, y + 12, x + 8, y + 19, black)
+  fb_line(surface, x + 8, y + 19, x + 11, y + 17, black)
+  fb_line(surface, x + 11, y + 17, x + 7, y + 11, black)
+  fb_line(surface, x + 7, y + 11, x + 11, y + 11, black)
+  fb_line(surface, x, y, x, y + 14, pointer_color)
+  fb_line(surface, x, y, x + 9, y + 10, pointer_color)
   return true
+end
+
+func os_present_with_pointer() do
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  back: ptr[FramebufferSurface] is os_back_surface_state
+  if not fb_present(back, front.pixels) then return false
+  os_draw_mouse_pointer(front)
+  return true
+end
+
+func os_redraw_terminal() do
+  back: ptr[FramebufferSurface] is os_back_surface_state
+  if back == 0 or back.pixels == 0 then return false
+  panel: u32 is fb_rgb(back, 20, 27, 40)
+  white: u32 is fb_rgb(back, 242, 247, 252)
+  window_width: u64 is 640
+  if back.width < 760 then window_width is back.width - 80
+  window_height: u64 is 330
+  if back.height < 520 then window_height is back.height - 150
+  window_x: u64 is (back.width - window_width) / 2
+  window_y: u64 is (back.height - window_height - 52) / 2
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  orange_large: ptr[BitmapFontStyle] is os_font_orange_large
+  green_large: ptr[BitmapFontStyle] is os_font_green_large
+
+  fb_fill_rect(back, window_x + 1, window_y + 39, window_width - 2, window_height - 40, panel)
+  font5x7_draw_text(back, window_x + 24, window_y + 72, os_text_terminal_prompt, 32, orange_large)
+  if os_graphics_message != 0 then
+    font5x7_draw_text(back, window_x + 24, window_y + 108, os_graphics_message, 64, green_large)
+  end
+  font5x7_draw_text(back, window_x + 24, window_y + 144, os_shell_prompt, 16, white_large)
+  if os_shell_length > 0 then
+    font5x7_draw_text(back, window_x + 96, window_y + 144, os_shell_input, 128, white_large)
+  end
+  cursor_x: u64 is window_x + 96 + os_shell_length * 12
+  if cursor_x + 10 < window_x + window_width then
+    fb_fill_rect(back, cursor_x, window_y + 144, 10, 15, white)
+  end
+  return os_present_with_pointer()
 end
 
 func os_draw_desktop(surface: ptr[FramebufferSurface]) do
@@ -259,9 +317,12 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
 end
 
 func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, pixel_format: u64) do
-  global os_graphics_status
+  global os_graphics_status, os_graphics_message, os_mouse_x, os_mouse_y
   front: ptr[FramebufferSurface] is os_front_surface_state
   back: ptr[FramebufferSurface] is os_back_surface_state
+  os_graphics_message is os_shell_status
+  os_mouse_x is width / 2
+  os_mouse_y is height / 2
   os_graphics_status is 1
   if not fb_surface_init(front, framebuffer, width, height, stride, pixel_format) then return false
   os_graphics_status is 2
@@ -275,8 +336,119 @@ func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, p
   os_graphics_status is 5
   if fb_sample_hash(back) == 0 then return false
   os_graphics_status is 6
-  if not fb_present(back, front.pixels) then return false
+  if not os_present_with_pointer() then return false
   os_graphics_status is 0
+  return true
+end
+
+func os_shell_accept(value: u64) do
+  global os_shell_length
+  if value == 13 then return true
+  if value == 10 then
+    if not serial_write_byte(1016, 10, 1000000) then return false
+    if not os_shell_execute(os_shell_input, os_shell_length) then return false
+    os_shell_length is 0
+    mem.write8(os_shell_input, 0)
+    if not os_serial_text(os_shell_prompt) then return false
+    return os_redraw_terminal()
+  end
+  if value == 8 or value == 127 then
+    if os_shell_length > 0 then
+      os_shell_length -= 1
+      mem.write8(ptr.add(os_shell_input, os_shell_length), 0)
+      return os_redraw_terminal()
+    end
+    return true
+  end
+  if value >= 32 and value <= 126 and os_shell_length < 63 then
+    mem.write8(ptr.add(os_shell_input, os_shell_length), value)
+    os_shell_length += 1
+    mem.write8(ptr.add(os_shell_input, os_shell_length), 0)
+    return os_redraw_terminal()
+  end
+  return true
+end
+
+func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
+  global os_keyboard_reported, os_shift_reported
+  if keyboard == 0 or keyboard.pressed == 0 then return true
+  if os_keyboard_reported == 0 then
+    if not os_serial_line(os_keyboard_marker, 19) then return false
+    os_keyboard_reported is 1
+  end
+  if (keyboard.key_code == 42 or keyboard.key_code == 54) and os_shift_reported == 0 then
+    if not os_serial_line(os_shift_marker, 16) then return false
+    os_shift_reported is 1
+  end
+  if keyboard.ascii != 0 then return os_shell_accept(keyboard.ascii)
+  return true
+end
+
+func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
+  global os_mouse_x, os_mouse_y, os_mouse_reported, os_mouse_click_reported
+  if mouse == 0 then return false
+  os_mouse_x is mouse.x
+  os_mouse_y is mouse.y
+  first_mouse: u64 is 0
+  first_click: u64 is 0
+  if os_mouse_reported == 0 then
+    first_mouse is 1
+    os_mouse_reported is 1
+  end
+  if mouse.pressed != 0 and os_mouse_click_reported == 0 then
+    first_click is 1
+    os_mouse_click_reported is 1
+  end
+  if not os_present_with_pointer() then return false
+  if first_mouse != 0 then
+    if not os_serial_line(os_mouse_marker, 16) then return false
+  end
+  if first_click != 0 then
+    if not os_serial_line(os_mouse_click_marker, 22) then return false
+  end
+  return true
+end
+
+func os_shell_run() do
+  global os_graphics_message
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
+  mouse: ptr[Ps2MouseState] is os_ps2_mouse_state
+  ps2_keyboard_reset(keyboard)
+  ps2_mouse_reset(mouse, front.width - 20, front.height - 22)
+  input_ports: u64 is ps2_controller_init()
+  if not os_serial_text(os_ps2_ports_prefix) then return false
+  if not os_serial_u64(input_ports) then return false
+  if not serial_write_byte(1016, 10, 1000000) then return false
+  if input_ports == 3 then
+    if not os_serial_line(os_ps2_marker, 17) then return false
+  end
+  if input_ports != 3 then
+    os_graphics_message is os_text_input_unavailable
+    os_redraw_terminal()
+  end
+
+  if not os_serial_cstr_line(os_shell_banner) then return false
+  if not os_serial_text(os_shell_prompt) then return false
+
+  while true do
+    value: u64 is serial_read_byte(1016, 1000)
+    if value != 65535 then
+      if not os_shell_accept(value) then return false
+    end
+    poll_count: u64 is 0
+    while poll_count < 16 do
+      input_kind: u64 is ps2_poll(keyboard, mouse)
+      if input_kind == 1 then
+        if not os_ps2_keyboard(keyboard) then return false
+      end
+      if input_kind == 2 then
+        if not os_ps2_mouse(mouse) then return false
+      end
+      poll_count += 1
+    end
+    cpu.pause()
+  end
   return true
 end
 

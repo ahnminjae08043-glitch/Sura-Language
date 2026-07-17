@@ -12,15 +12,20 @@ experimental freestanding x86-64 target.
 - renders pixels, lines, rectangles, icons, and 5x7 bitmap text
 - presents a double-buffered 1280x800-tested desktop with a terminal window,
   desktop icons, and a taskbar
+- polls the emulated i8042 controller for translated PS/2 keyboard scan codes
+  and three-byte mouse packets
+- accepts commands in the graphical terminal and moves a software pointer
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
 - runs a COM1 command shell and exits through QEMU's `isa-debug-exit` device
 
 This is the first graphical desktop milestone, not a complete desktop
-operating system. The visible terminal is currently a rendered preview; input
-still uses COM1. There is no mouse, interactive window manager, application
-process, persistent desktop filesystem, network stack, or browser yet.
+operating system. The terminal accepts PS/2 keyboard input in QEMU and COM1
+remains available for diagnostics and automation. The mouse pointer moves, but
+windows cannot yet be dragged, resized, focused, or clicked. There is no
+application process, persistent desktop filesystem, network stack, or browser
+yet.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
@@ -53,7 +58,10 @@ Capture the actual QEMU framebuffer after the desktop marker:
 ```
 
 The capture is written to `build\os\SuraOS-desktop.ppm`. The capture tool uses
-QEMU QMP, requires `SURA_OS_DESKTOP_OK`, and then shuts the VM down normally.
+QEMU QMP, requires `SURA_OS_DESKTOP_OK` and `SURA_OS_PS2_READY`, types
+`status` through the emulated keyboard, moves the emulated mouse, checks the
+Shift/keyboard/move/click markers and the command result, and then shuts the
+VM down normally.
 
 The shell supports `help`, `status`, `mem`, `about`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,

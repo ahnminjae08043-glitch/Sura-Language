@@ -3,7 +3,8 @@ param(
     [string]$Qemu = "",
     [string]$Firmware = "",
     [string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-desktop.ppm"),
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+    [switch]$SkipInputVerification
 )
 
 $ErrorActionPreference = "Stop"
@@ -223,7 +224,10 @@ try {
     $serialBuffer = New-Object byte[] 4096
     $bootDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $bootDeadline -and
-           -not $serialText.ToString().Contains("SURA_OS_DESKTOP_OK")) {
+           (-not $serialText.ToString().Contains("SURA_OS_DESKTOP_OK") -or
+            (-not $SkipInputVerification -and
+             (-not $serialText.ToString().Contains("SURA_OS_PS2_READY") -or
+              -not $serialText.ToString().Contains("Sura OS shell ready"))))) {
         while ($serialStream.DataAvailable) {
             $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
             if ($read -le 0) { break }
@@ -236,6 +240,70 @@ try {
     }
     if (-not $serialText.ToString().Contains("SURA_OS_DESKTOP_OK")) {
         throw "Sura OS desktop marker was not observed before capture"
+    }
+
+    if (-not $SkipInputVerification) {
+        if (-not $serialText.ToString().Contains("SURA_OS_PS2_READY")) {
+            throw "Sura OS PS/2 controller did not become ready"
+        }
+        foreach ($key in @("shift", "s", "t", "a", "t", "u", "z", "backspace", "s", "ret")) {
+            [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+                execute = "human-monitor-command"
+                arguments = @{ "command-line" = "sendkey $key" }
+            })
+            Start-Sleep -Milliseconds 80
+        }
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "human-monitor-command"
+            arguments = @{ "command-line" = "mouse_move 24 12" }
+        })
+        Start-Sleep -Milliseconds 120
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "input-send-event"
+            arguments = @{
+                events = @(
+                    @{ type = "btn"; data = @{ button = "left"; down = $true } }
+                )
+            }
+        })
+        Start-Sleep -Milliseconds 120
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "input-send-event"
+            arguments = @{
+                events = @(
+                    @{ type = "btn"; data = @{ button = "left"; down = $false } }
+                )
+            }
+        })
+
+        $inputDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        while ([DateTime]::UtcNow -lt $inputDeadline -and
+               (-not $serialText.ToString().Contains("SURA_OS_KEYBOARD_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_SHIFT_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_MOUSE_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_MOUSE_CLICK_OK") -or
+                -not $serialText.ToString().Contains("kernel: ready"))) {
+            while ($serialStream.DataAvailable) {
+                $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
+                if ($read -le 0) { break }
+                [void]$serialText.Append(
+                    [System.Text.Encoding]::ASCII.GetString($serialBuffer, 0, $read)
+                )
+            }
+            if ($qemuProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 50
+        }
+        foreach ($marker in @(
+            "SURA_OS_KEYBOARD_OK",
+            "SURA_OS_SHIFT_OK",
+            "SURA_OS_MOUSE_OK",
+            "SURA_OS_MOUSE_CLICK_OK",
+            "kernel: ready"
+        )) {
+            if (-not $serialText.ToString().Contains($marker)) {
+                throw "Sura OS input verification did not observe: $marker"
+            }
+        }
     }
 
     $qemuCapturePath = $temporaryCapture.Replace('\', '/')
@@ -265,7 +333,9 @@ try {
     }
 
     $capture = Get-Item -LiteralPath $Output
-    "sura_os_screenshot: PASS ($($capture.FullName), $($capture.Length) bytes)"
+    $inputStatus = "verified"
+    if ($SkipInputVerification) { $inputStatus = "skipped" }
+    "sura_os_screenshot: PASS ($($capture.FullName), $($capture.Length) bytes, input=$inputStatus)"
 }
 catch {
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {

@@ -1,0 +1,286 @@
+# Polling Intel 8042 / PS/2 keyboard and mouse support for x86-64 kernels.
+#
+# Keyboard bytes are decoded as translated Set-1 scan codes. Mouse packets use
+# the standard three-byte relative format. The caller owns all state and polls
+# the controller; this module does not install IRQ handlers.
+
+struct Ps2KeyboardState do
+  left_shift: u64
+  right_shift: u64
+  caps_lock: u64
+  extended: u64
+  skip_bytes: u64
+  scan_code: u64
+  key_code: u64
+  ascii: u64
+  pressed: u64
+end
+
+struct Ps2MouseState do
+  x: i64
+  y: i64
+  max_x: u64
+  max_y: u64
+  buttons: u64
+  pressed: u64
+  released: u64
+  moved: u64
+  packet_index: u64
+  packet0: u64
+  packet1: u64
+end
+
+ps2_keymap_base is static.bytes([0, 27, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 9, 113, 119, 101, 114, 116, 121, 117, 105, 111, 112, 91, 93, 10, 0, 97, 115, 100, 102, 103, 104, 106, 107, 108, 59, 39, 96, 0, 92, 122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1)
+ps2_keymap_shift is static.bytes([0, 27, 33, 64, 35, 36, 37, 94, 38, 42, 40, 41, 95, 43, 8, 9, 81, 87, 69, 82, 84, 89, 85, 73, 79, 80, 123, 125, 10, 0, 65, 83, 68, 70, 71, 72, 74, 75, 76, 58, 34, 126, 0, 124, 90, 88, 67, 86, 66, 78, 77, 60, 62, 63, 0, 42, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1)
+
+func ps2_keyboard_reset(state: ptr[Ps2KeyboardState]) do
+  if state == 0 then return false
+  state.left_shift is 0
+  state.right_shift is 0
+  state.caps_lock is 0
+  state.extended is 0
+  state.skip_bytes is 0
+  state.scan_code is 0
+  state.key_code is 0
+  state.ascii is 0
+  state.pressed is 0
+  return true
+end
+
+func ps2_keyboard_ascii(state: ptr[Ps2KeyboardState], code: u64) do
+  if state == 0 or code >= 128 then return 0
+  shifted: u64 is 0
+  if state.left_shift != 0 or state.right_shift != 0 then shifted is 1
+  base: u64 is mem.read8(ptr.add(ps2_keymap_base, code))
+  if base >= 97 and base <= 122 and state.caps_lock != 0 then
+    if shifted == 0 then
+      shifted is 1
+    else
+      shifted is 0
+    end
+  end
+  if shifted != 0 then return mem.read8(ptr.add(ps2_keymap_shift, code))
+  return base
+end
+
+func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
+  if state == 0 or value > 255 then return false
+  state.ascii is 0
+  state.pressed is 0
+
+  if state.skip_bytes > 0 then
+    state.skip_bytes -= 1
+    return false
+  end
+  if value == 225 then
+    state.skip_bytes is 5
+    state.extended is 0
+    return false
+  end
+  if value == 224 then
+    state.extended is 1
+    return false
+  end
+
+  released: u64 is 0
+  code: u64 is value
+  if code >= 128 then
+    released is 1
+    code -= 128
+  end
+  state.scan_code is value
+  state.key_code is code
+  if state.extended != 0 then state.key_code is code + 256
+  state.extended is 0
+
+  if code == 42 then
+    if released == 0 then
+      state.left_shift is 1
+    else
+      state.left_shift is 0
+    end
+    if released == 0 then state.pressed is 1
+    return true
+  end
+  if code == 54 then
+    if released == 0 then
+      state.right_shift is 1
+    else
+      state.right_shift is 0
+    end
+    if released == 0 then state.pressed is 1
+    return true
+  end
+  if code == 58 and released == 0 then
+    if state.caps_lock == 0 then
+      state.caps_lock is 1
+    else
+      state.caps_lock is 0
+    end
+    state.pressed is 1
+    return true
+  end
+  if released != 0 then return false
+
+  state.pressed is 1
+  state.ascii is ps2_keyboard_ascii(state, code)
+  return true
+end
+
+func ps2_mouse_reset(state: ptr[Ps2MouseState], width: u64, height: u64) do
+  if state == 0 or width == 0 or height == 0 then return false
+  state.x is width / 2
+  state.y is height / 2
+  state.max_x is width - 1
+  state.max_y is height - 1
+  state.buttons is 0
+  state.pressed is 0
+  state.released is 0
+  state.moved is 0
+  state.packet_index is 0
+  state.packet0 is 0
+  state.packet1 is 0
+  return true
+end
+
+func ps2_mouse_feed(state: ptr[Ps2MouseState], value: u64) do
+  if state == 0 or value > 255 then return false
+  if state.packet_index == 0 then
+    if (value & 8) == 0 then return false
+    state.packet0 is value
+    state.packet_index is 1
+    return false
+  end
+  if state.packet_index == 1 then
+    state.packet1 is value
+    state.packet_index is 2
+    return false
+  end
+
+  first: u64 is state.packet0
+  second: u64 is state.packet1
+  third: u64 is value
+  state.packet_index is 0
+  delta_x: i64 is second
+  delta_y: i64 is third
+  if (first & 16) != 0 then delta_x -= 256
+  if (first & 32) != 0 then delta_y -= 256
+  if (first & 64) != 0 then delta_x is 0
+  if (first & 128) != 0 then delta_y is 0
+
+  old_x: i64 is state.x
+  old_y: i64 is state.y
+  state.x is state.x + delta_x
+  state.y is state.y - delta_y
+  if state.x < 0 then state.x is 0
+  if state.y < 0 then state.y is 0
+  if state.x > state.max_x then state.x is state.max_x
+  if state.y > state.max_y then state.y is state.max_y
+  if state.x != old_x or state.y != old_y then
+    state.moved is 1
+  else
+    state.moved is 0
+  end
+
+  old_buttons: u64 is state.buttons
+  new_buttons: u64 is first & 7
+  changed: u64 is old_buttons ^ new_buttons
+  state.buttons is new_buttons
+  state.pressed is changed & new_buttons
+  state.released is changed & old_buttons
+  return true
+end
+
+func ps2_wait_input_clear(spin_limit: u64) do
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    if (io.in8(100) & 2) == 0 then return true
+    cpu.pause()
+    attempt += 1
+  end
+  return false
+end
+
+func ps2_controller_command(value: u64) do
+  if value > 255 or not ps2_wait_input_clear(100000) then return false
+  io.out8(100, value)
+  return true
+end
+
+func ps2_controller_data(value: u64) do
+  if value > 255 or not ps2_wait_input_clear(100000) then return false
+  io.out8(96, value)
+  return true
+end
+
+func ps2_read_port(mouse: bool, spin_limit: u64) do
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    status: u64 is io.in8(100)
+    if (status & 1) != 0 then
+      value: u64 is io.in8(96)
+      from_mouse: bool is (status & 32) != 0
+      if from_mouse == mouse then
+        return value
+      end
+    else
+      cpu.pause()
+    end
+    attempt += 1
+  end
+  return 65535
+end
+
+func ps2_flush(limit: u64) do
+  count: u64 is 0
+  while count < limit and (io.in8(100) & 1) != 0 do
+    discarded: u64 is io.in8(96)
+    count += 1
+  end
+  return true
+end
+
+func ps2_device_command(value: u64, mouse: bool) do
+  if mouse then
+    if not ps2_controller_command(212) then return false
+  end
+  if not ps2_controller_data(value) then return false
+  return ps2_read_port(mouse, 200000) == 250
+end
+
+func ps2_controller_init() do
+  if not ps2_controller_command(173) then return 0
+  if not ps2_controller_command(167) then return 0
+  ps2_flush(64)
+
+  if not ps2_controller_command(32) then return 0
+  config: u64 is ps2_read_port(false, 100000)
+  if config == 65535 then return 0
+  config is (config & 204) | 64
+  if not ps2_controller_command(96) then return 0
+  if not ps2_controller_data(config) then return 0
+
+  result: u64 is 0
+  if ps2_controller_command(174) then
+    if ps2_device_command(244, false) then result is result | 1
+  end
+  if ps2_controller_command(168) then
+    if ps2_device_command(246, true) and ps2_device_command(244, true) then
+      result is result | 2
+    end
+  end
+  ps2_flush(64)
+  return result
+end
+
+func ps2_poll(keyboard: ptr[Ps2KeyboardState], mouse: ptr[Ps2MouseState]) do
+  status: u64 is io.in8(100)
+  if (status & 1) == 0 then return 0
+  value: u64 is io.in8(96)
+  if (status & 32) != 0 then
+    if ps2_mouse_feed(mouse, value) then return 2
+    return 0
+  end
+  if ps2_keyboard_feed(keyboard, value) then return 1
+  return 0
+end

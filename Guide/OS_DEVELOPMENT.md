@@ -12,12 +12,13 @@ memory, and executes a physical-page allocate/write/read/free self-check before
 emitting `SURA_OS_KERNEL_READY`.
 
 It is not a complete general-purpose operating system. The rendered terminal
-does not receive keyboard input yet; the current shell is carried over COM1.
-There is no mouse, interactive window manager, application process, persistent
-desktop filesystem, network stack, or browser. The files in `examples/os`
-remain compiler feature tests and do not form a complete user environment or
-device-driver stack. Test generated images in a virtual machine before
-considering physical hardware.
+receives translated PS/2 keyboard input in QEMU and COM1 remains available for
+diagnostics and automation. A polling PS/2 mouse moves a software pointer.
+Windows cannot yet be focused, dragged, resized, or clicked. There is no
+application process, persistent desktop filesystem, network stack, or browser.
+The files in `examples/os` remain compiler feature tests and do not form a
+complete user environment or device-driver stack. Test generated images in a
+virtual machine before considering physical hardware.
 
 ## Build
 
@@ -248,6 +249,37 @@ hardware GPU acceleration or an interactive window system.
 `examples/os/framebuffer_features.sura` independently compiles the surface,
 pixel, rectangle, line, icon, font, hash, and presentation paths into an EFI
 feature image. The OS VM gate is the executed proof for the same libraries.
+
+## PS/2 desktop input
+
+`stdlib/freestanding/ps2.sura` provides a polling Intel 8042 path for the
+current x86-64 desktop milestone:
+
+- controller input/output readiness waits with fixed spin limits
+- translated Set-1 keyboard decoding, left/right Shift, Caps Lock, printable
+  ASCII, Enter, Backspace, and extended-key tracking
+- standard three-byte relative mouse packet assembly, signed movement,
+  bounds, and button transition state
+- keyboard and auxiliary-device enable commands used by QEMU's emulated
+  controller
+
+The OS combines COM1 and PS/2 input in one polling shell loop. Printable keys,
+Backspace, and Enter update the graphical terminal. Mouse packets move a
+software pointer. The first controller, keyboard, and mouse events emit
+`SURA_OS_PS2_READY`, `SURA_OS_KEYBOARD_OK`, and `SURA_OS_MOUSE_OK`. Shift and
+the first mouse-button press additionally emit `SURA_OS_SHIFT_OK` and
+`SURA_OS_MOUSE_CLICK_OK`.
+
+`examples/os/ps2_features.sura` checks scan-code and packet decoding in
+generated EFI code. `tools/sura_os_screenshot.ps1` uses QMP to type `status`
+through QEMU's emulated PS/2 keyboard, moves the emulated mouse, requires the
+Shift/keyboard/move/click markers and `kernel: ready`, and captures the
+resulting framebuffer.
+
+This is polling input with no IRQ1/IRQ12 handler, event queue, key repeat
+policy, keyboard layout selection, Unicode text input, wheel/five-button mouse,
+USB HID, focus routing, or click dispatch. Those belong to later interrupt,
+window-manager, and USB stages.
 
 ## Kernel intrinsics
 
