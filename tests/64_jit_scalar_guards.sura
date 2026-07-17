@@ -1,0 +1,85 @@
+# Guarded native record scalar replacement must deopt when a subclass
+# overrides a method observed as monomorphic during warmup.
+struct ScalarGuardVec do
+  x is 0
+  y is 0
+
+  func add(other) do
+    return ScalarGuardVec(self.x + other.x, self.y + other.y)
+  end
+
+  func scale(k) do
+    return ScalarGuardVec(self.x * k, self.y * k)
+  end
+end
+
+class ScalarGuardChild extends ScalarGuardVec do
+  func scale(k) do
+    return ScalarGuardVec(100, 200)
+  end
+end
+
+func scalar_guard_step(pos, velocity, factor) do
+  scaled is velocity.scale(factor)
+  return pos.add(scaled)
+end
+
+base is ScalarGuardVec(1, 2)
+velocity is ScalarGuardVec(3, 4)
+i is 0
+while i < 20 do
+  warmed is scalar_guard_step(base, velocity, 2)
+  assert_eq(warmed.x, 7)
+  assert_eq(warmed.y, 10)
+  i is i + 1
+end
+
+child is new ScalarGuardChild()
+deoptimized is scalar_guard_step(base, child, 9)
+assert_eq(deoptimized.x, 101)
+assert_eq(deoptimized.y, 202)
+
+# A second global alias makes in-place result reuse illegal. The escape proof
+# must keep the old instance observable through saved_alias.
+alias_pos is ScalarGuardVec(0, 0)
+saved_alias is alias_pos
+alias_velocity is ScalarGuardVec(1, 2)
+i is 0
+while i < 20 do
+  alias_pos is scalar_guard_step(alias_pos, alias_velocity, 1)
+  i is i + 1
+end
+assert_eq(alias_pos.x, 20)
+assert_eq(alias_pos.y, 40)
+assert_eq(saved_alias.x, 0)
+assert_eq(saved_alias.y, 0)
+
+# The machine-stack scalar ABI is intentionally numeric-only because its
+# private register file is not part of the VM GC root range. String fields
+# must take the initialized VM-stack fallback and preserve concatenation.
+struct ScalarTextGuardVec do
+  x is ""
+  y is ""
+
+  func add(other) do
+    return ScalarTextGuardVec(self.x + other.x, self.y + other.y)
+  end
+end
+
+func scalar_text_guard_step(pos, suffix) do
+  return pos.add(suffix)
+end
+
+text_pos is ScalarTextGuardVec("a", "z")
+text_suffix is ScalarTextGuardVec("b", "y")
+i is 0
+while i < 20 do
+  text_pos is scalar_text_guard_step(text_pos, text_suffix)
+  i is i + 1
+end
+assert_eq(text_pos.x.len(), 21)
+assert_eq(text_pos.y.len(), 21)
+assert(text_pos.x.ends_with("bbbb"))
+assert(text_pos.y.ends_with("yyyy"))
+
+print("64_jit_scalar_guards: PASS")

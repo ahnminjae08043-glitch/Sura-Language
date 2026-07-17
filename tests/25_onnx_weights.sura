@@ -1,0 +1,51 @@
+use autograd
+
+f64 is autograd.tensor([[1.25, -2.5], [3.75, 4]])
+f32 is autograd.tensor([0.1, 0.2, 0.3], "float32")
+f16 is autograd.tensor([1.5, -0.5], "float16")
+bf16 is autograd.tensor(7.25, "bfloat16")
+
+path is path_join(temp_dir(), "sura-weights-" + uuid_v4() + ".onnx")
+written is autograd.save_onnx_weights({f64: f64, f32: f32, f16: f16, bf16: bf16}, path)
+assert(written > 100)
+assert(file_exists(path))
+
+loaded is autograd.load_onnx_weights(path)
+assert_eq(autograd.dtype(loaded.f64), "float64")
+assert_eq(autograd.dtype(loaded.f32), "float32")
+assert_eq(autograd.dtype(loaded.f16), "float16")
+assert_eq(autograd.dtype(loaded.bf16), "bfloat16")
+assert_eq(autograd.requires_grad(loaded.f64), false)
+assert_eq(json_stringify(autograd.data(loaded.f64)), json_stringify(autograd.data(f64)))
+assert_eq(json_stringify(autograd.data(loaded.f32)), json_stringify(autograd.data(f32)))
+assert_eq(json_stringify(autograd.data(loaded.f16)), json_stringify(autograd.data(f16)))
+assert_eq(json_stringify(autograd.data(loaded.bf16)), json_stringify(autograd.data(bf16)))
+
+trainable is autograd.load_onnx_weights(path, {requires_grad: true})
+assert_eq(autograd.requires_grad(trainable.f32), true)
+autograd.backward(autograd.sum(trainable.f32))
+assert_eq(json_stringify(autograd.grad(trainable.f32)), "[1,1,1]")
+
+alias_rejected is false
+try
+  autograd.save_onnx_weights({a: f64, b: f64}, path + ".alias")
+catch error
+  alias_rejected is true
+end
+assert(alias_rejected)
+
+truncated_path is path + ".truncated"
+bytes is file_read_bytes(path)
+bytes.pop()
+file_write_bytes(truncated_path, bytes)
+truncated_rejected is false
+try
+  autograd.load_onnx_weights(truncated_path)
+catch error
+  truncated_rejected is true
+end
+assert(truncated_rejected)
+
+file_delete(path)
+file_delete(truncated_path)
+print "25_onnx_weights: PASS"

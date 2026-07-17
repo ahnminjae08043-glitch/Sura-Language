@@ -1,0 +1,15 @@
+arr is ["a", "b"]
+for i, v in arr do
+    print i
+    print v
+end
+
+for ch in "hi" do
+    print ch
+end
+
+d is {"x": 7}
+for k, v in d do
+    print k
+    print v
+end

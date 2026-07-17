@@ -1,0 +1,53 @@
+# Topological scheduling with dependency validation.
+
+tasks is ["design", "assets", "engine", "gameplay", "tests", "release"]
+dependencies is {design: [], assets: ["design"], engine: ["design"], gameplay: ["assets", "engine"], tests: ["gameplay"], release: ["tests"]}
+
+func contains_name(items, name) do
+  for item in items do
+    if item == name then return true
+  end
+  return false
+end
+
+func ready(task, finished) do
+  for dependency in dependencies[task] do
+    if not contains_name(finished, dependency) then return false
+  end
+  return true
+end
+
+remaining is []
+for task in tasks do
+  remaining.push(task)
+end
+schedule is []
+
+while remaining.len() > 0 do
+  progress is false
+  i is 0
+  while i < remaining.len() do
+    task is remaining[i]
+    if ready(task, schedule) then
+      schedule.push(task)
+      remaining.remove(i)
+      progress is true
+    else
+      i += 1
+    end
+  end
+
+  if not progress then
+    throw "dependency cycle detected"
+  end
+end
+
+print("Build schedule")
+i is 0
+while i < schedule.len() do
+  print("{i + 1}. {schedule[i]}")
+  i += 1
+end
+
+assert_eq(schedule[0], "design")
+assert_eq(schedule[schedule.len() - 1], "release")

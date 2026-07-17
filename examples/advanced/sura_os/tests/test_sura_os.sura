@@ -1,0 +1,243 @@
+# Integration and subsystem tests for SuraOS.
+
+use json
+import "../src/constants.sura"
+import "../src/util.sura"
+import "../src/diagnostics.sura"
+import "../src/memory.sura"
+import "../src/devices.sura"
+import "../src/security.sura"
+import "../src/cpu.sura"
+import "../src/assembler.sura"
+import "../src/filesystem.sura"
+import "../src/process.sura"
+import "../src/scheduler.sura"
+import "../src/services.sura"
+import "../src/packages.sura"
+import "../src/network.sura"
+import "../src/monitor.sura"
+import "../src/snapshots.sura"
+import "../src/kernel.sura"
+import "../src/bootloader.sura"
+import "../src/shell.sura"
+
+func test_new_machine() do
+  kernel is kernel_create(4 * 1024 * 1024, 4, 12345)
+  loader is bootloader_create(boot_config_default())
+  kernel.bootloader is loader
+  result is bootloader_run(loader, kernel)
+  assert_eq(result.ok, true)
+  return {kernel: kernel, loader: loader}
+end
+
+# Constants and generic helpers.
+assert_eq(SURAOS_NAME, "SuraOS")
+assert_eq(SURAOS_ARCH, "SVM32")
+assert_eq(suraos_process_is_alive(SURAOS_PROCESS_READY), true)
+assert_eq(suraos_process_is_alive(SURAOS_PROCESS_TERMINATED), false)
+assert_eq(osutil_clamp(15, 0, 10), 10)
+assert_eq(osutil_clamp(-2, 0, 10), 0)
+assert_eq(osutil_percent(1, 4), 25)
+assert_eq(osutil_hex(255, 4), "00FF")
+assert_eq(osutil_normalize_path("../etc/./motd", "/home/user"), "/home/etc/motd")
+assert_eq(osutil_basename("/home/user/file.txt"), "file.txt")
+assert_eq(osutil_parent_path("/home/user/file.txt"), "/home/user")
+assert_eq(osutil_sort_strings(["z", "a", "m"]).join(","), "a,m,z")
+assert_eq(osutil_checksum_text("SuraOS"), osutil_checksum_text("SuraOS"))
+
+# Structured diagnostics.
+log is diag_create(3)
+diag_info(log, "test", "one", {}, 1)
+diag_warn(log, "test", "two", {}, 2)
+diag_error(log, "kernel", "three", {}, 3)
+diag_debug(log, "test", "four", {}, 4)
+assert_eq(log.entries.len(), 3)
+assert_eq(log.dropped, 1)
+assert_eq(log.warnings, 1)
+assert_eq(log.errors, 1)
+assert_eq(diag_filter(log, "WARN", "").len(), 2)
+assert_eq(diag_tail(log, 1)[0].message, "four")
+
+# Sparse protected memory.
+memory is mem_create(8192)
+allocation is mem_allocate(memory, 7, 256, SURAOS_PERM_READ | SURAOS_PERM_WRITE, "heap", "test")
+assert_eq(allocation.ok, true)
+address is allocation.value
+assert_eq(mem_write_u32(memory, 7, address, 305419896, false).ok, true)
+assert_eq(mem_read_u32(memory, 7, address, false).value, 305419896)
+assert_eq(mem_read_u32(memory, 8, address, false).ok, false)
+assert_eq(mem_stats(memory).reserved, 256)
+assert_eq(mem_validate(memory).ok, true)
+assert_eq(mem_free(memory, 7, address, false).ok, true)
+assert_eq(mem_stats(memory).reserved, 0)
+
+# Assembler and SVM32 instruction validation.
+counter_program is asm_assemble(asm_counter_source(5), "test-counter")
+assert_eq(counter_program.assembled, true)
+assert_eq(counter_program.instructions.len(), 8)
+assert_eq(counter_program.entry, 0)
+assert_eq(asm_validate_program(counter_program).ok, true)
+assert_eq(asm_disassemble(counter_program).contains("SYSCALL 2"), true)
+bad_program is asm_assemble("NOT_AN_OPCODE R1\n", "bad")
+assert_eq(bad_program.assembled, false)
+assert_eq(bad_program.errors.len() > 0, true)
+sample_names is ["hello.sasm", "factorial.sasm", "fibonacci.sasm", "sum_100.sasm", "countdown.sasm", "process_info.sasm", "clock_reader.sasm", "sleeping_worker.sasm", "bitwise.sasm"]
+for sample_name in sample_names do
+  sample_source is file_read("../programs/" + sample_name)
+  sample_program is asm_assemble(sample_source, sample_name)
+  assert_eq(sample_program.assembled, true)
+  assert_eq(asm_validate_program(sample_program).ok, true)
+end
+
+# Filesystem hierarchy, permissions, descriptors and export/import.
+filesystem is fs_create(0)
+fs_format_default(filesystem, 0)
+assert_eq(fs_validate(filesystem).ok, true)
+assert_eq(fs_get(filesystem, "/home/user", "/").owner, "user")
+write_result is fs_write_file(filesystem, "/home/user/test.txt", "alpha", "user", "/", 1)
+assert_eq(write_result.ok, true)
+assert_eq(fs_append_file(filesystem, "/home/user/test.txt", "-beta", "user", "/", 2).ok, true)
+assert_eq(fs_read_file(filesystem, "/home/user/test.txt", "user", "/").value, "alpha-beta")
+assert_eq(fs_copy(filesystem, "/home/user/test.txt", "/home/user/copy.txt", "user", "/", 3).ok, true)
+assert_eq(fs_move(filesystem, "/home/user/copy.txt", "/home/user/moved.txt", "user", "/", 4).ok, true)
+assert_eq(fs_get(filesystem, "/home/user/copy.txt", "/") == nil, true)
+assert_eq(fs_get(filesystem, "/home/user/moved.txt", "/") != nil, true)
+assert_eq(fs_tree_lines(filesystem, "/", "root", "/").value.len() > 10, true)
+disk_data is fs_export(filesystem)
+imported_disk is fs_import(disk_data)
+assert_eq(imported_disk.ok, true)
+assert_eq(fs_validate(imported_disk.value).ok, true)
+
+# Users, groups, login sessions and capability checks.
+security is security_create()
+security_bootstrap(security)
+assert_eq(security_authenticate(security, "user", "sura", 0).ok, true)
+assert_eq(security_authenticate(security, "user", "wrong", 0).ok, false)
+assert_eq(security_has_capability(security, "root", "system.shutdown"), true)
+assert_eq(security_has_capability(security, "user", "system.shutdown"), false)
+assert_eq(security_grant(security, "user", "device.network", "root").ok, true)
+assert_eq(security_has_capability(security, "user", "device.network"), true)
+assert_eq(security_revoke(security, "user", "device.network", "root").ok, true)
+
+# Full staged boot and kernel health.
+machine is test_new_machine()
+kernel is machine.kernel
+loader is machine.loader
+assert_eq(kernel.booted, true)
+assert_eq(loader.complete, true)
+assert_eq(loader.failed, false)
+assert_eq(bootloader_report(loader).checks_failed, 0)
+assert_eq(bootloader_report(loader).detected.devices, 6)
+assert_eq(fs_get(kernel.fs, "/boot/boot.cfg", "/") != nil, true)
+assert_eq(kernel_health(kernel).healthy, true)
+assert_eq(kernel.programs.keys().len(), 3)
+
+# Process creation, scheduling and system calls.
+hello_spawn is kernel_spawn_registered(kernel, "hello", "user", 0, 5)
+counter_spawn is kernel_spawn_registered(kernel, "counter", "user", 0, 4)
+assert_eq(hello_spawn.ok, true)
+assert_eq(counter_spawn.ok, true)
+schedule_result is kernel_run(kernel, 2000)
+assert_eq(schedule_result.ok, true)
+assert_eq(hello_spawn.value.state, SURAOS_PROCESS_TERMINATED)
+assert_eq(counter_spawn.value.state, SURAOS_PROCESS_TERMINATED)
+assert_eq(hello_spawn.value.exit_code, 0)
+assert_eq(counter_spawn.value.exit_code, 0)
+assert_eq(kernel.total_created, 2)
+assert_eq(kernel.total_exited, 2)
+assert_eq(kernel.syscalls >= 3, true)
+assert_eq(scheduler_stats(kernel).context_switches > 0, true)
+
+# Service manager lifecycle.
+assert_eq(service_manager_stats(kernel.services).units, 3)
+welcome_start is service_start(kernel.services, kernel, "welcome", true)
+assert_eq(welcome_start.ok, true)
+assert_eq(service_status(kernel.services, "welcome").value.state, "active")
+kernel_run(kernel, 100)
+service_tick(kernel.services, kernel)
+assert_eq(service_status(kernel.services, "welcome").value.state, "inactive")
+assert_eq(service_status(kernel.services, "welcome").value.last_exit_code, 0)
+assert_eq(service_enable(kernel.services, "welcome", false, kernel.clock.tick).ok, true)
+assert_eq(service_start(kernel.services, kernel, "welcome", true).ok, false)
+assert_eq(service_enable(kernel.services, "welcome", true, kernel.clock.tick).ok, true)
+
+# Package dependency resolution, installation and integrity verification.
+assert_eq(pkg_manager_stats(kernel.packages).repository_packages, 3)
+resolution is pkg_resolve(kernel.packages, "sura-manual", "^1.0.0")
+assert_eq(resolution.ok, true)
+assert_eq(resolution.manifests.len(), 2)
+install_result is pkg_install(kernel.packages, kernel, "sura-manual", "^1.0.0")
+assert_eq(install_result.ok, true)
+assert_eq(pkg_is_installed(kernel.packages, "sura-base", ">=1.0.0"), true)
+assert_eq(pkg_is_installed(kernel.packages, "sura-manual", "1.2.0"), true)
+assert_eq(fs_get(kernel.fs, "/usr/share/doc/sura-manual/quickstart.txt", "/") != nil, true)
+assert_eq(pkg_verify(kernel.packages, kernel, "").ok, true)
+assert_eq(pkg_required_by(kernel.packages, "sura-base")[0], "sura-manual")
+assert_eq(pkg_remove(kernel.packages, kernel, "sura-base", false).ok, false)
+
+# Virtual loopback network, route lookup, firewall and sockets.
+assert_eq(net_ipv4_valid("127.0.0.1"), true)
+assert_eq(net_ipv4_valid("999.0.0.1"), false)
+assert_eq(net_prefix_match("127.1.2.3", "127.0.0.0/8"), true)
+assert_eq(net_dns_resolve(kernel.network, "localhost").value, "127.0.0.1")
+assert_eq(net_route_lookup(kernel.network, "127.0.0.1").ok, true)
+server_open is net_socket_open(kernel.network, "udp", 0, "root")
+client_open is net_socket_open(kernel.network, "udp", 0, "root")
+assert_eq(server_open.ok, true)
+assert_eq(client_open.ok, true)
+server is server_open.value
+client is client_open.value
+assert_eq(net_socket_bind(kernel.network, server.id, "lo", "127.0.0.1", 9000).ok, true)
+assert_eq(net_socket_connect(kernel.network, client.id, "127.0.0.1", 9000, kernel.clock.tick).ok, true)
+assert_eq(net_socket_send(kernel.network, client.id, "loopback-payload", kernel.clock.tick).ok, true)
+poll_result is net_poll(kernel.network, kernel.clock.tick, 10)
+assert_eq(poll_result.polled, 1)
+assert_eq(poll_result.delivered, 1)
+received is net_socket_receive(kernel.network, server.id)
+assert_eq(received.ok, true)
+assert_eq(received.value.payload, "loopback-payload")
+assert_eq(net_stats(kernel.network).packets_sent, 1)
+assert_eq(net_stats(kernel.network).packets_received, 1)
+assert_eq(net_socket_close(kernel.network, client.id, kernel.clock.tick).ok, true)
+assert_eq(net_socket_close(kernel.network, server.id, kernel.clock.tick).ok, true)
+
+# Monitoring, alert rules and text dashboard.
+sample_result is monitor_sample(kernel.monitor, kernel)
+assert_eq(sample_result.ok, true)
+assert_eq(monitor_latest(kernel.monitor).tick, kernel.clock.tick)
+assert_eq(monitor_stats(kernel.monitor).rules, 8)
+assert_eq(monitor_dashboard(kernel.monitor, kernel).contains("SuraOS system monitor"), true)
+assert_eq(monitor_average(kernel.monitor, "process.total", 10) >= 0, true)
+
+# Shell command routing against virtual objects only.
+shell is shell_create(kernel, "user", false)
+assert_eq(shell_execute(shell, kernel, "pwd"), true)
+assert_eq(shell_execute(shell, kernel, "ls /"), true)
+assert_eq(shell_execute(shell, kernel, "programs"), true)
+assert_eq(shell_execute(shell, kernel, "services"), true)
+assert_eq(shell_execute(shell, kernel, "pkg list"), true)
+assert_eq(shell_execute(shell, kernel, "ip route"), true)
+assert_eq(shell_execute(shell, kernel, "monitor dashboard"), true)
+assert_eq(shell_execute(shell, kernel, "boot-report"), true)
+assert_eq(shell.failures, 0)
+assert_eq(shell.commands, 8)
+
+# Snapshots are plain data and do not mutate the live kernel.
+snapshot is kernel_snapshot(kernel)
+assert_eq(snapshot.schema, SURAOS_SNAPSHOT_SCHEMA)
+assert_eq(snapshot.version, SURAOS_VERSION)
+assert_eq(snapshot.filesystem.schema, SURAOS_DISK_SCHEMA)
+assert_eq(snapshot.processes.len(), kernel.process_count)
+first_capture is snapshot_capture(kernel.snapshots, kernel, "before-note", "before adding a diff marker")
+assert_eq(first_capture.ok, true)
+assert_eq(fs_write_file(kernel.fs, "/home/user/diff-marker.txt", "changed", "user", "/", kernel.clock.tick).ok, true)
+second_capture is snapshot_capture(kernel.snapshots, kernel, "after-note", "after adding a diff marker")
+assert_eq(second_capture.ok, true)
+snapshot_difference is snapshot_diff(kernel.snapshots, first_capture.value.id, second_capture.value.id)
+assert_eq(snapshot_difference.ok, true)
+assert_eq(snapshot_difference.value.files.added.contains("/home/user/diff-marker.txt"), true)
+assert_eq(snapshot_manager_stats(kernel.snapshots).snapshots, 2)
+assert_eq(snapshot_validate(first_capture.value.data).ok, true)
+assert_eq(kernel_health(kernel).healthy, true)
+
+print("SuraOS integration tests passed")

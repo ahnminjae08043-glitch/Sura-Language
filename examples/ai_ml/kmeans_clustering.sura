@@ -1,0 +1,48 @@
+# K-means clustering implemented with ordinary Sura arrays.
+points is [[1, 1], [1.2, 0.8], [0.8, 1.3], [8, 8], [8.4, 7.7], [7.6, 8.2]]
+centroids is [[1, 1], [8, 8]]
+labels is [0, 0, 0, 0, 0, 0]
+
+func distance2(a, b) do
+  dx is a[0] - b[0]
+  dy is a[1] - b[1]
+  return dx * dx + dy * dy
+end
+
+repeat 8 do
+  i is 0
+  while i < points.len() do
+    d0 is distance2(points[i], centroids[0])
+    d1 is distance2(points[i], centroids[1])
+    if d0 <= d1 then labels[i] is 0 else labels[i] is 1
+    i += 1
+  end
+
+  sum0x is 0
+  sum0y is 0
+  count0 is 0
+  sum1x is 0
+  sum1y is 0
+  count1 is 0
+  i is 0
+  while i < points.len() do
+    cluster is labels[i]
+    if cluster == 0 then
+      sum0x += points[i][0]
+      sum0y += points[i][1]
+      count0 += 1
+    else
+      sum1x += points[i][0]
+      sum1y += points[i][1]
+      count1 += 1
+    end
+    i += 1
+  end
+
+  if count0 > 0 then centroids[0] is [sum0x / count0, sum0y / count0]
+  if count1 > 0 then centroids[1] is [sum1x / count1, sum1y / count1]
+end
+
+print("K-means labels: {labels.join(",")}")
+print("centroids: {centroids}")
+assert_eq(labels.join(","), "0,0,0,1,1,1")

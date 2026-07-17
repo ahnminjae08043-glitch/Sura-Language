@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a scoped addition with compatibility, fallback, and verification details.
+title: "[Feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: use_case
+    attributes:
+      label: Concrete use case
+      description: Show the program or workflow that cannot be expressed cleanly today.
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Proposed support tier
+      options:
+        - Experimental
+        - Platform-limited
+        - Stable core
+    validations:
+      required: true
+  - type: textarea
+    id: surface
+    attributes:
+      label: Public surface
+      description: List proposed syntax, API, CLI, or file-format changes.
+    validations:
+      required: true
+  - type: textarea
+    id: fallback
+    attributes:
+      label: Unsupported-platform and failure behavior
+      description: State the explicit error or fallback path.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Explain source, bytecode, package-format, Plugin ABI, and FFI ABI impact.
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: Name tests, platforms, documentation, and CI evidence required for promotion.
+    validations:
+      required: true

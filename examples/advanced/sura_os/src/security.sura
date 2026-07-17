@@ -1,0 +1,160 @@
+# Users, groups, sessions, capabilities, and audit decisions.
+
+func security_create() do
+  users is {}
+  groups is {}
+  capabilities is ["process.inspect", "process.signal", "process.spawn", "fs.read", "fs.write", "fs.admin", "system.shutdown", "system.snapshot", "device.network"]
+  return {users: users, groups: groups, sessions: {}, next_uid: 1000, next_gid: 1000, next_session: 1, capabilities: capabilities, auth_success: 0, auth_failures: 0, denials: 0}
+end
+
+func security_password_hash(username, password) do
+  # This is an intentionally small deterministic teaching hash, not a real
+  # password hash.  SuraOS documents the distinction instead of pretending to
+  # provide host security.
+  combined is username + ":" + password + ":suraos"
+  total is 5381
+  index is 0
+  while index < combined.len() do
+    total is ((total << 5) + total + index + combined[index].len()) % 2147483647
+    index += 1
+  end
+  return "s1$" + osutil_hex(total, 8)
+end
+
+func security_add_group(security, name, gid) do
+  groups is security.groups
+  if name in groups then return osutil_fail(SURAOS_ERR_EXISTS, "group exists")
+  actual_gid is gid
+  if actual_gid < 0 then
+    actual_gid is security.next_gid
+    security.next_gid += 1
+  end
+  group is {name: name, gid: actual_gid, members: []}
+  groups[name] is group
+  return osutil_ok(group)
+end
+
+func security_add_user(security, username, password, primary_group, home, shell, uid) do
+  users is security.users
+  if username in users then return osutil_fail(SURAOS_ERR_EXISTS, "user exists")
+  groups is security.groups
+  if not (primary_group in groups) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "primary group not found")
+  actual_uid is uid
+  if actual_uid < 0 then
+    actual_uid is security.next_uid
+    security.next_uid += 1
+  end
+  user is {username: username, uid: actual_uid, primary_group: primary_group, groups: [primary_group], home: home, shell: shell, password_hash: security_password_hash(username, password), locked: false, failed_logins: 0, capabilities: [], created_tick: 0}
+  users[username] is user
+  group is groups[primary_group]
+  members is group.members
+  members.push(username)
+  return osutil_ok(user)
+end
+
+func security_bootstrap(security) do
+  security_add_group(security, "root", 0)
+  security_add_group(security, "users", 100)
+  root_result is security_add_user(security, "root", "root", "root", "/root", "/bin/sh", 0)
+  user_result is security_add_user(security, "user", "sura", "users", "/home/user", "/bin/sh", 1000)
+  root is root_result.value
+  root.capabilities is osutil_clone_array(security.capabilities)
+  user is user_result.value
+  user.capabilities is ["process.inspect", "process.spawn", "fs.read", "fs.write"]
+  return security
+end
+
+func security_get_user(security, username) do
+  users is security.users
+  if username in users then return users[username]
+  return nil
+end
+
+func security_authenticate(security, username, password, tick) do
+  user is security_get_user(security, username)
+  if user == nil or user.locked then
+    security.auth_failures += 1
+    return osutil_fail(SURAOS_ERR_PERMISSION, "authentication failed")
+  end
+  expected is security_password_hash(username, password)
+  if expected != user.password_hash then
+    user.failed_logins += 1
+    security.auth_failures += 1
+    if user.failed_logins >= 5 then user.locked is true
+    return osutil_fail(SURAOS_ERR_PERMISSION, "authentication failed")
+  end
+  user.failed_logins is 0
+  security.auth_success += 1
+  session_id is security.next_session
+  security.next_session += 1
+  session is {id: session_id, username: username, uid: user.uid, created_tick: tick, last_tick: tick, active: true}
+  sessions is security.sessions
+  sessions[osutil_key(session_id)] is session
+  return osutil_ok(session)
+end
+
+func security_session(security, session_id) do
+  sessions is security.sessions
+  key is osutil_key(session_id)
+  if key in sessions and sessions[key].active then return sessions[key]
+  return nil
+end
+
+func security_logout(security, session_id, tick) do
+  session is security_session(security, session_id)
+  if session == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "session not found")
+  session.active is false
+  session.last_tick is tick
+  return osutil_ok(session_id)
+end
+
+func security_has_capability(security, username, capability) do
+  user is security_get_user(security, username)
+  if user == nil or user.locked then return false
+  return user.capabilities.contains(capability)
+end
+
+func security_require(security, username, capability) do
+  if security_has_capability(security, username, capability) then return osutil_ok(true)
+  security.denials += 1
+  return osutil_fail(SURAOS_ERR_PERMISSION, "missing capability " + capability)
+end
+
+func security_grant(security, username, capability, requester) do
+  if requester != "root" then return osutil_fail(SURAOS_ERR_PERMISSION, "only root may grant capabilities")
+  if not security.capabilities.contains(capability) then return osutil_fail(SURAOS_ERR_INVALID, "unknown capability")
+  user is security_get_user(security, username)
+  if user == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "user not found")
+  capabilities is user.capabilities
+  if not capabilities.contains(capability) then capabilities.push(capability)
+  return osutil_ok(capability)
+end
+
+func security_revoke(security, username, capability, requester) do
+  if requester != "root" then return osutil_fail(SURAOS_ERR_PERMISSION, "only root may revoke capabilities")
+  user is security_get_user(security, username)
+  if user == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "user not found")
+  capabilities is user.capabilities
+  osutil_remove_value(capabilities, capability)
+  return osutil_ok(capability)
+end
+
+func security_can_signal(security, sender_user, target_process) do
+  if sender_user == "root" then return true
+  if sender_user == target_process.user then return true
+  return security_has_capability(security, sender_user, "process.signal")
+end
+
+func security_user_info(security, username) do
+  user is security_get_user(security, username)
+  if user == nil then return nil
+  return {username: user.username, uid: user.uid, primary_group: user.primary_group, groups: osutil_clone_array(user.groups), home: user.home, shell: user.shell, locked: user.locked, capabilities: osutil_clone_array(user.capabilities)}
+end
+
+func security_stats(security) do
+  active_sessions is 0
+  for session in security.sessions.values() do
+    if session.active then active_sessions += 1
+  end
+  return {users: security.users.keys().len(), groups: security.groups.keys().len(), sessions: security.sessions.keys().len(), active_sessions: active_sessions, auth_success: security.auth_success, auth_failures: security.auth_failures, denials: security.denials}
+end

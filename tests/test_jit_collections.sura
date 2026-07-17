@@ -1,0 +1,25 @@
+# Collection-heavy functions must keep identical VM and native-JIT semantics.
+# The loop creates enough short-lived nested objects to cross the GC threshold
+# repeatedly while source registers remain live in native frames.
+
+func make_packet(i) do
+  return {id: "packet-" + to_str(i), values: [i, i + 1, {ok: true}], meta: {index: i, active: i % 2 == 0}}
+end
+
+i is 0
+checksum is 0
+last_id is ""
+
+while i < 5000 do
+  packet is make_packet(i)
+  assert_eq(length(packet.values), 3)
+  assert_eq(packet.values[2].ok, true)
+  checksum is checksum + packet.values[0] + packet.values[1] + packet.meta.index
+  last_id is packet.id
+  i is i + 1
+end
+
+assert_eq(checksum, 37497500)
+assert_eq(last_id, "packet-4999")
+print "jit collections checksum: {checksum}"
+print "jit collections last id: {last_id}"

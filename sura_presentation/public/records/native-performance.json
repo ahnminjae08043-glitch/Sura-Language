@@ -1,0 +1,180 @@
+{
+    "schema":  "sura.native.performance.v1",
+    "generated_utc":  "2026-07-16T13:48:07Z",
+    "passed":  true,
+    "engine":  {
+                   "file":  "SuraLanguage.exe",
+                   "version_output":  "Sura Language 1.11.1",
+                   "bytes":  8651612,
+                   "sha256":  "4a78ca28fe2b500e6d7dfc46347b981b355e43cb7a57cd63bd8a8618dc16a1de"
+               },
+    "host":  {
+                 "os":  "Microsoft Windows NT 10.0.26200.0",
+                 "architecture":  "X64",
+                 "cpu":  "12th Gen Intel(R) Core(TM) i5-12400F"
+             },
+    "compiler":  "C:\\msys64\\mingw64\\bin\\g++.exe",
+    "compiler_version":  "g++.exe (Rev13, Built by MSYS2 project) 15.2.0",
+    "compiler_flags":  "-O3 -DNDEBUG -std=c++17 -march=native",
+    "compiler_output":  "",
+    "baseline_count":  2,
+    "primary_baseline_id":  "vec2",
+    "three_d_baseline_id":  "vec3",
+    "baselines":  [
+                      {
+                          "id":  "vec2",
+                          "benchmark":  "game physics Vec2 loop",
+                          "sura_file":  "bench_physics.sura",
+                          "native_file":  "bench_physics_native.cpp",
+                          "dimension":  "vec2",
+                          "measurement_scope":  {
+                                                    "timed_region":  "inner physics loop only",
+                                                    "workload":  "Vec2 p = step(p, v, dt)",
+                                                    "steps":  100000,
+                                                    "step_label":  "100k",
+                                                    "sura_runs":  5,
+                                                    "native_runs":  5,
+                                                    "sura_timer":  "Sura clock() around 100k script loop",
+                                                    "native_timer":  "std::chrono around 100k C++ loop",
+                                                    "source_loop_guard":  "bench_physics.sura: while i \u003c 100000",
+                                                    "cxx_flags":  "-O3 -DNDEBUG -std=c++17 -march=native",
+                                                    "comparison_note":  "C++ receives the same fixed inner loop scope and native compiler optimization range; this ratio is evidence, not a claim that Sura is faster than C++."
+                                                },
+                          "fair_scope_passed":  true,
+                          "expected_final_axis":  "x",
+                          "expected_final_value":  1600,
+                          "sura_final_runs":  [
+                                                  1600.0000000018149,
+                                                  1600.0000000018149,
+                                                  1600.0000000018149,
+                                                  1600.0000000018149,
+                                                  1600.0000000018149
+                                              ],
+                          "native_final_value":  1600.00000000181,
+                          "sura_jit_ms":  0.090380001347512,
+                          "sura_jit_time_source":  "script_loop",
+                          "sura_loop_scope":  "100k",
+                          "sura_jit_runs":  [
+                                                0.15569999959552661,
+                                                0.088600005256012082,
+                                                0.070900001446716487,
+                                                0.069399997300934047,
+                                                0.067300003138370812
+                                            ],
+                          "sura_jit_run_count":  5,
+                          "native_ms":  0.0501,
+                          "native_time_source":  "native_loop",
+                          "native_loop_scope":  "100k",
+                          "sura_native_ratio":  1.8039920428645111,
+                          "native_faster_by":  1.8039920428645111,
+                          "max_sura_native_ratio":  0,
+                          "passed":  true,
+                          "warnings":  [
+
+                                       ]
+                      },
+                      {
+                          "id":  "vec3",
+                          "benchmark":  "game physics Vec3 loop",
+                          "sura_file":  "bench_physics3d.sura",
+                          "native_file":  "bench_physics_native.cpp",
+                          "dimension":  "vec3",
+                          "measurement_scope":  {
+                                                    "timed_region":  "inner physics loop only",
+                                                    "workload":  "Vec3 p = step3(p, v, gravity, wind, dt)",
+                                                    "steps":  100000,
+                                                    "step_label":  "100k",
+                                                    "sura_runs":  5,
+                                                    "native_runs":  5,
+                                                    "sura_timer":  "Sura clock() around 100k script loop",
+                                                    "native_timer":  "std::chrono around 100k C++ loop",
+                                                    "source_loop_guard":  "bench_physics3d.sura: while i \u003c 100000",
+                                                    "cxx_flags":  "-O3 -DNDEBUG -std=c++17 -march=native",
+                                                    "comparison_note":  "C++ receives the same fixed inner loop scope and native compiler optimization range; this ratio is evidence, not a claim that Sura is faster than C++."
+                                                },
+                          "fair_scope_passed":  true,
+                          "expected_final_axis":  "z",
+                          "expected_final_value":  4799.52,
+                          "sura_final_runs":  [
+                                                  4799.5199999974539,
+                                                  4799.5199999974539,
+                                                  4799.5199999974539,
+                                                  4799.5199999974539,
+                                                  4799.5199999974539
+                                              ],
+                          "native_final_value":  4799.51999999745,
+                          "sura_jit_ms":  0.10426000080769882,
+                          "sura_jit_time_source":  "script_loop",
+                          "sura_loop_scope":  "100k",
+                          "sura_jit_runs":  [
+                                                0.10879999899771065,
+                                                0.15179999900283292,
+                                                0.08679999882588163,
+                                                0.086700005340389907,
+                                                0.087200001871678978
+                                            ],
+                          "sura_jit_run_count":  5,
+                          "native_ms":  0.05016,
+                          "native_time_source":  "native_loop",
+                          "native_loop_scope":  "100k",
+                          "sura_native_ratio":  2.0785486604405663,
+                          "native_faster_by":  2.0785486604405663,
+                          "max_sura_native_ratio":  0,
+                          "passed":  true,
+                          "warnings":  [
+
+                                       ]
+                      }
+                  ],
+    "benchmark":  "game physics Vec2 loop",
+    "sura_file":  "bench_physics.sura",
+    "native_file":  "bench_physics_native.cpp",
+    "measurement_scope":  {
+                              "timed_region":  "inner physics loop only",
+                              "workload":  "Vec2 p = step(p, v, dt)",
+                              "steps":  100000,
+                              "step_label":  "100k",
+                              "sura_runs":  5,
+                              "native_runs":  5,
+                              "sura_timer":  "Sura clock() around 100k script loop",
+                              "native_timer":  "std::chrono around 100k C++ loop",
+                              "source_loop_guard":  "bench_physics.sura: while i \u003c 100000",
+                              "cxx_flags":  "-O3 -DNDEBUG -std=c++17 -march=native",
+                              "comparison_note":  "C++ receives the same fixed inner loop scope and native compiler optimization range; this ratio is evidence, not a claim that Sura is faster than C++."
+                          },
+    "fair_scope_passed":  true,
+    "expected_final_x":  1600,
+    "sura_final_x_runs":  [
+                              1600.0000000018149,
+                              1600.0000000018149,
+                              1600.0000000018149,
+                              1600.0000000018149,
+                              1600.0000000018149
+                          ],
+    "native_final_x":  1600.00000000181,
+    "sura_jit_ms":  0.090380001347512,
+    "sura_jit_time_source":  "script_loop",
+    "sura_loop_scope":  "100k",
+    "sura_jit_runs":  [
+                          0.15569999959552661,
+                          0.088600005256012082,
+                          0.070900001446716487,
+                          0.069399997300934047,
+                          0.067300003138370812
+                      ],
+    "sura_jit_run_count":  5,
+    "native_ms":  0.0501,
+    "native_time_source":  "native_loop",
+    "native_loop_scope":  "100k",
+    "sura_native_ratio":  1.8039920428645111,
+    "native_faster_by":  1.8039920428645111,
+    "native_3d_available":  true,
+    "native_3d_sura_jit_ms":  0.10426000080769882,
+    "native_3d_ms":  0.05016,
+    "native_3d_sura_native_ratio":  2.0785486604405663,
+    "native_3d_fair_scope_passed":  true,
+    "max_sura_native_ratio":  0,
+    "warnings":  [
+
+                 ]
+}

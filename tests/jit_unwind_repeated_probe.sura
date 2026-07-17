@@ -1,0 +1,74 @@
+struct Probe do
+  value is 0
+end
+
+func read_value(item) do
+  return item.value
+end
+
+func checked_shift(value, amount) do
+  return value << amount
+end
+
+func checked_mod(value, divisor) do
+  return value % divisor
+end
+
+# Force main's native frame above the UWOP_ALLOC_SMALL range. The scalar
+# callable reserves a bounded machine-stack register window, while later
+# helper exceptions must still unwind through the same generated main frame.
+struct UnwindVec do
+  x is 0
+  y is 0
+
+  func add(other) do
+    return UnwindVec(self.x + other.x, self.y + other.y)
+  end
+end
+
+func unwind_vec_step(pos, velocity) do
+  return pos.add(velocity)
+end
+
+unwind_pos is UnwindVec(0, 0)
+unwind_velocity is UnwindVec(1, 2)
+repeat 12 do
+  unwind_pos is unwind_vec_step(unwind_pos, unwind_velocity)
+end
+assert_eq(unwind_pos.x, 12)
+assert_eq(unwind_pos.y, 24)
+
+p is Probe(7)
+repeat 12 do
+  assert_eq(read_value(p), 7)
+  assert_eq(checked_shift(8, 1), 16)
+  assert_eq(checked_mod(11, 4), 3)
+end
+
+dot_caught is 0
+shift_caught is 0
+mod_caught is 0
+repeat 200 do
+  try
+    ignored_dot is read_value(nil)
+  catch error
+    dot_caught += 1
+  end
+
+  try
+    ignored_shift is checked_shift(1, 64)
+  catch error
+    shift_caught += 1
+  end
+
+  try
+    ignored_mod is checked_mod(1, 0)
+  catch error
+    mod_caught += 1
+  end
+end
+
+assert_eq(dot_caught, 200)
+assert_eq(shift_caught, 200)
+assert_eq(mod_caught, 200)
+print("jit_unwind_repeated_probe: PASS")

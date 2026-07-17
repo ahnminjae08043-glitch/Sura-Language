@@ -1,0 +1,454 @@
+# SuraOS package repository, dependency resolver and virtual-disk installer.
+# Packages live entirely inside the in-memory filesystem; no host package
+# manager or host command is invoked.
+
+func pkg_manager_create() do
+  return {repository: {}, installed: {}, transactions: [], next_transaction: 1, installs: 0, removals: 0, upgrades: 0, verification_failures: 0, repository_name: "sura-core", architecture: SURAOS_ARCH, database_path: "/var/lib/packages", cache_path: "/var/cache/packages"}
+end
+
+func pkg_version_parts(version) do
+  clean is version.trim()
+  suffix_index is clean.index_of("-")
+  if suffix_index >= 0 then clean is clean.sub(0, suffix_index)
+  raw is clean.split(".")
+  parts is [0, 0, 0]
+  index is 0
+  while index < raw.len() and index < 3 do
+    parts[index] is osutil_max(0, osutil_to_integer(raw[index], 0))
+    index += 1
+  end
+  return parts
+end
+
+func pkg_version_compare(left, right) do
+  a is pkg_version_parts(left)
+  b is pkg_version_parts(right)
+  index is 0
+  while index < 3 do
+    if a[index] < b[index] then return -1
+    if a[index] > b[index] then return 1
+    index += 1
+  end
+  return 0
+end
+
+func pkg_constraint_satisfied(version, constraint) do
+  clean is constraint.trim()
+  if clean == "" or clean == "*" then return true
+  if clean.starts_with(">=") then return pkg_version_compare(version, clean.sub(2, clean.len()).trim()) >= 0
+  if clean.starts_with("<=") then return pkg_version_compare(version, clean.sub(2, clean.len()).trim()) <= 0
+  if clean.starts_with(">") then return pkg_version_compare(version, clean.sub(1, clean.len()).trim()) > 0
+  if clean.starts_with("<") then return pkg_version_compare(version, clean.sub(1, clean.len()).trim()) < 0
+  if clean.starts_with("^") then
+    expected is pkg_version_parts(clean.sub(1, clean.len()))
+    actual is pkg_version_parts(version)
+    return actual[0] == expected[0] and pkg_version_compare(version, clean.sub(1, clean.len())) >= 0
+  end
+  if clean.starts_with("~") then
+    expected is pkg_version_parts(clean.sub(1, clean.len()))
+    actual is pkg_version_parts(version)
+    return actual[0] == expected[0] and actual[1] == expected[1] and pkg_version_compare(version, clean.sub(1, clean.len())) >= 0
+  end
+  return pkg_version_compare(version, clean) == 0
+end
+
+func pkg_valid_name(name) do
+  clean is name.trim().lower()
+  if clean.len() == 0 then return false
+  allowed is "abcdefghijklmnopqrstuvwxyz0123456789-_"
+  for char in clean.split("") do
+    if not allowed.contains(char) then return false
+  end
+  return true
+end
+
+func pkg_manifest(name, version, description, files, dependencies, metadata) do
+  return {name: name.trim().lower(), version: version.trim(), description: description, architecture: SURAOS_ARCH, files: osutil_clone_dict(files), dependencies: osutil_clone_dict(dependencies), conflicts: [], provides: [], scripts: {pre_install: "", post_install: "", pre_remove: "", post_remove: ""}, metadata: osutil_clone_dict(metadata), checksum: "", installed_size: 0}
+end
+
+func pkg_manifest_finalize(manifest) do
+  size is 0
+  checks is []
+  paths is osutil_sort_strings(manifest.files.keys())
+  for path in paths do
+    content is "" + manifest.files[path]
+    size += content.len()
+    checks.push(path + ":" + osutil_checksum_text(content))
+  end
+  manifest.installed_size is size
+  manifest.checksum is osutil_checksum_text(manifest.name + "@" + manifest.version + "|" + checks.join("|"))
+  return manifest
+end
+
+func pkg_manifest_validate(manifest) do
+  errors is []
+  if not pkg_valid_name(manifest.name) then errors.push("invalid package name")
+  if pkg_version_parts(manifest.version).len() != 3 then errors.push("invalid version")
+  if manifest.architecture != SURAOS_ARCH and manifest.architecture != "any" then errors.push("architecture mismatch")
+  if manifest.files.keys().len() == 0 then errors.push("package has no files")
+  for path in manifest.files.keys() do
+    normalized is osutil_normalize_path(path, "/")
+    if normalized != path or not path.starts_with("/") then errors.push("non-canonical file path: " + path)
+    if path.starts_with("/boot") or path.starts_with("/dev") then errors.push("package cannot write protected path: " + path)
+  end
+  for dependency in manifest.dependencies.keys() do
+    if not pkg_valid_name(dependency) then errors.push("invalid dependency name: " + dependency)
+  end
+  expected is pkg_manifest_finalize(manifest).checksum
+  if manifest.checksum != expected then errors.push("manifest checksum mismatch")
+  return {ok: errors.len() == 0, errors: errors}
+end
+
+func pkg_repository_add(manager, manifest) do
+  validation is pkg_manifest_validate(manifest)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  repository is manager.repository
+  key is manifest.name
+  versions is {}
+  if key in repository then versions is repository[key]
+  if manifest.version in versions then return osutil_fail(SURAOS_ERR_EXISTS, "package version already exists")
+  versions[manifest.version] is manifest
+  repository[key] is versions
+  return osutil_ok(manifest.name + "@" + manifest.version)
+end
+
+func pkg_repository_versions(manager, name) do
+  repository is manager.repository
+  key is name.trim().lower()
+  if not (key in repository) then return []
+  versions is repository[key].keys()
+  result is osutil_clone_array(versions)
+  i is 0
+  while i < result.len() do
+    best is i
+    j is i + 1
+    while j < result.len() do
+      if pkg_version_compare(result[j], result[best]) > 0 then best is j
+      j += 1
+    end
+    value is result[i]
+    result[i] is result[best]
+    result[best] is value
+    i += 1
+  end
+  return result
+end
+
+func pkg_repository_find(manager, name, constraint) do
+  repository is manager.repository
+  key is name.trim().lower()
+  if not (key in repository) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "package not found: " + key)
+  versions is repository[key]
+  for version in pkg_repository_versions(manager, key) do
+    if pkg_constraint_satisfied(version, constraint) then return osutil_ok(versions[version])
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "no version satisfies " + constraint)
+end
+
+func pkg_installed_get(manager, name) do
+  installed is manager.installed
+  key is name.trim().lower()
+  if key in installed then return installed[key]
+  return nil
+end
+
+func pkg_is_installed(manager, name, constraint) do
+  record is pkg_installed_get(manager, name)
+  if record == nil then return false
+  return pkg_constraint_satisfied(record.version, constraint)
+end
+
+func pkg_resolve_visit(manager, name, constraint, visiting, resolved, errors) do
+  if pkg_is_installed(manager, name, constraint) then return
+  if visiting.contains(name) then
+    errors.push("dependency cycle at " + name)
+    return
+  end
+  found is pkg_repository_find(manager, name, constraint)
+  if not found.ok then
+    errors.push(found.message)
+    return
+  end
+  manifest is found.value
+  key is manifest.name + "@" + manifest.version
+  if resolved.contains(key) then return
+  next_visiting is osutil_clone_array(visiting)
+  next_visiting.push(name)
+  dependency_names is osutil_sort_strings(manifest.dependencies.keys())
+  for dependency_name in dependency_names do
+    pkg_resolve_visit(manager, dependency_name, manifest.dependencies[dependency_name], next_visiting, resolved, errors)
+  end
+  resolved.push(key)
+end
+
+func pkg_resolve(manager, name, constraint) do
+  resolved is []
+  errors is []
+  pkg_resolve_visit(manager, name, constraint, [], resolved, errors)
+  manifests is []
+  for key in resolved do
+    separator is key.index_of("@")
+    package_name is key.sub(0, separator)
+    version is key.sub(separator + 1, key.len())
+    manifests.push(manager.repository[package_name][version])
+  end
+  return {ok: errors.len() == 0, manifests: manifests, errors: errors, requested: name, constraint: constraint}
+end
+
+func pkg_transaction_begin(manager, action, requested, tick) do
+  id is manager.next_transaction
+  manager.next_transaction += 1
+  transaction is {id: id, action: action, requested: requested, tick: tick, status: "running", operations: [], errors: [], installed_bytes: 0, removed_bytes: 0}
+  transactions is manager.transactions
+  transactions.push(transaction)
+  return transaction
+end
+
+func pkg_transaction_operation(transaction, action, name, version, ok, message) do
+  operations is transaction.operations
+  operations.push({action: action, name: name, version: version, ok: ok, message: message})
+  if not ok then
+    errors is transaction.errors
+    errors.push(message)
+  end
+end
+
+func pkg_ensure_parent_directories(fs, path, tick) do
+  parent is osutil_parent_path(path)
+  if parent == "/" then return osutil_ok(true)
+  return fs_mkdir(fs, parent, "root", true, tick)
+end
+
+func pkg_write_manifest_files(manager, kernel, manifest, transaction) do
+  written is []
+  for path in osutil_sort_strings(manifest.files.keys()) do
+    parent is pkg_ensure_parent_directories(kernel.fs, path, kernel.clock.tick)
+    if not parent.ok then return {ok: false, written: written, message: parent.message}
+    result is fs_write_file(kernel.fs, path, manifest.files[path], "root", "/", kernel.clock.tick)
+    if not result.ok then return {ok: false, written: written, message: result.message}
+    written.push(path)
+    transaction.installed_bytes += ("" + manifest.files[path]).len()
+  end
+  return {ok: true, written: written, message: ""}
+end
+
+func pkg_database_record(manager, kernel, manifest, paths, transaction_id) do
+  file_checksums is {}
+  for path in paths do
+    read_result is fs_read_file(kernel.fs, path, "root", "/")
+    if read_result.ok then file_checksums[path] is osutil_checksum_text(read_result.value)
+  end
+  record is {name: manifest.name, version: manifest.version, description: manifest.description, architecture: manifest.architecture, dependencies: osutil_clone_dict(manifest.dependencies), files: osutil_clone_array(paths), file_checksums: file_checksums, checksum: manifest.checksum, installed_size: manifest.installed_size, installed_tick: kernel.clock.tick, transaction_id: transaction_id, explicit: true, state: "installed"}
+  installed is manager.installed
+  installed[manifest.name] is record
+  return record
+end
+
+func pkg_install_manifest(manager, kernel, manifest, transaction) do
+  current is pkg_installed_get(manager, manifest.name)
+  if current != nil and current.version == manifest.version then
+    pkg_transaction_operation(transaction, "keep", manifest.name, manifest.version, true, "already installed")
+    return osutil_ok(current)
+  end
+  write_result is pkg_write_manifest_files(manager, kernel, manifest, transaction)
+  if not write_result.ok then
+    pkg_transaction_operation(transaction, "install", manifest.name, manifest.version, false, write_result.message)
+    return osutil_fail(SURAOS_ERR_IO, write_result.message)
+  end
+  record is pkg_database_record(manager, kernel, manifest, write_result.written, transaction.id)
+  action is "install"
+  if current != nil then action is "upgrade"
+  pkg_transaction_operation(transaction, action, manifest.name, manifest.version, true, "installed")
+  if current == nil then manager.installs += 1 else manager.upgrades += 1
+  return osutil_ok(record)
+end
+
+func pkg_install(manager, kernel, name, constraint) do
+  transaction is pkg_transaction_begin(manager, "install", name, kernel.clock.tick)
+  resolution is pkg_resolve(manager, name, constraint)
+  if not resolution.ok then
+    transaction.status is "failed"
+    transaction.errors is resolution.errors
+    return osutil_fail(SURAOS_ERR_NOT_FOUND, resolution.errors.join(", "))
+  end
+  for manifest in resolution.manifests do
+    installed is pkg_install_manifest(manager, kernel, manifest, transaction)
+    if not installed.ok then
+      transaction.status is "failed"
+      return installed
+    end
+  end
+  transaction.status is "committed"
+  pkg_database_sync(manager, kernel)
+  return osutil_ok(transaction)
+end
+
+func pkg_required_by(manager, name) do
+  result is []
+  for record in manager.installed.values() do
+    if name in record.dependencies then result.push(record.name)
+  end
+  return osutil_sort_strings(result)
+end
+
+func pkg_remove(manager, kernel, name, force) do
+  record is pkg_installed_get(manager, name)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "package is not installed")
+  required_by is pkg_required_by(manager, record.name)
+  if required_by.len() > 0 and not force then return osutil_fail(SURAOS_ERR_BUSY, "required by: " + required_by.join(", "))
+  transaction is pkg_transaction_begin(manager, "remove", record.name, kernel.clock.tick)
+  paths is osutil_clone_array(record.files)
+  paths.reverse()
+  for path in paths do
+    node is fs_get(kernel.fs, path, "/")
+    if node != nil then
+      transaction.removed_bytes += node.size
+      result is fs_remove(kernel.fs, path, "root", "/", false, kernel.clock.tick)
+      pkg_transaction_operation(transaction, "remove-file", record.name, record.version, result.ok, path)
+      if not result.ok and not force then
+        transaction.status is "failed"
+        return result
+      end
+    end
+  end
+  installed is manager.installed
+  installed.delete(record.name)
+  manager.removals += 1
+  transaction.status is "committed"
+  pkg_transaction_operation(transaction, "remove", record.name, record.version, true, "removed")
+  pkg_database_sync(manager, kernel)
+  return osutil_ok(transaction)
+end
+
+func pkg_verify_record(manager, kernel, record) do
+  errors is []
+  for path in record.files do
+    read_result is fs_read_file(kernel.fs, path, "root", "/")
+    if not read_result.ok then
+      errors.push("missing file: " + path)
+    else
+      checksum is osutil_checksum_text(read_result.value)
+      if not (path in record.file_checksums) then errors.push("missing checksum: " + path)
+      if path in record.file_checksums and checksum != record.file_checksums[path] then errors.push("changed file: " + path)
+    end
+  end
+  if errors.len() > 0 then manager.verification_failures += 1
+  return {ok: errors.len() == 0, name: record.name, version: record.version, files: record.files.len(), errors: errors}
+end
+
+func pkg_verify(manager, kernel, name) do
+  results is []
+  failed is 0
+  if name != "" then
+    record is pkg_installed_get(manager, name)
+    if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "package is not installed")
+    single_result is pkg_verify_record(manager, kernel, record)
+    results.push(single_result)
+    if not single_result.ok then failed += 1
+  end
+  if name == "" then
+    names is osutil_sort_strings(manager.installed.keys())
+    for installed_name in names do
+      verify_result is pkg_verify_record(manager, kernel, manager.installed[installed_name])
+      results.push(verify_result)
+      if not verify_result.ok then failed += 1
+    end
+  end
+  return {ok: failed == 0, checked: results.len(), failed: failed, results: results}
+end
+
+func pkg_database_export(manager) do
+  records is []
+  for name in osutil_sort_strings(manager.installed.keys()) do
+    records.push(manager.installed[name])
+  end
+  return {schema: "suraos.packages.v1", repository: manager.repository_name, architecture: manager.architecture, records: records}
+end
+
+func pkg_database_sync(manager, kernel) do
+  fs_mkdir(kernel.fs, manager.database_path, "root", true, kernel.clock.tick)
+  content is json.stringify(pkg_database_export(manager))
+  return fs_write_file(kernel.fs, manager.database_path + "/installed.json", content, "root", "/", kernel.clock.tick)
+end
+
+func pkg_search(manager, query) do
+  needle is query.trim().lower()
+  rows is []
+  for name in osutil_sort_strings(manager.repository.keys()) do
+    versions is pkg_repository_versions(manager, name)
+    if versions.len() > 0 then
+      manifest is manager.repository[name][versions[0]]
+      haystack is (manifest.name + " " + manifest.description).lower()
+      if needle == "" or haystack.contains(needle) then
+        installed is pkg_installed_get(manager, name)
+        installed_version is ""
+        if installed != nil then installed_version is installed.version
+        rows.push({name: name, version: manifest.version, installed: installed != nil, installed_version: installed_version, description: manifest.description})
+      end
+    end
+  end
+  return rows
+end
+
+func pkg_upgrade_plan(manager) do
+  rows is []
+  for name in osutil_sort_strings(manager.installed.keys()) do
+    current is manager.installed[name]
+    found is pkg_repository_find(manager, name, "*")
+    if found.ok and pkg_version_compare(found.value.version, current.version) > 0 then rows.push({name: name, old_version: current.version, new_version: found.value.version})
+  end
+  return rows
+end
+
+func pkg_upgrade_all(manager, kernel) do
+  plan is pkg_upgrade_plan(manager)
+  results is []
+  failed is 0
+  for item in plan do
+    result is pkg_install(manager, kernel, item.name, item.new_version)
+    results.push({name: item.name, old_version: item.old_version, new_version: item.new_version, ok: result.ok, message: result.message})
+    if not result.ok then failed += 1
+  end
+  return {ok: failed == 0, upgrades: results.len() - failed, failed: failed, results: results}
+end
+
+func pkg_install_default_repository(manager) do
+  base_files is {"/usr/share/sura-base/release.txt": "SuraOS base utilities " + SURAOS_VERSION + "\n", "/usr/share/sura-base/license.txt": "Educational virtual operating system example.\n"}
+  base is pkg_manifest("sura-base", "1.0.0", "Base filesystem metadata and common data", base_files, {}, {category: "system", maintainer: "SuraOS Team"})
+  pkg_manifest_finalize(base)
+  pkg_repository_add(manager, base)
+
+  docs_files is {"/usr/share/doc/sura-manual/quickstart.txt": "Run help, programs, ps, mem, disk and services in the SuraOS shell.\n", "/usr/share/doc/sura-manual/virtualization.txt": "SuraOS is hosted and does not replace the host operating system.\n"}
+  docs is pkg_manifest("sura-manual", "1.2.0", "Offline user and architecture manual", docs_files, {"sura-base": ">=1.0.0"}, {category: "documentation", maintainer: "SuraOS Team"})
+  pkg_manifest_finalize(docs)
+  pkg_repository_add(manager, docs)
+
+  demo_source is asm_counter_source(25)
+  demo_files is {"/opt/sura-demos/counter25.sasm": demo_source, "/opt/sura-demos/README.txt": "Assemble counter25.sasm inside the virtual shell.\n"}
+  demos is pkg_manifest("sura-demos", "2.0.0", "Additional SVM32 demonstration sources", demo_files, {"sura-base": "^1.0.0"}, {category: "examples", maintainer: "SuraOS Team"})
+  pkg_manifest_finalize(demos)
+  pkg_repository_add(manager, demos)
+  return manager
+end
+
+func pkg_manager_stats(manager) do
+  repository_versions is 0
+  for versions in manager.repository.values() do
+    repository_versions += versions.keys().len()
+  end
+  installed_bytes is 0
+  for record in manager.installed.values() do
+    installed_bytes += record.installed_size
+  end
+  return {repository_packages: manager.repository.keys().len(), repository_versions: repository_versions, installed: manager.installed.keys().len(), installed_bytes: installed_bytes, transactions: manager.transactions.len(), installs: manager.installs, removals: manager.removals, upgrades: manager.upgrades, verification_failures: manager.verification_failures}
+end
+
+func pkg_table(manager, query) do
+  lines is ["NAME                 AVAILABLE  INSTALLED  DESCRIPTION"]
+  for row in pkg_search(manager, query) do
+    installed is "-"
+    if row.installed then installed is row.installed_version
+    lines.push(osutil_pad_right(row.name, 20, " ") + " " + osutil_pad_right(row.version, 10, " ") + " " + osutil_pad_right(installed, 10, " ") + " " + row.description)
+  end
+  return lines.join("\n")
+end

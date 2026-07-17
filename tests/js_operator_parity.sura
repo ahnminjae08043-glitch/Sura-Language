@@ -1,0 +1,17 @@
+numbers is [1, 2] + [3, 4]
+labels is ["su"] + ["ra"]
+
+assert_eq(length(numbers), 4)
+assert_eq(numbers[0], 1)
+assert_eq(numbers[3], 4)
+assert_eq(length(labels), 2)
+assert_eq(labels[1], "ra")
+
+assert_eq(2 in numbers, true)
+assert_eq("ra" in labels, true)
+assert_eq("name" in {name: "Sura"}, true)
+assert_eq(12 in "x12y", true)
+assert_eq(type(1 in 7), "nil")
+assert_eq("missing" in labels, false)
+
+print("js operator parity: PASS")

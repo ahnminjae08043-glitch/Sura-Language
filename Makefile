@@ -1,70 +1,71 @@
-﻿CXX      = g++
-CXXFLAGS = -std=c++17 -Wall -O2
-INCLUDES =
-LIBS     =
+CXX ?= g++
+CXXFLAGS ?= -std=c++17 -O2 -DNDEBUG -Wall
+CPPFLAGS ?=
+LDFLAGS ?=
 
-# Platform detection
+# Portable is the release default. Use `make NATIVE=1` only for a local,
+# machine-specific performance build that will not be redistributed.
+NATIVE ?= 0
+ifeq ($(NATIVE),1)
+    CXXFLAGS += -march=native
+endif
+
 ifeq ($(OS),Windows_NT)
-    TARGET     = SuraEngine.exe
-    RM         = del /Q
-    # Windows: use MSYS2 paths if available
-    ifneq ($(wildcard C:/msys64/mingw64/bin/g++.exe),)
-        CXX      = C:/msys64/mingw64/bin/g++.exe
-        INCLUDES = -IC:/msys64/mingw64/include
-    endif
+    EXEEXT = .exe
+    PLATFORM_LIBS = -lgdi32
 else
+    EXEEXT =
     UNAME_S := $(shell uname -s)
-    TARGET  = SuraEngine
-    RM      = rm -f
-    ifeq ($(UNAME_S),Darwin)
-        # macOS: use Homebrew paths if available
-        CXXFLAGS += -stdlib=libc++
-    endif
     ifeq ($(UNAME_S),Linux)
-        # Linux: standard paths
-        LIBS += -lpthread
+        PLATFORM_LIBS = -ldl
     endif
 endif
 
-# Architecture detection
-UNAME_M := $(shell uname -m 2>/dev/null || echo x86_64)
-ifeq ($(UNAME_M),aarch64)
-    CXXFLAGS += -march=armv8-a
-endif
-ifeq ($(UNAME_M),arm64)
-    CXXFLAGS += -march=armv8-a
-endif
+TARGET      = SuraLanguage$(EXEEXT)
+PKG_TARGET  = surapkg$(EXEEXT)
+JIT_TARGET  = SuraJIT$(EXEEXT)
 
-HEADERS = platform.hpp lexer.hpp ast.hpp value.hpp parser.hpp \
-          compiler.hpp jit.hpp typechecker.hpp jit_op.hpp \
-          jit_compiler.hpp jit_vm.hpp
-SOURCES = main.cpp gc.cpp
+ENGINE_SOURCES = main.cpp gc.cpp platform.cpp
+ENGINE_HEADERS = $(wildcard *.hpp)
+JIT_SOURCES    = sura_jit.cpp platform.cpp
 
-.PHONY: all clean run test bench dump repl
+.PHONY: all engine package clean run jit jit-run jit-test jit-bench jit-dump
 
-all: $(TARGET)
+all: engine package
 
-$(TARGET): $(SOURCES) $(HEADERS)
-	$(CXX) $(CXXFLAGS) $(INCLUDES) $(SOURCES) -o $(TARGET) $(LIBS)
-	@echo Build complete: $(TARGET)
+engine: $(TARGET)
+
+package: $(PKG_TARGET)
+
+$(TARGET): $(ENGINE_SOURCES) $(ENGINE_HEADERS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(ENGINE_SOURCES) -o $@ $(LDFLAGS) $(PLATFORM_LIBS)
+	@echo Built $@
+
+$(PKG_TARGET): surapkg.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) surapkg.cpp -o $@ $(LDFLAGS) $(PLATFORM_LIBS)
+	@echo Built $@
+
+# The standalone JIT driver is optional; SuraLanguage is the canonical runtime.
+jit: $(JIT_TARGET)
+
+$(JIT_TARGET): $(JIT_SOURCES) $(ENGINE_HEADERS)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(JIT_SOURCES) -o $@ $(LDFLAGS) $(PLATFORM_LIBS)
+	@echo Built $@
 
 clean:
-	$(RM) $(TARGET)
+	$(RM) $(TARGET) $(PKG_TARGET) $(JIT_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
 
-repl: $(TARGET)
-	./$(TARGET) --repl
+jit-run: $(JIT_TARGET)
+	./$(JIT_TARGET) --repl
 
-test: $(TARGET)
-	./$(TARGET) test_jit.sura
+jit-test: $(JIT_TARGET)
+	./$(JIT_TARGET) test_jit.sura
 
-bench: $(TARGET)
-	./$(TARGET) --bench test_jit.sura
+jit-bench: $(JIT_TARGET)
+	./$(JIT_TARGET) --bench test_jit.sura
 
-dump: $(TARGET)
-	./$(TARGET) --dump test_jit.sura
-
-strict-test: $(TARGET)
-	./$(TARGET) --strict test_type_error.sura
+jit-dump: $(JIT_TARGET)
+	./$(JIT_TARGET) --dump test_jit.sura

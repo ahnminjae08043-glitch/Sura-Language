@@ -1,0 +1,6 @@
+profile is {tag: "old"}
+profile.tag is 7
+profile.tag += 5
+
+assert_eq(profile.tag, 12)
+print_no_nl(profile.tag)

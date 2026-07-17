@@ -1,0 +1,24 @@
+.name fibonacci
+.entry start
+
+# Produce F(12). R0 is previous, R1 is current, R2 is a temporary.
+start:
+MOVI R0 0
+MOVI R1 1
+MOVI R3 0
+MOVI R4 12
+
+next:
+MOV R2 R0
+ADD R2 R1
+MOV R0 R1
+MOV R1 R2
+INC R3
+CMP R3 R4
+JL next
+
+MOV R0 R1
+SYSCALL PRINT_NUMBER
+MOVI R0 0
+SYSCALL EXIT
+

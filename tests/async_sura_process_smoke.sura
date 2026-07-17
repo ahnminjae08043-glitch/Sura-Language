@@ -1,0 +1,56 @@
+use async
+use json
+
+worker is path_join("tests", "async_sura_worker.sura")
+
+task is async.sura({program: worker, input: {mode: "value", value: 21}, timeout_ms: 5000})
+result is json.parse(trim(async.await(task)))
+assert_eq(result.value, 42)
+assert_eq(result.mode, "value")
+
+recursive_task is async.sura({program: worker, input: {mode: "recursive", value: 0}, timeout_ms: 5000})
+recursive_result is json.parse(trim(async.await(recursive_task)))
+assert(recursive_result.recursive_blocked)
+
+closure_rejected is false
+captured is 7
+closure_value is func() do
+  return captured
+end
+try
+  async.sura({program: worker, input: closure_value})
+catch error
+  closure_rejected is error.contains("supports only nil, bool, finite number, string, array, and dict")
+end
+assert(closure_rejected)
+
+cycle_rejected is false
+cycle is []
+cycle.push(cycle)
+try
+  async.sura({program: worker, input: cycle})
+catch error
+  cycle_rejected is error.contains("cyclic array or dict")
+end
+assert(cycle_rejected)
+
+timeout_task is async.sura({program: worker, input: {mode: "delay", delay_ms: 5000, value: 1}, timeout_ms: 50})
+timeout_observed is false
+try
+  async.await(timeout_task)
+catch error
+  timeout_observed is error.contains("timed out")
+end
+assert(timeout_observed)
+
+scope is async.scope()
+cancelled_task is async.sura({program: worker, input: {mode: "delay", delay_ms: 5000, value: 1}, timeout_ms: 10000}, scope)
+closed is async.scope_close(scope, 3000)
+assert(closed.closed)
+assert_eq(closed.total, 1)
+assert_eq(closed.cancelled, 1)
+assert(not async.status(cancelled_task).known)
+
+assert_eq(async.limits().tracked, 0)
+assert_eq(async.limits().scopes, 0)
+print "async Sura process smoke: PASS"

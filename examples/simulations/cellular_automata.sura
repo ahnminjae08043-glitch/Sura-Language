@@ -1,0 +1,68 @@
+# Conway's Game of Life on a wrapping 14 x 10 grid.
+
+W is 14
+H is 10
+cells is []
+i is 0
+while i < W * H do
+  cells.push(0)
+  i += 1
+end
+
+# Glider and a small oscillator.
+seeds is [1 * W + 2, 2 * W + 3, 3 * W + 1, 3 * W + 2, 3 * W + 3, 6 * W + 8, 6 * W + 9, 6 * W + 10]
+for position in seeds do
+  cells[position] is 1
+end
+
+func neighbor_count(x, y) do
+  count is 0
+  dy is -1
+  while dy <= 1 do
+    dx is -1
+    while dx <= 1 do
+      if dx != 0 or dy != 0 then
+        nx is (x + dx + W) % W
+        ny is (y + dy + H) % H
+        count += cells[ny * W + nx]
+      end
+      dx += 1
+    end
+    dy += 1
+  end
+  return count
+end
+
+generation is 0
+while generation < 8 do
+  print("generation {generation}")
+  y is 0
+  while y < H do
+    line is ""
+    x is 0
+    while x < W do
+      if cells[y * W + x] == 1 then line += "#" else line += "."
+      x += 1
+    end
+    print(line)
+    y += 1
+  end
+
+  next is []
+  y is 0
+  while y < H do
+    x is 0
+    while x < W do
+      n is neighbor_count(x, y)
+      alive is cells[y * W + x] == 1
+      next_alive is n == 3 or (alive and n == 2)
+      if next_alive then next.push(1) else next.push(0)
+      x += 1
+    end
+    y += 1
+  end
+  cells is next
+  generation += 1
+end
+
+assert_eq(cells.len(), W * H)

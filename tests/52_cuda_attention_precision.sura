@@ -1,0 +1,333 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func assert_fused_graph(stats) do
+  assert_eq(stats.attention_launches, 3)
+  assert_eq(stats.reference_attention_launches, 0)
+  assert_eq(stats.warp_attention_launches, 1)
+  assert_eq(stats.fast_attention_forward_launches, 1)
+  assert_eq(stats.parallel_attention_launches, 0)
+  assert_eq(stats.fused_attention_launches, 2)
+  assert_eq(stats.attention_launches, stats.reference_attention_launches + stats.warp_attention_launches + stats.parallel_attention_launches + stats.fused_attention_launches)
+end
+
+func make_q_values() do
+  rows is []
+  token is 0
+  while token < 8 do
+    rows.push([(token % 5 - 2) * 0.2, (token % 3 - 1) * 0.15, token * 0.04 - 0.1, (token % 2) * 0.25 - 0.05])
+    token is token + 1
+  end
+  return [rows]
+end
+
+func make_k_values() do
+  rows is []
+  token is 0
+  while token < 8 do
+    rows.push([((token * 2) % 7 - 3) * 0.12, (token % 4 - 1) * 0.11, (token + 1) * 0.035, (token % 3) * 0.08 - 0.1])
+    token is token + 1
+  end
+  return [rows]
+end
+
+func make_v_values() do
+  rows is []
+  token is 0
+  while token < 8 do
+    rows.push([token * 0.08 - 0.2, (7 - token) * 0.06, (token % 4) * 0.2 - 0.3, (token % 3 - 1) * 0.17])
+    token is token + 1
+  end
+  return [rows]
+end
+
+func make_seed_values() do
+  rows is []
+  token is 0
+  while token < 8 do
+    rows.push([(token % 3) * 0.25 - 0.2, (token % 2) * 0.4 - 0.1, (token % 5 - 2) * 0.15, 0.05 + token * 0.02])
+    token is token + 1
+  end
+  return [rows]
+end
+
+func make_alias_values() do
+  rows is []
+  token is 0
+  while token < 8 do
+    rows.push([(token % 5 - 2) * 0.09, ((token * 3) % 7 - 3) * 0.07, token * 0.025 - 0.08, (token % 2) * 0.16 - 0.04])
+    token is token + 1
+  end
+  return [rows]
+end
+
+parallel_name is "SURA_CUDA_ATTENTION_PARALLEL"
+fused_name is "SURA_CUDA_ATTENTION_FUSED"
+original_parallel is env_get(parallel_name, "")
+original_fused is env_get(fused_name, "")
+
+info is autograd.cuda_info()
+if info.available then
+  try
+    q_values is make_q_values()
+    k_values is make_k_values()
+    v_values is make_v_values()
+    seed_values is make_seed_values()
+
+    # Precision names are closed, and fast never silently falls back to CPU,
+    # a short sequence, or a disabled optimized CUDA plan.
+    env_set(parallel_name, "1")
+    env_set(fused_name, "1")
+    cpu_one is autograd.tensor([[[1]]], {dtype: "float32"})
+    invalid_rejected is false
+    invalid_message is ""
+    try
+      autograd.causal_attention(cpu_one, cpu_one, cpu_one, {precision: "turbo"})
+    catch error
+      invalid_rejected is true
+      invalid_message is error
+    end
+    assert(invalid_rejected)
+    assert(invalid_message.contains("precision must be auto, fast, or strict"))
+
+    cpu_fast_rejected is false
+    cpu_fast_message is ""
+    try
+      autograd.causal_attention(cpu_one, cpu_one, cpu_one, {precision: "fast"})
+    catch error
+      cpu_fast_rejected is true
+      cpu_fast_message is error
+    end
+    assert(cpu_fast_rejected)
+    assert(cpu_fast_message.contains("resident CUDA float32 tensors"))
+
+    short_gpu is autograd.tensor([[[1], [2], [3], [4]]], {device: "cuda"})
+    short_fast_rejected is false
+    short_fast_message is ""
+    try
+      autograd.causal_attention(short_gpu, short_gpu, short_gpu, {precision: "fast"})
+    catch error
+      short_fast_rejected is true
+      short_fast_message is error
+    end
+    assert(short_fast_rejected)
+    assert(short_fast_message.contains("sequence >= 8"))
+
+    fast_q is autograd.tensor(q_values, {device: "cuda"})
+    fast_k is autograd.tensor(k_values, {device: "cuda"})
+    fast_v is autograd.tensor(v_values, {device: "cuda"})
+    env_set(fused_name, "0")
+    fused_fast_rejected is false
+    fused_fast_message is ""
+    try
+      autograd.causal_attention(fast_q, fast_k, fast_v, {precision: "fast"})
+    catch error
+      fused_fast_rejected is true
+      fused_fast_message is error
+    end
+    assert(fused_fast_rejected)
+    assert(fused_fast_message.contains("SURA_CUDA_ATTENTION_FUSED enabled"))
+
+    env_set(fused_name, "1")
+    env_set(parallel_name, "0")
+    parallel_fast_rejected is false
+    parallel_fast_message is ""
+    try
+      autograd.causal_attention(fast_q, fast_k, fast_v, {precision: "fast"})
+    catch error
+      parallel_fast_rejected is true
+      parallel_fast_message is error
+    end
+    assert(parallel_fast_rejected)
+    assert(parallel_fast_message.contains("SURA_CUDA_ATTENTION_PARALLEL"))
+
+    # auto chooses the legacy packed path when only fused is disabled.
+    env_set(parallel_name, "1")
+    env_set(fused_name, "0")
+    legacy_q is autograd.parameter(q_values, {device: "cuda"})
+    legacy_k is autograd.parameter(k_values, {device: "cuda"})
+    legacy_v is autograd.parameter(v_values, {device: "cuda"})
+    legacy_seed is autograd.tensor(seed_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    legacy_output is autograd.causal_attention(legacy_q, legacy_k, legacy_v, {precision: "auto"})
+    autograd.backward(legacy_output, legacy_seed)
+    legacy_stats is autograd.cuda_stats()
+    assert_eq(legacy_stats.attention_launches, 6)
+    assert_eq(legacy_stats.reference_attention_launches, 0)
+    assert_eq(legacy_stats.warp_attention_launches, 1)
+    assert_eq(legacy_stats.fast_attention_forward_launches, 0)
+    assert_eq(legacy_stats.parallel_attention_launches, 5)
+    assert_eq(legacy_stats.fused_attention_launches, 0)
+
+    # A fused auto forward keeps its two-kernel backward even after both
+    # switches are disabled. This is the optimized-to-reference direction of
+    # the graph-sticky dispatch contract.
+    env_set(parallel_name, "1")
+    env_set(fused_name, "1")
+    sticky_fast_q is autograd.parameter(q_values, {device: "cuda"})
+    sticky_fast_k is autograd.parameter(k_values, {device: "cuda"})
+    sticky_fast_v is autograd.parameter(v_values, {device: "cuda"})
+    sticky_fast_seed is autograd.tensor(seed_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    sticky_fast_output is autograd.causal_attention(sticky_fast_q, sticky_fast_k, sticky_fast_v, {precision: "auto"})
+    env_set(fused_name, "0")
+    env_set(parallel_name, "0")
+    autograd.backward(sticky_fast_output, sticky_fast_seed)
+    assert_fused_graph(autograd.cuda_stats())
+
+    # Conversely, an auto reference forward cannot be upgraded by enabling
+    # the switches between forward and backward.
+    sticky_reference_q is autograd.parameter(q_values, {device: "cuda"})
+    sticky_reference_k is autograd.parameter(k_values, {device: "cuda"})
+    sticky_reference_v is autograd.parameter(v_values, {device: "cuda"})
+    sticky_reference_seed is autograd.tensor(seed_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    sticky_reference_output is autograd.causal_attention(sticky_reference_q, sticky_reference_k, sticky_reference_v, {precision: "auto"})
+    env_set(parallel_name, "1")
+    env_set(fused_name, "1")
+    autograd.backward(sticky_reference_output, sticky_reference_seed)
+    sticky_reference_stats is autograd.cuda_stats()
+    assert_eq(sticky_reference_stats.attention_launches, 2)
+    assert_eq(sticky_reference_stats.reference_attention_launches, 2)
+    assert_eq(sticky_reference_stats.warp_attention_launches, 0)
+    assert_eq(sticky_reference_stats.fast_attention_forward_launches, 0)
+    assert_eq(sticky_reference_stats.parallel_attention_launches, 0)
+    assert_eq(sticky_reference_stats.fused_attention_launches, 0)
+
+    # strict uses the f64-score reference plan. Finite f32 operands near
+    # FLT_MAX produce dot products beyond f32, but equal scores must still
+    # yield the same causal averages and value gradient as the CPU oracle.
+    huge is 300000000000000000000000000000000000000
+    huge_rows is []
+    huge_keys is []
+    strict_values is []
+    token is 0
+    while token < 8 do
+      huge_rows.push([huge])
+      huge_keys.push([huge])
+      strict_values.push([token + 1])
+      token is token + 1
+    end
+    strict_q_values is [huge_rows]
+    strict_k_values is [huge_keys]
+    strict_v_values is [strict_values]
+    strict_cpu_q is autograd.tensor(strict_q_values, {dtype: "float32"})
+    strict_cpu_k is autograd.tensor(strict_k_values, {dtype: "float32"})
+    strict_cpu_v is autograd.parameter(strict_v_values, {dtype: "float32"})
+    strict_cpu_output is autograd.causal_attention(strict_cpu_q, strict_cpu_k, strict_cpu_v, {scale: 1, precision: "strict"})
+    autograd.backward(autograd.sum(strict_cpu_output))
+    strict_cpu_data is autograd.data(strict_cpu_output)
+    strict_cpu_v_grad is autograd.grad(strict_cpu_v)
+    assert_approx(strict_cpu_data[0][7][0], 4.5, 0.000001)
+
+    strict_gpu_q is autograd.tensor(strict_q_values, {device: "cuda"})
+    strict_gpu_k is autograd.tensor(strict_k_values, {device: "cuda"})
+    strict_gpu_v is autograd.parameter(strict_v_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    strict_gpu_output is autograd.causal_attention(strict_gpu_q, strict_gpu_k, strict_gpu_v, {scale: 1, precision: "strict"})
+    autograd.backward(autograd.sum(strict_gpu_output))
+    strict_stats is autograd.cuda_stats()
+    assert_eq(strict_stats.attention_launches, 2)
+    assert_eq(strict_stats.reference_attention_launches, 2)
+    assert_eq(strict_stats.warp_attention_launches, 0)
+    assert_eq(strict_stats.fast_attention_forward_launches, 0)
+    assert_eq(strict_stats.parallel_attention_launches, 0)
+    assert_eq(strict_stats.fused_attention_launches, 0)
+    approx_rank3(autograd.data(strict_gpu_output), strict_cpu_data, 0.0002)
+    approx_rank3(autograd.grad(strict_gpu_v), strict_cpu_v_grad, 0.0003)
+
+    # q=k=v aliasing must sum all three parent-role contributions into one
+    # scaled leaf gradient. Unscaling exposes the CPU-reference result while
+    # preserving the three-launch fast contract.
+    alias_values is make_alias_values()
+    alias_cpu is autograd.parameter(alias_values, {dtype: "float32"})
+    alias_cpu_output is autograd.causal_attention(alias_cpu, alias_cpu, alias_cpu, {precision: "strict"})
+    autograd.backward(autograd.sum(alias_cpu_output))
+    alias_cpu_data is autograd.data(alias_cpu_output)
+    alias_cpu_grad is autograd.grad(alias_cpu)
+
+    alias_gpu is autograd.parameter(alias_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    alias_gpu_output is autograd.causal_attention(alias_gpu, alias_gpu, alias_gpu, {precision: "fast"})
+    alias_gpu_loss is autograd.sum(alias_gpu_output)
+    autograd.backward_scaled(alias_gpu_loss, 8)
+    assert_fused_graph(autograd.cuda_stats())
+    alias_scaled_info is autograd.grad_info(alias_gpu)
+    assert(alias_scaled_info.present)
+    assert_eq(alias_scaled_info.scale, 8)
+    assert(autograd.unscale_gradients([alias_gpu]).committed)
+    approx_rank3(autograd.data(alias_gpu_output), alias_cpu_data, 0.002)
+    approx_rank3(autograd.grad(alias_gpu), alias_cpu_grad, 0.006)
+
+    # retain_graph keeps exactly two f32 row-stat buffers. The final
+    # non-retained pass releases those buffers while preserving output and
+    # accumulated leaf gradients.
+    retained_q is autograd.parameter(q_values, {device: "cuda"})
+    retained_k is autograd.parameter(k_values, {device: "cuda"})
+    retained_v is autograd.parameter(v_values, {device: "cuda"})
+    retained_seed is autograd.tensor(seed_values, {device: "cuda"})
+    autograd.cuda_reset_stats()
+    retained_allocated_before is autograd.cuda_stats().allocated_bytes
+    retained_output is autograd.causal_attention(retained_q, retained_k, retained_v, {precision: "fast"})
+    retained_output_bytes is autograd.storage_bytes(retained_output)
+    retained_gradient_bytes is autograd.storage_bytes(retained_q) + autograd.storage_bytes(retained_k) + autograd.storage_bytes(retained_v)
+    retained_saved_bytes is 8 * 2 * 4
+    autograd.backward(retained_output, retained_seed, true)
+    retained_first_stats is autograd.cuda_stats()
+    assert_fused_graph(retained_first_stats)
+    assert_eq(retained_first_stats.allocated_bytes - retained_allocated_before, retained_output_bytes + retained_gradient_bytes + retained_saved_bytes)
+
+    autograd.backward(retained_output, retained_seed, false)
+    retained_final_stats is autograd.cuda_stats()
+    assert_eq(retained_final_stats.attention_launches, 5)
+    assert_eq(retained_final_stats.reference_attention_launches, 0)
+    assert_eq(retained_final_stats.warp_attention_launches, 1)
+    assert_eq(retained_final_stats.fast_attention_forward_launches, 1)
+    assert_eq(retained_final_stats.parallel_attention_launches, 0)
+    assert_eq(retained_final_stats.fused_attention_launches, 4)
+    assert_eq(retained_final_stats.allocated_bytes - retained_allocated_before, retained_output_bytes + retained_gradient_bytes)
+    released_graph_rejected is false
+    try
+      autograd.backward(retained_output, retained_seed)
+    catch error
+      released_graph_rejected is true
+    end
+    assert(released_graph_rejected)
+  catch failure
+    env_set(parallel_name, original_parallel)
+    env_set(fused_name, original_fused)
+    throw failure
+  end
+  env_set(parallel_name, original_parallel)
+  env_set(fused_name, original_fused)
+else
+  print "52_cuda_attention_precision: SKIP ({info.error})"
+end
+
+print "52_cuda_attention_precision: PASS"

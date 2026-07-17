@@ -1,0 +1,33 @@
+# A hot counted loop over a numeric struct with non-vector field and method
+# names. The optimizing tier must prove this shape structurally rather than
+# depending on the historical Vec2/add/scale benchmark vocabulary.
+struct MotionSample do
+    alpha is 0
+    beta is 0
+
+    func advance(delta, gain) do
+        return MotionSample(self.alpha + delta.alpha * gain, self.beta + delta.beta * gain)
+    end
+end
+
+func integrate_sample(current, delta, gain) do
+    return current.advance(delta, gain)
+end
+
+sample is MotionSample(0, 0)
+delta is MotionSample(3, -1)
+gain is 0.005
+
+started is clock()
+counter is 0
+while counter < 100000 do
+    sample is integrate_sample(sample, delta, gain)
+    counter is counter + 1
+end
+elapsed_ms is (clock() - started) * 1000
+
+assert_eq(round(sample.alpha), 1500)
+assert_eq(round(sample.beta), -500)
+assert_eq(counter, 100000)
+print "generic record loop 100k x  {elapsed_ms} ms"
+print "68_jit_generic_record_loop: PASS"

@@ -1,0 +1,69 @@
+# Procedural 3D height field rendered as a projected wire terrain.
+# Arrow keys rotate, Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 800
+H is 560
+if not win_init(W, H, "Sura Voxel Terrain 3D") then
+  print("win_init failed")
+  exit(1)
+end
+
+angle is 0.55
+frame is 0
+running is true
+
+func height_at(x, z) do
+  return sin(x * 0.65) * 25 + cos(z * 0.55) * 22 + sin((x + z) * 0.3) * 16
+end
+
+func project(x, y, z) do
+  rx is x * cos(angle) - z * sin(angle)
+  rz is x * sin(angle) + z * cos(angle) + 340
+  return {x: W / 2 + rx * 390 / rz, y: H / 2 + (y - 30) * 390 / rz}
+end
+
+while running do
+  frame += 1
+  if key_down("left") then angle -= 0.035
+  if key_down("right") then angle += 0.035
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then angle += 0.02
+
+  win_clear(7, 13, 24)
+  z is -8
+  while z <= 8 do
+    x is -10
+    previous is nil
+    while x <= 10 do
+      y is height_at(x, z)
+      point is project(x * 18, y, z * 18)
+      if previous != nil then win_line(previous.x, previous.y, point.x, point.y, 70, 190, 130)
+      previous is point
+      x += 1
+    end
+    z += 1
+  end
+  x is -10
+  while x <= 10 do
+    z is -8
+    previous is nil
+    while z <= 8 do
+      y is height_at(x, z)
+      point is project(x * 18, y, z * 18)
+      if previous != nil then win_line(previous.x, previous.y, point.x, point.y, 75, 145, 220)
+      previous is point
+      z += 1
+    end
+    x += 1
+  end
+  win_text("PROCEDURAL TERRAIN 3D", 18, 16, 220, 240, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 10 then running is false
+  wait(16)
+end
+
+win_close()
+print("voxel_terrain: frames={frame}")
+assert(frame > 0)
+

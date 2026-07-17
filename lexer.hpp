@@ -34,6 +34,7 @@ enum class TT {
     NOT,       
     TRUE,      
     FALSE,     
+    NIL,
     USE,       
     CONTINUE,  
     FOR,       
@@ -46,9 +47,15 @@ enum class TT {
     NEW,       
     EXTENDS,   
     SUPER,     
-    ELIF,      
-    FINALLY,   
-    FSTR,      
+    ELIF,
+    FINALLY,
+    FSTR,
+    MATCH,
+    WHEN,
+    ENUM,
+    STRUCT,
+    IMPORT,
+    GLOBAL,
 
     
     AMP,      
@@ -60,6 +67,8 @@ enum class TT {
     RBRACE,   
     COLON,    
     QUESTION, 
+    NULL_COALESCE,
+    OPTIONAL_DOT,
 
     
     PLUS,    
@@ -103,13 +112,14 @@ struct Token {
     TT          type;
     std::string value; 
     int         line;  
+    int         column = 1;
 
     
     std::string type_str() const {
         switch (type) {
-            case TT::NUM:     return "?�자";
+            case TT::NUM:     return "숫자";
             case TT::STR:     return "문자열";
-            case TT::IDENT:   return "?�별??" + value + ")";
+            case TT::IDENT:   return "식별자(" + value + ")";
             case TT::IS:      return "is";
             case TT::IF:      return "if";
             case TT::THEN:    return "then";
@@ -126,6 +136,7 @@ struct Token {
             case TT::NOT:     return "not";
             case TT::TRUE:    return "true";
             case TT::FALSE:   return "false";
+            case TT::NIL:      return "nil";
             case TT::USE:      return "use";
             case TT::CONTINUE: return "continue";
             case TT::FOR:      return "for";
@@ -140,7 +151,13 @@ struct Token {
             case TT::SUPER:    return "super";
             case TT::ELIF:     return "elif";
             case TT::FINALLY:  return "finally";
-            case TT::FSTR:    return "보간문자열";
+            case TT::FSTR:     return "보간문자열";
+            case TT::MATCH:    return "match";
+            case TT::WHEN:     return "when";
+            case TT::ENUM:     return "enum";
+            case TT::STRUCT:   return "struct";
+            case TT::IMPORT:   return "import";
+            case TT::GLOBAL:   return "global";
             case TT::AMP:      return "&";
             case TT::PIPE:     return "|";
             case TT::CARET:    return "^";
@@ -150,6 +167,8 @@ struct Token {
             case TT::RBRACE:   return "}";
             case TT::COLON:    return ":";
             case TT::QUESTION: return "?";
+            case TT::NULL_COALESCE: return "??";
+            case TT::OPTIONAL_DOT:  return "?.";
             case TT::PLUS:       return "+";
             case TT::MINUS:      return "-";
             case TT::STAR:       return "*";
@@ -186,7 +205,9 @@ struct LexError : std::runtime_error {
     int line;
     std::string details;
     LexError(const std::string& msg, int ln, const std::string& det = "")
-        : std::runtime_error("[?�라 ?�서 ?�류] " + std::to_string(ln) + "�? " + msg + (det.empty() ? "" : " (" + det + ")")), line(ln), details(det) {}
+        : std::runtime_error("[Sura lexer error] line " + std::to_string(ln) + ": " + msg +
+                             (det.empty() ? "" : " (" + det + ")")),
+          line(ln), details(det) {}
 };
 
 
@@ -216,6 +237,7 @@ class Lexer {
         {"not",    TT::NOT},
         {"true",   TT::TRUE},
         {"false",  TT::FALSE},
+        {"nil",    TT::NIL},
         {"use",      TT::USE},
         {"continue", TT::CONTINUE},
         {"for",      TT::FOR},
@@ -230,6 +252,12 @@ class Lexer {
         {"super",    TT::SUPER},
         {"elif",     TT::ELIF},
         {"finally",  TT::FINALLY},
+        {"match",    TT::MATCH},
+        {"when",     TT::WHEN},
+        {"enum",     TT::ENUM},
+        {"struct",   TT::STRUCT},
+        {"import",   TT::IMPORT},
+        {"global",   TT::GLOBAL},
         };
         return KEYWORDS;
     }
@@ -336,6 +364,12 @@ public:
         src = source;
         pos = 0;
         line = 1;
+        if (src.size() >= 3 &&
+            (unsigned char)src[0] == 0xEF &&
+            (unsigned char)src[1] == 0xBB &&
+            (unsigned char)src[2] == 0xBF) {
+            pos = 3;
+        }
         std::vector<Token> tokens;
         bool line_has_token = false; 
 
@@ -415,7 +449,11 @@ public:
                 case '{': tokens.push_back(make(TT::LBRACE,   "{")); break;
                 case '}': tokens.push_back(make(TT::RBRACE,   "}")); break;
                 case ':': tokens.push_back(make(TT::COLON,    ":")); break;
-                case '?': tokens.push_back(make(TT::QUESTION, "?")); break;
+                case '?':
+                    if (match('?')) tokens.push_back(make(TT::NULL_COALESCE, "??"));
+                    else if (match('.')) tokens.push_back(make(TT::OPTIONAL_DOT, "?."));
+                    else tokens.push_back(make(TT::QUESTION, "?"));
+                    break;
                 case '=': {
                     if (match('=')) tokens.push_back(make(TT::EQ,  "=="));
                     else throw LexError("'=' 단독 사용 불가. 할당은 'is', 비교는 '==' 을 사용하세요.", line);
@@ -427,7 +465,7 @@ public:
                     break;
                 }
                 default:
-                    throw LexError(std::string("?????�는 문자: '") + c + "'", line);
+                    throw LexError(std::string("지원하지 않는 문자: '") + c + "'", line);
             }
         }
 

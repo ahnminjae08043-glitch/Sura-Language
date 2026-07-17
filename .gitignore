@@ -1,0 +1,49 @@
+# Build and diagnostic outputs
+build_output.txt
+jit_compile_err.txt
+jit_err.txt
+jit_errors.txt
+link_errors.txt
+main_obj_errors.txt
+surapkg_build_output.txt
+*.obj
+*.o
+*.ilk
+*.pdb
+*.log
+*.tmp
+*.bak
+
+# Local executables and scratch files
+*.exe
+*.dll
+*.lib
+*.a
+*.vsix
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.zip
+dist/
+build/
+artifacts/
+sura.pkg.json
+sura_walk_*/
+__pycache__/
+.pytest_cache/
+node_modules/
+
+# Generated web and editor-extension output
+**/.next/
+**/.vercel/
+**/.wrangler/
+**/out/
+**/coverage/
+sura_presentation/.git/
+
+# Local credentials and machine-specific settings
+.env
+.env.*
+!.env.example
+.claude/settings.local.json

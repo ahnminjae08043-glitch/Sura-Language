@@ -1,0 +1,126 @@
+# SuraOS entry point.
+#
+# Default: deterministic demonstration
+# --interactive: enter the virtual shell
+# --smoke: run assertions suitable for CI
+
+use json
+import "src/constants.sura"
+import "src/util.sura"
+import "src/diagnostics.sura"
+import "src/memory.sura"
+import "src/devices.sura"
+import "src/security.sura"
+import "src/cpu.sura"
+import "src/assembler.sura"
+import "src/filesystem.sura"
+import "src/process.sura"
+import "src/scheduler.sura"
+import "src/services.sura"
+import "src/packages.sura"
+import "src/network.sura"
+import "src/monitor.sura"
+import "src/snapshots.sura"
+import "src/kernel.sura"
+import "src/bootloader.sura"
+import "src/shell.sura"
+
+func suraos_new_machine(host_echo) do
+  kernel is kernel_create(16 * 1024 * 1024, 8, 20260717)
+  loader is bootloader_create(boot_config_default())
+  kernel.bootloader is loader
+  boot is bootloader_run(loader, kernel)
+  if not boot.ok then
+    print("SuraOS boot failed: " + boot.message)
+    return nil
+  end
+  shell is shell_create(kernel, "user", host_echo)
+  return {kernel: kernel, shell: shell}
+end
+
+func suraos_smoke_assert(condition, message, state) do
+  if condition then
+    state.passed += 1
+  else
+    state.failed += 1
+    failures is state.failures
+    failures.push(message)
+  end
+end
+
+func suraos_run_smoke() do
+  state is {passed: 0, failed: 0, failures: []}
+  machine is suraos_new_machine(false)
+  suraos_smoke_assert(machine != nil, "machine creation", state)
+  if machine == nil then
+    print("SuraOS smoke: FAIL (boot)")
+    return false
+  end
+
+  kernel is machine.kernel
+  shell is machine.shell
+  health is kernel_health(kernel)
+  suraos_smoke_assert(health.healthy, "kernel health after boot", state)
+  suraos_smoke_assert(kernel.programs.keys().len() == 3, "built-in program count", state)
+  suraos_smoke_assert(fs_validate(kernel.fs).ok, "filesystem validation", state)
+  suraos_smoke_assert(mem_validate(kernel.memory).ok, "memory validation", state)
+
+  hello is kernel_spawn_registered(kernel, "hello", "user", 0, 5)
+  suraos_smoke_assert(hello.ok, "spawn hello", state)
+  run_report is kernel_run(kernel, 1000)
+  suraos_smoke_assert(run_report.ok, "scheduler run", state)
+  if hello.ok then
+    suraos_smoke_assert(hello.value.state == SURAOS_PROCESS_TERMINATED, "hello terminates", state)
+    suraos_smoke_assert(hello.value.exit_code == 0, "hello exit code", state)
+  end
+
+  write_result is fs_write_file(kernel.fs, "/home/user/smoke.txt", "virtual disk works", "user", "/", kernel.clock.tick)
+  read_result is fs_read_file(kernel.fs, "/home/user/smoke.txt", "user", "/")
+  suraos_smoke_assert(write_result.ok, "virtual file write", state)
+  suraos_smoke_assert(read_result.ok and read_result.value == "virtual disk works", "virtual file read", state)
+
+  program is asm_assemble(asm_counter_source(4), "smoke-counter")
+  suraos_smoke_assert(program.assembled, "assembler", state)
+  suraos_smoke_assert(asm_validate_program(program).ok, "program validator", state)
+
+  shell_execute(shell, kernel, "pwd")
+  shell_execute(shell, kernel, "ls /")
+  shell_execute(shell, kernel, "health")
+  suraos_smoke_assert(shell.failures == 0, "shell batch", state)
+  suraos_smoke_assert(kernel_health(kernel).healthy, "kernel health after workload", state)
+
+  if state.failed == 0 then
+    print("SuraOS smoke: PASS (" + state.passed + " checks)")
+    return true
+  end
+  print("SuraOS smoke: FAIL (" + state.failed + " failed)")
+  for failure in state.failures do
+    print(" - " + failure)
+  end
+  return false
+end
+
+func suraos_run_demo() do
+  machine is suraos_new_machine(true)
+  if machine == nil then return false
+  kernel is machine.kernel
+  shell is machine.shell
+  print("")
+  print("--- deterministic SuraOS demonstration ---")
+  commands is ["about", "health", "ls -l /", "tree /", "cat /etc/motd", "programs", "disasm counter", "run hello", "run counter", "run cooperative", "ps", "mem", "disk", "devices"]
+  report is shell_run_batch(shell, kernel, commands)
+  print("--- demo complete: " + report.passed + "/" + report.commands + " commands ---")
+  return report.failed == 0
+end
+
+mode is "--demo"
+if argc() > 0 then mode is argv()[0]
+
+if mode == "--interactive" then
+  machine is suraos_new_machine(true)
+  if machine != nil then shell_run_interactive(machine.shell, machine.kernel)
+elif mode == "--smoke" then
+  suraos_run_smoke()
+else
+  suraos_run_demo()
+end

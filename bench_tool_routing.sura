@@ -1,0 +1,56 @@
+# AI automation workload: route many tool candidates by latency, cost, reliability, and risk.
+# This models a hot agent-loop scheduler that repeatedly chooses the best tool/action.
+
+func route_score(i) do
+  latency is (i * 37) % 120
+  cost is (i * 17 + 11) % 90
+  reliability is 100 - ((i * 13) % 45)
+  risk is (i * i + 19) % 70
+
+  score is reliability * 8 - latency * 3 - cost * 2 - risk * 5
+  if latency < 35 then
+    score is score + 90
+  end
+  if reliability > 80 then
+    score is score + 120
+  end
+  if risk > 50 then
+    score is score - 160
+  end
+  if cost < 20 then
+    score is score + 40
+  end
+  return score
+end
+
+runs is 5
+candidates is 160000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  best is -999999
+  accepted is 0
+  total is 0
+  while i < candidates do
+    score is route_score(i)
+    if score > best then
+      best is score
+    end
+    if score > 250 then
+      accepted is accepted + 1
+    end
+    total is total + score
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is best + accepted + total
+end
+
+avg is total_ms / runs
+print "tool routing candidates: {candidates}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

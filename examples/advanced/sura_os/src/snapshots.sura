@@ -1,0 +1,262 @@
+# SuraOS in-memory snapshot catalog, validation, diff and data-plane restore.
+# Live process restoration is intentionally excluded: restoring CPU execution
+# requires a stopped kernel and a dedicated replay protocol.
+
+func snapshot_manager_create(limit) do
+  return {snapshots: {}, order: [], next_id: 1, limit: osutil_max(1, limit), captures: 0, deletes: 0, restores: 0, diffs: 0, failures: 0}
+end
+
+func snapshot_validate(snapshot) do
+  errors is []
+  if snapshot.schema != SURAOS_SNAPSHOT_SCHEMA then errors.push("snapshot schema mismatch")
+  if snapshot.version != SURAOS_VERSION then errors.push("snapshot version mismatch")
+  if snapshot.clock < 0 then errors.push("negative snapshot clock")
+  if snapshot.memory.size < 1 then errors.push("invalid memory size")
+  if snapshot.filesystem.schema != SURAOS_DISK_SCHEMA then errors.push("filesystem schema mismatch")
+  if snapshot.scheduler.quantum < 1 then errors.push("invalid scheduler quantum")
+  pids is []
+  for process in snapshot.processes do
+    if pids.contains(process.pid) then errors.push("duplicate process pid " + process.pid)
+    pids.push(process.pid)
+  end
+  return {ok: errors.len() == 0, errors: errors}
+end
+
+func snapshot_catalog_trim(manager) do
+  snapshots is manager.snapshots
+  order is manager.order
+  while order.len() > manager.limit do
+    oldest is order.remove(0)
+    snapshots.delete(osutil_key(oldest))
+    manager.deletes += 1
+  end
+end
+
+func snapshot_capture(manager, kernel, name, description) do
+  if name.trim().len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "snapshot name is empty")
+  data is kernel_snapshot(kernel)
+  validation is snapshot_validate(data)
+  if not validation.ok then
+    manager.failures += 1
+    return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  end
+  id is manager.next_id
+  manager.next_id += 1
+  record is {id: id, name: name, description: description, created_tick: kernel.clock.tick, created_user: kernel.current_user, checksum: snapshot_checksum(data), data: data, size_estimate: snapshot_size_estimate(data), tags: [], protected: false}
+  snapshots is manager.snapshots
+  order is manager.order
+  snapshots[osutil_key(id)] is record
+  order.push(id)
+  manager.captures += 1
+  snapshot_catalog_trim(manager)
+  return osutil_ok(record)
+end
+
+func snapshot_get(manager, id) do
+  snapshots is manager.snapshots
+  key is osutil_key(id)
+  if key in snapshots then return snapshots[key]
+  return nil
+end
+
+func snapshot_find_name(manager, name) do
+  result is []
+  for id in manager.order do
+    record is snapshot_get(manager, id)
+    if record != nil and record.name == name then result.push(record)
+  end
+  return result
+end
+
+func snapshot_delete(manager, id, force) do
+  record is snapshot_get(manager, id)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  if record.protected and not force then return osutil_fail(SURAOS_ERR_PERMISSION, "snapshot is protected")
+  snapshots is manager.snapshots
+  order is manager.order
+  snapshots.delete(osutil_key(id))
+  osutil_remove_value(order, id)
+  manager.deletes += 1
+  return osutil_ok(record)
+end
+
+func snapshot_protect(manager, id, protected) do
+  record is snapshot_get(manager, id)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  record.protected is protected
+  return osutil_ok(protected)
+end
+
+func snapshot_tag_add(manager, id, tag) do
+  record is snapshot_get(manager, id)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  clean is tag.trim().lower()
+  if clean.len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "tag is empty")
+  tags is record.tags
+  if not tags.contains(clean) then tags.push(clean)
+  return osutil_ok(clean)
+end
+
+func snapshot_tag_remove(manager, id, tag) do
+  record is snapshot_get(manager, id)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  tags is record.tags
+  return osutil_ok(osutil_remove_value(tags, tag.trim().lower()))
+end
+
+func snapshot_checksum(snapshot) do
+  parts is []
+  parts.push(snapshot.schema)
+  parts.push(snapshot.version)
+  parts.push("" + snapshot.clock)
+  parts.push("" + snapshot.memory.size)
+  parts.push("" + snapshot.memory.segments.len())
+  parts.push("" + snapshot.memory.cells.keys().len())
+  parts.push("" + snapshot.filesystem.nodes.len())
+  parts.push("" + snapshot.processes.len())
+  for process in snapshot.processes do
+    parts.push(process.pid + ":" + process.name + ":" + process.state + ":" + process.cpu_ticks)
+  end
+  return osutil_checksum_text(parts.join("|"))
+end
+
+func snapshot_size_estimate(snapshot) do
+  bytes is 128
+  bytes += snapshot.memory.cells.keys().len() * 16
+  bytes += snapshot.memory.objects.keys().len() * 32
+  bytes += snapshot.memory.segments.len() * 96
+  for node in snapshot.filesystem.nodes do
+    bytes += 128 + node.path.len() + node.content.len()
+  end
+  bytes += snapshot.processes.len() * 512
+  return bytes
+end
+
+func snapshot_process_index(snapshot) do
+  result is {}
+  for process in snapshot.processes do
+    result[osutil_key(process.pid)] is process
+  end
+  return result
+end
+
+func snapshot_file_index(snapshot) do
+  result is {}
+  for node in snapshot.filesystem.nodes do
+    result[node.path] is node
+  end
+  return result
+end
+
+func snapshot_diff_processes(before, after) do
+  old_index is snapshot_process_index(before)
+  new_index is snapshot_process_index(after)
+  added is []
+  removed is []
+  changed is []
+  for key in new_index.keys() do
+    if not (key in old_index) then
+      added.push(new_index[key].pid)
+    else
+      old_process is old_index[key]
+      new_process is new_index[key]
+      fields is []
+      if old_process.state != new_process.state then fields.push("state")
+      if old_process.cpu_ticks != new_process.cpu_ticks then fields.push("cpu_ticks")
+      if old_process.exit_code != new_process.exit_code then fields.push("exit_code")
+      if old_process.priority != new_process.priority then fields.push("priority")
+      if fields.len() > 0 then changed.push({pid: new_process.pid, name: new_process.name, fields: fields})
+    end
+  end
+  for key in old_index.keys() do
+    if not (key in new_index) then removed.push(old_index[key].pid)
+  end
+  return {added: added, removed: removed, changed: changed}
+end
+
+func snapshot_diff_files(before, after) do
+  old_index is snapshot_file_index(before)
+  new_index is snapshot_file_index(after)
+  added is []
+  removed is []
+  changed is []
+  for path in new_index.keys() do
+    if not (path in old_index) then
+      added.push(path)
+    else
+      old_node is old_index[path]
+      new_node is new_index[path]
+      fields is []
+      if old_node.kind != new_node.kind then fields.push("kind")
+      if old_node.size != new_node.size then fields.push("size")
+      if old_node.content != new_node.content then fields.push("content")
+      if old_node.owner != new_node.owner then fields.push("owner")
+      if old_node.permissions != new_node.permissions then fields.push("permissions")
+      if fields.len() > 0 then changed.push({path: path, fields: fields})
+    end
+  end
+  for path in old_index.keys() do
+    if not (path in new_index) then removed.push(path)
+  end
+  return {added: osutil_sort_strings(added), removed: osutil_sort_strings(removed), changed: changed}
+end
+
+func snapshot_diff_memory(before, after) do
+  return {size_before: before.memory.size, size_after: after.memory.size, segments_before: before.memory.segments.len(), segments_after: after.memory.segments.len(), cells_before: before.memory.cells.keys().len(), cells_after: after.memory.cells.keys().len(), reserved_before: before.memory.counters.bytes_reserved, reserved_after: after.memory.counters.bytes_reserved, faults_before: before.memory.counters.faults, faults_after: after.memory.counters.faults}
+end
+
+func snapshot_diff(manager, left_id, right_id) do
+  left is snapshot_get(manager, left_id)
+  right is snapshot_get(manager, right_id)
+  if left == nil or right == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  manager.diffs += 1
+  return osutil_ok({left: {id: left.id, name: left.name, tick: left.created_tick}, right: {id: right.id, name: right.name, tick: right.created_tick}, tick_delta: right.created_tick - left.created_tick, processes: snapshot_diff_processes(left.data, right.data), files: snapshot_diff_files(left.data, right.data), memory: snapshot_diff_memory(left.data, right.data), stats: {created_delta: right.data.stats.total_created - left.data.stats.total_created, exited_delta: right.data.stats.total_exited - left.data.stats.total_exited, syscall_delta: right.data.stats.syscalls - left.data.stats.syscalls}})
+end
+
+func snapshot_restore_data(manager, kernel, id, requester_user) do
+  if requester_user != "root" then return osutil_fail(SURAOS_ERR_PERMISSION, "snapshot restore requires root")
+  record is snapshot_get(manager, id)
+  if record == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "snapshot not found")
+  validation is snapshot_validate(record.data)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  if snapshot_checksum(record.data) != record.checksum then return osutil_fail(SURAOS_ERR_INVALID, "snapshot checksum mismatch")
+  filesystem_result is fs_import(record.data.filesystem)
+  if not filesystem_result.ok then return filesystem_result
+  restored_memory is mem_restore(record.data.memory)
+  memory_validation is mem_validate(restored_memory)
+  if not memory_validation.ok then return osutil_fail(SURAOS_ERR_INVALID, memory_validation.errors.join(", "))
+  kernel.fs is filesystem_result.value
+  kernel.memory is restored_memory
+  kernel.current_user is record.data.current_user
+  kernel.config is osutil_clone_dict(record.data.config)
+  manager.restores += 1
+  return osutil_ok({id: id, restored_filesystem: true, restored_memory: true, restored_processes: false, note: "live process and CPU state were intentionally not restored"})
+end
+
+func snapshot_list(manager) do
+  rows is []
+  for id in manager.order do
+    record is snapshot_get(manager, id)
+    if record != nil then rows.push({id: record.id, name: record.name, description: record.description, tick: record.created_tick, user: record.created_user, checksum: record.checksum, size_estimate: record.size_estimate, tags: osutil_clone_array(record.tags), protected: record.protected, processes: record.data.processes.len(), files: record.data.filesystem.nodes.len()})
+  end
+  return rows
+end
+
+func snapshot_manager_stats(manager) do
+  estimated_bytes is 0
+  protected is 0
+  for record in manager.snapshots.values() do
+    estimated_bytes += record.size_estimate
+    if record.protected then protected += 1
+  end
+  return {snapshots: manager.snapshots.keys().len(), protected: protected, estimated_bytes: estimated_bytes, limit: manager.limit, captures: manager.captures, deletes: manager.deletes, restores: manager.restores, diffs: manager.diffs, failures: manager.failures}
+end
+
+func snapshot_table(manager) do
+  lines is [" ID NAME                 TICK       SIZE   PROTECTED DESCRIPTION"]
+  for row in snapshot_list(manager) do
+    lines.push(osutil_pad_left(row.id, 3, " ") + " " + osutil_pad_right(row.name, 20, " ") + " " + osutil_pad_left(row.tick, 8, " ") + " " + osutil_pad_left(row.size_estimate, 10, " ") + " " + osutil_pad_right(row.protected, 9, " ") + " " + row.description)
+  end
+  return lines.join("\n")
+end
+

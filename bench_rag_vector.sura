@@ -1,0 +1,61 @@
+# AI/RAG workload: rank synthetic document embeddings against a query vector.
+# This models the hot numeric loop in a local retrieval step before an LLM call.
+
+func query_component(dim) do
+  return ((dim * 37 + 11) % 101) - 50
+end
+
+func doc_component(doc, dim) do
+  return (((doc + 3) * (dim * 17 + 5) + doc * doc + dim * dim * 7) % 113) - 56
+end
+
+func score_doc(doc, dims) do
+  dim is 0
+  dot is 0
+  doc_norm is 0
+  query_norm is 0
+  while dim < dims do
+    q is query_component(dim)
+    v is doc_component(doc, dim)
+    dot is dot + q * v
+    doc_norm is doc_norm + v * v
+    query_norm is query_norm + q * q
+    dim is dim + 1
+  end
+  return dot * 100000 / (1 + doc_norm + query_norm)
+end
+
+runs is 5
+docs is 12000
+dims is 16
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  doc is 0
+  best_score is -999999999
+  best_doc is -1
+  top_hits is 0
+  total_score is 0
+  while doc < docs do
+    score is score_doc(doc, dims)
+    if score > best_score then
+      best_score is score
+      best_doc is doc
+    end
+    if score > 3500 then
+      top_hits is top_hits + 1
+    end
+    total_score is total_score + score
+    doc is doc + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is best_doc + top_hits * 17 + best_score + total_score
+end
+
+avg is total_ms / runs
+print "rag vector docs: {docs}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

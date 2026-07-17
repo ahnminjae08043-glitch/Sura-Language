@@ -1,0 +1,315 @@
+# SuraOS staged bootloader and recovery diagnostics.
+# The project is a hosted virtual OS, so this models firmware and boot stages
+# without touching the host boot sector or physical hardware.
+
+func boot_config_default() do
+  return {kernel: "/boot/suraos.kernel", init: "/bin/init", root: "/", hostname: "sura-machine", memory_check: true, filesystem_check: true, safe_mode: false, verbose: true, max_boot_ticks: 1000, fallback_user: "root", command_line: "quiet=false console=virtual0"}
+end
+
+func boot_config_clone(config) do
+  return {kernel: config.kernel, init: config.init, root: config.root, hostname: config.hostname, memory_check: config.memory_check, filesystem_check: config.filesystem_check, safe_mode: config.safe_mode, verbose: config.verbose, max_boot_ticks: config.max_boot_ticks, fallback_user: config.fallback_user, command_line: config.command_line}
+end
+
+func boot_config_validate(config) do
+  errors is []
+  if not config.kernel.starts_with("/") then errors.push("kernel path must be absolute")
+  if not config.init.starts_with("/") then errors.push("init path must be absolute")
+  if config.root != "/" then errors.push("v1 supports only the root filesystem at /")
+  if config.hostname.trim().len() == 0 then errors.push("hostname is empty")
+  if config.max_boot_ticks < 1 then errors.push("max_boot_ticks must be positive")
+  if config.fallback_user.trim().len() == 0 then errors.push("fallback_user is empty")
+  return {ok: errors.len() == 0, errors: errors}
+end
+
+func boot_parse_bool(value, fallback) do
+  lower is ("" + value).trim().lower()
+  if lower == "true" or lower == "yes" or lower == "1" or lower == "on" then return true
+  if lower == "false" or lower == "no" or lower == "0" or lower == "off" then return false
+  return fallback
+end
+
+func boot_config_set(config, key, value) do
+  normalized is key.trim().lower()
+  if normalized == "kernel" then
+    config.kernel is value
+  elif normalized == "init" then
+    config.init is value
+  elif normalized == "root" then
+    config.root is value
+  elif normalized == "hostname" then
+    config.hostname is value
+  elif normalized == "memory_check" then
+    config.memory_check is boot_parse_bool(value, config.memory_check)
+  elif normalized == "filesystem_check" then
+    config.filesystem_check is boot_parse_bool(value, config.filesystem_check)
+  elif normalized == "safe_mode" then
+    config.safe_mode is boot_parse_bool(value, config.safe_mode)
+  elif normalized == "verbose" then
+    config.verbose is boot_parse_bool(value, config.verbose)
+  elif normalized == "max_boot_ticks" then
+    config.max_boot_ticks is osutil_to_integer(value, config.max_boot_ticks)
+  elif normalized == "fallback_user" then
+    config.fallback_user is value
+  elif normalized == "command_line" then
+    config.command_line is value
+  else
+    return osutil_fail(SURAOS_ERR_INVALID, "unknown boot option: " + key)
+  end
+  return osutil_ok(value)
+end
+
+func boot_config_parse(text) do
+  config is boot_config_default()
+  warnings is []
+  line_number is 0
+  for raw in text.split("\n") do
+    line_number += 1
+    line is raw.trim()
+    if line.len() > 0 and not line.starts_with("#") then
+      separator is line.index_of("=")
+      if separator < 1 then
+        warnings.push("line " + line_number + ": expected key=value")
+      else
+        key is line.sub(0, separator).trim()
+        value is line.sub(separator + 1, line.len()).trim()
+        result is boot_config_set(config, key, value)
+        if not result.ok then warnings.push("line " + line_number + ": " + result.message)
+      end
+    end
+  end
+  validation is boot_config_validate(config)
+  return {ok: validation.ok, config: config, warnings: warnings, errors: validation.errors}
+end
+
+func boot_config_text(config) do
+  lines is []
+  lines.push("kernel=" + config.kernel)
+  lines.push("init=" + config.init)
+  lines.push("root=" + config.root)
+  lines.push("hostname=" + config.hostname)
+  lines.push("memory_check=" + config.memory_check)
+  lines.push("filesystem_check=" + config.filesystem_check)
+  lines.push("safe_mode=" + config.safe_mode)
+  lines.push("verbose=" + config.verbose)
+  lines.push("max_boot_ticks=" + config.max_boot_ticks)
+  lines.push("fallback_user=" + config.fallback_user)
+  lines.push("command_line=" + config.command_line)
+  return lines.join("\n") + "\n"
+end
+
+func bootloader_create(config) do
+  actual is config
+  if actual == nil then actual is boot_config_default()
+  return {config: boot_config_clone(actual), stage: "RESET", stage_number: 0, started_tick: 0, finished_tick: -1, complete: false, failed: false, failure: "", safe_mode: actual.safe_mode, entries: [], checks: [], warnings: [], recovery_actions: [], detected: {memory: 0, filesystem: "", devices: 0, users: 0, programs: 0}}
+end
+
+func bootloader_entry(loader, level, component, message, tick, data) do
+  entry is {sequence: loader.entries.len() + 1, tick: tick, level: level, component: component, message: message, data: data}
+  entries is loader.entries
+  entries.push(entry)
+  return entry
+end
+
+func bootloader_stage(loader, stage, tick) do
+  loader.stage_number += 1
+  loader.stage is stage
+  return bootloader_entry(loader, SURAOS_LOG_INFO, "bootloader", "stage " + loader.stage_number + ": " + stage, tick, {})
+end
+
+func bootloader_warning(loader, component, message, tick) do
+  warnings is loader.warnings
+  warnings.push(message)
+  return bootloader_entry(loader, SURAOS_LOG_WARN, component, message, tick, {})
+end
+
+func bootloader_fail(loader, component, message, tick) do
+  loader.failed is true
+  loader.complete is false
+  loader.failure is message
+  loader.stage is "FAILED"
+  bootloader_entry(loader, SURAOS_LOG_ERROR, component, message, tick, {})
+  return osutil_fail(SURAOS_ERR_FAULT, message)
+end
+
+func bootloader_record_check(loader, name, ok, message, tick, details) do
+  check is {name: name, ok: ok, message: message, tick: tick, details: details}
+  checks is loader.checks
+  checks.push(check)
+  level is SURAOS_LOG_INFO
+  if not ok then level is SURAOS_LOG_ERROR
+  bootloader_entry(loader, level, "check", name + ": " + message, tick, details)
+  return check
+end
+
+func bootloader_check_config(loader, kernel) do
+  validation is boot_config_validate(loader.config)
+  bootloader_record_check(loader, "configuration", validation.ok, validation.errors.join(", "), kernel.clock.tick, {errors: validation.errors})
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  kernel_config is kernel.config
+  kernel_config.hostname is loader.config.hostname
+  return osutil_ok(true)
+end
+
+func bootloader_check_memory(loader, kernel) do
+  if not loader.config.memory_check then
+    bootloader_record_check(loader, "memory", true, "skipped by configuration", kernel.clock.tick, {})
+    return osutil_ok(true)
+  end
+  validation is mem_validate(kernel.memory)
+  stats is mem_stats(kernel.memory)
+  detected is loader.detected
+  detected.memory is stats.size
+  message is "detected " + stats.size + " bytes, " + stats.segment_count + " reserved segments"
+  if not validation.ok then message is validation.errors.join(", ")
+  bootloader_record_check(loader, "memory", validation.ok, message, kernel.clock.tick, stats)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_FAULT, message)
+
+  probe is mem_allocate(kernel.memory, 0, 64, SURAOS_PERM_READ | SURAOS_PERM_WRITE, "probe", "boot-probe")
+  if not probe.ok then return osutil_fail(SURAOS_ERR_NO_MEMORY, "memory probe allocation failed")
+  write_result is mem_write_u32(kernel.memory, 0, probe.value, 305419896, true)
+  read_result is mem_read_u32(kernel.memory, 0, probe.value, true)
+  verified is write_result.ok and read_result.ok and read_result.value == 305419896
+  mem_free(kernel.memory, 0, probe.value, true)
+  bootloader_record_check(loader, "memory-probe", verified, "write/read pattern 0x12345678", kernel.clock.tick, {address: probe.value})
+  if not verified then return osutil_fail(SURAOS_ERR_FAULT, "memory probe mismatch")
+  return osutil_ok(true)
+end
+
+func bootloader_check_filesystem(loader, kernel) do
+  if not loader.config.filesystem_check then
+    bootloader_record_check(loader, "filesystem", true, "skipped by configuration", kernel.clock.tick, {})
+    return osutil_ok(true)
+  end
+  validation is fs_validate(kernel.fs)
+  usage is fs_usage(kernel.fs)
+  detected is loader.detected
+  detected.filesystem is usage.label
+  message is usage.label + " has " + usage.nodes + " nodes"
+  if not validation.ok then message is validation.errors.join(", ")
+  bootloader_record_check(loader, "filesystem", validation.ok, message, kernel.clock.tick, usage)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_FAULT, message)
+  required is ["/boot", "/bin", "/dev", "/etc", "/home", "/var"]
+  missing is []
+  for path in required do
+    if fs_get(kernel.fs, path, "/") == nil then missing.push(path)
+  end
+  bootloader_record_check(loader, "filesystem-layout", missing.len() == 0, "required directory scan", kernel.clock.tick, {missing: missing})
+  if missing.len() > 0 then return osutil_fail(SURAOS_ERR_NOT_FOUND, "missing boot directories: " + missing.join(", "))
+  return osutil_ok(true)
+end
+
+func bootloader_check_devices(loader, kernel) do
+  manager is kernel.devices
+  names is ["console", "keyboard", "clock", "random", "null", "net0"]
+  available is 0
+  if manager.console != nil then available += 1
+  if manager.keyboard != nil then available += 1
+  if manager.clock != nil then available += 1
+  if manager.random != nil then available += 1
+  if manager.null_device != nil then available += 1
+  if manager.net0 != nil then available += 1
+  detected is loader.detected
+  detected.devices is available
+  ok is available == names.len()
+  bootloader_record_check(loader, "devices", ok, available + "/" + names.len() + " virtual devices online", kernel.clock.tick, {expected: names})
+  if not ok then return osutil_fail(SURAOS_ERR_NOT_FOUND, "required virtual device missing")
+  return osutil_ok(true)
+end
+
+func bootloader_check_security(loader, kernel) do
+  stats is security_stats(kernel.security)
+  detected is loader.detected
+  detected.users is stats.users
+  ok is stats.users >= 2 and stats.groups >= 2
+  bootloader_record_check(loader, "security", ok, stats.users + " users and " + stats.groups + " groups", kernel.clock.tick, stats)
+  if not ok then return osutil_fail(SURAOS_ERR_INVALID, "security database is incomplete")
+  return osutil_ok(true)
+end
+
+func bootloader_write_files(loader, kernel) do
+  config_text is boot_config_text(loader.config)
+  config_result is fs_write_file(kernel.fs, "/boot/boot.cfg", config_text, "root", "/", kernel.clock.tick)
+  image_result is fs_write_file(kernel.fs, loader.config.kernel, "SURAOS-HOSTED-KERNEL\nversion=" + SURAOS_VERSION + "\n", "root", "/", kernel.clock.tick)
+  init_result is fs_write_file(kernel.fs, loader.config.init, "# virtual init entry managed by SuraOS\n", "root", "/", kernel.clock.tick)
+  ok is config_result.ok and image_result.ok and init_result.ok
+  bootloader_record_check(loader, "boot-files", ok, "configuration, kernel image and init entry", kernel.clock.tick, {})
+  if not ok then return osutil_fail(SURAOS_ERR_IO, "failed to populate boot files")
+  return osutil_ok(true)
+end
+
+func bootloader_run(loader, kernel) do
+  loader.started_tick is kernel.clock.tick
+  bootloader_stage(loader, "FIRMWARE", kernel.clock.tick)
+  config_result is bootloader_check_config(loader, kernel)
+  if not config_result.ok then return bootloader_fail(loader, "config", config_result.message, kernel.clock.tick)
+
+  bootloader_stage(loader, "HARDWARE-DISCOVERY", kernel.clock.tick)
+  memory_result is bootloader_check_memory(loader, kernel)
+  if not memory_result.ok then return bootloader_fail(loader, "memory", memory_result.message, kernel.clock.tick)
+  device_result is bootloader_check_devices(loader, kernel)
+  if not device_result.ok then return bootloader_fail(loader, "devices", device_result.message, kernel.clock.tick)
+
+  bootloader_stage(loader, "FILESYSTEM", kernel.clock.tick)
+  filesystem_result is bootloader_check_filesystem(loader, kernel)
+  if not filesystem_result.ok then return bootloader_fail(loader, "filesystem", filesystem_result.message, kernel.clock.tick)
+  files_result is bootloader_write_files(loader, kernel)
+  if not files_result.ok then return bootloader_fail(loader, "boot-files", files_result.message, kernel.clock.tick)
+
+  bootloader_stage(loader, "SECURITY", kernel.clock.tick)
+  security_result is bootloader_check_security(loader, kernel)
+  if not security_result.ok then return bootloader_fail(loader, "security", security_result.message, kernel.clock.tick)
+
+  bootloader_stage(loader, "KERNEL", kernel.clock.tick)
+  kernel_result is kernel_boot(kernel)
+  if not kernel_result.ok then return bootloader_fail(loader, "kernel", kernel_result.message, kernel.clock.tick)
+  detected is loader.detected
+  detected.programs is kernel.programs.keys().len()
+
+  bootloader_stage(loader, "USERSPACE", kernel.clock.tick)
+  if loader.safe_mode then bootloader_warning(loader, "userspace", "safe mode: optional services disabled", kernel.clock.tick)
+  loader.finished_tick is kernel.clock.tick
+  loader.complete is true
+  loader.stage is "READY"
+  bootloader_entry(loader, SURAOS_LOG_INFO, "bootloader", "handoff complete", kernel.clock.tick, {})
+  return osutil_ok(kernel)
+end
+
+func bootloader_recovery_scan(loader, kernel) do
+  actions is []
+  memory is mem_validate(kernel.memory)
+  filesystem is fs_validate(kernel.fs)
+  if not memory.ok then actions.push("inspect memory map and release orphaned segments")
+  if not filesystem.ok then actions.push("restore filesystem from a verified snapshot")
+  if kernel.panic != nil then actions.push("review kernel panic diagnostics")
+  if actions.len() == 0 then actions.push("no repair action required")
+  loader.recovery_actions is actions
+  return {memory: memory, filesystem: filesystem, panic: kernel.panic, actions: actions}
+end
+
+func bootloader_report(loader) do
+  passed is 0
+  failed is 0
+  for check in loader.checks do
+    if check.ok then passed += 1 else failed += 1
+  end
+  return {stage: loader.stage, complete: loader.complete, failed: loader.failed, failure: loader.failure, started_tick: loader.started_tick, finished_tick: loader.finished_tick, checks: loader.checks.len(), checks_passed: passed, checks_failed: failed, warnings: osutil_clone_array(loader.warnings), entries: loader.entries.len(), detected: loader.detected, safe_mode: loader.safe_mode}
+end
+
+func bootloader_report_text(loader) do
+  report is bootloader_report(loader)
+  lines is []
+  lines.push("SuraOS boot report")
+  lines.push("stage=" + report.stage + " complete=" + report.complete + " safe_mode=" + report.safe_mode)
+  lines.push("checks=" + report.checks + " passed=" + report.checks_passed + " failed=" + report.checks_failed)
+  lines.push("memory=" + report.detected.memory + " devices=" + report.detected.devices + " users=" + report.detected.users + " programs=" + report.detected.programs)
+  for check in loader.checks do
+    marker is "PASS"
+    if not check.ok then marker is "FAIL"
+    lines.push("[" + marker + "] " + check.name + " - " + check.message)
+  end
+  for warning in loader.warnings do
+    lines.push("[WARN] " + warning)
+  end
+  if loader.failed then lines.push("failure=" + loader.failure)
+  return lines.join("\n")
+end

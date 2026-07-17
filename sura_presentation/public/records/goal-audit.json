@@ -1,0 +1,1981 @@
+{
+    "schema":  "sura.goal.audit.v1",
+    "generated_utc":  "2026-07-16T15:11:26Z",
+    "repo_root":  "<local-repository>",
+    "passed":  false,
+    "status":  "INCOMPLETE",
+    "progress_percent":  99.2,
+    "required_count":  127,
+    "passed_count":  126,
+    "failed_count":  1,
+    "blocker_count":  1,
+    "max_native_ratio":  10,
+    "max_native_evidence_age_hours":  168,
+    "categories":  [
+                       {
+                           "name":  "ai_native",
+                           "required":  11,
+                           "passed":  11,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "developer_tools",
+                           "required":  12,
+                           "passed":  12,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "interop",
+                           "required":  6,
+                           "passed":  6,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "package_ecosystem",
+                           "required":  11,
+                           "passed":  11,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "performance",
+                           "required":  9,
+                           "passed":  9,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "positioning",
+                           "required":  4,
+                           "passed":  4,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "runtime_safety",
+                           "required":  3,
+                           "passed":  3,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "stdlib",
+                           "required":  5,
+                           "passed":  5,
+                           "failed":  0,
+                           "status":  "PASS"
+                       },
+                       {
+                           "name":  "world_class_frontier",
+                           "required":  66,
+                           "passed":  65,
+                           "failed":  1,
+                           "status":  "INCOMPLETE"
+                       }
+                   ],
+    "checks":  [
+                   {
+                       "category":  "positioning",
+                       "id":  "python_like_scripting",
+                       "name":  "Python-like easy scripting position",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "keep the positioning guide aligned with the language syntax and stdlib"
+                   },
+                   {
+                       "category":  "positioning",
+                       "id":  "lua_like_embedding",
+                       "name":  "Lua-like native embedding position",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "keep native embedding docs and smoke coverage current"
+                   },
+                   {
+                       "category":  "positioning",
+                       "id":  "ai_automation_native",
+                       "name":  "AI and automation native position",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "keep AI/automation docs and agent smoke coverage current"
+                   },
+                   {
+                       "category":  "positioning",
+                       "id":  "independent_language",
+                       "name":  "Independent language, not Python translation",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "avoid adding Python-to-Sura translation as a core path"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "publish_registry",
+                       "name":  "Publish and registry workflow",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore publish and registry workflow evidence"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "central_registry",
+                       "name":  "Central registry metadata and browser flow",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore central registry metadata and browser evidence"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "hosted_registry_service_packaging",
+                       "name":  "Hosted registry service packaging and health smoke",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "deploy/registry/docker-compose.yml",
+                                        "deploy/registry/Dockerfile",
+                                        "deploy/registry/systemd/sura-registry.service",
+                                        "tools/sura_registry_api.js",
+                                        "tools/sura_registry_service_smoke.ps1"
+                                    ],
+                       "next_action":  "restore hosted registry service packaging, health endpoint, admin queue smoke, and deployment docs"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "hosted_registry_abuse_review_ops",
+                       "name":  "Hosted registry abuse queue operations",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "deploy/registry/README.md",
+                                        "Guide/ECOSYSTEM.md",
+                                        "tools/sura_registry_api.js",
+                                        "tools/sura_registry_service_smoke.ps1"
+                                    ],
+                       "next_action":  "restore hosted registry abuse review queue filters, moderation audit log, actioned yanks, and smoke/docs evidence"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "versioning",
+                       "name":  "Package version management",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_pkg_version_smoke.ps1"
+                                    ],
+                       "next_action":  "restore surapkg version smoke coverage"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "cross_version_compatibility",
+                       "name":  "Guaranteed and historical cross-version compatibility evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "compatibility.json",
+                                        "COMPATIBILITY.md",
+                                        "tests/compat/1.10/core.sura",
+                                        "tools/sura_compatibility_gate.ps1",
+                                        "tools/sura_release_evidence_gate.ps1"
+                                    ],
+                       "next_action":  "restore the 1.11 guarantee contract, archived 1.10 runtime probes, forward bytecode load, release gate, and public documentation"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "lockfile_resolver",
+                       "name":  "Lockfile and dependency resolver",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore dependency resolver and lockfile evidence"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "security_advisories",
+                       "name":  "Registry security advisory gates",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore advisory gates and install/update blocking coverage"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "windows_user_installer",
+                       "name":  "Python-style Windows user installer",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/INSTALL.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tools/sura_installer_smoke.ps1",
+                                        "tools/sura_make_installer.ps1"
+                                    ],
+                       "next_action":  "restore installer generator, PATH command shims, smoke coverage, and install docs"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "docs_generation",
+                       "name":  "Package docs generation",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_pkg_docs_smoke.ps1",
+                                        "tools/sura_pkg_search_smoke.ps1"
+                                    ],
+                       "next_action":  "restore generated package docs and search smoke coverage"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "release_flow",
+                       "name":  "Guarded package release flow",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_release_smoke.ps1",
+                                        "tools/sura_release_pack_smoke.ps1"
+                                    ],
+                       "next_action":  "restore guarded release smoke coverage"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "python_bridge",
+                       "name":  "Python package bridge",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_python_bridge_smoke.ps1"
+                                    ],
+                       "next_action":  "restore Python bridge smoke coverage"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "c_abi_ffi",
+                       "name":  "C ABI FFI and native embedding",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "sura_ffi.hpp",
+                                        "sura_ffi.cpp",
+                                        "tools/sura_embed_smoke.ps1"
+                                    ],
+                       "next_action":  "restore C ABI embedding files and smoke coverage"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "native_plugin_cancellation",
+                       "name":  "Native plugin cooperative cancellation evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "examples/sura_plugin_sample.c",
+                                        "sura_plugin.h",
+                                        "tools/sura_plugin_smoke.ps1"
+                                    ],
+                       "next_action":  "restore cancellable plugin ABI, sample plugin polling, and policy smoke coverage"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "js_target",
+                       "name":  "JavaScript target",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_js_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JavaScript target smoke coverage"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_class_exception_lowering",
+                       "name":  "JS class and exception lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target class/extends plus try/catch/finally lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_super_init_lowering",
+                       "name":  "JS super.init constructor lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target super.init constructor lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_when_lowering",
+                       "name":  "JS when/is/in/else lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target when/is/in/else lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_inline_elif_lowering",
+                       "name":  "JS inline elif statement lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target inline elif statement lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "if_inline_else_lowering",
+                       "name":  "Native/JS/WASM inline else statement lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "parser.hpp",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tests/03_control.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore native parser plus JS/WASM inline else statement lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_match_lowering",
+                       "name":  "JS match/when wildcard lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target match/when wildcard lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_print_n_space_lowering",
+                       "name":  "JS print_n space-form lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target print_n/print_no_nl space-form lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_enum_lowering",
+                       "name":  "JS enum declaration lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target enum declaration lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_struct_lowering",
+                       "name":  "JS struct declaration lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target struct declaration lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_lambda_lowering",
+                       "name":  "JS lambda expression lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target lambda expression lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_func_expr_lowering",
+                       "name":  "JS block function expression lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target block function expression lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_optional_coalesce_lowering",
+                       "name":  "JS optional chaining and null coalescing parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS target optional chaining/null coalescing smoke and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_stable_runtime_subset",
+                       "name":  "JS target stable-test runtime parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target stable-test runtime parity smoke and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_nested_closure_lowering",
+                       "name":  "JS nested function closure lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS target nested function closure smoke and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_indexed_for_lowering",
+                       "name":  "JS indexed for-loop lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target indexed for-loop lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_dict_indexed_for_lowering",
+                       "name":  "JS dict key/value for-loop lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target dict key/value for-loop lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_safe_for_iter_lowering",
+                       "name":  "JS nil and dict-safe for-in lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS nil/dict-safe for-in lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_space_assert_lowering",
+                       "name":  "JS/WASM space-form assertion lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM space-form assertion lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_loop_control_lowering",
+                       "name":  "WASM break and continue lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target break/continue named-label lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_loop_control_lowering",
+                       "name":  "JS break and continue loop-control parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS target break/continue loop-control smoke and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_step_for_lowering",
+                       "name":  "JS/WASM stepped range-for lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM stepped range-for lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_tilde_for_lowering",
+                       "name":  "JS/WASM tilde range-for lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM tilde range-for lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_loop_limit_snapshot_lowering",
+                       "name":  "JS repeat and range limit snapshot parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1"
+                                    ],
+                       "next_action":  "restore JS repeat/range loop limit snapshot lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_tilde_when_range_lowering",
+                       "name":  "Native/JS/WASM tilde range when-arm parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "parser.hpp",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore native, JS, and WASM tilde range when-arm parsing/lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_when_first_else_lowering",
+                       "name":  "Native/JS/WASM first-else when-arm parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore native, JS, and WASM first-else when-arm lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "native_reverse_step_for",
+                       "name":  "Native reverse stepped range-for execution",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "jit_compiler.hpp",
+                                        "stdlib/data.sura",
+                                        "tests/03_control.sura"
+                                    ],
+                       "next_action":  "restore native JIT reverse stepped range-for execution and stable-test evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_when_lowering",
+                       "name":  "WASM when/is/in/else lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target when/is/in/else lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_match_lowering",
+                       "name":  "WASM match/when wildcard lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target match/when wildcard lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_block_match_arm_lowering",
+                       "name":  "JS/WASM block-style match arm parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM block-style match arm lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_match_first_wildcard_lowering",
+                       "name":  "JS/WASM first-wildcard match arm parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM first-wildcard match arm lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_nonterminal_default_arm_lowering",
+                       "name":  "JS/WASM nonterminal else/wildcard arm parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM nonterminal default-arm lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_recursive_function_lowering",
+                       "name":  "WASM recursive function and inline return lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target recursive numeric function lowering, inline return smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_function_exports",
+                       "name":  "WASM top-level numeric function export parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM top-level numeric function exports, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_inline_elif_lowering",
+                       "name":  "WASM inline elif statement lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "parser.hpp",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target inline elif statement lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_assert_ne_lowering",
+                       "name":  "WASM assert_ne/assert_neq lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target assert_ne/assert_neq lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_assert_between_lowering",
+                       "name":  "WASM assert_between lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target assert_between numeric bounds lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_assert_approx_lowering",
+                       "name":  "WASM assert_approx lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target assert_approx numeric absolute-difference lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_pow_lowering",
+                       "name":  "WASM pow/math.pow lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target pow/math.pow integer lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_sqrt_lowering",
+                       "name":  "WASM sqrt/math.sqrt lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target sqrt/math.sqrt integer lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_variadic_min_max_lowering",
+                       "name":  "WASM variadic min/max lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target variadic min/max integer lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_decimal_rounding_lowering",
+                       "name":  "WASM decimal floor/ceil/round literal lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target decimal literal floor/ceil/round folding, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_signed_decimal_rounding_lowering",
+                       "name":  "WASM signed decimal rounding parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target signed decimal literal round/floor/ceil folding parity, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_decimal_comparison_lowering",
+                       "name":  "WASM decimal literal comparison lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target decimal literal comparison folding, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_numeric_conversion_lowering",
+                       "name":  "WASM to_int/to_float/to_bool numeric conversion lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target to_int/to_float/to_bool numeric conversion lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_is_reassignment_lowering",
+                       "name":  "WASM is reassignment lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target is reassignment lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_print_call_lowering",
+                       "name":  "WASM print(...) lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target print(...) lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_print_n_lowering",
+                       "name":  "WASM print_n lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target print_n statement/call lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_print_no_nl_lowering",
+                       "name":  "WASM print_no_nl lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target print_no_nl statement/call lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_bool_literal_lowering",
+                       "name":  "WASM true/false literal lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target true/false bool literal lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_throw_lowering",
+                       "name":  "WASM throw statement trap lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target throw statement trap lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_numeric_enum_lowering",
+                       "name":  "WASM enum declaration lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target numeric/string/bare enum declaration lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_bitwise_shift_lowering",
+                       "name":  "WASM bitwise and shift expression lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target bitwise/shift expression lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_bitwise_not_lowering",
+                       "name":  "JS/WASM unary bitwise-not lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM unary bitwise-not lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "js_wasm_ternary_lowering",
+                       "name":  "JS/WASM ternary expression lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore JS/WASM ternary expression lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_inline_branch_local_collection",
+                       "name":  "WASM inline branch-local declaration collection",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM local declaration collection for inline if/elif/else/when/match arms, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_repeat_limit_snapshot_lowering",
+                       "name":  "WASM fixed-count repeat lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM repeat count snapshot lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "wasm_numeric_array_lowering",
+                       "name":  "WASM numeric array literal/index/len lowering parity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "test_wasm_target.sura",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM numeric array literal/index/len, array helper, and indexed for-in lowering, smoke, and docs evidence"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "wasm_target",
+                       "name":  "WebAssembly target",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1",
+                                        "tools/sura_wasm_function_dispatch_smoke.ps1"
+                                    ],
+                       "next_action":  "restore WASM target smoke coverage"
+                   },
+                   {
+                       "category":  "interop",
+                       "id":  "c_header_bindgen",
+                       "name":  "C/C++ header binding generation",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_bind_c_smoke.ps1",
+                                        "tools/bindgen_c.ps1"
+                                    ],
+                       "next_action":  "restore C/C++ bindgen smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "lsp",
+                       "name":  "Language server coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_lsp_smoke.js",
+                                        "sura-vscode/package.json"
+                                    ],
+                       "next_action":  "restore LSP smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "lsp_flow_code_actions",
+                       "name":  "Flow-aware LSP hover and runtime code actions",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "main.cpp",
+                                        "tools/sura_lsp_smoke.js"
+                                    ],
+                       "next_action":  "restore LSP reassignment-aware hover inference, direct interop code actions, and smoke/doc evidence"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "vscode_one_click_run",
+                       "name":  "VS Code one-click Sura run command",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "sura-vscode/extension.ts",
+                                        "sura-vscode/package.json",
+                                        "tools/sura_vscode_run_button_smoke.ps1"
+                                    ],
+                       "next_action":  "restore VS Code editor title run button, Run menu button, Python-like CodeLens, first-character completions, context menu run/debug commands, installed-runtime default, and smoke/docs evidence"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "diagnostic_language_policy",
+                       "name":  "English default and Korean optional diagnostics",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "main.cpp",
+                                        "sura-vscode/package.json",
+                                        "tools/sura_language_policy_smoke.ps1"
+                                    ],
+                       "next_action":  "restore diagnostic language policy implementation, VS Code setting, smoke, and roadmap evidence"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "text_encoding_guard",
+                       "name":  "UTF-8 guide and diagnostic text integrity",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "GUIDE.md",
+                                        "Guide/GUIDE.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tools/sura_guide_syntax_smoke.ps1",
+                                        "tools/sura_text_encoding_smoke.ps1"
+                                    ],
+                       "next_action":  "restore clean UTF-8 guide text and CI guard against mojibake"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "formatter",
+                       "name":  "Formatter coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_engine_format_smoke.ps1",
+                                        "tools/sura_pkg_format_smoke.ps1"
+                                    ],
+                       "next_action":  "restore formatter smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "linter",
+                       "name":  "Linter coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_engine_lint_smoke.ps1",
+                                        "tools/sura_pkg_lint_smoke.ps1"
+                                    ],
+                       "next_action":  "restore linter smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "debugger",
+                       "name":  "Debugger coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_debug_smoke.js",
+                                        "tools/sura_debug_locals_smoke.js",
+                                        "tools/sura_debug_exception_smoke.js"
+                                    ],
+                       "next_action":  "restore debugger smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "profiler",
+                       "name":  "Profiler coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_profile_smoke.ps1",
+                                        "tools/sura_pkg_profile_smoke.ps1"
+                                    ],
+                       "next_action":  "restore profiler smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "ast_json_export",
+                       "name":  "Machine-readable AST JSON export",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "main.cpp",
+                                        "tools/sura_ast_json_smoke.ps1",
+                                        "tools/sura_js_target_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore AST JSON export, smoke coverage, and roadmap evidence"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "test_runner",
+                       "name":  "Test runner coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_test_runner_smoke.ps1",
+                                        "tools/sura_engine_test_smoke.ps1"
+                                    ],
+                       "next_action":  "restore package and engine test runner smoke coverage"
+                   },
+                   {
+                       "category":  "developer_tools",
+                       "id":  "docs_site",
+                       "name":  "Searchable docs and package metadata",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_pkg_docs_smoke.ps1",
+                                        "tools/sura_pkg_info_smoke.ps1",
+                                        "tools/sura_pkg_search_smoke.ps1"
+                                    ],
+                       "next_action":  "restore package docs/info/search smoke coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "json_schema",
+                       "name":  "JSON and schema helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore JSON/schema helper evidence"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "http_api",
+                       "name":  "HTTP/API client helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore HTTP/API helper evidence"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "tool_calling_policy",
+                       "name":  "Tool calling and policy gates",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_tool_approval_smoke.ps1",
+                                        "tools/sura_tool_policy_audit_smoke.ps1",
+                                        "tools/sura_tool_audit_log_smoke.ps1"
+                                    ],
+                       "next_action":  "restore tool calling policy smoke coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "embedded_tool_approval_ui",
+                       "name":  "Embedded/editor tool approval bridge evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "stdlib.hpp",
+                                        "tools/sura_tool_approval_smoke.ps1"
+                                    ],
+                       "next_action":  "restore embedded/editor approval request-response bridge implementation, docs, and allow/deny smoke coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "async_stream",
+                       "name":  "Async and stream helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md"
+                                    ],
+                       "next_action":  "restore async/stream helper evidence"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "vector_tensor_llm",
+                       "name":  "Vector, tensor, RAG, and LLM helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore vector/tensor/RAG/LLM helper evidence"
+                   },
+                   {
+                       "category":  "runtime_safety",
+                       "id":  "scheduled_runtime_soak",
+                       "name":  "Scheduled multi-platform runtime soak evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/runtime-soak.yml",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tests/runtime_soak_cycle.sura",
+                                        "tools/sura_runtime_soak.ps1",
+                                        "tools/sura_test_process.ps1"
+                                    ],
+                       "next_action":  "restore the bounded soak runner, deterministic allocation/exception fixture, multi-platform schedule, JSON artifacts, and factual limitation note"
+                   },
+                   {
+                       "category":  "runtime_safety",
+                       "id":  "public_security_boundary",
+                       "name":  "Public security policy and honest audit boundary",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/ISSUE_TEMPLATE/security_contact.yml",
+                                        ".github/workflows/bench-dashboard.yml",
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "SECURITY.md",
+                                        "tools/sura_security_policy_smoke.ps1"
+                                    ],
+                       "next_action":  "restore the public security policy, private-contact fallback template, unsupported-claim guard, and both CI integrations"
+                   },
+                   {
+                       "category":  "runtime_safety",
+                       "id":  "external_audit_handoff",
+                       "name":  "Reproducible external security review handoff",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/bench-dashboard.yml",
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "SECURITY_AUDIT.md",
+                                        "tools/sura_security_audit_bundle.ps1",
+                                        "tools/sura_security_audit_bundle_smoke.ps1"
+                                    ],
+                       "next_action":  "restore the source-review scope, hashed handoff generator, integrity smoke, CI bundle artifact, and honest no-audit boundary"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "bounded_bpe",
+                       "name":  "Bounded deterministic byte-level BPE",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tests/70_bpe_tokenizer.sura",
+                                        "tokenizer.hpp"
+                                    ],
+                       "next_action":  "restore bounded BPE implementation, safety tests, documentation, and cross-platform coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "bounded_onnx_execution",
+                       "name":  "Bounded validated CPU ONNX execution",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "onnx_weights.hpp",
+                                        "tests/71_onnx_execution.sura"
+                                    ],
+                       "next_action":  "restore bounded ONNX parsing/execution, autograd correctness and rejection tests, documentation, and cross-platform coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "native_neural_networks",
+                       "name":  "Native neural-network training",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "Guide/AI.md",
+                                        "jit_vm.hpp",
+                                        "stdlib.hpp",
+                                        "tests/12_native_nn.sura",
+                                        "tools/sura_nn_smoke.ps1"
+                                    ],
+                       "next_action":  "restore native neural-network implementation, tests, documentation, and cross-platform coverage"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "vector_3d_helpers",
+                       "name":  "3D vector helper coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "jit_vm.hpp",
+                                        "stdlib.hpp",
+                                        "test_js_target.sura",
+                                        "test_wasm_target.sura",
+                                        "test_world_features.sura",
+                                        "tools/sura_stdlib_modules_smoke.ps1",
+                                        "tools/sura_to_js.ps1",
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1"
+                                    ],
+                       "next_action":  "restore direct/native/JS/WASM/module 3D vector helper implementation, tests, and docs"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "physics_3d_benchmark",
+                       "name":  "3D physics benchmark coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "bench_physics3d.py",
+                                        "bench_physics3d.sura",
+                                        "Guide/ECOSYSTEM.md",
+                                        "Guide/WORLD_CLASS_ROADMAP.md",
+                                        "tools/sura_bench_dashboard.ps1",
+                                        "tools/sura_release_evidence_gate.ps1"
+                                    ],
+                       "next_action":  "restore the 3D physics benchmark and required dashboard/release-gate evidence"
+                   },
+                   {
+                       "category":  "ai_native",
+                       "id":  "agent_scaffold",
+                       "name":  "AI agent scaffold",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_agent_smoke.ps1"
+                                    ],
+                       "next_action":  "restore surapkg agent smoke coverage"
+                   },
+                   {
+                       "category":  "package_ecosystem",
+                       "id":  "installed_example_gallery",
+                       "name":  "Installed searchable example gallery and project scaffolding",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        ".github/workflows/bench-dashboard.yml",
+                                        ".github/workflows/cross-platform-smoke.yml",
+                                        "examples/README.md",
+                                        "surapkg.cpp",
+                                        "tools/sura_make_installer.ps1",
+                                        "tools/sura_pkg_examples_smoke.ps1",
+                                        "tools/sura_store_msix.ps1"
+                                    ],
+                       "next_action":  "restore installed example discovery, byte-preserving scaffolding, provenance, installer/Store payloads, docs, and multi-platform CI"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "jit",
+                       "name":  "Native JIT evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_jit_mod_smoke.ps1",
+                                        "tools/sura_jit_collections_smoke.ps1",
+                                        "tests/test_jit_collections.sura",
+                                        "jit_target.hpp",
+                                        "tools/sura_jit_target_smoke.ps1",
+                                        "tools/sura_jit_portable_baseline_smoke.ps1",
+                                        "tests/jit_sysv_baseline_test.cpp",
+                                        "tools/sura_jit_arm64_baseline_smoke.ps1",
+                                        "tests/jit_arm64_baseline_test.cpp"
+                                    ],
+                       "next_action":  "restore native JIT target, Win64 x86-64, Linux System V, and ARM64 baseline smoke coverage"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "portable_jit_numeric_baseline",
+                       "name":  "Portable native JIT numeric baseline coverage",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required multi-file text evidence exists",
+                       "evidence":  [
+                                        "COMPATIBILITY.md",
+                                        "jit_native.hpp",
+                                        "tests/jit_arm64_baseline_test.cpp",
+                                        "tests/jit_sysv_baseline_test.cpp"
+                                    ],
+                       "next_action":  "restore proven-numeric division/comparison machine lowering, NaN semantics, guarded fallback tests, and compatibility documentation"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "aot",
+                       "name":  "AOT launcher evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_aot.ps1",
+                                        "tools/sura_aot_smoke.ps1"
+                                    ],
+                       "next_action":  "restore AOT smoke coverage"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "wasm_output",
+                       "name":  "WASM output evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_to_wasm.ps1",
+                                        "tools/sura_wasm_target_smoke.ps1",
+                                        "tests/wasm_array_addition.sura",
+                                        "tests/wasm_dynamic_numeric_errors.sura",
+                                        "tests/wasm_dynamic_decimal_value.sura"
+                                    ],
+                       "next_action":  "restore WASM target, deep array-producer metadata, catchable dynamic numeric errors, and tagged decimal Value smoke coverage"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "benchmark_dashboard",
+                       "name":  "Benchmark dashboard and Python comparisons",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_bench_dashboard.ps1",
+                                        "tools/sura_bench_gate.ps1",
+                                        "tools/sura_bench_dashboard_smoke.ps1"
+                                    ],
+                       "next_action":  "restore benchmark dashboard and Python-comparison gate coverage"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "native_performance_evidence",
+                       "name":  "C++ native performance baseline evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "fresh engine-bound Vec2/Vec3 evidence passed integrity checks",
+                       "evidence":  [
+                                        "artifacts\\native_perf.json",
+                                        "SuraLanguage.exe"
+                                    ],
+                       "next_action":  "rerun tools/sura_native_perf_baseline.ps1 with the current engine and keep the unmodified output"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "native_3d_performance_evidence",
+                       "name":  "3D C++ native performance baseline evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "3D native baseline recorded a verified fair-scope ratio 2.08x",
+                       "evidence":  [
+                                        "artifacts\\native_perf.json",
+                                        "SuraLanguage.exe"
+                                    ],
+                       "next_action":  "rerun tools/sura_native_perf_baseline.ps1 with the current engine and keep the Vec3 run evidence"
+                   },
+                   {
+                       "category":  "performance",
+                       "id":  "native_cpp_speed_goal",
+                       "name":  "Rust/C++-class native speed proof",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "Vec2 1.80x and Vec3 2.08x are both within limit 10.00x",
+                       "evidence":  [
+                                        "artifacts\\native_perf.json"
+                                    ],
+                       "next_action":  "optimize JIT/AOT hot loops, numeric operations, and object-heavy code until both Vec2 and Vec3 Sura/native ratios are \u003c= 10x"
+                   },
+                   {
+                       "category":  "stdlib",
+                       "id":  "http_server",
+                       "name":  "HTTP server helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_http_server_smoke.ps1"
+                                    ],
+                       "next_action":  "restore HTTP server smoke coverage"
+                   },
+                   {
+                       "category":  "stdlib",
+                       "id":  "console_api",
+                       "name":  "Console API helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_console_smoke.ps1",
+                                        "stdlib.hpp",
+                                        "jit_vm.hpp",
+                                        "sura-vscode/extension.ts"
+                                    ],
+                       "next_action":  "restore native, JS, and editor console API coverage"
+                   },
+                   {
+                       "category":  "stdlib",
+                       "id":  "data_time_security_storage",
+                       "name":  "Regex, datetime, crypto, database, and filesystem helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore expanded stdlib docs and smoke coverage"
+                   },
+                   {
+                       "category":  "stdlib",
+                       "id":  "cli_logging_testing_serialization",
+                       "name":  "CLI, logging, testing, and serialization helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required text evidence exists",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "restore CLI/log/test/serialization docs and smoke coverage"
+                   },
+                   {
+                       "category":  "stdlib",
+                       "id":  "concurrency_random",
+                       "name":  "Concurrency and random helpers",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_async_smoke.ps1",
+                                        "tools/sura_random_smoke.ps1"
+                                    ],
+                       "next_action":  "restore async and random smoke coverage"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_hosted_registry_service",
+                       "name":  "Always-on hosted registry with abuse review queues",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "roadmap no longer lists this as open work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "build and verify a hosted registry service with production abuse reporting/review queues"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_full_wasm_lowering",
+                       "name":  "Full dynamic AST/bytecode lowering for WASM target",
+                       "passed":  false,
+                       "blocking":  true,
+                       "message":  "roadmap still lists this as non-negotiable remaining work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "replace proof WASM output with full dynamic AST/bytecode lowering plus parity tests"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_deeper_lsp_flow",
+                       "name":  "Broader runtime LSP code actions and flow-aware intelligence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "roadmap no longer lists this as open work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "add deeper flow-aware hover/signature data and broader runtime LSP code actions"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_native_plugin_cancellation",
+                       "name":  "Cancellable native plugin execution and per-call cancellation checks",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "roadmap no longer lists this as open work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "expand plugin lifecycle with cancellable native execution and richer per-call cancellation verification"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_embedded_tool_approval_ui",
+                       "name":  "Embedded UI tool approval integrations",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "roadmap no longer lists this as open work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "add richer embedded/editor UI approval integrations beyond command callbacks"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_more_real_world_benchmarks",
+                       "name":  "More real-world Python comparison benchmarks",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "roadmap no longer lists this as open work",
+                       "evidence":  [
+                                        "Guide/WORLD_CLASS_ROADMAP.md"
+                                    ],
+                       "next_action":  "add more realistic benchmark cases beyond current recursion, AI, tool-routing, policy, dependency, physics, and market simulations"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "target_lowering_audit_visibility",
+                       "name":  "JS/WASM target lowering audit evidence",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_target_lowering_audit.ps1",
+                                        "tools/sura_target_lowering_audit_smoke.ps1",
+                                        "artifacts/target_lowering_audit.json",
+                                        "artifacts/target_lowering_audit.md"
+                                    ],
+                       "next_action":  "keep target lowering audit JSON/Markdown evidence in CI before goal and release evidence gates"
+                   },
+                   {
+                       "category":  "world_class_frontier",
+                       "id":  "world1_goal_audit_release_visibility",
+                       "name":  "Goal audit remains in release and Discord evidence flow",
+                       "passed":  true,
+                       "blocking":  true,
+                       "message":  "required files exist",
+                       "evidence":  [
+                                        "tools/sura_goal_audit.ps1",
+                                        "tools/sura_discord_goal_status.ps1",
+                                        ".github/workflows/bench-dashboard.yml"
+                                    ],
+                       "next_action":  "keep goal audit and Discord progress reporting in the release evidence flow"
+                   }
+               ],
+    "remaining_work":  [
+                           {
+                               "category":  "world_class_frontier",
+                               "id":  "world1_full_wasm_lowering",
+                               "requirement":  "Full dynamic AST/bytecode lowering for WASM target",
+                               "message":  "roadmap still lists this as non-negotiable remaining work",
+                               "next_action":  "replace proof WASM output with full dynamic AST/bytecode lowering plus parity tests",
+                               "evidence":  [
+                                                "Guide/WORLD_CLASS_ROADMAP.md"
+                                            ]
+                           }
+                       ],
+    "blockers":  [
+                     {
+                         "category":  "world_class_frontier",
+                         "id":  "world1_full_wasm_lowering",
+                         "requirement":  "Full dynamic AST/bytecode lowering for WASM target",
+                         "message":  "roadmap still lists this as non-negotiable remaining work",
+                         "next_action":  "replace proof WASM output with full dynamic AST/bytecode lowering plus parity tests"
+                     }
+                 ]
+}

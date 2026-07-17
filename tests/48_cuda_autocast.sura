@@ -1,0 +1,178 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+# autocast() is an explicitly restorable, thread-local state API. Every
+# setter returns the previous state so callers can implement nested scopes.
+initial_state is autograd.autocast()
+assert_eq(initial_state.enabled, false)
+assert_eq(initial_state.dtype, "bfloat16")
+assert_eq(autograd.limits().cuda_autocast_enabled, false)
+assert_eq(autograd.limits().cuda_autocast_dtype, "bfloat16")
+
+outer_previous is autograd.autocast("float16")
+assert_eq(outer_previous.enabled, initial_state.enabled)
+assert_eq(outer_previous.dtype, initial_state.dtype)
+outer_state is autograd.autocast()
+assert_eq(outer_state.enabled, true)
+assert_eq(outer_state.dtype, "float16")
+
+inner_previous is autograd.autocast({enabled: true, dtype: "bfloat16"})
+assert_eq(inner_previous.enabled, true)
+assert_eq(inner_previous.dtype, "float16")
+inner_state is autograd.autocast()
+assert_eq(inner_state.enabled, true)
+assert_eq(inner_state.dtype, "bfloat16")
+
+autograd.autocast(inner_previous)
+restored_outer is autograd.autocast()
+assert_eq(restored_outer.enabled, true)
+assert_eq(restored_outer.dtype, "float16")
+
+disabled_previous is autograd.autocast(false)
+assert_eq(disabled_previous.enabled, true)
+assert_eq(disabled_previous.dtype, "float16")
+disabled_state is autograd.autocast()
+assert_eq(disabled_state.enabled, false)
+assert_eq(disabled_state.dtype, "float16")
+autograd.autocast(disabled_previous)
+
+autograd.autocast(outer_previous)
+restored_initial is autograd.autocast()
+assert_eq(restored_initial.enabled, initial_state.enabled)
+assert_eq(restored_initial.dtype, initial_state.dtype)
+
+# Autocast is CUDA-only policy. Enabling it must not change CPU dtype,
+# numerical semantics, gradients, or launch counters.
+cpu_scope is autograd.autocast("float16")
+cpu_left is autograd.parameter([[1, 2], [3, 4]])
+cpu_right is autograd.parameter([[2, -1], [0.5, 3]])
+autograd.cuda_reset_stats()
+cpu_output is autograd.matmul(cpu_left, cpu_right)
+autograd.backward(cpu_output, [[1, 0.25], [-2, 0.5]])
+assert_eq(autograd.dtype(cpu_output), "float64")
+approx_rank2(autograd.data(cpu_output), [[3, 5], [8, 9]], 0.0000001)
+approx_rank2(autograd.grad(cpu_left), [[1.75, 1.25], [-4.5, 0.5]], 0.0000001)
+approx_rank2(autograd.grad(cpu_right), [[-5, 1.75], [-6, 2.5]], 0.0000001)
+cpu_stats is autograd.cuda_stats()
+assert_eq(cpu_stats.matmul_launches, 0)
+assert_eq(cpu_stats.h2d_bytes, 0)
+assert_eq(cpu_stats.d2h_bytes, 0)
+autograd.autocast(cpu_scope)
+
+info is autograd.cuda_info()
+if info.available then
+  assert_eq(autograd.limits().cuda_dtype, "float32")
+  assert_eq(autograd.limits().cuda_gradient_dtype, "float32")
+  matrix_values is [[1, 2], [3, 4]]
+  weight_values is [[2, -1], [0.5, 3]]
+  seed_values is [[1, 0.25], [-2, 0.5]]
+
+  # A float16 scope selects mixed compute for the forward. Changing the
+  # ambient scope before backward must not alter the graph's saved plan.
+  f16_input is autograd.parameter(matrix_values, {device: "cuda"})
+  f16_weight is autograd.parameter(weight_values, {device: "cuda"})
+  f16_seed is autograd.tensor(seed_values, {device: "cuda"})
+  f16_scope is autograd.autocast("float16")
+  autograd.cuda_reset_stats()
+  f16_output is autograd.matmul(f16_input, f16_weight)
+  assert_eq(autograd.dtype(f16_output), "float32")
+  assert_eq(autograd.dtype(f16_input), "float32")
+  assert_eq(autograd.dtype(f16_weight), "float32")
+  assert_eq(autograd.storage_bytes(f16_output), 16)
+  assert_eq(autograd.storage_bytes(f16_input), 16)
+  assert_eq(autograd.storage_bytes(f16_weight), 16)
+  autograd.autocast("bfloat16")
+  autograd.backward(f16_output, f16_seed)
+  autograd.cuda_synchronize()
+  f16_stats is autograd.cuda_stats()
+  assert_eq(f16_stats.matmul_launches, 3)
+  assert_eq(f16_stats.float32_matmul_launches, 0)
+  assert_eq(f16_stats.float16_matmul_launches, 3)
+  assert_eq(f16_stats.bfloat16_matmul_launches, 0)
+  assert_eq(f16_stats.cublas_fast_matmul_launches + f16_stats.mixed_matmul_fallback_launches, 3)
+  assert_eq(f16_stats.h2d_bytes, 0)
+  assert_eq(f16_stats.d2h_bytes, 0)
+  approx_rank2(autograd.data(f16_output), [[3, 5], [8, 9]], 0.005)
+  approx_rank2(autograd.grad(f16_input), [[1.75, 1.25], [-4.5, 0.5]], 0.005)
+  approx_rank2(autograd.grad(f16_weight), [[-5, 1.75], [-6, 2.5]], 0.005)
+  autograd.autocast(f16_scope)
+
+  # linear() inherits the active bfloat16 policy through its internal
+  # matmul, while bias math and all public tensor/gradient storage stay f32.
+  linear_input is autograd.parameter(matrix_values, {device: "cuda"})
+  linear_weight is autograd.parameter(weight_values, {device: "cuda"})
+  linear_bias is autograd.parameter([0.5, -1], {device: "cuda"})
+  linear_seed is autograd.tensor([[1, 2], [3, 4]], {device: "cuda"})
+  bf16_scope is autograd.autocast("bfloat16")
+  autograd.cuda_reset_stats()
+  linear_output is autograd.linear(linear_input, linear_weight, linear_bias)
+  assert_eq(autograd.dtype(linear_output), "float32")
+  assert_eq(autograd.dtype(linear_bias), "float32")
+  assert_eq(autograd.storage_bytes(linear_output), 16)
+  assert_eq(autograd.storage_bytes(linear_bias), 8)
+  autograd.backward(linear_output, linear_seed)
+  autograd.cuda_synchronize()
+  bf16_stats is autograd.cuda_stats()
+  assert_eq(bf16_stats.matmul_launches, 3)
+  assert_eq(bf16_stats.float32_matmul_launches, 0)
+  assert_eq(bf16_stats.float16_matmul_launches, 0)
+  assert_eq(bf16_stats.bfloat16_matmul_launches, 3)
+  assert_eq(bf16_stats.cublas_fast_matmul_launches + bf16_stats.mixed_matmul_fallback_launches, 3)
+  assert_eq(bf16_stats.h2d_bytes, 0)
+  assert_eq(bf16_stats.d2h_bytes, 0)
+  approx_rank2(autograd.data(linear_output), [[3.5, 4], [8.5, 8]], 0.025)
+  approx_rank2(autograd.grad(linear_input), [[0, 6.5], [2, 13.5]], 0.025)
+  approx_rank2(autograd.grad(linear_weight), [[10, 14], [14, 20]], 0.025)
+  approx_rank1(autograd.grad(linear_bias), [4, 6], 0.0001)
+  autograd.autocast(bf16_scope)
+
+  # An explicit per-op compute_dtype takes priority over an enabled scope,
+  # and the override is also frozen into both backward matmul launches.
+  override_input is autograd.parameter(matrix_values, {device: "cuda"})
+  override_weight is autograd.parameter(weight_values, {device: "cuda"})
+  override_seed is autograd.tensor(seed_values, {device: "cuda"})
+  override_scope is autograd.autocast("bfloat16")
+  autograd.cuda_reset_stats()
+  override_output is autograd.matmul(override_input, override_weight, {compute_dtype: "float32"})
+  autograd.backward(override_output, override_seed)
+  autograd.cuda_synchronize()
+  override_stats is autograd.cuda_stats()
+  assert_eq(override_stats.matmul_launches, 3)
+  assert_eq(override_stats.float32_matmul_launches, 3)
+  assert_eq(override_stats.float16_matmul_launches, 0)
+  assert_eq(override_stats.bfloat16_matmul_launches, 0)
+  assert_eq(override_stats.cublas_fast_matmul_launches, 0)
+  assert_eq(override_stats.mixed_matmul_fallback_launches, 0)
+  assert_eq(override_stats.h2d_bytes, 0)
+  assert_eq(override_stats.d2h_bytes, 0)
+  assert_eq(autograd.dtype(override_output), "float32")
+  assert_eq(autograd.storage_bytes(override_output), 16)
+  autograd.autocast(override_scope)
+else
+  print "48_cuda_autocast: SKIP ({info.error})"
+end
+
+final_state is autograd.autocast()
+assert_eq(final_state.enabled, initial_state.enabled)
+assert_eq(final_state.dtype, initial_state.dtype)
+assert_eq(autograd.limits().cuda_autocast_enabled, initial_state.enabled)
+assert_eq(autograd.limits().cuda_autocast_dtype, initial_state.dtype)
+
+print "48_cuda_autocast: PASS"

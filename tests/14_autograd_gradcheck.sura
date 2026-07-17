@@ -1,0 +1,43 @@
+use autograd
+use array
+
+func numeric_loss(p) do
+  w is autograd.tensor([[p[0], p[1]], [p[2], p[3]]])
+  x is autograd.tensor([[p[4]], [p[5]]])
+  b is autograd.tensor([[p[6]], [p[7]]])
+  z is autograd.add(autograd.matmul(w, x), b)
+  activated is autograd.tanh(z)
+  return autograd.item(autograd.sum(autograd.mul(activated, activated)))
+end
+
+func central_difference(p, index, epsilon) do
+  plus is array.clone(p)
+  minus is array.clone(p)
+  plus[index] is plus[index] + epsilon
+  minus[index] is minus[index] - epsilon
+  return (numeric_loss(plus) - numeric_loss(minus)) / (2 * epsilon)
+end
+
+p is [0.2, -0.4, 0.7, 0.1, 0.3, -0.8, 0.1, -0.2]
+w is autograd.parameter([[p[0], p[1]], [p[2], p[3]]])
+x is autograd.parameter([[p[4]], [p[5]]])
+b is autograd.parameter([[p[6]], [p[7]]])
+z is autograd.add(autograd.matmul(w, x), b)
+activated is autograd.tanh(z)
+loss is autograd.sum(autograd.mul(activated, activated))
+assert_approx(autograd.item(loss), 0.204017397353185, 0.000000001)
+autograd.backward(loss)
+
+wg is autograd.grad(w)
+xg is autograd.grad(x)
+bg is autograd.grad(b)
+analytic is [wg[0][0], wg[0][1], wg[1][0], wg[1][1], xg[0][0], xg[1][0], bg[0][0], bg[1][0]]
+
+i is 0
+while i < analytic.len() do
+  numerical is central_difference(p, i, 0.00001)
+  assert_approx(analytic[i], numerical, 0.00002)
+  i is i + 1
+end
+
+print "14_autograd_gradcheck: PASS"

@@ -1,0 +1,122 @@
+use async
+use os
+
+# The runtime must be configured before the first task is submitted.
+assert(async.configure(2, 32))
+limits is async.limits()
+assert_eq(limits.max_workers, 2)
+assert_eq(limits.max_queue, 32)
+assert_eq(limits.max_tracked, 34)
+
+# Exercise the tracked-task bound deterministically.  Two worker slots plus
+# thirty-two queued/retained handles are admitted; the next task is rejected.
+capacity_scope is async.scope()
+capacity_ids is []
+capacity_ids.push(async.sleep(5000, capacity_scope))
+capacity_ids.push(async.sleep(5000, capacity_scope))
+worker_deadline is clock() + 2
+while async.limits().running < 2 and clock() < worker_deadline do
+  sleep_ms(1)
+end
+assert_eq(async.limits().running, 2)
+i is 2
+while i < 34 do
+  capacity_ids.push(async.sleep(5000, capacity_scope))
+  i is i + 1
+end
+capacity_rejected is false
+try
+  async.sleep(5000, capacity_scope)
+catch error
+  capacity_rejected is error.contains("capacity exhausted")
+end
+assert(capacity_rejected)
+assert(async.limits().running <= 2)
+capacity_closed is async.scope_close(capacity_scope, 3000)
+assert(capacity_closed.closed)
+assert_eq(capacity_closed.total, 34)
+assert_eq(capacity_closed.cancelled, 34)
+assert_eq(async.limits().tracked, 0)
+
+# Repeated cancellation races must never exceed the worker bound and must
+# remove every task/scope handle after close.
+round is 0
+while round < 40 do
+  scope is async.scope()
+  ids is []
+  j is 0
+  while j < 32 do
+    ids.push(async.sleep(1000, scope))
+    j is j + 1
+  end
+  sleep_ms(2)
+  current is async.limits()
+  assert(current.running <= 2)
+  async.scope_cancel(scope)
+  closed is async.scope_close(scope, 3000)
+  assert(closed.closed)
+  assert_eq(closed.total, 32)
+  assert_eq(closed.cancelled, 32)
+  assert_eq(async.limits().tracked, 0)
+  round is round + 1
+end
+
+# A timed-out join closes the scope to new children but keeps its handles
+# until a later join can finish and clean them.
+joining_scope is async.scope()
+joining_task is async.sleep(100, joining_scope)
+timed is async.scope_join(joining_scope, 1)
+assert(not timed.closed)
+assert(timed.timed_out)
+assert(async.scope_status(joining_scope).closing)
+late_child_rejected is false
+try
+  async.sleep(1, joining_scope)
+catch error
+  late_child_rejected is error.contains("scope is closed")
+end
+assert(late_child_rejected)
+joined is async.scope_join(joining_scope, 2000)
+assert(joined.closed)
+assert_eq(joined.succeeded, 1)
+assert(not async.status(joining_task).known)
+
+# Child failures are retained in state, propagated by await, and consumed.
+failed_task is async.http_get("invalid://structured-concurrency")
+sleep_ms(10)
+failed_status is async.status(failed_task)
+assert(failed_status.failed)
+assert(failed_status.error.contains("URL must start"))
+failure_observed is false
+try
+  async.await(failed_task)
+catch error
+  failure_observed is error.contains("task") and error.contains("failed")
+end
+assert(failure_observed)
+assert(not async.status(failed_task).known)
+
+# async.cmd cancellation terminates the child process, rather than merely
+# dropping its eventual output.  Keep the upper bound loose for loaded CI.
+long_command is "sleep 30"
+if os.is_windows() then
+  long_command is "ping 127.0.0.1 -n 31 > nul"
+end
+command_task is async.cmd(long_command)
+sleep_ms(100)
+cancel_started is clock()
+assert(async.cancel(command_task))
+command_cancel_observed is false
+try
+  async.await(command_task)
+catch error
+  command_cancel_observed is error.contains("cancelled")
+end
+cancel_elapsed is clock() - cancel_started
+assert(command_cancel_observed)
+assert(cancel_elapsed < 5)
+
+assert_eq(length(async.pending()), 0)
+assert_eq(async.limits().tracked, 0)
+assert_eq(async.limits().scopes, 0)
+print "structured async stress: PASS"

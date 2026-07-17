@@ -1,0 +1,34 @@
+# A closure escaping from a callee that throws must not retain a pointer into
+# the discarded register frame. The next call intentionally reuses that frame.
+saved_after_throw is func() do
+  return -1
+end
+
+func install_then_throw() do
+  global saved_after_throw
+  captured is 41
+  saved_after_throw is func() do
+    return captured
+  end
+  throw "stop"
+end
+
+func clobber_discarded_frame() do
+  captured is 999
+  another is 123
+  return captured + another
+end
+
+caught is false
+try
+  install_then_throw()
+catch error
+  caught is true
+  assert_eq(error, "stop")
+end
+
+assert(caught)
+assert_eq(clobber_discarded_frame(), 1122)
+assert_eq(saved_after_throw(), 41)
+
+print("65_exception_upvalue_safety: PASS")

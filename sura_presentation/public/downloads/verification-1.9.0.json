@@ -1,0 +1,39 @@
+{
+  "schema": "sura.public.verification.v1",
+  "product": "Sura Language",
+  "version": "1.9.0",
+  "verified": "2026-07-13",
+  "engine_file": "SuraLanguage.exe",
+  "engine_sha256": "be8c8be5fa07b65d2152e9f56fba07874b6dde9135af1b99b4d9da8c4b309578",
+  "engine_bytes": 8346287,
+  "engine_locations_checked": [
+    "repository build",
+    "SuraLanguageSetup-1.9.0.exe payload",
+    "SuraLanguage-1.9.0-windows-x64.zip payload"
+  ],
+  "package_helper": {
+    "file": "surapkg.exe",
+    "bytes": 5347144,
+    "sha256": "b25bc765d731ac9631c589ba910913539e8da7c5c1c087af23ef55da2503009b"
+  },
+  "results": {
+    "core_suite": "63/63 PASS",
+    "core_suite_consecutive_runs": "10/10 PASS",
+    "regression_corpus_latest_run": "73/73 PASS",
+    "structured_async": "VM PASS; --jit PASS; each stress program validates 200/200 iterations",
+    "javascript_target_smoke": "PASS",
+    "webassembly_target_smoke": "PASS in 330.1 seconds",
+    "target_lowering_audit": "INCOMPLETE; JS full 41 ignored 2; WASM full 28 partial 13 ignored 2",
+    "installer_smoke": "PASS",
+    "default_values": "VM PASS; --jit PASS; SURB v3 bytecode PASS; SRP v5 release container PASS",
+    "bytecode_compatibility": "1.9 runtime loaded a SURB v2 file; a version-2 runtime rejected SURB v3 with version mismatch"
+  },
+  "observed_test_variance": {
+    "test": "test_js_target.sura",
+    "sequence": [
+      "full regression corpus exit 1",
+      "isolated rerun exit 0",
+      "next full regression corpus exit 0 with 73/73"
+    ]
+  }
+}

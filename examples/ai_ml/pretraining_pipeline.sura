@@ -1,0 +1,57 @@
+use tokenizer
+use dataset
+use autograd
+
+# Teaching-scale language-model pretraining pipeline.
+# The stages mirror larger runs: tokenize -> shard -> batch -> forward ->
+# next-token loss -> backward -> optimizer -> checkpoint.
+corpus is "sura learns from text. sura predicts the next byte. sura learns from examples. "
+dataset_path is path_join(temp_dir(), "sura-pretrain-" + uuid_v4() + ".suradata")
+checkpoint_path is path_join(temp_dir(), "sura-pretrain-" + uuid_v4() + ".surackpt")
+
+tok is tokenizer.byte()
+dataset.pack_text(corpus.repeat(4), tok, dataset_path, {input: "text", chunk_bytes: 32})
+loader is dataset.open(dataset_path, {batch_size: 4, sequence_length: 12, stride: 6, shuffle: true, seed: 2026})
+
+embedding is autograd.randn([256, 12], {seed: 1, std: 0.03, requires_grad: true, dtype: "float32"})
+head_weight is autograd.randn([12, 256], {seed: 2, std: 0.03, requires_grad: true, dtype: "float32"})
+head_bias is autograd.zeros([256], {requires_grad: true, dtype: "float32"})
+parameters is [embedding, head_weight, head_bias]
+
+first_loss is 0
+last_loss is 0
+step is 0
+while step < 30 do
+  batch is dataset.next(loader)
+  if batch == nil then
+    dataset.reset(loader, step + 1)
+    batch is dataset.next(loader)
+  end
+
+  autograd.zero_grad(parameters)
+  hidden is autograd.embedding(batch.input_ids, embedding)
+  logits is autograd.linear(hidden, head_weight, head_bias)
+  loss is autograd.cross_entropy_ids(logits, batch.target_ids)
+  last_loss is autograd.item(loss)
+  if step == 0 then first_loss is last_loss
+  autograd.backward(loss)
+  autograd.clip_grad_norm(parameters, 1)
+  autograd.adam(parameters, 0.02)
+  step += 1
+end
+
+written is autograd.save_checkpoint({embedding: embedding, head_weight: head_weight, head_bias: head_bias}, checkpoint_path)
+restored is autograd.load_checkpoint(checkpoint_path)
+
+print("Pretraining steps={step}")
+print("loss: {first_loss} -> {last_loss}")
+print("checkpoint bytes={written}")
+print("restored embedding shape={autograd.shape(restored.embedding)}")
+
+assert_eq(step, 30)
+assert(written > 0)
+assert_eq(autograd.shape(restored.embedding).join(","), "256,12")
+
+dataset.close(loader)
+file_delete(dataset_path)
+file_delete(checkpoint_path)

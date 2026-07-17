@@ -1,0 +1,6 @@
+use async
+
+print("작업 시작")
+timer is async.sleep(10)
+async.await(timer)
+print("비동기 작업 완료")

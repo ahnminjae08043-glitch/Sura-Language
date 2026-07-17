@@ -1,0 +1,10 @@
+names is ["Sura", "WASM"]
+profile is {name: "Sura", active: true}
+nested is {names: names, profile: profile}
+result is "NestedCollections {to_str([names, profile])} {to_str(nested)}"
+assert(contains(result, "[[\"Sura\", \"WASM\"],"))
+assert(contains(result, "\"names\": [\"Sura\", \"WASM\"]"))
+assert(contains(result, "\"profile\":"))
+assert(contains(result, "\"name\": \"Sura\""))
+assert(contains(result, "\"active\": true"))
+print_no_nl(result)

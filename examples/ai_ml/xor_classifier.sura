@@ -1,0 +1,16 @@
+use nn
+
+# Binary classification with a hidden layer.
+inputs is [[0, 0], [0, 1], [1, 0], [1, 1]]
+targets is [0, 1, 1, 0]
+
+model is nn.mlp([2, 8, 1], {activation: "tanh", task: "binary", seed: 7})
+run is nn.train(model, inputs, targets, {optimizer: "adam", epochs: 2500, learning_rate: 0.05, batch_size: 4, target_loss: 0.012, seed: 7})
+
+classes is nn.classify(run.model, inputs)
+probabilities is nn.predict(run.model, inputs)
+print("XOR probabilities: {probabilities}")
+print("XOR classes: {classes.join(",")}")
+print("accuracy={nn.evaluate(run.model, inputs, targets).accuracy}")
+
+assert_eq(classes.join(","), "0,1,1,0")

@@ -1,0 +1,257 @@
+# Process model and lifecycle helpers.
+
+func proc_create(kernel, program, name, user, parent_pid, priority) do
+  if kernel.process_count >= SURAOS_MAX_PROCESSES then return osutil_fail(SURAOS_ERR_LIMIT, "process table is full")
+  validation is asm_validate_program(program)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, "invalid executable: " + validation.errors.join(", "))
+
+  pid is kernel.next_pid
+  kernel.next_pid += 1
+  code_bytes is osutil_max(64, program.instructions.len() * 8)
+  data_bytes is osutil_max(128, program.data.keys().len() * 32)
+  layout_result is mem_allocate_process_layout(kernel.memory, pid, code_bytes, data_bytes, 2048, SURAOS_DEFAULT_STACK)
+  if not layout_result.ok then return layout_result
+  layout is layout_result.value
+
+  cpu is cpu_create(layout.stack_top)
+  cpu_set_pc(cpu, program.entry)
+  process is {pid: pid, parent_pid: parent_pid, name: name, user: user, group: user, state: SURAOS_PROCESS_NEW, priority: osutil_clamp(priority, 0, 9), base_priority: osutil_clamp(priority, 0, 9), program: program, cpu: cpu, memory: layout, heap_allocations: [], open_files: {}, next_fd: 3, cwd: "/", environment: {}, messages: [], children: [], exit_code: nil, created_tick: kernel.clock.tick, started_tick: nil, ended_tick: nil, wake_tick: nil, wait_reason: "", waiting_for_pid: -1, cpu_ticks: 0, quantum_ticks: 0, context_switches: 0, syscalls: 0, faults: 0, signals: [], last_error: "", output_bytes: 0}
+
+  processes is kernel.processes
+  processes[osutil_key(pid)] is process
+  kernel.process_count += 1
+  kernel.total_created += 1
+
+  if parent_pid > 0 then
+    parent is proc_get(kernel, parent_pid)
+    if parent != nil then
+      children is parent.children
+      children.push(pid)
+    end
+  end
+
+  proc_set_state(kernel, process, SURAOS_PROCESS_READY, "created")
+  scheduler_enqueue(kernel, pid)
+  diag_info(kernel.log, "process", "created process " + name, {pid: pid, parent_pid: parent_pid, user: user}, kernel.clock.tick)
+  return osutil_ok(process)
+end
+
+func proc_get(kernel, pid) do
+  processes is kernel.processes
+  key is osutil_key(pid)
+  if key in processes then return processes[key]
+  return nil
+end
+
+func proc_exists(kernel, pid) do
+  return proc_get(kernel, pid) != nil
+end
+
+func proc_set_state(kernel, process, new_state, reason) do
+  old_state is process.state
+  if old_state == new_state then return true
+  allowed is false
+  if old_state == SURAOS_PROCESS_NEW and new_state == SURAOS_PROCESS_READY then allowed is true
+  if old_state == SURAOS_PROCESS_READY and (new_state == SURAOS_PROCESS_RUNNING or new_state == SURAOS_PROCESS_STOPPED or new_state == SURAOS_PROCESS_TERMINATED) then allowed is true
+  if old_state == SURAOS_PROCESS_RUNNING and (new_state == SURAOS_PROCESS_READY or new_state == SURAOS_PROCESS_WAITING or new_state == SURAOS_PROCESS_STOPPED or new_state == SURAOS_PROCESS_TERMINATED) then allowed is true
+  if old_state == SURAOS_PROCESS_WAITING and (new_state == SURAOS_PROCESS_READY or new_state == SURAOS_PROCESS_STOPPED or new_state == SURAOS_PROCESS_TERMINATED) then allowed is true
+  if old_state == SURAOS_PROCESS_STOPPED and (new_state == SURAOS_PROCESS_READY or new_state == SURAOS_PROCESS_TERMINATED) then allowed is true
+  if old_state == SURAOS_PROCESS_TERMINATED and new_state == SURAOS_PROCESS_ZOMBIE then allowed is true
+  if not allowed then
+    diag_warn(kernel.log, "process", "invalid state transition", {pid: process.pid, old_state: old_state, new_state: new_state}, kernel.clock.tick)
+    return false
+  end
+  process.state is new_state
+  process.wait_reason is reason
+  if new_state == SURAOS_PROCESS_RUNNING and process.started_tick == nil then process.started_tick is kernel.clock.tick
+  if new_state == SURAOS_PROCESS_TERMINATED then process.ended_tick is kernel.clock.tick
+  return true
+end
+
+func proc_list(kernel, include_zombies) do
+  result is []
+  for process in kernel.processes.values() do
+    if include_zombies or process.state != SURAOS_PROCESS_ZOMBIE then result.push(process)
+  end
+  return osutil_sort_by_number(result, "pid", false)
+end
+
+func proc_count_state(kernel, state) do
+  count is 0
+  for process in kernel.processes.values() do
+    if process.state == state then count += 1
+  end
+  return count
+end
+
+func proc_find_by_name(kernel, name) do
+  result is []
+  for process in kernel.processes.values() do
+    if process.name == name then result.push(process)
+  end
+  return result
+end
+
+func proc_send_message(kernel, from_pid, to_pid, payload, message_type) do
+  target is proc_get(kernel, to_pid)
+  if target == nil or not suraos_process_is_alive(target.state) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "target process not found")
+  messages is target.messages
+  message is {id: kernel.next_message_id, from_pid: from_pid, to_pid: to_pid, type: message_type, payload: payload, tick: kernel.clock.tick}
+  kernel.next_message_id += 1
+  messages.push(message)
+  if target.state == SURAOS_PROCESS_WAITING and target.wait_reason == "message" then
+    target.wake_tick is nil
+    proc_set_state(kernel, target, SURAOS_PROCESS_READY, "message received")
+    scheduler_enqueue(kernel, target.pid)
+  end
+  return osutil_ok(message.id)
+end
+
+func proc_receive_message(process, message_type) do
+  messages is process.messages
+  index is 0
+  while index < messages.len() do
+    message is messages[index]
+    if message_type == "" or message.type == message_type then
+      messages.remove(index)
+      return osutil_ok(message)
+    end
+    index += 1
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "no matching message")
+end
+
+func proc_queue_signal(kernel, pid, signal, sender_pid) do
+  process is proc_get(kernel, pid)
+  if process == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "process not found")
+  signals is process.signals
+  signals.push({signal: signal, sender_pid: sender_pid, tick: kernel.clock.tick})
+  return osutil_ok(signal)
+end
+
+func proc_handle_signals(kernel, process) do
+  signals is process.signals
+  while signals.len() > 0 do
+    item is signals.remove(0)
+    signal is item.signal
+    if signal == SURAOS_SIGNAL_KILL then
+      proc_exit(kernel, process, 137, "killed")
+      return "terminated"
+    end
+    if signal == SURAOS_SIGNAL_TERM then
+      proc_exit(kernel, process, 143, "terminated")
+      return "terminated"
+    end
+    if signal == SURAOS_SIGNAL_STOP and suraos_process_is_alive(process.state) then
+      scheduler_remove(kernel, process.pid)
+      proc_set_state(kernel, process, SURAOS_PROCESS_STOPPED, "signal stop")
+      return "stopped"
+    end
+    if signal == SURAOS_SIGNAL_CONT and process.state == SURAOS_PROCESS_STOPPED then
+      proc_set_state(kernel, process, SURAOS_PROCESS_READY, "signal continue")
+      scheduler_enqueue(kernel, process.pid)
+      return "continued"
+    end
+  end
+  return "none"
+end
+
+func proc_sleep(kernel, process, ticks, reason) do
+  duration is floor(ticks)
+  if duration < 1 then duration is 1
+  process.wake_tick is kernel.clock.tick + duration
+  proc_set_state(kernel, process, SURAOS_PROCESS_WAITING, reason)
+  scheduler_remove(kernel, process.pid)
+  return process.wake_tick
+end
+
+func proc_wake(kernel, process, reason) do
+  if process.state != SURAOS_PROCESS_WAITING then return false
+  process.wake_tick is nil
+  process.waiting_for_pid is -1
+  proc_set_state(kernel, process, SURAOS_PROCESS_READY, reason)
+  scheduler_enqueue(kernel, process.pid)
+  return true
+end
+
+func proc_wait_for(kernel, process, child_pid) do
+  child is proc_get(kernel, child_pid)
+  if child == nil or child.parent_pid != process.pid then return osutil_fail(SURAOS_ERR_NO_CHILD, "not a child process")
+  if child.state == SURAOS_PROCESS_TERMINATED or child.state == SURAOS_PROCESS_ZOMBIE then return osutil_ok(child.exit_code)
+  process.waiting_for_pid is child_pid
+  process.wake_tick is nil
+  proc_set_state(kernel, process, SURAOS_PROCESS_WAITING, "child")
+  scheduler_remove(kernel, process.pid)
+  return osutil_ok(nil)
+end
+
+func proc_close_files(kernel, process) do
+  descriptors is process.open_files.keys()
+  for key in descriptors do
+    fs_close(kernel.fs, process, osutil_to_integer(key, -1))
+  end
+end
+
+func proc_exit(kernel, process, code, reason) do
+  if process.state == SURAOS_PROCESS_TERMINATED or process.state == SURAOS_PROCESS_ZOMBIE then return process.exit_code
+  process.exit_code is floor(code)
+  process.last_error is reason
+  cpu is process.cpu
+  cpu.halted is true
+  scheduler_remove(kernel, process.pid)
+  proc_close_files(kernel, process)
+  mem_release_process(kernel.memory, process.pid)
+  proc_set_state(kernel, process, SURAOS_PROCESS_TERMINATED, reason)
+  kernel.total_exited += 1
+  diag_info(kernel.log, "process", "process exited", {pid: process.pid, code: process.exit_code, reason: reason}, kernel.clock.tick)
+
+  parent is proc_get(kernel, process.parent_pid)
+  if parent != nil then
+    proc_send_message(kernel, process.pid, parent.pid, {exit_code: process.exit_code}, "child_exit")
+    if parent.state == SURAOS_PROCESS_WAITING and parent.wait_reason == "child" and (parent.waiting_for_pid == process.pid or parent.waiting_for_pid == -1) then proc_wake(kernel, parent, "child exited")
+  end
+  return process.exit_code
+end
+
+func proc_reap(kernel, pid, requester_pid) do
+  process is proc_get(kernel, pid)
+  if process == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "process not found")
+  if process.parent_pid != requester_pid and requester_pid != 0 then return osutil_fail(SURAOS_ERR_PERMISSION, "only parent or kernel may reap")
+  if process.state != SURAOS_PROCESS_TERMINATED and process.state != SURAOS_PROCESS_ZOMBIE then return osutil_fail(SURAOS_ERR_BUSY, "process is still alive")
+  exit_code is process.exit_code
+  proc_set_state(kernel, process, SURAOS_PROCESS_ZOMBIE, "reaped")
+  processes is kernel.processes
+  processes.delete(osutil_key(pid))
+  kernel.process_count -= 1
+  return osutil_ok(exit_code)
+end
+
+func proc_set_priority(kernel, pid, priority, requester_user) do
+  process is proc_get(kernel, pid)
+  if process == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "process not found")
+  if requester_user != "root" and requester_user != process.user then return osutil_fail(SURAOS_ERR_PERMISSION, "cannot change another user's process")
+  process.priority is osutil_clamp(floor(priority), 0, 9)
+  return osutil_ok(process.priority)
+end
+
+func proc_uptime(kernel, process) do
+  finish is kernel.clock.tick
+  if process.ended_tick != nil then finish is process.ended_tick
+  return finish - process.created_tick
+end
+
+func proc_info(kernel, process) do
+  return {pid: process.pid, parent_pid: process.parent_pid, name: process.name, user: process.user, state: process.state, priority: process.priority, cpu_ticks: process.cpu_ticks, uptime: proc_uptime(kernel, process), memory_bytes: process.memory.code_size + process.memory.data_size + process.memory.heap_size + process.memory.stack_size, open_files: process.open_files.keys().len(), messages: process.messages.len(), exit_code: process.exit_code, wait_reason: process.wait_reason}
+end
+
+func proc_table(kernel) do
+  rows is []
+  for process in proc_list(kernel, true) do
+    rows.push(proc_info(kernel, process))
+  end
+  return rows
+end
+
+func proc_snapshot(process) do
+  return {pid: process.pid, parent_pid: process.parent_pid, name: process.name, user: process.user, group: process.group, state: process.state, priority: process.priority, base_priority: process.base_priority, program: process.program, cpu: cpu_snapshot(process.cpu), memory: osutil_clone_dict(process.memory), heap_allocations: osutil_clone_array(process.heap_allocations), cwd: process.cwd, environment: osutil_clone_dict(process.environment), messages: osutil_clone_array(process.messages), children: osutil_clone_array(process.children), exit_code: process.exit_code, created_tick: process.created_tick, started_tick: process.started_tick, ended_tick: process.ended_tick, wake_tick: process.wake_tick, wait_reason: process.wait_reason, waiting_for_pid: process.waiting_for_pid, cpu_ticks: process.cpu_ticks, context_switches: process.context_switches, syscalls: process.syscalls, faults: process.faults, last_error: process.last_error}
+end

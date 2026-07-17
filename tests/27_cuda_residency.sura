@@ -1,0 +1,31 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  left is autograd.tensor([[1, 2, 3], [4, 5, 6]], {device: "cuda"})
+  right is autograd.tensor([[1, 2], [3, 4], [5, 6]], {device: "cuda"})
+  bias is autograd.ones([2, 2], {device: "cuda"})
+
+  autograd.cuda_reset_stats()
+  product is autograd.matmul(left, right)
+  activated is autograd.relu(product)
+  biased is autograd.add(activated, bias)
+  total is autograd.sum(biased)
+
+  before_read is autograd.cuda_stats()
+  assert_eq(before_read.h2d_bytes, 0)
+  assert_eq(before_read.d2h_bytes, 0)
+  assert(before_read.matmul_launches >= 1)
+  assert(before_read.relu_launches >= 1)
+  assert(before_read.elementwise_launches >= 1)
+  assert(before_read.reduction_launches >= 1)
+  assert_eq(autograd.device(total), "cuda:{info.device_index}")
+
+  assert_approx(autograd.item(total), 167, 0.0001)
+  after_read is autograd.cuda_stats()
+  assert_eq(after_read.d2h_bytes, 4)
+else
+  print "27_cuda_residency: SKIP ({info.error})"
+end
+
+print "27_cuda_residency: PASS"

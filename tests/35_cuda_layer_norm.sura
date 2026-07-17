@@ -1,0 +1,179 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # Five features deliberately exercise a row shorter than a CUDA warp. The
+  # second row is constant, so its normalized values must be exactly zero and
+  # the affine forward result must equal the bias.
+  input_values is [[1, 2, 3, 4, 5], [7, 7, 7, 7, 7]]
+  weight_values is [1.5, 0.5, -1, 2, -0.25]
+  bias_values is [0.1, -0.2, 0.3, 1, -2]
+  seed_values is [[1, 2, 3, 4, 5], [-1, 0.5, 2, -3, 4]]
+  epsilon is 0.00001
+
+  cpu_input is autograd.parameter(input_values, {dtype: "float32"})
+  cpu_weight is autograd.parameter(weight_values, {dtype: "float32"})
+  cpu_bias is autograd.parameter(bias_values, {dtype: "float32"})
+  cpu_output is autograd.layer_norm(cpu_input, cpu_weight, cpu_bias, epsilon)
+  assert_eq(autograd.shape(cpu_output).join(","), "2,5")
+  cpu_output_data is autograd.data(cpu_output)
+
+  # Independent anchors keep CPU/GPU parity from hiding a shared semantic
+  # error. LayerNorm uses population variance over the final dimension.
+  expected_output_row is [-2.021315040278671, -0.5535525067131118, 0.3, 2.414210026852447, -2.353552506713112]
+  approx_rank1(cpu_output_data[0], expected_output_row, 0.00001)
+  approx_rank1(cpu_output_data[1], bias_values, 0.000001)
+
+  autograd.backward(cpu_output, seed_values)
+  cpu_input_grad is autograd.grad(cpu_input)
+  cpu_weight_grad is autograd.grad(cpu_weight)
+  cpu_bias_grad is autograd.grad(cpu_bias)
+  expected_weight_grad is [-1.4142100268524473, -1.4142100268524473, 0, 2.8284200537048947, 7.0710501342622365]
+  approx_rank1(cpu_weight_grad, expected_weight_grad, 0.00001)
+  approx_rank1(cpu_bias_grad, [0, 2.5, 5, 1, 9], 0.000001)
+  expected_constant_grad is [173.92527130926078, 727.3238618387271, 15.81138830084184, -1249.0996757665098, 332.03915431767973]
+  approx_rank1(cpu_input_grad[1], expected_constant_grad, 0.00001)
+
+  gpu_input is autograd.parameter(input_values, {device: "cuda"})
+  gpu_weight is autograd.parameter(weight_values, {device: "cuda"})
+  gpu_bias is autograd.parameter(bias_values, {device: "cuda"})
+  # Upload the explicit nonuniform seed before resetting counters. Forward and
+  # backward must then remain resident until values are deliberately observed.
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  gpu_output is autograd.layer_norm(gpu_input, gpu_weight, gpu_bias, epsilon)
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(gpu_output), "float32")
+  assert_eq(autograd.shape(gpu_output).join(","), "2,5")
+  assert_eq(autograd.numel(gpu_output), 10)
+  assert_eq(autograd.storage_bytes(gpu_output), 40)
+  autograd.backward(gpu_output, gpu_seed)
+
+  # Output storage, saved row statistics, backward intermediates, and
+  # persistent leaf gradients must not create a stale/full host mirror.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 0)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert(before_observation.kernel_launches >= 2)
+  assert(before_observation.layer_norm_launches >= 3)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_input_grad is autograd.grad(gpu_input)
+  gpu_weight_grad is autograd.grad(gpu_weight)
+  gpu_bias_grad is autograd.grad(gpu_bias)
+  approx_rank2(gpu_output_data, cpu_output_data, 0.0001)
+  # The constant row has an inverse standard deviation near 316, so allow a
+  # slightly wider absolute f32 tolerance for its input gradient.
+  approx_rank2(gpu_input_grad, cpu_input_grad, 0.05)
+  approx_rank1(gpu_weight_grad, cpu_weight_grad, 0.001)
+  approx_rank1(gpu_bias_grad, cpu_bias_grad, 0.001)
+
+  # data() retains one 10-element f32 host mirror. grad() uses temporary
+  # staging, so the four observations transfer 40 + 40 + 20 + 20 bytes.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 40)
+  after_observation is autograd.cuda_stats()
+  assert_eq(after_observation.h2d_bytes, 0)
+  assert_eq(after_observation.d2h_bytes, 120)
+
+  # Float32 values near 1e30 still have distinct representable neighbors at a
+  # step near 1e23. The scaled CUDA statistics path must not collapse them to
+  # a constant row or overflow while centering them.
+  large_base is pow(10, 30)
+  large_step is pow(10, 23)
+  large_values is [[large_base, large_base + large_step, large_base + 2 * large_step]]
+  cpu_large_input is autograd.tensor(large_values, {dtype: "float32"})
+  cpu_large_output is autograd.layer_norm(cpu_large_input, nil, nil, epsilon)
+  cpu_large_data is autograd.data(cpu_large_output)
+  assert(cpu_large_data[0][0] < -1)
+  assert(abs(cpu_large_data[0][1]) < 0.01)
+  assert(cpu_large_data[0][2] > 1)
+
+  # With no differentiable parent, the CUDA forward must allocate only its
+  # 3-element output. Saved mean/rstd buffers are backward-only state.
+  gpu_large_input is autograd.tensor(large_values, {device: "cuda"})
+  allocation_before_no_grad is autograd.cuda_stats().allocated_bytes
+  gpu_large_output is autograd.layer_norm(gpu_large_input, nil, nil, epsilon)
+  allocation_after_no_grad is autograd.cuda_stats().allocated_bytes
+  assert_eq(autograd.requires_grad(gpu_large_output), false)
+  assert_eq(autograd.storage_bytes(gpu_large_output), 12)
+  assert_eq(allocation_after_no_grad - allocation_before_no_grad, 12)
+  approx_rank2(autograd.data(gpu_large_output), cpu_large_data, 0.002)
+
+  # Both endpoints are exact float32 values, but their mathematical mean
+  # (16777217) is not representable as float32. Backward must recompute the
+  # row statistics in f64 instead of rebuilding xhat from the rounded saved
+  # mean, otherwise dx and dweight are wrong by orders of magnitude.
+  midpoint_values is [[16777216, 16777218]]
+  midpoint_weight_values is [1, 1]
+  midpoint_seed_values is [[1, 2]]
+  cpu_midpoint_input is autograd.parameter(midpoint_values, {dtype: "float32"})
+  cpu_midpoint_weight is autograd.parameter(midpoint_weight_values, {dtype: "float32"})
+  cpu_midpoint_output is autograd.layer_norm(cpu_midpoint_input, cpu_midpoint_weight)
+  autograd.backward(cpu_midpoint_output, midpoint_seed_values)
+
+  gpu_midpoint_input is autograd.parameter(midpoint_values, {device: "cuda"})
+  gpu_midpoint_weight is autograd.parameter(midpoint_weight_values, {device: "cuda"})
+  gpu_midpoint_seed is autograd.tensor(midpoint_seed_values, {device: "cuda"})
+  gpu_midpoint_output is autograd.layer_norm(gpu_midpoint_input, gpu_midpoint_weight)
+  autograd.backward(gpu_midpoint_output, gpu_midpoint_seed)
+  approx_rank2(autograd.data(gpu_midpoint_output), autograd.data(cpu_midpoint_output), 0.00001)
+  approx_rank2(autograd.grad(gpu_midpoint_input), autograd.grad(cpu_midpoint_input), 0.000001)
+  approx_rank1(autograd.grad(gpu_midpoint_weight), autograd.grad(cpu_midpoint_weight), 0.00001)
+
+  # No-affine LayerNorm uses the same final-axis contract and backward path.
+  # Seven features also ensure the kernels do not rely on warp-aligned rows.
+  plain_values is [[-3, -2, -1, 0, 1, 2, 3]]
+  plain_seed_values is [[1, -1, 2, -2, 3, -3, 4]]
+  cpu_plain_input is autograd.parameter(plain_values, {dtype: "float32"})
+  cpu_plain_output is autograd.layer_norm(cpu_plain_input)
+  autograd.backward(cpu_plain_output, plain_seed_values)
+  cpu_plain_output_data is autograd.data(cpu_plain_output)
+  cpu_plain_input_grad is autograd.grad(cpu_plain_input)
+
+  gpu_plain_input is autograd.parameter(plain_values, {device: "cuda"})
+  gpu_plain_seed is autograd.tensor(plain_seed_values, {device: "cuda"})
+  gpu_plain_output is autograd.layer_norm(gpu_plain_input)
+  autograd.backward(gpu_plain_output, gpu_plain_seed)
+  approx_rank2(autograd.data(gpu_plain_output), cpu_plain_output_data, 0.0001)
+  approx_rank2(autograd.grad(gpu_plain_input), cpu_plain_input_grad, 0.001)
+
+  # Saved row statistics must survive a retained backward and be reusable on
+  # the second pass. Persistent leaf gradients should accumulate both passes.
+  retained_input is autograd.parameter(plain_values, {device: "cuda"})
+  retained_seed is autograd.tensor(plain_seed_values, {device: "cuda"})
+  retained_output is autograd.layer_norm(retained_input)
+  autograd.backward(retained_output, retained_seed, true)
+  retained_once is autograd.grad(retained_input)
+  autograd.backward(retained_output, retained_seed, false)
+  retained_twice is autograd.grad(retained_input)
+  i is 0
+  while i < retained_once[0].len() do
+    assert_approx(retained_twice[0][i], 2 * retained_once[0][i], 0.002)
+    i is i + 1
+  end
+else
+  print "35_cuda_layer_norm: SKIP ({info.error})"
+end
+
+print "35_cuda_layer_norm: PASS"

@@ -1,0 +1,387 @@
+# SuraOS sparse virtual memory manager.
+#
+# Addresses are 32-bit teaching addresses.  Physical storage is sparse so a
+# process may receive a realistic address range without allocating a huge host
+# array.  Segments carry owner and permission metadata and every user access is
+# validated before touching a cell.
+
+func mem_create(size) do
+  actual_size is floor(size)
+  if actual_size < 4096 then actual_size is 4096
+  return {size: actual_size, cells: {}, objects: {}, segments: [], next_address: 256, faults: 0, reads: 0, writes: 0, allocations: 0, frees: 0, bytes_reserved: 0, peak_reserved: 0}
+end
+
+func mem_segment_end(segment) do
+  return segment.start + segment.size
+end
+
+func mem_segment_contains(segment, address, length) do
+  return address >= segment.start and address + length <= mem_segment_end(segment)
+end
+
+func mem_find_segment(memory, address, length) do
+  for segment in memory.segments do
+    if mem_segment_contains(segment, address, length) then return segment
+  end
+  return nil
+end
+
+func mem_permission_allows(segment, operation) do
+  if operation == "read" then return (segment.permissions & SURAOS_PERM_READ) != 0
+  if operation == "write" then return (segment.permissions & SURAOS_PERM_WRITE) != 0
+  if operation == "execute" then return (segment.permissions & SURAOS_PERM_EXEC) != 0
+  return false
+end
+
+func mem_access_allowed(memory, pid, address, length, operation, kernel_mode) do
+  if address < 0 or length < 0 or address + length > memory.size then return false
+  segment is mem_find_segment(memory, address, length)
+  if segment == nil then return false
+  if not kernel_mode and segment.pid != pid then return false
+  return mem_permission_allows(segment, operation)
+end
+
+func mem_record_fault(memory) do
+  memory.faults += 1
+end
+
+func mem_find_gap(memory, requested_size) do
+  cursor is 256
+  ordered is osutil_sort_by_number(memory.segments, "start", false)
+  for segment in ordered do
+    if cursor + requested_size <= segment.start then return cursor
+    endpoint is mem_segment_end(segment)
+    if endpoint > cursor then cursor is endpoint
+  end
+  if cursor + requested_size <= memory.size then return cursor
+  return -1
+end
+
+func mem_allocate(memory, pid, requested_size, permissions, kind, name) do
+  size is floor(requested_size)
+  if size <= 0 then return osutil_fail(SURAOS_ERR_INVALID, "allocation size must be positive")
+  address is mem_find_gap(memory, size)
+  if address < 0 then return osutil_fail(SURAOS_ERR_NO_MEMORY, "virtual address space exhausted")
+  segment is {start: address, size: size, pid: pid, permissions: permissions, kind: kind, name: name, created_order: memory.allocations + 1}
+  segments is memory.segments
+  segments.push(segment)
+  memory.allocations += 1
+  memory.bytes_reserved += size
+  if memory.bytes_reserved > memory.peak_reserved then memory.peak_reserved is memory.bytes_reserved
+  endpoint is address + size
+  if endpoint > memory.next_address then memory.next_address is endpoint
+  return osutil_ok(address)
+end
+
+func mem_allocate_process_layout(memory, pid, code_size, data_size, heap_size, stack_size) do
+  created is []
+  code is mem_allocate(memory, pid, osutil_max(64, code_size), SURAOS_PERM_READ | SURAOS_PERM_EXEC, "code", "process-code")
+  if not code.ok then return code
+  created.push(code.value)
+  data is mem_allocate(memory, pid, osutil_max(64, data_size), SURAOS_PERM_READ | SURAOS_PERM_WRITE, "data", "process-data")
+  if not data.ok then
+    mem_free(memory, pid, code.value, true)
+    return data
+  end
+  created.push(data.value)
+  heap is mem_allocate(memory, pid, osutil_max(128, heap_size), SURAOS_PERM_READ | SURAOS_PERM_WRITE, "heap", "process-heap")
+  if not heap.ok then
+    mem_free(memory, pid, code.value, true)
+    mem_free(memory, pid, data.value, true)
+    return heap
+  end
+  created.push(heap.value)
+  stack is mem_allocate(memory, pid, osutil_max(128, stack_size), SURAOS_PERM_READ | SURAOS_PERM_WRITE, "stack", "process-stack")
+  if not stack.ok then
+    for address in created do
+      mem_free(memory, pid, address, true)
+    end
+    return stack
+  end
+  layout is {code_start: code.value, code_size: osutil_max(64, code_size), data_start: data.value, data_size: osutil_max(64, data_size), heap_start: heap.value, heap_size: osutil_max(128, heap_size), heap_cursor: heap.value, stack_start: stack.value, stack_size: osutil_max(128, stack_size), stack_top: stack.value + osutil_max(128, stack_size)}
+  return osutil_ok(layout)
+end
+
+func mem_clear_range(memory, start, size) do
+  cells is memory.cells
+  objects is memory.objects
+  keys_to_remove is []
+  for key in cells.keys() do
+    address is osutil_to_integer(key, -1)
+    if address >= start and address < start + size then keys_to_remove.push(key)
+  end
+  for key in keys_to_remove do
+    cells.delete(key)
+  end
+  object_keys is []
+  for key in objects.keys() do
+    address is osutil_to_integer(key, -1)
+    if address >= start and address < start + size then object_keys.push(key)
+  end
+  for key in object_keys do
+    objects.delete(key)
+  end
+end
+
+func mem_free(memory, pid, address, kernel_mode) do
+  index is 0
+  while index < memory.segments.len() do
+    segment is memory.segments[index]
+    if segment.start == address then
+      if not kernel_mode and segment.pid != pid then return osutil_fail(SURAOS_ERR_PERMISSION, "segment belongs to another process")
+      mem_clear_range(memory, segment.start, segment.size)
+      memory.bytes_reserved -= segment.size
+      memory.frees += 1
+      segments is memory.segments
+      segments.remove(index)
+      return osutil_ok(segment.size)
+    end
+    index += 1
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "segment not found")
+end
+
+func mem_release_process(memory, pid) do
+  starts is []
+  for segment in memory.segments do
+    if segment.pid == pid then starts.push(segment.start)
+  end
+  released is 0
+  for address in starts do
+    result is mem_free(memory, pid, address, true)
+    if result.ok then released += result.value
+  end
+  return released
+end
+
+func mem_read(memory, pid, address, kernel_mode) do
+  location is floor(address)
+  if not mem_access_allowed(memory, pid, location, 1, "read", kernel_mode) then
+    mem_record_fault(memory)
+    return osutil_fail(SURAOS_ERR_FAULT, "invalid read at 0x" + osutil_hex(location, 8))
+  end
+  memory.reads += 1
+  cells is memory.cells
+  key is osutil_key(location)
+  if key in cells then return osutil_ok(cells[key])
+  return osutil_ok(0)
+end
+
+func mem_write(memory, pid, address, value, kernel_mode) do
+  location is floor(address)
+  if not mem_access_allowed(memory, pid, location, 1, "write", kernel_mode) then
+    mem_record_fault(memory)
+    return osutil_fail(SURAOS_ERR_FAULT, "invalid write at 0x" + osutil_hex(location, 8))
+  end
+  cells is memory.cells
+  cells[osutil_key(location)] is value
+  memory.writes += 1
+  return osutil_ok(value)
+end
+
+func mem_read_u8(memory, pid, address, kernel_mode) do
+  result is mem_read(memory, pid, address, kernel_mode)
+  if not result.ok then return result
+  value is floor(result.value) % 256
+  if value < 0 then value += 256
+  return osutil_ok(value)
+end
+
+func mem_write_u8(memory, pid, address, value, kernel_mode) do
+  byte is floor(value) % 256
+  if byte < 0 then byte += 256
+  return mem_write(memory, pid, address, byte, kernel_mode)
+end
+
+func mem_read_u32(memory, pid, address, kernel_mode) do
+  total is 0
+  offset is 0
+  factor is 1
+  while offset < 4 do
+    part is mem_read_u8(memory, pid, address + offset, kernel_mode)
+    if not part.ok then return part
+    total += part.value * factor
+    factor *= 256
+    offset += 1
+  end
+  return osutil_ok(total)
+end
+
+func mem_write_u32(memory, pid, address, value, kernel_mode) do
+  number is floor(value)
+  offset is 0
+  while offset < 4 do
+    part is number % 256
+    result is mem_write_u8(memory, pid, address + offset, part, kernel_mode)
+    if not result.ok then return result
+    number is floor(number / 256)
+    offset += 1
+  end
+  return osutil_ok(value)
+end
+
+func mem_write_block(memory, pid, address, values, kernel_mode) do
+  index is 0
+  while index < values.len() do
+    result is mem_write_u8(memory, pid, address + index, values[index], kernel_mode)
+    if not result.ok then return result
+    index += 1
+  end
+  return osutil_ok(values.len())
+end
+
+func mem_read_block(memory, pid, address, length, kernel_mode) do
+  values is []
+  index is 0
+  while index < length do
+    result is mem_read_u8(memory, pid, address + index, kernel_mode)
+    if not result.ok then return result
+    values.push(result.value)
+    index += 1
+  end
+  return osutil_ok(values)
+end
+
+func mem_store_object(memory, pid, address, value, kernel_mode) do
+  if not mem_access_allowed(memory, pid, address, 1, "write", kernel_mode) then
+    mem_record_fault(memory)
+    return osutil_fail(SURAOS_ERR_FAULT, "invalid object write")
+  end
+  objects is memory.objects
+  objects[osutil_key(address)] is value
+  memory.writes += 1
+  return osutil_ok(address)
+end
+
+func mem_load_object(memory, pid, address, kernel_mode) do
+  if not mem_access_allowed(memory, pid, address, 1, "read", kernel_mode) then
+    mem_record_fault(memory)
+    return osutil_fail(SURAOS_ERR_FAULT, "invalid object read")
+  end
+  objects is memory.objects
+  key is osutil_key(address)
+  if not (key in objects) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "object not found")
+  memory.reads += 1
+  return osutil_ok(objects[key])
+end
+
+func mem_heap_alloc(memory, process, size) do
+  layout is process.memory
+  requested is floor(size)
+  if requested <= 0 then return osutil_fail(SURAOS_ERR_INVALID, "heap allocation must be positive")
+  if layout.heap_cursor + requested > layout.heap_start + layout.heap_size then return osutil_fail(SURAOS_ERR_NO_MEMORY, "process heap exhausted")
+  address is layout.heap_cursor
+  layout.heap_cursor += requested
+  heap_allocations is process.heap_allocations
+  heap_allocations.push({address: address, size: requested, freed: false})
+  return osutil_ok(address)
+end
+
+func mem_heap_free(memory, process, address) do
+  for allocation in process.heap_allocations do
+    if allocation.address == address and not allocation.freed then
+      allocation.freed is true
+      mem_clear_range(memory, allocation.address, allocation.size)
+      return osutil_ok(allocation.size)
+    end
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "heap allocation not found")
+end
+
+func mem_copy(memory, pid, destination, source, length, kernel_mode) do
+  block is mem_read_block(memory, pid, source, length, kernel_mode)
+  if not block.ok then return block
+  return mem_write_block(memory, pid, destination, block.value, kernel_mode)
+end
+
+func mem_fill(memory, pid, address, length, value, kernel_mode) do
+  index is 0
+  while index < length do
+    result is mem_write_u8(memory, pid, address + index, value, kernel_mode)
+    if not result.ok then return result
+    index += 1
+  end
+  return osutil_ok(length)
+end
+
+func mem_segments_for_process(memory, pid) do
+  result is []
+  for segment in memory.segments do
+    if segment.pid == pid then result.push(segment)
+  end
+  return osutil_sort_by_number(result, "start", false)
+end
+
+func mem_map(memory) do
+  rows is []
+  ordered is osutil_sort_by_number(memory.segments, "start", false)
+  for segment in ordered do
+    permission_text is ""
+    if (segment.permissions & SURAOS_PERM_READ) != 0 then
+      permission_text += "r"
+    else
+      permission_text += "-"
+    end
+    if (segment.permissions & SURAOS_PERM_WRITE) != 0 then
+      permission_text += "w"
+    else
+      permission_text += "-"
+    end
+    if (segment.permissions & SURAOS_PERM_EXEC) != 0 then
+      permission_text += "x"
+    else
+      permission_text += "-"
+    end
+    rows.push({start: segment.start, finish: mem_segment_end(segment), size: segment.size, pid: segment.pid, permissions: permission_text, kind: segment.kind, name: segment.name})
+  end
+  return rows
+end
+
+func mem_stats(memory) do
+  return {size: memory.size, reserved: memory.bytes_reserved, free: memory.size - memory.bytes_reserved, utilization: osutil_percent(memory.bytes_reserved, memory.size), peak_reserved: memory.peak_reserved, segment_count: memory.segments.len(), cell_count: memory.cells.keys().len(), object_count: memory.objects.keys().len(), reads: memory.reads, writes: memory.writes, faults: memory.faults, allocations: memory.allocations, frees: memory.frees}
+end
+
+func mem_validate(memory) do
+  errors is []
+  ordered is osutil_sort_by_number(memory.segments, "start", false)
+  previous_end is 0
+  total is 0
+  for segment in ordered do
+    if segment.start < 0 then errors.push("negative segment start")
+    if segment.size <= 0 then errors.push("non-positive segment size")
+    if mem_segment_end(segment) > memory.size then errors.push("segment exceeds memory")
+    if segment.start < previous_end then errors.push("overlapping segments")
+    previous_end is mem_segment_end(segment)
+    total += segment.size
+  end
+  if total != memory.bytes_reserved then errors.push("reserved byte counter mismatch")
+  return {ok: errors.len() == 0, errors: errors, calculated_reserved: total}
+end
+
+func mem_snapshot(memory) do
+  segments is []
+  for segment in memory.segments do
+    segments.push(osutil_clone_dict(segment))
+  end
+  return {size: memory.size, cells: osutil_clone_dict(memory.cells), objects: osutil_clone_dict(memory.objects), segments: segments, next_address: memory.next_address, counters: {faults: memory.faults, reads: memory.reads, writes: memory.writes, allocations: memory.allocations, frees: memory.frees, bytes_reserved: memory.bytes_reserved, peak_reserved: memory.peak_reserved}}
+end
+
+func mem_restore(snapshot) do
+  memory is mem_create(snapshot.size)
+  memory.cells is osutil_clone_dict(snapshot.cells)
+  memory.objects is osutil_clone_dict(snapshot.objects)
+  segments is []
+  for segment in snapshot.segments do
+    segments.push(osutil_clone_dict(segment))
+  end
+  memory.segments is segments
+  memory.next_address is snapshot.next_address
+  memory.faults is snapshot.counters.faults
+  memory.reads is snapshot.counters.reads
+  memory.writes is snapshot.counters.writes
+  memory.allocations is snapshot.counters.allocations
+  memory.frees is snapshot.counters.frees
+  memory.bytes_reserved is snapshot.counters.bytes_reserved
+  memory.peak_reserved is snapshot.counters.peak_reserved
+  return memory
+end

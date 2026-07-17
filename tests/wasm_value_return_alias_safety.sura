@@ -1,0 +1,9 @@
+func make_value_collection(flag) do
+  return flag ? ["zero", "one"] : {name: "bad"}
+end
+
+collection_alias is make_value_collection(true)
+label is "Alias {type(collection_alias)} {length(collection_alias)} {to_str(collection_alias[1])}"
+
+assert_eq(label, "Alias array 2 one")
+print label

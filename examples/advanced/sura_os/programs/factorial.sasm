@@ -1,0 +1,19 @@
+.name factorial
+.entry start
+
+# Calculate 8! in R0 and print 40320.
+start:
+MOVI R0 1
+MOVI R1 1
+MOVI R2 8
+
+multiply:
+MUL R0 R1
+INC R1
+CMP R1 R2
+JLE multiply
+
+SYSCALL PRINT_NUMBER
+MOVI R0 0
+SYSCALL EXIT
+

@@ -1,0 +1,88 @@
+# Automation workload: aggregate API/tool-call log records for an agent runtime.
+# Models status-code bucketing, latency checks, token accounting, and risk scoring.
+
+func status_code(i) do
+  if i % 97 == 0 then
+    return 500
+  end
+  if i % 41 == 0 then
+    return 429
+  end
+  if i % 17 == 0 then
+    return 404
+  end
+  return 200
+end
+
+func latency_ms(i) do
+  return 20 + ((i * 37 + i * i) % 480)
+end
+
+func token_count(i) do
+  return 64 + ((i * 13 + 7) % 2048)
+end
+
+func retry_count(i) do
+  return (i * 19 + 3) % 4
+end
+
+func risk_score(status, latency, tokens, retries) do
+  score is 0
+  if status >= 500 then
+    score is score + 120
+  end
+  if status == 429 then
+    score is score + 75
+  end
+  if status == 404 then
+    score is score + 15
+  end
+  if latency > 350 then
+    score is score + 30
+  end
+  if tokens > 1500 then
+    score is score + 20
+  end
+  return score + retries * 18
+end
+
+runs is 5
+records is 220000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  failures is 0
+  throttles is 0
+  slow is 0
+  token_total is 0
+  risk_total is 0
+  while i < records do
+    status is status_code(i)
+    latency is latency_ms(i)
+    tokens is token_count(i)
+    retries is retry_count(i)
+    if status >= 500 then
+      failures is failures + 1
+    end
+    if status == 429 then
+      throttles is throttles + 1
+    end
+    if latency > 350 then
+      slow is slow + 1
+    end
+    token_total is token_total + tokens
+    risk_total is risk_total + risk_score(status, latency, tokens, retries)
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is failures + throttles * 3 + slow * 5 + token_total + risk_total
+end
+
+avg is total_ms / runs
+print "api log ETL records: {records}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

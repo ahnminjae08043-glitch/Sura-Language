@@ -1,0 +1,57 @@
+# if/elif/else
+x is 5
+result is ""
+if x > 10 then
+  result is "big"
+elif x > 3 then
+  result is "medium"
+else
+  result is "small"
+end
+assert_eq(result, "medium")
+
+inline_else_result is ""
+if x > 10 then
+  inline_else_result is "big"
+else then inline_else_result is "not big"
+end
+assert_eq(inline_else_result, "not big")
+
+# while
+i is 0
+sum is 0
+while i < 5 do
+  sum += i
+  i += 1
+end
+assert_eq(sum, 10)
+
+# repeat
+count is 0
+repeat 7 do
+  count += 1
+end
+assert_eq(count, 7)
+
+# for
+total is 0
+for n in 1 to 5 do
+  total += n
+end
+assert_eq(total, 15)
+
+reverse_total is 0
+for n in 5 to 1 step -2 do
+  reverse_total += n
+end
+assert_eq(reverse_total, 9)
+
+# break
+i is 0
+while true do
+  i += 1
+  if i == 3 then break
+end
+assert_eq(i, 3)
+
+print "03_control: PASS"

@@ -1,10 +1,27 @@
-Set-Location "C:\Users\user\Documents\Sura"
-$output = & "C:\msys64\mingw64\bin\g++.exe" -std=c++17 -Wall main2.cpp -o SuraEngine2.exe -lsfml-graphics -lsfml-window -lsfml-system 2>&1
-$output | Out-File -FilePath "build_errors.txt" -Encoding UTF8
-$exitCode = $LASTEXITCODE
-if ($exitCode -eq 0) {
-    Write-Host "[OK] 빌드 성공!"
-} else {
-    Write-Host "[FAIL] 빌드 실패 (Exit: $exitCode)"
-    Get-Content "build_errors.txt"
+param(
+    [ValidateSet("portable", "native")]
+    [string]$Mode = "portable"
+)
+
+$ErrorActionPreference = "Stop"
+$root = $PSScriptRoot
+$buildScript = Join-Path $root "build.bat"
+if (-not (Test-Path -LiteralPath $buildScript -PathType Leaf)) {
+    throw "build.bat not found: $buildScript"
 }
+
+Push-Location $root
+try {
+    & $env:ComSpec /d /c $buildScript $Mode
+    $exitCode = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+
+if ($exitCode -ne 0) {
+    Write-Host "[FAIL] Sura build failed (exit $exitCode)."
+    exit $exitCode
+}
+
+Write-Host "[OK] Built SuraLanguage.exe in $Mode mode."

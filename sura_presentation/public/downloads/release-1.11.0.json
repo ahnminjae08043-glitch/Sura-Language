@@ -1,0 +1,61 @@
+{
+  "schema": "sura.public.release.v1",
+  "product": "Sura Language",
+  "version": "1.11.0",
+  "published": "2026-07-15",
+  "platform": "windows-x64",
+  "starter_pack": {
+    "command": "surapkg new <name>",
+    "generated": ["package manifest", "source", "test", "README", "VS Code settings"],
+    "beginner_examples": 12
+  },
+  "runtime": {
+    "engine": "register VM",
+    "optional_jit": {
+      "flag": "--jit",
+      "platform_abi": "Windows x64 / Win64",
+      "mode": "lazy partial compilation inside the register VM",
+      "fallback": "unsupported bodies remain in the register VM"
+    },
+    "diagnostics_default": "English",
+    "diagnostics_korean": "--lang ko or SURA_LANG=ko"
+  },
+  "installer_requirements": [
+    "Windows x64",
+    ".NET Framework CLR",
+    "Windows PowerShell or PowerShell"
+  ],
+  "optional_integrations": {
+    "ffmpeg": "local media and video decoding",
+    "curl": "native HTTP, async HTTP, and HTTP-backed LLM requests",
+    "nodejs": "JavaScript target, VS Code tooling, http.serve_routes, and preferred http.serve_static runtime",
+    "python": "Python bridge and http.serve_static fallback",
+    "c_cpp_toolchain": "source build, embedding, FFI bindings, and plugins",
+    "cuda_driver_and_optional_cublas": "CUDA tensor operations"
+  },
+  "signing": {
+    "authenticode": "NotSigned",
+    "vsix_signature": "Not provided"
+  },
+  "license": {
+    "root_license_file": "Not provided",
+    "vscode_package_field": "UNLICENSED"
+  },
+  "artifacts": [
+    {
+      "name": "SuraLanguageSetup-1.11.0.exe",
+      "bytes": 14981632,
+      "sha256": "767f40e1b00df433ba5f49b0f3593e1f1dc060175e2c6fb09f8d05455f45af73"
+    },
+    {
+      "name": "SuraLanguage-1.11.0-windows-x64.zip",
+      "bytes": 5339622,
+      "sha256": "3ee623d4a3389b7506ed635e1180f2a7e2d9f35631f8e1addc54835995f1f652"
+    },
+    {
+      "name": "SuraLanguage-VSCode-1.11.0.vsix",
+      "bytes": 59900,
+      "sha256": "9952dd2ff2537513eb38cfe11deb4c7687c75102f20225442c3cafe207cb673a"
+    }
+  ]
+}

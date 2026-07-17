@@ -1,0 +1,21 @@
+[Unit]
+Description=Sura hosted package registry API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/sura/registry.env
+WorkingDirectory=/opt/sura
+ExecStart=/usr/bin/node /opt/sura/tools/sura_registry_api.js
+Restart=always
+RestartSec=5
+User=sura
+Group=sura
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/sura-registry
+
+[Install]
+WantedBy=multi-user.target

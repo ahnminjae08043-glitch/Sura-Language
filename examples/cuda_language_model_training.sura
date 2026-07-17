@@ -1,0 +1,48 @@
+use autograd
+
+# A compact end-to-end language-model training slice on Sura's resident CUDA
+# graph. Integer token IDs stay on the CPU contract boundary; model weights,
+# activations, gradients, and optimizer candidates remain on the GPU.
+info is autograd.cuda_info()
+if not info.available then
+  print "CUDA unavailable: {info.error}"
+  exit(0)
+end
+
+tokens is [[0, 1, 2, 3]]
+targets is [[1, 2, 3, 0]]
+
+embedding is autograd.parameter([[0.5, 0, 0, 0], [0, 0.5, 0, 0], [0, 0, 0.5, 0], [0, 0, 0, 0.5]], {device: "cuda"})
+norm_weight is autograd.parameter([1, 1, 1, 1], {device: "cuda"})
+norm_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+hidden_weight is autograd.parameter([[0.2, -0.1, 0.1, 0, 0.05, -0.05, 0.08, -0.02], [-0.1, 0.2, 0, 0.1, -0.05, 0.05, -0.02, 0.08], [0.1, 0, 0.2, -0.1, 0.08, -0.02, 0.05, -0.05], [0, 0.1, -0.1, 0.2, -0.02, 0.08, -0.05, 0.05]], {device: "cuda"})
+hidden_bias is autograd.parameter([0, 0, 0, 0, 0, 0, 0, 0], {device: "cuda"})
+head_weight is autograd.parameter([[0.1, -0.1, 0.05, -0.05], [-0.05, 0.1, -0.1, 0.05], [0.08, -0.02, 0.04, -0.1], [-0.1, 0.04, -0.02, 0.08], [0.05, 0.02, -0.08, 0.01], [-0.02, 0.05, 0.01, -0.08], [0.03, -0.07, 0.09, -0.01], [-0.07, 0.03, -0.01, 0.09]], {device: "cuda"})
+head_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+parameters is [embedding, norm_weight, norm_bias, hidden_weight, hidden_bias, head_weight, head_bias]
+
+func language_model(input_ids) do
+  hidden is autograd.embedding(input_ids, embedding)
+  hidden is autograd.layer_norm(hidden, norm_weight, norm_bias)
+  hidden is autograd.gelu(autograd.linear(hidden, hidden_weight, hidden_bias))
+  return autograd.linear(hidden, head_weight, head_bias)
+end
+
+first is autograd.cross_entropy_ids(language_model(tokens), targets)
+initial_loss is autograd.item(first)
+autograd.backward(first)
+
+step is 0
+while step < 40 do
+  autograd.zero_grad(parameters)
+  loss is autograd.cross_entropy_ids(language_model(tokens), targets)
+  autograd.backward(loss)
+  autograd.sgd(parameters, 0.1)
+  step is step + 1
+end
+
+final_loss is autograd.item(autograd.cross_entropy_ids(language_model(tokens), targets))
+print "backend = {info.matmul_backend}"
+print "initial loss = {initial_loss}"
+print "final loss = {final_loss}"
+

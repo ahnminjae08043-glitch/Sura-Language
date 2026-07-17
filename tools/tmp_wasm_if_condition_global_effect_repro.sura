@@ -1,0 +1,12 @@
+state is nil
+
+func init_state() do
+  global state
+  state is {score: 21, name: "Cond"}
+  return true
+end
+
+if init_state() then
+  print("ready")
+end
+print(type(state) + ":" + state.name + ":" + to_str(state.score))

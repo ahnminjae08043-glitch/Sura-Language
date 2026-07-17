@@ -1,0 +1,468 @@
+# Sura Dungeon 3D
+# Real-time window raycaster dungeon.
+# Controls: click the window, then W/S move, A/D turn, Q/E strafe, Space interact, Esc quit.
+# Smoke: sura dungeon3d.sura -- --smoke
+
+SMOKE is false
+INPUT_SMOKE is false
+if argc() > 0 then
+  if argv()[0] == "--smoke" then
+    SMOKE is true
+  end
+  if argv()[0] == "--input-smoke" then
+    INPUT_SMOKE is true
+  end
+end
+
+W is 800
+H is 500
+FOV is 1.0471975512
+HALF_FOV is FOV / 2
+PI is 3.141592653589793
+TWO_PI is PI * 2
+STRIP is 8
+
+MW is 16
+MH is 16
+world is [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1, 1,0,0,0,0,0,0,0,1,0,0,0,0,4,0,1, 1,0,2,2,0,1,1,0,1,0,3,3,0,0,0,1, 1,0,2,0,0,0,1,0,0,0,3,0,0,1,0,1, 1,0,0,0,1,0,1,1,1,0,0,0,1,1,0,1, 1,1,1,0,1,0,0,0,1,1,0,0,0,0,0,1, 1,0,0,0,1,1,1,0,0,0,0,1,1,1,0,1, 1,0,1,0,0,0,1,0,2,2,0,0,0,1,0,1, 1,0,1,1,1,0,1,0,2,0,0,1,0,1,0,1, 1,0,0,0,1,0,0,0,0,0,1,1,0,0,0,1, 1,0,3,0,1,1,1,1,1,0,0,0,0,4,0,1, 1,0,3,0,0,0,0,0,1,1,1,0,1,1,0,1, 1,0,0,0,1,1,1,0,0,0,0,0,1,0,0,1, 1,0,1,0,0,0,0,0,1,1,1,0,0,0,5,1, 1,0,0,0,1,0,0,0,0,0,0,0,1,0,0,1, 1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1]
+
+px is 2.5
+py is 1.5
+pa is 0.0
+PLAYER_RADIUS is 0.22
+hp is 100
+keys is 0
+message is "Find the gold exit tile."
+input_status is "idle"
+frame is 0
+running is true
+smoke_ok is true
+input_smoke_ok is false
+last_key is ""
+hold_w is 0
+hold_s is 0
+hold_a is 0
+hold_d is 0
+hold_q is 0
+hold_e is 0
+hold_space is 0
+hold_escape is 0
+
+if not win_init(W, H, "Sura Dungeon 3D") then
+  print("win_init failed")
+  exit()
+end
+win_focus()
+
+func clamp(v, lo, hi) do
+  if v < lo then return lo
+  if v > hi then return hi
+  return v
+end
+
+func wrap_angle(a) do
+  while a < 0 do
+    a += TWO_PI
+  end
+  while a >= TWO_PI do
+    a -= TWO_PI
+  end
+  return a
+end
+
+func tile_at(tx, ty) do
+  if tx < 0 then return 1
+  if ty < 0 then return 1
+  if tx >= MW then return 1
+  if ty >= MH then return 1
+  return world[ty * MW + tx]
+end
+
+func tile_walkable(t) do
+  if t == 0 then return true
+  if t == 4 then return true
+  if t == 5 then return true
+  return false
+end
+
+func can_walk(x, y) do
+  if not tile_walkable(tile_at(floor(x - PLAYER_RADIUS), floor(y - PLAYER_RADIUS))) then return false
+  if not tile_walkable(tile_at(floor(x + PLAYER_RADIUS), floor(y - PLAYER_RADIUS))) then return false
+  if not tile_walkable(tile_at(floor(x - PLAYER_RADIUS), floor(y + PLAYER_RADIUS))) then return false
+  if not tile_walkable(tile_at(floor(x + PLAYER_RADIUS), floor(y + PLAYER_RADIUS))) then return false
+  return true
+end
+
+func wall_r(wall, dist, side) do
+  base is 120
+  if wall == 2 then base is 170 else if wall == 3 then base is 70 else if wall == 4 then base is 180 else if wall == 5 then base is 230 else base is 120
+  fog is clamp(1.0 - dist / 10.0, 0.18, 1.0)
+  if side == 1 then fog is fog * 0.72
+  return floor(base * fog)
+end
+
+func wall_g(wall, dist, side) do
+  base is 118
+  if wall == 2 then base is 55 else if wall == 3 then base is 145 else if wall == 4 then base is 125 else if wall == 5 then base is 185 else base is 118
+  fog is clamp(1.0 - dist / 10.0, 0.18, 1.0)
+  if side == 1 then fog is fog * 0.72
+  return floor(base * fog)
+end
+
+func wall_b(wall, dist, side) do
+  base is 130
+  if wall == 2 then base is 55 else if wall == 3 then base is 95 else if wall == 4 then base is 60 else if wall == 5 then base is 55 else base is 130
+  fog is clamp(1.0 - dist / 10.0, 0.18, 1.0)
+  if side == 1 then fog is fog * 0.72
+  return floor(base * fog)
+end
+
+func draw_wall_slice(x, dist, wall, side) do
+  fixed_dist is dist * cos((pa - HALF_FOV + (x * FOV) / W) - pa)
+  if fixed_dist < 0.12 then fixed_dist is 0.12
+  wall_h is floor((H * 0.82) / fixed_dist)
+  if wall_h > H then wall_h is H
+  top is floor((H - wall_h) / 2)
+  bottom is top + wall_h
+  r is wall_r(wall, fixed_dist, side)
+  g is wall_g(wall, fixed_dist, side)
+  b is wall_b(wall, fixed_dist, side)
+  win_rect(x, top, STRIP + 1, wall_h, r, g, b)
+
+  edge is floor(45 / fixed_dist)
+  if edge < 1 then edge is 1
+  win_rect(x, top, STRIP + 1, edge, clamp(r + 35, 0, 255), clamp(g + 35, 0, 255), clamp(b + 35, 0, 255))
+  win_rect(x, bottom - edge, STRIP + 1, edge, floor(r * 0.55), floor(g * 0.55), floor(b * 0.55))
+end
+
+func cast_and_draw_column(x) do
+  ray is pa - HALF_FOV + (x * FOV) / W
+  rdx is cos(ray)
+  rdy is sin(ray)
+  if abs(rdx) < 0.0001 then rdx is 0.0001
+  if abs(rdy) < 0.0001 then rdy is 0.0001
+
+  map_x is floor(px)
+  map_y is floor(py)
+  ddx is abs(1.0 / rdx)
+  ddy is abs(1.0 / rdy)
+  step_x is 0
+  step_y is 0
+  side_x is 0
+  side_y is 0
+
+  if rdx < 0 then
+    step_x is -1
+    side_x is (px - map_x) * ddx
+  else
+    step_x is 1
+    side_x is (map_x + 1.0 - px) * ddx
+  end
+
+  if rdy < 0 then
+    step_y is -1
+    side_y is (py - map_y) * ddy
+  else
+    step_y is 1
+    side_y is (map_y + 1.0 - py) * ddy
+  end
+
+  hit is 0
+  wall is 1
+  side is 0
+  steps is 0
+  while hit == 0 and steps < 48 do
+    if side_x < side_y then
+      side_x += ddx
+      map_x += step_x
+      side is 0
+    else
+      side_y += ddy
+      map_y += step_y
+      side is 1
+    end
+    wall is tile_at(map_x, map_y)
+    if wall > 0 then
+      hit is 1
+    end
+    steps += 1
+  end
+
+  dist is 0
+  if side == 0 then
+    dist is (map_x - px + (1 - step_x) * 0.5) / rdx
+  else
+    dist is (map_y - py + (1 - step_y) * 0.5) / rdy
+  end
+  if dist < 0.05 then dist is 0.05
+  draw_wall_slice(x, dist, wall, side)
+end
+
+func draw_floor() do
+  win_clear(4, 6, 12)
+  win_rect(0, 0, W, H / 2, 10, 14, 26)
+  win_rect(0, H / 2, W, H / 2, 27, 24, 22)
+  y is H / 2
+  shade is 0
+  while y < H do
+    c is clamp(35 + shade, 35, 90)
+    win_rect(0, y, W, 6, c, floor(c * 0.82), floor(c * 0.58))
+    y += 18
+    shade += 4
+  end
+end
+
+func draw_minimap() do
+  ox is 18
+  oy is 382
+  s is 9
+  win_rect(ox - 4, oy - 4, MW * s + 8, MH * s + 8, 8, 10, 14)
+  my is 0
+  while my < MH do
+    mx is 0
+    while mx < MW do
+      t is tile_at(mx, my)
+      if t == 0 then
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 22, 25, 30)
+      else if t == 2 then
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 95, 34, 34)
+      else if t == 3 then
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 32, 90, 56)
+      else if t == 4 then
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 115, 75, 26)
+      else if t == 5 then
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 180, 145, 40)
+      else
+        win_rect(ox + mx * s, oy + my * s, s - 1, s - 1, 70, 70, 84)
+      end
+      mx += 1
+    end
+    my += 1
+  end
+  ppx is ox + floor(px * s)
+  ppy is oy + floor(py * s)
+  win_circle(ppx, ppy, 4, 250, 220, 80)
+  win_line(ppx, ppy, ppx + cos(pa) * 12, ppy + sin(pa) * 12, 250, 220, 80)
+end
+
+func draw_hud() do
+  win_rect(12, 12, 650, 100, 6, 8, 12)
+  win_text("Sura Dungeon 3D", 26, 24, 235, 235, 220)
+  win_text("Click window, then W/S move  A/D turn  Q/E strafe  Space interact", 26, 46, 150, 190, 210)
+  win_text(message, 26, 68, 240, 205, 115)
+  win_text("Input " + input_status + "   Pos " + floor(px * 10) / 10 + "," + floor(py * 10) / 10, 26, 90, 160, 215, 165)
+  win_text("Keys " + keys + "   HP " + hp, W - 170, 24, 230, 230, 220)
+  if last_key != "" then
+    win_text("Key " + last_key, W - 170, 46, 160, 215, 165)
+  end
+  cx is W / 2
+  cy is H / 2
+  win_line(cx - 12, cy, cx - 4, cy, 220, 220, 210)
+  win_line(cx + 4, cy, cx + 12, cy, 220, 220, 210)
+  win_line(cx, cy - 12, cx, cy - 4, 220, 220, 210)
+  win_line(cx, cy + 4, cx, cy + 12, 220, 220, 210)
+end
+
+if not can_walk(px, py) then
+  px is 2.5
+  py is 1.5
+  pa is 0.0
+  message is "Moved to a safe start."
+end
+
+if SMOKE then
+  if not can_walk(px, py) then
+    smoke_ok is false
+    running is false
+  end
+  smoke_start_x is px
+  smoke_nx is px + 0.075
+  if can_walk(smoke_nx, py) then
+    px is smoke_nx
+  end
+  if px <= smoke_start_x then
+    smoke_ok is false
+    running is false
+  end
+end
+
+if INPUT_SMOKE then
+  input_start_x is px
+  input_start_y is py
+end
+
+while running do
+  frame += 1
+
+  if not win_poll() then
+    running is false
+    break
+  end
+
+  if frame < 120 then
+    win_focus()
+  end
+
+  speed is 0.20
+  turn is 0.10
+  move_x is 0.0
+  move_y is 0.0
+
+  k_shift is key_down("shift")
+  k_a is key_down("a")
+  k_d is key_down("d")
+  k_w is key_down("w")
+  k_s is key_down("s")
+  k_q is key_down("q")
+  k_e is key_down("e")
+  k_space is key_down("space")
+  k_escape is key_down("escape")
+  k_left is key_down("left")
+  k_right is key_down("right")
+  k_up is key_down("up")
+  k_down is key_down("down")
+
+  if hold_w > 0 then hold_w -= 1
+  if hold_s > 0 then hold_s -= 1
+  if hold_a > 0 then hold_a -= 1
+  if hold_d > 0 then hold_d -= 1
+  if hold_q > 0 then hold_q -= 1
+  if hold_e > 0 then hold_e -= 1
+  if hold_space > 0 then hold_space -= 1
+  if hold_escape > 0 then hold_escape -= 1
+
+  last_key is readkey_timeout(1)
+  if last_key == "a" or last_key == "A" then hold_a is 12
+  if last_key == "d" or last_key == "D" then hold_d is 12
+  if last_key == "w" or last_key == "W" then hold_w is 12
+  if last_key == "s" or last_key == "S" then hold_s is 12
+  if last_key == "q" or last_key == "Q" then hold_q is 12
+  if last_key == "e" or last_key == "E" then hold_e is 12
+  if last_key == "space" then hold_space is 12
+  if last_key == "escape" then hold_escape is 12
+  if last_key == "left" then hold_a is 12
+  if last_key == "right" then hold_d is 12
+  if last_key == "up" then hold_w is 12
+  if last_key == "down" then hold_s is 12
+
+  if hold_a > 0 then k_a is true
+  if hold_d > 0 then k_d is true
+  if hold_w > 0 then k_w is true
+  if hold_s > 0 then k_s is true
+  if hold_q > 0 then k_q is true
+  if hold_e > 0 then k_e is true
+  if hold_space > 0 then k_space is true
+  if hold_escape > 0 then k_escape is true
+
+  if k_left then k_a is true
+  if k_right then k_d is true
+  if k_up then k_w is true
+  if k_down then k_s is true
+
+  input_status is "idle"
+  if k_w then input_status is "forward"
+  if k_s then input_status is "back"
+  if k_a then input_status is "turn-left"
+  if k_d then input_status is "turn-right"
+  if k_q then input_status is "strafe-left"
+  if k_e then input_status is "strafe-right"
+  if k_space then input_status is "space"
+  if k_escape then input_status is "escape"
+
+  if k_shift then speed is 0.24
+  if k_a then pa is wrap_angle(pa - turn)
+  if k_d then pa is wrap_angle(pa + turn)
+  if k_w then
+    move_x += cos(pa) * speed
+    move_y += sin(pa) * speed
+  end
+  if k_s then
+    move_x -= cos(pa) * speed
+    move_y -= sin(pa) * speed
+  end
+  if k_q then
+    move_x += cos(pa - PI / 2) * speed
+    move_y += sin(pa - PI / 2) * speed
+  end
+  if k_e then
+    move_x += cos(pa + PI / 2) * speed
+    move_y += sin(pa + PI / 2) * speed
+  end
+
+  if move_x != 0 or move_y != 0 then
+    nx is px + move_x
+    ny is py + move_y
+    if can_walk(nx, py) then
+      px is nx
+    end
+    if can_walk(px, ny) then
+      py is ny
+    end
+  end
+
+  if INPUT_SMOKE then
+    if k_w and px > input_start_x + 0.05 then
+      input_smoke_ok is true
+      running is false
+    end
+    if frame >= 90 then
+      running is false
+    end
+  end
+
+  if k_space then
+    tx is floor(px + cos(pa) * 1.0)
+    ty is floor(py + sin(pa) * 1.0)
+    t is tile_at(tx, ty)
+    if t == 4 then
+      keys += 1
+      world[ty * MW + tx] is 0
+      message is "You picked up an old brass key."
+    else if t == 5 then
+      if keys >= 1 then
+        message is "Exit opened. Dungeon clear."
+        running is false
+      else
+        message is "The gold door needs a key."
+      end
+    else
+      message is "Dust and stone. Nothing useful."
+    end
+  end
+  if k_escape then running is false
+
+  draw_floor()
+  col is 0
+  while col < W do
+    cast_and_draw_column(col)
+    col += STRIP
+  end
+  draw_minimap()
+  draw_hud()
+  if not win_update() then
+    running is false
+  end
+
+  if SMOKE then
+    if frame >= 3 then running is false
+  end
+  wait 16
+end
+
+win_close()
+if SMOKE then
+  if smoke_ok then
+    print "dungeon3d_smoke: PASS"
+  else
+    print "dungeon3d_smoke: FAIL spawn blocked"
+  end
+else if INPUT_SMOKE then
+  if input_smoke_ok then
+    print "dungeon3d_input_smoke: PASS"
+  else
+    print "dungeon3d_input_smoke: FAIL pos=" + px + "," + py
+    exit(1)
+  end
+else
+  print "Dungeon run ended."
+end

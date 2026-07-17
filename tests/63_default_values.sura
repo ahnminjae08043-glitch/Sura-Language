@@ -1,0 +1,169 @@
+# Executable function, lambda, method, class-field, and struct defaults.
+
+calls is 0
+
+func make_default() do
+  global calls
+  calls += 1
+  return 40 + calls
+end
+
+func add(value, delta is value + 1) do
+  return value + delta
+end
+
+func choose(value is make_default()) do
+  return value
+end
+
+assert_eq(add(3), 7)
+assert_eq(add(3, 10), 13)
+assert_eq(choose(9), 9)
+assert_eq(calls, 0)
+assert_eq(choose(), 41)
+assert_eq(calls, 1)
+assert_eq(choose(nil), nil)
+assert_eq(calls, 1)
+
+block is func(value is 12) do
+  return value
+end
+assert_eq(block(), 12)
+assert_eq(block(5), 5)
+
+lambda is |value is 14| value
+assert_eq(lambda(), 14)
+assert_eq(lambda(6), 6)
+
+lambda_or is |value is (1 | 2)| value
+assert_eq(lambda_or(), 3)
+assert_eq(lambda_or(8), 8)
+
+class Counter do
+  base is 7
+
+  func read(extra is self.base) do
+    return self.base + extra
+  end
+end
+
+counter is new Counter()
+assert_eq(counter.base, 7)
+assert_eq(counter.read(), 14)
+assert_eq(counter.read(3), 10)
+
+struct Vec2 do
+  x is 2
+  y is 3
+end
+
+vec_default is Vec2()
+vec_partial is Vec2(8)
+vec_full is Vec2(8, 9)
+assert_eq(vec_default.x, 2)
+assert_eq(vec_default.y, 3)
+assert_eq(vec_partial.x, 8)
+assert_eq(vec_partial.y, 3)
+assert_eq(vec_full.x, 8)
+assert_eq(vec_full.y, 9)
+
+field_calls is 0
+field_order is ""
+
+func field_default(tag, value) do
+  global field_calls, field_order
+  field_calls += 1
+  field_order += tag
+  return value
+end
+
+class MutableDefaults do
+  z is field_default("z", [1])
+  a is field_default("a", [2])
+end
+
+assert_eq(field_calls, 0)
+first_defaults is new MutableDefaults()
+assert_eq(field_calls, 2)
+assert_eq(field_order, "za")
+second_defaults is new MutableDefaults()
+assert_eq(field_calls, 4)
+assert_eq(field_order, "zaza")
+first_z is first_defaults.z
+first_z.push(9)
+assert_eq(first_defaults.z.len(), 2)
+assert_eq(second_defaults.z.len(), 1)
+
+class ParentDefaults do
+  parent_values is field_default("p", [3])
+end
+
+class ChildDefaults extends ParentDefaults do
+  child_values is field_default("c", [4])
+end
+
+field_order is ""
+child_one is new ChildDefaults()
+assert_eq(field_order, "pc")
+field_order is ""
+child_two is new ChildDefaults()
+assert_eq(field_order, "pc")
+child_one_parent_values is child_one.parent_values
+child_one_child_values is child_one.child_values
+child_one_parent_values.push(5)
+child_one_child_values.push(6)
+assert_eq(child_one.parent_values.len(), 2)
+assert_eq(child_two.parent_values.len(), 1)
+assert_eq(child_one.child_values.len(), 2)
+assert_eq(child_two.child_values.len(), 1)
+
+class DefaultsWithCtor do
+  values is field_default("u", [5])
+
+  func init(number) do
+    self.number is number
+  end
+end
+
+field_order is ""
+ctor_by_call is DefaultsWithCtor(70)
+ctor_by_new is new DefaultsWithCtor(80)
+assert_eq(field_order, "uu")
+assert_eq(ctor_by_call.number, 70)
+assert_eq(ctor_by_new.number, 80)
+ctor_by_call_values is ctor_by_call.values
+ctor_by_call_values.push(7)
+assert_eq(ctor_by_call.values.len(), 2)
+assert_eq(ctor_by_new.values.len(), 1)
+
+struct_calls is 0
+
+func struct_default() do
+  global struct_calls
+  struct_calls += 1
+  return 20 + struct_calls
+end
+
+struct StructDefault do
+  value is struct_default()
+end
+
+assert_eq(struct_calls, 0)
+struct_explicit is StructDefault(90)
+assert_eq(struct_explicit.value, 90)
+assert_eq(struct_calls, 0)
+struct_omitted is StructDefault()
+assert_eq(struct_omitted.value, 21)
+assert_eq(struct_calls, 1)
+
+repeat 12 do
+  assert_eq(add(3), 7)
+  assert_eq(block(), 12)
+  assert_eq(lambda(), 14)
+  assert_eq(lambda_or(), 3)
+  assert_eq(counter.read(), 14)
+  warmed is Vec2()
+  assert_eq(warmed.x + warmed.y, 5)
+end
+
+print("default values: PASS")

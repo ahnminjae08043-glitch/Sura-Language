@@ -1,0 +1,28 @@
+{
+    "schema":  "sura.site.release.v1",
+    "version":  "1.11.1",
+    "store":  {
+                  "product_id":  "9P5JFKSWTP0P",
+                  "url":  "https://apps.microsoft.com/detail/9P5JFKSWTP0P",
+                  "publisher":  "SuraTeam",
+                  "availability":  "public",
+                  "pricing":  "Free"
+              },
+    "artifacts":  [
+                      {
+                          "name":  "SuraLanguageSetup-1.11.1.exe",
+                          "bytes":  15038464,
+                          "sha256":  "b88bdb651e4d443064418a88abc6482f305b65339be614d80c4998f8add9c38a"
+                      },
+                      {
+                          "name":  "SuraLanguage-1.11.1-windows-x64.zip",
+                          "bytes":  5359996,
+                          "sha256":  "fed5291869e66a1a0da49d59b31482ef6c2843d32a4f1bb4c0c07ae12c2a3277"
+                      },
+                      {
+                          "name":  "SuraLanguage-VSCode-1.11.1.vsix",
+                          "bytes":  170920,
+                          "sha256":  "86d1dbb4a8efc7459da1a6b8f02af4fed958ffe92433060ccf8bace3a00dae6a"
+                      }
+                  ]
+}

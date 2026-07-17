@@ -1,0 +1,10 @@
+.name hello-file
+.entry start
+.data greeting Hello from a standalone SVM32 source file
+
+start:
+MOVI R0 @greeting
+SYSCALL PRINT
+MOVI R0 0
+SYSCALL EXIT
+

@@ -1,0 +1,34 @@
+# This source is compiled without the Sura VM or hosted standard library.
+# Build:
+#   sura --target uefi-x86_64 --out BOOTX64.EFI examples/os/hello_uefi.sura
+
+func show_banner() -> u64 do
+  uefi.write("Sura OS")
+  uefi.newline()
+  uefi.write("Booted from a freestanding .sura program.")
+  uefi.newline()
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.clear()
+  uefi.set_color(15, 1)
+  show_banner()
+
+  framebuffer: ptr is uefi.gop_framebuffer()
+  width: u32 is uefi.gop_width()
+  height: u32 is uefi.gop_height()
+  stride: u32 is uefi.gop_stride()
+
+  if framebuffer != 0 and width > 0 and height > 0 and stride >= width then
+    uefi.write("UEFI GOP framebuffer is available.")
+    uefi.newline()
+  else
+    uefi.write("UEFI GOP framebuffer was not found.")
+    uefi.newline()
+  end
+
+  uefi.write("Sura kernel entry returned EFI_SUCCESS.")
+  uefi.newline()
+  return 0
+end

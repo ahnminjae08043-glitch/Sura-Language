@@ -1,0 +1,326 @@
+# Sura StarBlaster 3D
+# WASD / arrow keys: move aim
+# Space / left mouse: fire
+# Q / Escape: quit
+# Run smoke test: sura examples/starblaster_3d.sura -- --smoke
+
+SMOKE is false
+if argc() > 0 then
+  if argv()[0] == "--smoke" then
+    SMOKE is true
+  end
+end
+
+W is 900
+H is 620
+CX is W / 2
+CY is H / 2
+FOV is 420
+
+if not win_init(W, H, "Sura StarBlaster 3D") then
+  print("win_init failed")
+  exit()
+end
+
+star_count is 95
+sx is []
+sy is []
+sz is []
+
+i is 0
+while i < star_count do
+  push(sx, random(-520, 520))
+  push(sy, random(-340, 340))
+  push(sz, random(30, 720))
+  i += 1
+end
+
+enemy_count is 10
+ex is []
+ey is []
+ez is []
+ehp is []
+ealive is []
+
+i is 0
+while i < enemy_count do
+  push(ex, random(-260, 260))
+  push(ey, random(-160, 160))
+  push(ez, random(260, 900))
+  push(ehp, 1)
+  push(ealive, 1)
+  i += 1
+end
+
+aim_x is CX
+aim_y is CY
+score is 0
+hp is 100
+wave is 1
+cooldown is 0
+flash is 0
+frame is 0
+running is true
+mouse_seed is mouse_pos()
+last_mouse_x is mouse_seed.x
+last_mouse_y is mouse_seed.y
+
+func clamp_value(v, lo, hi) do
+  if v < lo then return lo
+  if v > hi then return hi
+  return v
+end
+
+func screen_x(x, z) do
+  return CX + (x * FOV) / z
+end
+
+func screen_y(y, z) do
+  return CY + (y * FOV) / z
+end
+
+func enemy_size(z) do
+  size is floor(2600 / z)
+  if size < 10 then return 10
+  if size > 58 then return 58
+  return size
+end
+
+func alive_count() do
+  count is 0
+  i is 0
+  while i < enemy_count do
+    if ealive[i] == 1 then
+      count += 1
+    end
+    i += 1
+  end
+  return count
+end
+
+func spawn_enemy(i) do
+  ex[i] is random(-260, 260)
+  ey[i] is random(-165, 145)
+  ez[i] is random(520, 980) + wave * 35
+  ehp[i] is 1 + floor(wave / 3)
+  ealive[i] is 1
+end
+
+func reset_wave() do
+  i is 0
+  while i < enemy_count do
+    spawn_enemy(i)
+    i += 1
+  end
+end
+
+func target_at(tx, ty) do
+  best is -1
+  best_d is 99999
+
+  i is 0
+  while i < enemy_count do
+    if ealive[i] == 1 then
+      px is screen_x(ex[i], ez[i])
+      py is screen_y(ey[i], ez[i])
+      dx is px - tx
+      dy is py - ty
+      d is sqrt(dx * dx + dy * dy)
+      hit_radius is enemy_size(ez[i]) + 18
+      if d < best_d and d < hit_radius then
+        best is i
+        best_d is d
+      end
+    end
+    i += 1
+  end
+  return best
+end
+
+func draw_crosshair() do
+  win_line(aim_x - 18, aim_y, aim_x - 6, aim_y, 80, 240, 255)
+  win_line(aim_x + 6, aim_y, aim_x + 18, aim_y, 80, 240, 255)
+  win_line(aim_x, aim_y - 18, aim_x, aim_y - 6, 80, 240, 255)
+  win_line(aim_x, aim_y + 6, aim_x, aim_y + 18, 80, 240, 255)
+  win_circle(aim_x, aim_y, 3, 120, 255, 255)
+end
+
+func draw_hud() do
+  win_text("Sura StarBlaster 3D", 18, 14, 230, 245, 255)
+  win_text("HP " + hp + "   SCORE " + score + "   WAVE " + wave, 18, 40, 190, 230, 255)
+  win_text("WASD/Arrows move  Space/Mouse fire  Q/Esc quit", 18, H - 28, 160, 185, 210)
+  hpw is hp * 2
+  win_rect(18, 62, 204, 12, 45, 45, 55)
+  win_rect(20, 64, hpw, 8, 80, 230, 120)
+end
+
+func draw_scene() do
+  if flash > 0 then
+    win_clear(14, 18, 34)
+  else
+    win_clear(4, 6, 16)
+  end
+
+  i is 0
+  while i < star_count do
+    px is screen_x(sx[i], sz[i])
+    py is screen_y(sy[i], sz[i])
+    if px >= 0 and px < W and py >= 0 and py < H then
+      bright is 255 - floor(sz[i] / 4)
+      if bright < 80 then bright is 80
+      size is 1
+      if sz[i] < 180 then size is 2
+      win_rect(px, py, size, size, bright, bright, 255)
+    end
+    i += 1
+  end
+
+  i is 0
+  while i < enemy_count do
+    if ealive[i] == 1 then
+      px is screen_x(ex[i], ez[i])
+      py is screen_y(ey[i], ez[i])
+      size is enemy_size(ez[i])
+      if px > -80 and px < W + 80 and py > -80 and py < H + 80 then
+        win_circle(px, py, size, 230, 70, 80)
+        win_circle(px, py, floor(size / 2), 255, 190, 90)
+        win_line(px - size - 12, py, px + size + 12, py, 255, 90, 90)
+        win_line(px, py - size - 12, px, py + size + 12, 255, 90, 90)
+      end
+    end
+    i += 1
+  end
+
+  draw_crosshair()
+  draw_hud()
+end
+
+reset_wave()
+if SMOKE then
+  ex[0] is 0
+  ey[0] is 0
+  ez[0] is 560
+  ehp[0] is 1
+  ealive[0] is 1
+  aim_x is screen_x(ex[0], ez[0])
+  aim_y is screen_y(ey[0], ez[0])
+end
+
+while running do
+  frame += 1
+
+  left_key is key_down("a") or key_down("left")
+  right_key is key_down("d") or key_down("right")
+  up_key is key_down("w") or key_down("up")
+  down_key is key_down("s") or key_down("down")
+  mouse_left is mouse_down("left")
+  fire_key is key_down("space") or mouse_left
+  quit_key is key_down("q") or key_down("escape")
+
+  if quit_key then
+    running is false
+  end
+
+  mouse is mouse_pos()
+  if mouse.x >= 0 and mouse.x < W and mouse.y >= 0 and mouse.y < H then
+    if mouse.x != last_mouse_x or mouse.y != last_mouse_y or mouse_left then
+      aim_x is mouse.x
+      aim_y is mouse.y
+      last_mouse_x is mouse.x
+      last_mouse_y is mouse.y
+    end
+  end
+
+  speed is 11
+  if left_key then aim_x -= speed
+  if right_key then aim_x += speed
+  if up_key then aim_y -= speed
+  if down_key then aim_y += speed
+  aim_x is clamp_value(aim_x, 30, W - 30)
+  aim_y is clamp_value(aim_y, 30, H - 30)
+
+  if cooldown > 0 then cooldown -= 1
+  if SMOKE and frame == 1 then fire_key is true
+  if fire_key and cooldown == 0 then
+    hit is target_at(aim_x, aim_y)
+    if hit >= 0 then
+      ehp[hit] is ehp[hit] - 1
+      flash is 6
+      if ehp[hit] <= 0 then
+        ealive[hit] is 0
+        score += 120 + wave * 20
+      else
+        score += 25
+      end
+    end
+    cooldown is 7
+  end
+
+  if flash > 0 then flash -= 1
+
+  i is 0
+  while i < star_count do
+    sz[i] is sz[i] - 7 - wave
+    if sz[i] < 24 then
+      sx[i] is random(-520, 520)
+      sy[i] is random(-340, 340)
+      sz[i] is random(600, 900)
+    end
+    i += 1
+  end
+
+  i is 0
+  while i < enemy_count do
+    if ealive[i] == 1 then
+      ez[i] is ez[i] - 3 - wave * 0.25
+      ex[i] is ex[i] + sin((frame + i * 17) / 18) * 0.8
+      if ez[i] < 30 then
+        hp -= 8 + wave * 2
+        spawn_enemy(i)
+      end
+    end
+    i += 1
+  end
+
+  if hp <= 0 then
+    running is false
+  end
+
+  if alive_count() == 0 then
+    wave += 1
+    reset_wave()
+  end
+
+  draw_scene()
+  open_now is win_update()
+  if not open_now then
+    running is false
+  end
+
+  if SMOKE and frame >= 8 then
+    running is false
+  end
+
+  wait(16)
+end
+
+win_clear(4, 5, 12)
+if hp <= 0 then
+  win_text("GAME OVER", 360, 250, 255, 90, 90)
+else
+  win_text("SURA 3D GAME READY", 315, 250, 120, 255, 180)
+end
+win_text("Score " + score + " / Wave " + wave, 345, 285, 230, 245, 255)
+win_update()
+
+if SMOKE then
+  if score <= 0 then
+    print("starblaster_3d_smoke: FAIL score did not change")
+    exit(1)
+  end
+  print("starblaster_3d_smoke: PASS")
+  win_close()
+else
+  wait(1800)
+  win_close()
+end

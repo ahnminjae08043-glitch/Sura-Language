@@ -1,0 +1,64 @@
+{
+    "schema":  "sura.public.verification.v1",
+    "product":  "Sura Language",
+    "version":  "1.11.1",
+    "verified":  "2026-07-15",
+    "engine_file":  "SuraLanguage.exe",
+    "engine_sha256":  "a735688c2f11de4e33b768c3aa2cdcfba7278e7d2d4b722d7144c6208cf10fe7",
+    "engine_bytes":  8518877,
+    "engine_locations_checked":  [
+                                     "repository build",
+                                     "generated installer kit",
+                                     "single-file installer smoke installation"
+                                 ],
+    "package_helper":  {
+                           "file":  "surapkg.exe",
+                           "bytes":  5372032,
+                           "sha256":  "a7640f81268b7be834d08134afdb222bb74beb507e774ccac3146e4257594cfb"
+                       },
+    "results":  {
+                    "stable_vm":  "107/107 PASS",
+                    "stable_jit":  "107/107 PASS",
+                    "core_vm":  "107/107 PASS",
+                    "core_jit":  "107/107 PASS",
+                    "bytecode_validation":  "not rerun as a standalone suite; stable VM/JIT suites PASS",
+                    "ffi_safety":  "not rerun as a standalone suite; stable VM/JIT suites PASS",
+                    "async_runtime_concurrency":  "stable VM/JIT async cases PASS; dedicated async race regression retained",
+                    "release_payload_identity":  "installer smoke verified generated kit, locked-upgrade handling, single-file installation, execution, and uninstall",
+                    "starter_examples":  "12/12 parse, typecheck, and run PASS without optional dependencies",
+                    "starter_scaffold":  "surapkg new, generated package run, and generated package test PASS",
+                    "target_lowering_audit":  "INCOMPLETE; JS full 41 partial 0 ignored 2; WASM full 27 partial 14 ignored 2",
+                    "installer_smoke":  "locked executable rejection, single-file extract, quiet install, UTF-8 execution, and uninstall PASS",
+                    "vscode_extension":  "TypeScript compile, LSP client/fallback smoke, esbuild, and extension smoke PASS",
+                    "website":  "vinext production build PASS",
+                    "windows_authenticode":  "valid 0; unsigned 3; direct warning expected True",
+                    "store_msix":  "package content PASS; local loose-layout smoke not_requested"
+                },
+    "performance_record":  {
+                               "status":  "archived performance record; not rerun for 1.11.1",
+                               "reason":  "This patch release changes JIT coverage, diagnostics, GC observability, editor integration, installer diagnostics, and release tooling; no new C++ comparison is claimed.",
+                               "previous_public_record":  "/downloads/verification-1.10.0.json#performance_record",
+                               "source":  "artifacts/native_perf.json",
+                               "sha256":  "4fc519f0473bcb5265214ef43abe01617343bc8f86e922a18a9c1a8f1e9c34ea",
+                               "generated_utc":  "2026-07-13T04:48:16Z",
+                               "measured_language_version":  "1.10.0",
+                               "measured_engine_sha256":  "2cba8070938783da9622a7f01a80d1a2b78aa21bef6d3142ee21303478dc08c0",
+                               "measured_engine_bytes":  8438343,
+                               "host":  {
+                                            "os":  "Microsoft Windows NT 10.0.26200.0",
+                                            "architecture":  "X64",
+                                            "cpu":  "12th Gen Intel(R) Core(TM) i5-12400F"
+                                        },
+                               "compiler_version":  "g++.exe (Rev13, Built by MSYS2 project) 15.2.0",
+                               "compiler_flags":  "-O3 -DNDEBUG -std=c++17 -march=native",
+                               "runs":  30,
+                               "vec2_sura_jit_ms":  1.935,
+                               "vec2_cpp_o3_ms":  0.050,
+                               "vec2_ratio":  38.33,
+                               "vec3_sura_jit_ms":  5.297,
+                               "vec3_cpp_o3_ms":  0.050,
+                               "vec3_ratio":  105.62,
+                               "target_ratio":  10,
+                               "target_met":  false
+                           }
+}

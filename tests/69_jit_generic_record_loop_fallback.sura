@@ -1,0 +1,27 @@
+# A strict counted-loop candidate whose method mutates its receiver. The
+# generic numeric-record tier must reject it and leave every iteration to the
+# complete VM/native path.
+struct MutableSample do
+    value is 0
+
+    func bump(delta) do
+        self.value is self.value + delta
+        return self
+    end
+end
+
+func mutate_sample(current, delta) do
+    return current.bump(delta)
+end
+
+sample is MutableSample(0)
+delta is 2
+counter is 0
+while counter < 1000 do
+    sample is mutate_sample(sample, delta)
+    counter is counter + 1
+end
+
+assert_eq(sample.value, 2000)
+assert_eq(counter, 1000)
+print "69_jit_generic_record_loop_fallback: PASS"

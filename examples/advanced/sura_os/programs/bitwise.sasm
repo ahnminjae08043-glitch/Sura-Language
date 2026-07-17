@@ -1,0 +1,16 @@
+.name bitwise
+.entry start
+
+# Exercise the integer ALU without relying on the host CPU directly.
+start:
+MOVI R0 240
+MOVI R1 15
+OR R0 R1
+MOVI R2 3
+SHL R0 R2
+MOVI R3 255
+XOR R0 R3
+SYSCALL PRINT_NUMBER
+MOVI R0 0
+SYSCALL EXIT
+

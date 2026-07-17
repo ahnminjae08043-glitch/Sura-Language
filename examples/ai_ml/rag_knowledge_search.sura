@@ -1,0 +1,15 @@
+use rag
+
+# Source-grounded retrieval without a network request or API key.
+documents is [{id: "games", title: "Game Runtime", text: "Sura provides window, keyboard, mouse, grid, vector, and drawing APIs for games.", embedding: [1.0, 0.1, 0.0]}, {id: "ai", title: "Native AI", text: "Sura can train dense neural networks and autograd models without Python.", embedding: [0.1, 1.0, 0.2]}, {id: "tools", title: "Developer Tools", text: "Sura includes a formatter, linter, test runner, package manager, and language server.", embedding: [0.0, 0.2, 1.0]}]
+
+query is "How can I train a model?"
+query_embedding is [0.1, 0.95, 0.1]
+prepared is rag.prepare(query, query_embedding, documents, 2)
+
+print("Question: {query}")
+print("Top source: {prepared.sources[0].title}")
+print("Context:\n{prepared.context}")
+
+assert_eq(prepared.sources[0].id, "ai")
+assert(prepared.context.contains("neural networks"))

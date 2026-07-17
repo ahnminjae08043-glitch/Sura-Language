@@ -1,0 +1,180 @@
+func throw_label(label) do
+  throw label
+end
+
+func relay_label(label) do
+  return 10 + throw_label(label)
+end
+
+func identity(value) do
+  return value
+end
+
+func relay_interp() do
+  return relay_label("interp")
+end
+
+func relay_return() do
+  return relay_label("return")
+end
+
+func catch_return_expression() do
+  try
+    return relay_return()
+  catch err
+    return err
+  end
+end
+
+func throw_array_payload() do
+  throw [1, "two", true]
+end
+
+func relay_array_payload() do
+  return throw_array_payload()
+end
+
+func throw_dict_payload() do
+  throw {kind: "dict", score: 7}
+end
+
+func relay_dict_payload() do
+  return throw_dict_payload()
+end
+
+func throw_mixed_payload(flag) do
+  if flag then
+    throw "mixed"
+  else
+    throw 9
+  end
+end
+
+class WasmObjectErrorA do
+  func init(code) do
+    self.code is code
+  end
+
+  func describe() do
+    return "A:" + to_str(self.code)
+  end
+end
+
+class WasmObjectErrorB do
+  func init(code) do
+    self.code is code
+  end
+
+  func describe() do
+    return "B:" + to_str(self.code)
+  end
+end
+
+func throw_object_payload(use_a) do
+  if use_a then
+    throw new WasmObjectErrorA(7)
+  else
+    throw new WasmObjectErrorB(9)
+  end
+end
+
+result is ""
+
+try
+  ignored_binary is 2 * (1 + relay_label("bin"))
+  result is "miss-bin"
+catch err
+  result is err
+finally do
+  result is result + ":F"
+end
+
+try
+  ignored_argument is identity(relay_label("arg"))
+  result is result + "|miss-arg"
+catch err
+  result is result + "|" + err
+end
+
+try
+  ignored_array is [1, relay_label("array-expr"), 3]
+  result is result + "|miss-array"
+catch err
+  result is result + "|" + err
+end
+
+try
+  ignored_dict is {value: relay_label("dict-expr")}
+  result is result + "|miss-dict"
+catch err
+  result is result + "|" + err
+end
+
+try
+  ignored_ternary is true ? relay_label("ternary") : 0
+  result is result + "|miss-ternary"
+catch err
+  result is result + "|" + err
+end
+
+try
+  if relay_label("condition") then
+    result is result + "|miss-condition"
+  end
+catch err
+  result is result + "|" + err
+end
+
+try
+  ignored_interp is "miss {relay_interp()}"
+  result is result + "|miss-interp"
+catch err
+  result is result + "|" + err
+end
+
+try
+  ignored_index is [10, 20][relay_label("index")]
+  result is result + "|miss-index"
+catch err
+  result is result + "|" + err
+end
+
+result is result + "|" + catch_return_expression()
+
+try
+  ignored_array_payload is relay_array_payload()
+  result is result + "|miss-array-payload"
+catch err
+  result is result + "|" + type(err) + ":" + to_str(err)
+end
+
+try
+  ignored_dict_payload is relay_dict_payload()
+  result is result + "|miss-dict-payload"
+catch err
+  result is result + "|" + type(err) + ":" + err.kind + ":" + to_str(err.score)
+end
+
+try
+  ignored_mixed_payload is throw_mixed_payload(false)
+  result is result + "|miss-mixed-payload"
+catch err
+  result is result + "|" + type(err) + ":" + to_str(err)
+end
+
+try
+  ignored_object_a is throw_object_payload(true)
+  result is result + "|miss-object-a"
+catch err
+  result is result + "|" + type(err) + ":" + err.describe()
+end
+
+try
+  ignored_object_b is throw_object_payload(false)
+  result is result + "|miss-object-b"
+catch err
+  result is result + "|" + type(err) + ":" + err.describe()
+end
+
+assert_eq(result, "bin:F|arg|array-expr|dict-expr|ternary|condition|interp|index|return|array:[1, \"two\", true]|dict:dict:7|number:9|instance:A:7|instance:B:9")
+print_no_nl(result)

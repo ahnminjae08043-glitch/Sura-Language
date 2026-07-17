@@ -1,0 +1,23 @@
+name is "Sura"
+numbers is [1, 2, 3, 4]
+total is 0
+
+for number in numbers do
+  total += number
+end
+
+func classify(value) do
+  if value > 10 then
+    return "large"
+  elif value == 10 then
+    return "ten"
+  else
+    return "small"
+  end
+end
+
+assert_eq(name, "Sura")
+assert_eq(total, 10)
+assert_eq(classify(total), "ten")
+assert_eq("{name}:{total}", "Sura:10")
+print("compat-1.11-core: PASS")

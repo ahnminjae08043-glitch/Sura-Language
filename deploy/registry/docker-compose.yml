@@ -1,0 +1,26 @@
+services:
+  sura-registry:
+    build:
+      context: ../..
+      dockerfile: deploy/registry/Dockerfile
+    image: sura-registry:local
+    restart: unless-stopped
+    environment:
+      PORT: "8765"
+      SURA_REGISTRY: /var/lib/sura-registry
+      SURA_REGISTRY_HOST: 0.0.0.0
+      SURA_REGISTRY_TOKEN: ${SURA_REGISTRY_TOKEN:?set SURA_REGISTRY_TOKEN}
+      SURA_REGISTRY_ADMIN_TOKEN: ${SURA_REGISTRY_ADMIN_TOKEN:?set SURA_REGISTRY_ADMIN_TOKEN}
+    ports:
+      - "8765:8765"
+    volumes:
+      - sura-registry-data:/var/lib/sura-registry
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8765/health').then(r=>r.json()).then(j=>process.exit(j.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  sura-registry-data:

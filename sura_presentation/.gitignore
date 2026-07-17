@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.next/
+.wrangler/
+.sites-dev.*.log
+.vinext-preview.*.log
+*.tgz
+
+.vercel

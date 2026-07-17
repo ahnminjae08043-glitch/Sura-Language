@@ -1,0 +1,7 @@
+label is "Literal {\"SURA\".lower()} {\"  core  \".trim()}"
+
+assert_eq(label, "Literal sura core")
+assert_eq("WASM".lower(), "wasm")
+assert_eq("  safe  ".trim(), "safe")
+
+print label

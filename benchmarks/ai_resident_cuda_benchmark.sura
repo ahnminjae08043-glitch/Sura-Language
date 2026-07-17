@@ -1,0 +1,109 @@
+use autograd
+use array
+
+# GPU-resident float32 benchmark. Host-to-device setup and the final scalar
+# readback are deliberately outside the timed/counter-validated regions.
+size is 256
+warmup is 3
+runs is 10
+learning_rate is 0.0001
+
+func median(values) do
+  ordered is array.sort(array.clone(values))
+  middle is floor(ordered.len() / 2)
+  if ordered.len() % 2 == 0 then
+    return (ordered[middle - 1] + ordered[middle]) / 2
+  end
+  return ordered[middle]
+end
+
+func p95(values) do
+  ordered is array.sort(array.clone(values))
+  index is ceil(ordered.len() * 0.95) - 1
+  return ordered[index]
+end
+
+# Generate one canonical CPU state file so the optional PyTorch companion uses
+# byte-identical float32 inputs, initial weights, and targets.
+input_host is autograd.randn([size, size], {seed: 1107, dtype: "float32"})
+weight_host is autograd.randn([size, size], {seed: 2209, dtype: "float32"})
+target_host is autograd.randn([size, size], {seed: 3301, dtype: "float32"})
+shared_inputs is env_get("SURA_RESIDENT_BENCH_INPUTS", "")
+if shared_inputs != "" then
+  autograd.save_safetensors({input: input_host, weight: weight_host, target: target_host}, shared_inputs)
+end
+
+cuda is autograd.cuda_info()
+if not cuda.available then
+  report is {schema: "sura.ai-resident-benchmark.v1", status: "unavailable", reason: cuda.error, matrix_size: size, warmup: warmup, runs: runs, dtype: "float32", forward: nil, training: nil}
+  print(json_stringify(report))
+else
+  # All uploads occur before warmup and before cuda_reset_stats().
+  input_cuda is autograd.to(input_host, "cuda")
+  target is autograd.to(target_host, "cuda")
+  weight is autograd.parameter(autograd.data(weight_host), {dtype: "float32", device: "cuda"})
+  forward_weight is autograd.detach(weight)
+
+  initial_output is autograd.relu(autograd.matmul(input_cuda, forward_weight))
+  initial_checksum is autograd.item(autograd.sum(initial_output))
+
+  i is 0
+  forward_output is nil
+  while i < warmup do
+    forward_output is autograd.relu(autograd.matmul(input_cuda, forward_weight))
+    i is i + 1
+  end
+  autograd.cuda_synchronize()
+
+  autograd.cuda_reset_stats()
+  forward_samples_ms is []
+  i is 0
+  while i < runs do
+    autograd.cuda_synchronize()
+    started is clock()
+    forward_output is autograd.relu(autograd.matmul(input_cuda, forward_weight))
+    autograd.cuda_synchronize()
+    forward_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+  forward_before_read is autograd.cuda_stats()
+  forward_checksum is autograd.item(autograd.sum(forward_output))
+  forward_after_read is autograd.cuda_stats()
+
+  i is 0
+  loss is nil
+  while i < warmup do
+    autograd.zero_grad([weight])
+    prediction is autograd.relu(autograd.matmul(input_cuda, weight))
+    loss is autograd.mse(prediction, target)
+    autograd.backward(loss)
+    autograd.sgd([weight], learning_rate)
+    i is i + 1
+  end
+  autograd.cuda_synchronize()
+
+  autograd.cuda_reset_stats()
+  training_samples_ms is []
+  i is 0
+  while i < runs do
+    autograd.cuda_synchronize()
+    started is clock()
+    autograd.zero_grad([weight])
+    prediction is autograd.relu(autograd.matmul(input_cuda, weight))
+    loss is autograd.mse(prediction, target)
+    autograd.backward(loss)
+    autograd.sgd([weight], learning_rate)
+    autograd.cuda_synchronize()
+    training_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+  training_before_read is autograd.cuda_stats()
+  final_loss is autograd.item(loss)
+  training_after_read is autograd.cuda_stats()
+
+  forward_report is {status: "ok", workload: "relu(matmul(input, weight))", median_ms: median(forward_samples_ms), p95_ms: p95(forward_samples_ms), raw_ms: forward_samples_ms, initial_checksum: initial_checksum, final_checksum: forward_checksum, stats_before_read: forward_before_read, stats_after_scalar_read: forward_after_read, resident_transfer_free: forward_before_read.h2d_bytes == 0 and forward_before_read.d2h_bytes == 0}
+  expected_optimizer_status_d2h is runs * 4
+  training_report is {status: "ok", workload: "zero_grad+matmul+relu+mse+backward+sgd", optimizer: "sgd", learning_rate: learning_rate, median_step_ms: median(training_samples_ms), p95_step_ms: p95(training_samples_ms), raw_step_ms: training_samples_ms, final_loss: final_loss, stats_before_read: training_before_read, stats_after_scalar_read: training_after_read, optimizer_status_d2h_bytes: training_before_read.d2h_bytes, expected_optimizer_status_d2h_bytes: expected_optimizer_status_d2h, resident_transfer_free: training_before_read.h2d_bytes == 0 and training_before_read.d2h_bytes == 0, resident_tensor_transfer_free: training_before_read.h2d_bytes == 0 and training_before_read.d2h_bytes == expected_optimizer_status_d2h}
+  report is {schema: "sura.ai-resident-benchmark.v1", status: "ok", device: cuda.device_name, device_index: cuda.device_index, compute_capability: cuda.compute_capability, backend: cuda.backend, matmul_backend: cuda.matmul_backend, cublas_available: cuda.cublas_available, cublas_library: cuda.cublas_library, cublas_error: cuda.cublas_error, kernel_coverage: cuda.kernel_coverage, matrix_size: size, warmup: warmup, runs: runs, dtype: "float32", setup_excluded: true, forward: forward_report, training: training_report}
+  print(json_stringify(report))
+end

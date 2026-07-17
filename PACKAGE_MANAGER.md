@@ -1,389 +1,144 @@
-# Sura 패키지 관리 시스템 (SURAPKG)
+# Sura 패키지 관리자
 
-## 개요
+`surapkg`는 Sura 프로젝트 생성, 실행, 테스트, 의존성 잠금과 배포 검사를
+담당하는 명령행 도구다. 이 문서는 Sura 1.11.1 실행 파일의 `surapkg --help`와
+스모크 테스트에서 확인하는 기능만 설명한다.
 
-**SURAPKG**는 Sura 언어를 위한 패키지 관리자입니다. 다른 프로그래밍 언어의 npm, pip, cargo와 유사한 역할을 합니다.
+## 새 프로젝트
 
----
-
-## 설치
-
-### 1단계: surapkg 바이너리 설치
-```bash
-# Windows
-> surapkg --version
-
-# Linux/macOS
-$ surapkg --version
+```powershell
+surapkg new hello_sura
+cd hello_sura
+surapkg run
+surapkg test
 ```
 
-### 2단계: 프로젝트 초기화
-```bash
-$ surapkg init my-project
-$ cd my-project
+`surapkg new hello_sura`가 만드는 기본 구조는 다음과 같다.
+
+```text
+hello_sura/
+├── .vscode/
+├── src/
+│   ├── hello_sura.sura
+│   └── greeting.sura
+├── tests/
+│   └── greeting_test.sura
+├── .gitignore
+├── README.md
+└── sura.pkg.json
 ```
 
-생성되는 파일:
-- `sura.pkg.yaml` - 패키지 메타데이터
-- `surapkg.lock.yaml` - 의존성 잠금 파일 (버전 관리)
-- `.surapkg/` - 로컬 패키지 캐시
-
----
-
-## sura.pkg.yaml 구조
-
-```yaml
-name: my-awesome-app
-version: 1.0.0
-author: Your Name
-license: MIT
-description: 내 첫 Sura 애플리케이션
-
-dependencies:
-  http-client: ^2.0.0      # 메이저 버전 호환
-  data-utils: ~1.5.0       # 마이너 버전 호환
-  game-physics: 1.0.0      # 정확한 버전
-
-dev-dependencies:
-  test-framework: ^1.0.0
-
-scripts:
-  start: main.sura
-  build: scripts/build.sura
-  test: scripts/test.sura
-```
-
----
-
-## 패키지 명령어
-
-### 의존성 설치
-```bash
-$ surapkg install           # sura.pkg.yaml 기반 설치
-$ surapkg install http-client   # 특정 패키지 설치
-$ surapkg install http-client@2.1.0  # 버전 지정
-```
-
-### 패키지 제거
-```bash
-$ surapkg remove http-client
-$ surapkg uninstall http-client
-```
-
-### 패키지 검색
-```bash
-$ surapkg search http
-$ surapkg search "data processing"
-```
-
-### 패키지 정보 보기
-```bash
-$ surapkg info http-client
-```
-
-### 버전 업그레이드
-```bash
-$ surapkg update                    # 모든 패키지 업데이트
-$ surapkg update http-client        # 특정 패키지 업데이트
-$ surapkg update http-client@3.0.0  # 특정 버전으로
-```
-
-### 전역 설치 (모든 프로젝트에서 사용)
-```bash
-$ surapkg install -g math-advanced
-```
-
----
-
-## 패키지 저장소 (Repository)
-
-### 공식 레지스트리
-```
-https://registry.sura-lang.org
-```
-
-패키지는 JSON 형식으로 관리됩니다:
+기본 매니페스트는 YAML이 아니라 JSON이다.
 
 ```json
 {
-  "name": "http-client",
-  "version": "2.1.0",
-  "author": "Developer",
-  "description": "HTTP 클라이언트 라이브러리",
-  "repository": "https://github.com/user/http-client",
-  "main": "lib/http.sura",
-  "dependencies": {
-    "url-parser": "^1.0.0"
-  },
-  "tags": ["web", "http", "networking"]
+  "name": "hello_sura",
+  "version": "0.1.0",
+  "main": "src/hello_sura.sura",
+  "description": "Sura starter project",
+  "dependencies": {}
 }
 ```
 
-### 프라이빗 레지스트리
-```bash
-$ surapkg config registry https://private.company.com/registry
-```
-
----
-
-## 패키지 생성 및 배포
-
-### 1단계: 패키지 디렉토리 구조
-```
-my-http-lib/
-├── sura.pkg.yaml
-├── README.md
-├── lib/
-│   └── http.sura
-├── examples/
-│   └── usage.sura
-└── tests/
-    └── test_http.sura
-```
-
-### 2단계: sura.pkg.yaml 작성
-```yaml
-name: http-client
-version: 2.1.0
-author: Your Name <your@email.com>
-license: MIT
-repository: https://github.com/user/http-client
-main: lib/http.sura
-description: 간단한 HTTP 클라이언트 라이브러리
-
-dependencies:
-  url-parser: ^1.0.0
-
-exports:
-  - http.sura
-  - utils/request.sura
-
-keywords:
-  - http
-  - web
-  - networking
-```
-
-### 3단계: 계정 등록 및 배포
-```bash
-$ surapkg login
-Username: your_username
-Password: ****
-Email: your@email.com
-
-$ surapkg publish
-Publishing http-client@2.1.0...
-✓ Package published successfully!
-```
-
----
-
-## 패키지 사용 방법
-
-### 로컬 패키지 사용
+생성된 메인 파일은 상대 경로 모듈을 가져와 바로 실행할 수 있다.
 
 ```sura
-# main.sura
-use http-client      # 자동으로 .surapkg/http-client 에서 로드
+import "./greeting.sura"
 
-func main do
-    http_request "GET" "https://api.example.com/data" result
-    print result
+args is argv()
+name is "Sura"
+if length(args) > 0 then
+  name is args[0]
 end
 
-main
+print(greet(name))
 ```
 
-### 특정 함수만 임포트
-```sura
-use http-client { send_request, parse_response }
+## 프로젝트 명령
 
-func main do
-    send_request "https://example.com" response
-end
+```powershell
+surapkg init my_project
+surapkg create my_library
+surapkg run
+surapkg test
+surapkg check
+surapkg lint
+surapkg format --check
+surapkg docs
+surapkg quality
+surapkg ci
 ```
 
----
+- `init`은 현재 디렉터리에 `sura.pkg.json`과 소스 파일을 만든다.
+- `create`는 패키지 골격 디렉터리를 만든다.
+- `run`은 매니페스트의 `main` 파일을 실행한다.
+- `test`는 패키지 테스트를 찾고 실행한다.
+- `check`, `lint`, `format`은 릴리스 전에 소스 품질을 검사한다.
+- `docs`, `quality`, `ci`는 문서·테스트·감사 결과를 배포용 보고서로 만든다.
 
-## 버전 관리 규칙
+각 명령은 지원되는 경우 `--json <파일>`을 받아 CI에서 읽을 수 있는 결과를
+기록한다. 정확한 인자는 설치된 버전의 `surapkg --help`를 기준으로 한다.
 
-Sura는 **Semantic Versioning** (SemVer) 를 따릅니다:
+## 의존성
 
-```
-MAJOR.MINOR.PATCH
-1.2.3
-│   │   │
-│   │   └─ 버그 수정
-│   └───── 새로운 기능 (역호환 유지)
-└───────── 호환 불가 변경
-```
-
-### 버전 범위 지정
-
-```
-1.0.0      # 정확한 버전
-^1.2.3     # 호환 가능한 메이저 버전 (1.x.x)
-~1.2.3     # 호환 가능한 마이너 버전 (1.2.x)
->=1.0.0    # 1.0.0 이상
-<2.0.0     # 2.0.0 미만
-1.0.0 - 2.0.0  # 범위
-```
-
----
-
-## 로컬 디렉토리 패키지
-
-다른 로컬 디렉토리의 패키지를 사용할 수 있습니다:
-
-```yaml
-dependencies:
-  my-local-lib: file:../my-lib
-  dev-toolkit: file:~/projects/dev-tools
+```powershell
+surapkg install ..\my_local_package
+surapkg install package-name@1.2.3
+surapkg install package-name@^1.2.0
+surapkg restore
+surapkg lock
+surapkg list --json
+surapkg tree --json
+surapkg why package-name --json
+surapkg outdated
+surapkg update package-name
+surapkg remove package-name
 ```
 
----
+로컬 경로, 번들 파일, 로컬 또는 HTTP 레지스트리의 이름·버전 참조를 설치할
+수 있다. 해결된 직접·전이 의존성은 `sura.lock.json`에 기록한다. 버전 제약은
+정확한 버전, `^`, `~`와 비교 연산자 범위를 지원한다.
 
-## 스크립트 실행
+기본 로컬 레지스트리 위치는 `SURA_REGISTRY`, HTTP 레지스트리는
+`SURA_REGISTRY_URL`로 지정한다. 저장소에 실제로 운영하지 않는 공개 레지스트리
+주소를 문서에 가정해서 적지 않는다.
 
-패키지의 커스텀 스크립트를 정의할 수 있습니다:
+## 게시와 공급망 검사
 
-```bash
-$ surapkg run start          # main.sura 실행
-$ surapkg run build          # scripts/build.sura 실행
-$ surapkg run test           # scripts/test.sura 실행
+```powershell
+surapkg publish . --dry-run --json publish-check.json
+surapkg sign . --json sign.json
+surapkg verify . --json verify.json
+surapkg audit . --json audit.json --sarif audit.sarif
+surapkg release . --dry-run --json release.json
 ```
 
-또는:
-```bash
-$ surapkg start
-$ surapkg build
-$ surapkg test
+HTTP 게시에는 `SURA_REGISTRY_TOKEN`이 필요하다. 서명, 잠금 파일, 레지스트리
+메타데이터와 보안 권고는 서로 다른 검사이므로 게시 전에 `verify`, `audit`,
+`quality`를 모두 실행한다. `publish --dry-run`과 `release --dry-run`은 외부
+레지스트리를 변경하지 않고 제출 가능 여부를 검사한다.
+
+## 버전과 호환성
+
+```powershell
+surapkg version
+surapkg version . patch
+surapkg version . minor
+surapkg version . 2.0.0
 ```
 
----
+패키지 버전은 `major.minor.patch` 형식을 사용한다. 언어와 런타임 자체의
+하위 호환 기준, 지원 중단 기간, 바이트코드와 ABI 계약은
+[Sura 호환성과 지원 정책](COMPATIBILITY.md)을 따른다.
 
-## 의존성 그래프 분석
+## 진단
 
-```bash
-$ surapkg ls              # 설치된 패키지 목록
-$ surapkg tree            # 의존성 트리 보기
-$ surapkg outdated        # 업데이트 가능한 패키지
-$ surapkg audit           # 보안 취약점 확인
+설치 경로, PATH 충돌, 컴파일러와 레지스트리 설정을 확인하려면 다음을
+실행한다.
+
+```powershell
+surapkg doctor --json doctor.json
 ```
 
----
-
-## 캐시 관리
-
-```bash
-$ surapkg cache ls         # 캐시 목록
-$ surapkg cache clean      # 캐시 정리
-$ surapkg cache verify     # 캐시 검증
-```
-
----
-
-## 환경 설정
-
-```bash
-$ surapkg config set registry https://registry.sura-lang.org
-$ surapkg config set prefix ~/.surapkg
-$ surapkg config get registry
-$ surapkg config list
-```
-
----
-
-## 예제: 웹 크롤러 프로젝트
-
-### 1. 프로젝트 초기화
-```bash
-$ surapkg init web-crawler
-$ cd web-crawler
-```
-
-### 2. 의존성 설치
-```bash
-$ surapkg install http-client
-$ surapkg install data-utils
-$ surapkg install json-parser
-```
-
-### 3. main.sura
-```sura
-use http-client
-use data-utils
-use json-parser
-
-func fetch_data(url) do
-    http_request "GET" url response
-    json_parse response data
-    return data
-end
-
-func main do
-    url is "https://api.example.com/articles"
-    articles is fetch_data(url)
-    
-    arr_len articles count
-    print "총 {count}개 기사 발견"
-    
-    for i in 0 to count - 1 do
-        arr_get articles i article
-        print article
-    end
-end
-
-main
-```
-
-### 4. 실행
-```bash
-$ surapkg start
-```
-
----
-
-## 주요 공식 패키지
-
-| 패키지 | 설명 | 버전 |
-|--------|------|------|
-| `http-client` | HTTP 요청 | ^2.0.0 |
-| `data-utils` | 데이터 처리 | ^1.5.0 |
-| `json-parser` | JSON 파싱 | ^1.0.0 |
-| `csv-handler` | CSV 처리 | ^1.2.0 |
-| `game-physics` | 2D 물리 엔진 | ^3.0.0 |
-| `graphics-lib` | 그래픽 렌더링 | ^2.1.0 |
-| `test-framework` | 단위 테스트 | ^1.0.0 |
-| `logging` | 로깅 시스템 | ^1.3.0 |
-
----
-
-## 문제 해결
-
-### 패키지 설치 실패
-```bash
-$ surapkg install --verbose http-client
-$ surapkg cache clean
-$ surapkg install http-client
-```
-
-### 버전 충돌
-```bash
-$ surapkg ls
-# 충돌하는 패키지 확인 후 버전 조정
-```
-
-### 로컬 개발 모드
-```bash
-$ surapkg link ../my-lib
-# sura.pkg.yaml에 자동 추가됨
-```
-
----
-
-## 더 알아보기
-
-- [공식 문서](https://docs.sura-lang.org)
-- [패키지 레지스트리](https://registry.sura-lang.org)
-- [커뮤니티 포럼](https://forum.sura-lang.org)
+문제가 발생하면 `doctor.json`, 사용한 Sura 버전, 운영체제와 실패한 명령을
+함께 남겨야 다른 환경에서도 재현할 수 있다.

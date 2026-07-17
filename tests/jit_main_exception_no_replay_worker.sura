@@ -1,0 +1,13 @@
+worker_args is argv()
+if worker_args.len() == 0 then
+  print "jit main exception worker fixture: PASS"
+else
+  marker_path is worker_args[0]
+  marker is ""
+  if file_exists(marker_path) then
+    marker is file_read(marker_path)
+  end
+  file_write(marker_path, marker + "x")
+  invalid_shift is 1 << 64
+  print invalid_shift
+end

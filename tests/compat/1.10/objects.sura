@@ -1,0 +1,35 @@
+class Counter do
+  func init(start) do
+    self.value is start
+  end
+
+  func add(amount) do
+    self.value += amount
+    return self.value
+  end
+end
+
+struct Vec2 do
+  x
+  y
+
+  func sum() do
+    return self.x + self.y
+  end
+end
+
+counter is new Counter(2)
+vector is Vec2(3, 4)
+
+assert_eq(counter.add(5), 7)
+assert_eq(counter.value, 7)
+assert_eq(vector.sum(), 7)
+
+caught is ""
+try
+  throw "compat-error"
+catch error
+  caught is error
+end
+assert_eq(caught, "compat-error")
+print("compat-1.10-objects: PASS")

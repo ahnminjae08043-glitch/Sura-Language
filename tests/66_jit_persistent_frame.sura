@@ -1,0 +1,35 @@
+# A single no-alias record-update call site may retain one continuously
+# published VM frame across loop iterations. Allocating unrelated strings in
+# the same loop forces GC activity while that frame remains visible as roots.
+struct PersistentVec2 do
+  x is 0
+  y is 0
+
+  func add(other) do
+    return PersistentVec2(self.x + other.x, self.y + other.y)
+  end
+
+  func scale(k) do
+    return PersistentVec2(self.x * k, self.y * k)
+  end
+end
+
+func persistent_step(pos, velocity, factor) do
+  scaled is velocity.scale(factor)
+  return pos.add(scaled)
+end
+
+persistent_pos is PersistentVec2(0, 0)
+persistent_velocity is PersistentVec2(1, 2)
+persistent_i is 0
+persistent_noise is ""
+while persistent_i < 2000 do
+  persistent_pos is persistent_step(persistent_pos, persistent_velocity, 0.5)
+  persistent_noise is "frame-{persistent_i}"
+  persistent_i is persistent_i + 1
+end
+
+assert_approx(persistent_pos.x, 1000, 0.000001)
+assert_approx(persistent_pos.y, 2000, 0.000001)
+assert(persistent_noise.contains("1999"))
+print("66_jit_persistent_frame: PASS")

@@ -22,12 +22,12 @@
     ["\"", "\""]
   ],
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*(else|elif|do|then|func|class|if|while|for|foreach|try|catch)\\b.*$",
+    "increaseIndentPattern": "^\\s*(else|elif|do|then|func|class|enum|if|while|for|foreach|when|try|catch)\\b.*$",
     "decreaseIndentPattern": "^\\s*(end|else|elif|catch)\\b"
   },
   "onEnterRules": [
     {
-      "beforeText": "^\\s*(if|while|for|foreach|func|class|try|catch|else|elif|do)\\b.*$",
+      "beforeText": "^\\s*(if|while|for|foreach|func|class|enum|when|try|catch|else|elif|do)\\b.*$",
       "action": { "indent": "indent" }
     },
     {

@@ -1,0 +1,16 @@
+func bump_capture_value(value) do
+  return value + 2
+end
+
+func make_capture_wrapper(handler) do
+  return func(value) do
+    return handler(value)
+  end
+end
+
+wrapped_capture_value is make_capture_wrapper(bump_capture_value)
+
+assert_eq(wrapped_capture_value(9), 11)
+assert_eq("Capture {wrapped_capture_value(9)}", "Capture 11")
+
+print_no_nl("returned parameter function capture ok")

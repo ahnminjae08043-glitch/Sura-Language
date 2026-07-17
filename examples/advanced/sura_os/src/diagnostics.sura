@@ -1,0 +1,86 @@
+# Structured diagnostic and audit logs used across the virtual kernel.
+
+func diag_create(limit) do
+  return {entries: [], limit: limit, sequence: 0, errors: 0, warnings: 0, dropped: 0}
+end
+
+func diag_add(log, level, subsystem, message, fields, tick) do
+  log.sequence += 1
+  entry is {sequence: log.sequence, tick: tick, level: level.upper(), subsystem: subsystem, message: message, fields: fields}
+  entries is log.entries
+  entries.push(entry)
+  if entry.level == "ERROR" or entry.level == "FATAL" then
+    log.errors += 1
+  end
+  if entry.level == "WARN" then
+    log.warnings += 1
+  end
+  while entries.len() > log.limit do
+    entries.remove(0)
+    log.dropped += 1
+  end
+  return entry
+end
+
+func diag_trace(log, subsystem, message, fields, tick) do
+  return diag_add(log, "TRACE", subsystem, message, fields, tick)
+end
+
+func diag_debug(log, subsystem, message, fields, tick) do
+  return diag_add(log, "DEBUG", subsystem, message, fields, tick)
+end
+
+func diag_info(log, subsystem, message, fields, tick) do
+  return diag_add(log, "INFO", subsystem, message, fields, tick)
+end
+
+func diag_warn(log, subsystem, message, fields, tick) do
+  return diag_add(log, "WARN", subsystem, message, fields, tick)
+end
+
+func diag_error(log, subsystem, message, fields, tick) do
+  return diag_add(log, "ERROR", subsystem, message, fields, tick)
+end
+
+func diag_filter(log, minimum_level, subsystem) do
+  weights is {TRACE: 0, DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4, FATAL: 5}
+  minimum is 0
+  if minimum_level.upper() in weights then minimum is weights[minimum_level.upper()]
+  result is []
+  for entry in log.entries do
+    weight is 0
+    if entry.level in weights then weight is weights[entry.level]
+    subsystem_ok is subsystem == "" or entry.subsystem == subsystem
+    if weight >= minimum and subsystem_ok then result.push(entry)
+  end
+  return result
+end
+
+func diag_format(entry) do
+  tick is osutil_pad_left(entry.tick, 6, "0")
+  level is osutil_pad_right(entry.level, 5, " ")
+  return "[{tick}] {level} {entry.subsystem}: {entry.message}"
+end
+
+func diag_tail(log, count) do
+  result is []
+  start is log.entries.len() - count
+  if start < 0 then start is 0
+  index is start
+  while index < log.entries.len() do
+    result.push(log.entries[index])
+    index += 1
+  end
+  return result
+end
+
+func diag_summary(log) do
+  return {entries: log.entries.len(), errors: log.errors, warnings: log.warnings, dropped: log.dropped, last_sequence: log.sequence}
+end
+
+func diag_clear(log) do
+  log.entries is []
+  log.errors is 0
+  log.warnings is 0
+  log.dropped is 0
+end

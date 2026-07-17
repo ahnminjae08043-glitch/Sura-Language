@@ -1,0 +1,14 @@
+// JIT benchmark
+func poly(x) do
+    return x * x + x * 3 + 7
+end
+
+i is 0
+sum is 0
+
+while i < 1000000 do
+    sum is sum + poly(i)
+    i is i + 1
+end
+
+print sum

@@ -1,0 +1,3 @@
+message is "나의 첫 Sura 프로그램"
+print(message)
+print("성공적으로 실행했어요!")

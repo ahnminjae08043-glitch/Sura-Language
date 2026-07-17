@@ -1,0 +1,62 @@
+{
+  "schema": "sura.public.verification.v1",
+  "product": "Sura Language",
+  "version": "1.11.0",
+  "verified": "2026-07-15",
+  "engine_file": "SuraLanguage.exe",
+  "engine_sha256": "599f9470eece9b69c4fbac0178e599bedc9ddcfa3102eb1fb38f3294f6842945",
+  "engine_bytes": 8467889,
+  "engine_locations_checked": [
+    "repository build",
+    "generated installer kit",
+    "single-file installer smoke installation"
+  ],
+  "package_helper": {
+    "file": "surapkg.exe",
+    "bytes": 5372032,
+    "sha256": "453ac61b7edf3c9ac58430dbb934c2e6465521ae9183b470d602985aaae6acd5"
+  },
+  "results": {
+    "stable_vm": "104/104 PASS",
+    "stable_jit": "104/104 PASS",
+    "core_vm": "104/104 PASS",
+    "core_jit": "104/104 PASS",
+    "bytecode_validation": "not rerun for 1.11.0; see verification-1.10.0.json",
+    "ffi_safety": "not rerun as a standalone suite for 1.11.0; stable runtime suite PASS",
+    "async_runtime_concurrency": "stable runtime suite async cases PASS",
+    "release_payload_identity": "installer smoke verified the generated kit and single-file installation",
+    "starter_examples": "12/12 parse, typecheck, and run PASS without optional dependencies",
+    "starter_scaffold": "surapkg new, generated package run, and generated package test PASS",
+    "target_lowering_audit": "INCOMPLETE; JS full 41 ignored 2; WASM full 28 partial 13 ignored 2",
+    "installer_smoke": "single-file extract, quiet install, UTF-8 execution, and uninstall PASS",
+    "vscode_extension": "TypeScript compile, smoke, esbuild, walkthrough commands, and VSIX package PASS",
+    "website": "vinext production build PASS"
+  },
+  "performance_record": {
+    "status": "archived 1.10.0 record; not rerun for 1.11.0",
+    "reason": "Starter Pack changes affect onboarding and tooling, not runtime performance paths",
+    "previous_public_record": "/downloads/verification-1.10.0.json#performance_record",
+    "source": "artifacts/native_perf.json",
+    "sha256": "4fc519f0473bcb5265214ef43abe01617343bc8f86e922a18a9c1a8f1e9c34ea",
+    "generated_utc": "2026-07-13T04:48:16Z",
+    "measured_language_version": "1.10.0",
+    "measured_engine_sha256": "2cba8070938783da9622a7f01a80d1a2b78aa21bef6d3142ee21303478dc08c0",
+    "measured_engine_bytes": 8438343,
+    "host": {
+      "os": "Microsoft Windows NT 10.0.26200.0",
+      "architecture": "X64",
+      "cpu": "12th Gen Intel(R) Core(TM) i5-12400F"
+    },
+    "compiler_version": "g++.exe (Rev13, Built by MSYS2 project) 15.2.0",
+    "compiler_flags": "-O3 -DNDEBUG -std=c++17 -march=native",
+    "runs": 30,
+    "vec2_sura_jit_ms": 1.935,
+    "vec2_cpp_o3_ms": 0.050,
+    "vec2_ratio": 38.33,
+    "vec3_sura_jit_ms": 5.297,
+    "vec3_cpp_o3_ms": 0.050,
+    "vec3_ratio": 105.62,
+    "target_ratio": 10,
+    "target_met": false
+  }
+}

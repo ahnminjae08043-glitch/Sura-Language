@@ -1,0 +1,14 @@
+func constant_math() do
+    left is 20
+    right is 22
+    total is left + right
+    return total * 2
+end
+
+result is 0
+for call_index in 1 to 8 do
+    result is constant_math()
+end
+
+assert_eq(result, 84)
+print("jit portable baseline source: PASS")

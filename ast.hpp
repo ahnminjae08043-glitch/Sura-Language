@@ -54,8 +54,12 @@ enum class NK {
     CMD,          
     EXPR_STMT,    
     TERNARY,      
-    FUNC_EXPR,    
-    STR_INTERP,   
+    FUNC_EXPR,
+    STR_INTERP,
+    MATCH,
+    ENUM_DEF,
+    IMPORT,
+    GLOBAL_DECL,
 };
 
 
@@ -75,21 +79,22 @@ enum class SType {
 
 inline const char* stype_name(SType t) {
     switch (t) {
-        case SType::ANY:    return "?�무";
-        case SType::NUMBER: return "?�자";
-        case SType::STRING: return "문자열";
-        case SType::BOOL:   return "불리언";
-        case SType::ARRAY:  return "배열";
-        case SType::DICT:   return "?�셔?�리";
-        case SType::NIL:    return "?�음";
-        case SType::CLASS:  return "<?�래??";
+        case SType::ANY:    return "any";
+        case SType::NUMBER: return "number";
+        case SType::STRING: return "string";
+        case SType::BOOL:   return "bool";
+        case SType::ARRAY:  return "array";
+        case SType::DICT:   return "dict";
+        case SType::NIL:    return "nil";
+        case SType::CLASS:  return "class";
     }
-    return "?�무";
+    return "any";
 }
 
 struct TypeAnnot {
     SType       kind       = SType::ANY;
     std::string class_name;          
+    std::string source_name;         
     bool        present    = false;  
 
     bool is_any() const { return !present || kind == SType::ANY; }
@@ -186,8 +191,9 @@ struct UnaryOp : Expr {
 struct DotAccess : Expr {
     ExprPtr     obj;
     std::string prop;
-    DotAccess(ExprPtr o, std::string p, int l = 0)
-        : Expr(NK::DOT_ACCESS, l), obj(std::move(o)), prop(std::move(p)) {}
+    bool optional = false;
+    DotAccess(ExprPtr o, std::string p, int l = 0, bool opt = false)
+        : Expr(NK::DOT_ACCESS, l), obj(std::move(o)), prop(std::move(p)), optional(opt) {}
 };
 
 
@@ -211,8 +217,9 @@ struct MethodCallExpr : Expr {
     ExprPtr              obj;
     std::string          method;
     std::vector<ExprPtr> args;
-    MethodCallExpr(ExprPtr o, std::string m, int l = 0)
-        : Expr(NK::METHOD_CALL, l), obj(std::move(o)), method(std::move(m)) {}
+    bool optional = false;
+    MethodCallExpr(ExprPtr o, std::string m, int l = 0, bool opt = false)
+        : Expr(NK::METHOD_CALL, l), obj(std::move(o)), method(std::move(m)), optional(opt) {}
 };
 
 
@@ -384,6 +391,11 @@ struct MethodEntry {
     std::vector<std::string> params;
     std::vector<ExprPtr>     defaults; 
     SuraBlock*                   body = nullptr; 
+    // `struct` declarations synthesize an init method whose omitted
+    // arguments inherit the corresponding field initializer expressions.
+    // The flag is frontend-only metadata; the compiler lowers those
+    // expressions into the normal method-entry default prologue.
+    bool generated_field_init = false;
 };
 
 
@@ -394,6 +406,10 @@ struct ClassDef : Stmt {
     std::string parent; 
 
     std::map<std::string, ExprPtr>     field_defaults;
+    std::map<std::string, bool>        field_has_explicit_default;
+    // Maps keep lookup stable; this vector preserves the source declaration
+    // order used by executable field initializers and public AST output.
+    std::vector<std::string>           field_order;
     std::map<std::string, MethodEntry> methods;
 
     
@@ -411,16 +427,20 @@ struct ClassDef : Stmt {
     void add_method(const std::string& mname,
                     std::vector<std::string> params,
                     std::vector<ExprPtr>     defaults,
-                    BlockPtr                 body_ptr) {
+                    BlockPtr                 body_ptr,
+                    bool                    generated_field_init = false) {
         method_bodies.push_back(std::move(body_ptr));
         MethodEntry me;
         me.params   = std::move(params);
         me.defaults = std::move(defaults);
         me.body     = method_bodies.back().get();
+        me.generated_field_init = generated_field_init;
         methods[mname] = std::move(me);
     }
 
-    void add_field(std::string fname, ExprPtr default_val) {
+    void add_field(std::string fname, ExprPtr default_val, bool explicit_default = true) {
+        if (field_defaults.find(fname) == field_defaults.end()) field_order.push_back(fname);
+        field_has_explicit_default[fname] = explicit_default;
         field_defaults[std::move(fname)] = std::move(default_val);
     }
 };
@@ -508,8 +528,48 @@ struct FuncExpr : Expr {
 
 
 struct StrInterp : Expr {
-    std::vector<ExprPtr> parts; 
+    std::vector<ExprPtr> parts;
     StrInterp(int l = 0) : Expr(NK::STR_INTERP, l) {}
+};
+
+struct MatchArm {
+    ExprPtr  pattern;       // nullptr when is_wildcard
+    ExprPtr  range_end;     // non-null for `in start to end`
+    bool     is_wildcard = false;
+    bool     is_range = false;
+    BlockPtr body;
+};
+
+struct MatchStmt : Stmt {
+    ExprPtr               subject;
+    std::vector<MatchArm> arms;
+    MatchStmt(ExprPtr s, int l = 0) : Stmt(NK::MATCH, l), subject(std::move(s)) {}
+};
+
+// enum members: { name, optional value expr }
+// - Bare member → value defaults to the name itself as a string
+// - `NAME is <expr>` → explicit value
+struct EnumMember {
+    std::string name;
+    ExprPtr     value;      // nullptr → use name string as value
+    int         line = 0;
+};
+
+struct EnumDef : Stmt {
+    std::string              name;
+    std::vector<EnumMember>  members;
+    EnumDef(std::string n, int l = 0) : Stmt(NK::ENUM_DEF, l), name(std::move(n)) {}
+};
+
+struct ImportStmt : Stmt {
+    std::string path;
+    ImportStmt(std::string p, int l = 0) : Stmt(NK::IMPORT, l), path(std::move(p)) {}
+};
+
+struct GlobalDeclStmt : Stmt {
+    std::vector<std::string> names;
+    GlobalDeclStmt(std::vector<std::string> n, int l = 0)
+        : Stmt(NK::GLOBAL_DECL, l), names(std::move(n)) {}
 };
 
 
@@ -556,24 +616,28 @@ static void dump_expr(const Expr* e, int depth = 0) {
         }
         case NK::CALL: {
             auto* ce = static_cast<const CallExpr*>(e);
-            printf("%sCALL %s (%zu ?�자)\n", ind.c_str(), ce->name.c_str(), ce->args.size());
-            for (auto& a : ce->args) dump_expr(a.get(), depth + 1); break;
+            printf("%sCALL %s (%zu args)\n", ind.c_str(), ce->name.c_str(), ce->args.size());
+            for (auto& a : ce->args) dump_expr(a.get(), depth + 1);
+            break;
         }
         case NK::METHOD_CALL: {
             auto* mc = static_cast<const MethodCallExpr*>(e);
-            printf("%sMETHOD .%s (%zu ?�자)\n", ind.c_str(), mc->method.c_str(), mc->args.size());
+            printf("%sMETHOD .%s (%zu args)\n", ind.c_str(), mc->method.c_str(), mc->args.size());
             dump_expr(mc->obj.get(), depth + 1);
-            for (auto& a : mc->args) dump_expr(a.get(), depth + 1); break;
+            for (auto& a : mc->args) dump_expr(a.get(), depth + 1);
+            break;
         }
         case NK::SUPER_CALL: {
             auto* sc = static_cast<const SuperCallExpr*>(e);
-            printf("%sSUPER.%s (%zu ?�자)\n", ind.c_str(), sc->method.c_str(), sc->args.size());
-            for (auto& a : sc->args) dump_expr(a.get(), depth + 1); break;
+            printf("%sSUPER.%s (%zu args)\n", ind.c_str(), sc->method.c_str(), sc->args.size());
+            for (auto& a : sc->args) dump_expr(a.get(), depth + 1);
+            break;
         }
         case NK::ARRAY_LIT: {
             auto* al = static_cast<const ArrayLit*>(e);
             printf("%sARRAY [%zu]\n", ind.c_str(), al->elements.size());
-            for (auto& el : al->elements) dump_expr(el.get(), depth + 1); break;
+            for (auto& el : al->elements) dump_expr(el.get(), depth + 1);
+            break;
         }
         case NK::DICT_LIT: {
             auto* dl = static_cast<const DictLit*>(e);
@@ -587,9 +651,10 @@ static void dump_expr(const Expr* e, int depth = 0) {
         case NK::NEW_EXPR: {
             auto* ne = static_cast<const NewExpr*>(e);
             printf("%sNEW_EXPR %s\n", ind.c_str(), ne->class_name.c_str());
-            for (auto& a : ne->args) dump_expr(a.get(), depth + 1); break;
+            for (auto& a : ne->args) dump_expr(a.get(), depth + 1);
+            break;
         }
-        default: printf("%s(?????�는 ?�현??\n", ind.c_str()); break;
+        default: printf("%s(unsupported expression)\n", ind.c_str()); break;
     }
 }
 
@@ -676,7 +741,7 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
             printf("%sCLASS %s", ind.c_str(), cd->name.c_str());
             if (!cd->parent.empty()) printf(" extends %s", cd->parent.c_str());
             printf("\n");
-            for (auto& [k, _] : cd->field_defaults)
+            for (const auto& k : cd->field_order)
                 printf("%s  field: %s\n", ind.c_str(), k.c_str());
             for (auto& [m, _] : cd->methods)
                 printf("%s  method: %s\n", ind.c_str(), m.c_str());
@@ -684,14 +749,16 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
         }
         case NK::NEW_INST: {
             auto* ni = static_cast<const NewInstStmt*>(s);
-            printf("%sNEW_INST %s = new %s (%zu ?�자)\n",
+            printf("%sNEW_INST %s = new %s (%zu args)\n",
                    ind.c_str(), ni->var.c_str(), ni->class_name.c_str(), ni->args.size());
-            for (auto& a : ni->args) dump_expr(a.get(), depth + 1); break;
+            for (auto& a : ni->args) dump_expr(a.get(), depth + 1);
+            break;
         }
         case NK::RETURN: {
             auto* rs = static_cast<const ReturnStmt*>(s);
             printf("%sRETURN\n", ind.c_str());
-            if (rs->value) dump_expr(rs->value.get(), depth + 1); break;
+            if (rs->value) dump_expr(rs->value.get(), depth + 1);
+            break;
         }
         case NK::BREAK:    printf("%sBREAK\n",    ind.c_str()); break;
         case NK::CONTINUE: printf("%sCONTINUE\n", ind.c_str()); break;
@@ -714,12 +781,20 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
         }
         case NK::USE:
             printf("%sUSE %s\n", ind.c_str(), static_cast<const UseStmt*>(s)->lib.c_str()); break;
+        case NK::GLOBAL_DECL: {
+            auto* gd = static_cast<const GlobalDeclStmt*>(s);
+            printf("%sGLOBAL", ind.c_str());
+            for (const auto& name : gd->names) printf(" %s", name.c_str());
+            printf("\n");
+            break;
+        }
         case NK::CMD: {
             auto* cs = static_cast<const CmdStmt*>(s);
-            printf("%sCMD %s (%zu ?�자)\n", ind.c_str(), cs->cmd.c_str(), cs->args.size());
-            for (auto& a : cs->args) dump_expr(a.get(), depth + 1); break;
+            printf("%sCMD %s (%zu args)\n", ind.c_str(), cs->cmd.c_str(), cs->args.size());
+            for (auto& a : cs->args) dump_expr(a.get(), depth + 1);
+            break;
         }
-        default: printf("%s(?????�는 문장)\n", ind.c_str()); break;
+        default: printf("%s(unsupported statement)\n", ind.c_str()); break;
     }
 }
 
@@ -728,10 +803,10 @@ static void dump_block(const SuraBlock* SuraBlock, int depth) {
     for (auto& s : SuraBlock->body) dump_stmt(s.get(), depth);
 }
 
-static void dump_ast(const SuraBlock* program) {
-    printf("?�═ AST ?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═\n");
+[[maybe_unused]] static void dump_ast(const SuraBlock* program) {
+    printf("================ AST ================\n");
     dump_block(program, 0);
-    printf("?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═?�═\n");
+    printf("=====================================\n");
 }
 
 #endif 

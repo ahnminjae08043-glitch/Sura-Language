@@ -1,0 +1,15 @@
+score is 87
+
+if score >= 90 then
+  print("등급 A")
+elif score >= 80 then
+  print("등급 B")
+else
+  print("등급 C")
+end
+
+total is 0
+for number in 1 to 5 do
+  total += number
+end
+print("1부터 5까지의 합: {total}")

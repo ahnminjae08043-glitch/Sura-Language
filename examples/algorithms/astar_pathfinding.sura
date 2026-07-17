@@ -1,0 +1,112 @@
+# A* pathfinding on a small tile map.
+# 0 = open, 1 = wall, 2 = final path.
+
+W is 10
+H is 8
+walls is [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0]
+
+start is 0
+goal is W * H - 1
+open is [start]
+closed is []
+came_from is {}
+g_score is {"0": 0}
+
+func key(n) do
+  return "" + n
+end
+
+func contains_node(items, node) do
+  for item in items do
+    if item == node then return true
+  end
+  return false
+end
+
+func heuristic(node) do
+  x is node % W
+  y is floor(node / W)
+  gx is goal % W
+  gy is floor(goal / W)
+  return abs(gx - x) + abs(gy - y)
+end
+
+func neighbors(node) do
+  result is []
+  x is node % W
+  y is floor(node / W)
+  if x > 0 then result.push(node - 1)
+  if x < W - 1 then result.push(node + 1)
+  if y > 0 then result.push(node - W)
+  if y < H - 1 then result.push(node + W)
+  return result
+end
+
+found is false
+while open.len() > 0 and not found do
+  best_pos is 0
+  best_node is open[0]
+  best_cost is g_score[key(best_node)] + heuristic(best_node)
+
+  i is 1
+  while i < open.len() do
+    candidate is open[i]
+    cost is g_score[key(candidate)] + heuristic(candidate)
+    if cost < best_cost then
+      best_pos is i
+      best_node is candidate
+      best_cost is cost
+    end
+    i += 1
+  end
+
+  current is open.remove(best_pos)
+  if current == goal then
+    found is true
+  else
+    closed.push(current)
+    for next in neighbors(current) do
+      if walls[next] == 0 and not contains_node(closed, next) then
+        tentative is g_score[key(current)] + 1
+        unseen is not (key(next) in g_score)
+        if unseen or tentative < g_score[key(next)] then
+          came_from[key(next)] is current
+          g_score[key(next)] is tentative
+          if not contains_node(open, next) then open.push(next)
+        end
+      end
+    end
+  end
+end
+
+path is []
+if found then
+  cursor is goal
+  while cursor != start do
+    path.push(cursor)
+    cursor is came_from[key(cursor)]
+  end
+  path.push(start)
+end
+
+print("A* path length: {path.len()}")
+y is 0
+while y < H do
+  line is ""
+  x is 0
+  while x < W do
+    node is y * W + x
+    symbol is "."
+    if walls[node] == 1 then symbol is "#"
+    if contains_node(path, node) then symbol is "*"
+    if node == start then symbol is "S"
+    if node == goal then symbol is "G"
+    line += symbol
+    x += 1
+  end
+  print(line)
+  y += 1
+end
+
+assert(found)
+assert(path.len() > 0)

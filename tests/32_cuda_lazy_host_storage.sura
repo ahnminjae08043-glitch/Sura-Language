@@ -1,0 +1,67 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  left is autograd.ones([32, 32], {device: "cuda"})
+  right is autograd.ones([32, 32], {device: "cuda"})
+  bias is autograd.ones([32, 32], {device: "cuda"})
+
+  baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  product is autograd.matmul(left, right)
+  activated is autograd.relu(product)
+  biased is autograd.add(activated, bias)
+  total is autograd.sum(biased)
+
+  # CUDA operation results have logical packed storage but no host allocation.
+  resident is autograd.limits().memory_used_bytes
+  assert_eq(resident, baseline)
+  assert_eq(autograd.storage_bytes(product), 4096)
+  assert_eq(autograd.storage_bytes(activated), 4096)
+  assert_eq(autograd.storage_bytes(biased), 4096)
+  assert_eq(autograd.storage_bytes(total), 4)
+
+  before_read is autograd.cuda_stats()
+  assert_eq(before_read.h2d_bytes, 0)
+  assert_eq(before_read.d2h_bytes, 0)
+
+  product_data is autograd.data(product)
+  assert_approx(product_data[0][0], 32, 0.0001)
+  after_product_read is autograd.limits().memory_used_bytes
+  assert_eq(after_product_read, baseline + 4096)
+
+  assert_approx(autograd.item(total), 33792, 0.001)
+  after_total_read is autograd.limits().memory_used_bytes
+  assert_eq(after_total_read, baseline + 4100)
+
+  after_read is autograd.cuda_stats()
+  assert_eq(after_read.h2d_bytes, 0)
+  assert_eq(after_read.d2h_bytes, 4100)
+
+  # A cached host observation is reusable and must not transfer or reserve
+  # the same value again.
+  assert_approx(autograd.item(total), 33792, 0.001)
+  assert_eq(autograd.limits().memory_used_bytes, after_total_read)
+  after_second_read is autograd.cuda_stats()
+  assert_eq(after_second_read.d2h_bytes, after_read.d2h_bytes)
+
+  # Persistence snapshots a still-lazy CUDA output without permanently
+  # installing a host mirror on the live tensor.
+  checkpoint_path is path_join(temp_dir(), "sura-lazy-cuda-" + uuid_v4() + ".surackpt")
+  written is autograd.save_checkpoint({biased: biased}, checkpoint_path, {optimizer: false})
+  assert(written > 64)
+  assert_eq(autograd.limits().memory_used_bytes, baseline + 4100)
+  after_save is autograd.cuda_stats()
+  assert_eq(after_save.d2h_bytes, 8196)
+
+  restored is autograd.load_checkpoint(checkpoint_path)
+  restored_data is autograd.data(restored.biased)
+  assert_eq(autograd.dtype(restored.biased), "float32")
+  assert_approx(restored_data[0][0], 33, 0.0001)
+  file_delete(checkpoint_path)
+else
+  print("32_cuda_lazy_host_storage: SKIP ({info.error})")
+end
+
+print("32_cuda_lazy_host_storage: PASS")

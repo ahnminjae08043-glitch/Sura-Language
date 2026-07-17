@@ -1,0 +1,173 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  base is path_join(temp_dir(), "sura-cuda-adam-checkpoint-" + uuid_v4())
+  optimizer_path is base + ".optimizer.surackpt"
+  roundtrip_path is base + ".roundtrip.surackpt"
+  f32_only_path is base + ".f32-only.surackpt"
+
+  parameter is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  reference is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  bf16_parameter is autograd.parameter([1], {dtype: "bfloat16", device: "cuda"})
+  bf16_reference is autograd.parameter([1], {dtype: "bfloat16", device: "cuda"})
+  f32_parameter is autograd.parameter([0.5], {dtype: "float32", device: "cuda"})
+  f32_reference is autograd.parameter([0.5], {dtype: "float32", device: "cuda"})
+
+  # Four sub-ULP Adam updates establish hidden f32 master weights and f32
+  # moments while the visible parameter remains physically packed f16.
+  warmup_gradients is [1, -0.5, 2, 0.25]
+  bf16_warmup_gradients is [-1, 0.75, 1.5, -0.25]
+  f32_warmup_gradients is [0.25, -2, 0.5, 3]
+  warmup is 0
+  while warmup < 4 do
+    autograd.zero_grad([parameter, reference, bf16_parameter, bf16_reference, f32_parameter, f32_reference])
+    autograd.backward(parameter, [warmup_gradients[warmup]])
+    autograd.backward(reference, [warmup_gradients[warmup]])
+    autograd.backward(bf16_parameter, [bf16_warmup_gradients[warmup]])
+    autograd.backward(bf16_reference, [bf16_warmup_gradients[warmup]])
+    autograd.backward(f32_parameter, [f32_warmup_gradients[warmup]])
+    autograd.backward(f32_reference, [f32_warmup_gradients[warmup]])
+    autograd.adam([parameter], 0.0002)
+    autograd.adam([reference], 0.0002)
+    autograd.adam([bf16_parameter], 0.001)
+    autograd.adam([bf16_reference], 0.001)
+    autograd.adam([f32_parameter], 0.0005)
+    autograd.adam([f32_reference], 0.0005)
+    warmup is warmup + 1
+  end
+
+  # Metadata rejection happens before any CUDA snapshot transfer.
+  autograd.cuda_reset_stats()
+  invalid_rejected is false
+  try
+    autograd.save_checkpoint({bad: 1, weight: parameter}, optimizer_path)
+  catch error
+    invalid_rejected is true
+  end
+  assert(invalid_rejected)
+  assert_eq(file_exists(optimizer_path), false)
+  assert_eq(autograd.cuda_stats().d2h_bytes, 0)
+
+  autograd.cuda_reset_stats()
+  written is autograd.save_checkpoint({bf_weight: bf16_parameter, f32_weight: f32_parameter, weight: parameter}, optimizer_path, {optimizer: true})
+  save_stats is autograd.cuda_stats()
+  assert(written > 64)
+  assert(file_exists(optimizer_path))
+  # Each low parameter contributes 14 bytes; f32 Adam contributes 12.
+  assert_eq(save_stats.d2h_bytes, 40)
+  assert_eq(autograd.device(parameter), "cuda:{info.device_index}")
+  assert_eq(autograd.storage_bytes(parameter), 2)
+
+  autograd.save_checkpoint({weight: f32_parameter}, f32_only_path, {optimizer: true})
+  f32_cpu_rejected is false
+  try
+    autograd.load_checkpoint(f32_only_path)
+  catch error
+    f32_cpu_rejected is true
+  end
+  assert(f32_cpu_rejected)
+
+  corrupt_path is base + ".corrupt.surackpt"
+  corrupt_bytes is file_read_bytes(optimizer_path)
+  corrupt_index is corrupt_bytes.len() - 1
+  corrupt_bytes[corrupt_index] is (corrupt_bytes[corrupt_index] + 1) % 256
+  file_write_bytes(corrupt_path, corrupt_bytes)
+  autograd.cuda_reset_stats()
+  corrupt_allocated is autograd.cuda_stats().allocated_bytes
+  corrupt_host_memory is autograd.limits().memory_used_bytes
+  corrupt_rejected is false
+  try
+    autograd.load_checkpoint(corrupt_path, {optimizer: true, device: "cuda"})
+  catch error
+    corrupt_rejected is true
+  end
+  assert(corrupt_rejected)
+  corrupt_stats is autograd.cuda_stats()
+  assert_eq(corrupt_stats.allocation_calls, 0)
+  assert_eq(corrupt_stats.h2d_bytes, 0)
+  assert_eq(corrupt_stats.allocated_bytes, corrupt_allocated)
+  assert_eq(autograd.limits().memory_used_bytes, corrupt_host_memory)
+
+  # Exact optimizer restore cannot silently discard the hidden master on CPU.
+  cpu_optimizer_rejected is false
+  try
+    autograd.load_checkpoint(optimizer_path)
+  catch error
+    cpu_optimizer_rejected is true
+  end
+  assert(cpu_optimizer_rejected)
+
+  weights_only is autograd.load_checkpoint(optimizer_path, {optimizer: false})
+  assert_eq(autograd.device(weights_only.weight), "cpu")
+  assert_eq(autograd.dtype(weights_only.weight), "float16")
+  assert_eq(autograd.storage_bytes(weights_only.weight), 2)
+  assert_eq(autograd.dtype(weights_only.bf_weight), "bfloat16")
+  assert_eq(autograd.storage_bytes(weights_only.bf_weight), 2)
+  assert_eq(autograd.dtype(weights_only.f32_weight), "float32")
+  assert_eq(autograd.storage_bytes(weights_only.f32_weight), 4)
+
+  restored is autograd.load_checkpoint(optimizer_path, {optimizer: true, device: "cuda"})
+  resumed is restored.weight
+  resumed_bf16 is restored.bf_weight
+  resumed_f32 is restored.f32_weight
+  resumed_info is autograd.grad_info(resumed)
+  assert_eq(autograd.device(resumed), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(resumed), "float16")
+  assert_eq(autograd.storage_bytes(resumed), 2)
+  assert_eq(autograd.requires_grad(resumed), true)
+  assert_eq(resumed_info.leaf, true)
+  assert_eq(resumed_info.optimizer_ready, true)
+  assert_eq(autograd.device(resumed_bf16), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(resumed_bf16), "bfloat16")
+  assert_eq(autograd.grad_info(resumed_bf16).leaf, true)
+  assert_eq(autograd.device(resumed_f32), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(resumed_f32), "float32")
+  assert_eq(autograd.grad_info(resumed_f32).leaf, true)
+
+  # Deterministic reserialization proves that visible/master/m/v plus Adam
+  # step and beta products survived the CUDA leaf restore bit-for-bit.
+  autograd.save_checkpoint({bf_weight: resumed_bf16, f32_weight: resumed_f32, weight: resumed}, roundtrip_path, {optimizer: true})
+  assert_eq(file_sha256(roundtrip_path), file_sha256(optimizer_path))
+
+  # Sign- and magnitude-changing gradients make m/v/step restoration
+  # observable; constant gradients would mostly reduce Adam to learning_rate.
+  continuation_gradients is [-2, 0.125, 1.75]
+  bf16_continuation_gradients is [0.5, -1.25, 2.5]
+  f32_continuation_gradients is [-0.75, 4, -1.5]
+  continuation is 0
+  while continuation < 3 do
+    autograd.zero_grad([resumed, reference, resumed_bf16, bf16_reference, resumed_f32, f32_reference])
+    autograd.backward(resumed, [continuation_gradients[continuation]])
+    autograd.backward(reference, [continuation_gradients[continuation]])
+    autograd.backward(resumed_bf16, [bf16_continuation_gradients[continuation]])
+    autograd.backward(bf16_reference, [bf16_continuation_gradients[continuation]])
+    autograd.backward(resumed_f32, [f32_continuation_gradients[continuation]])
+    autograd.backward(f32_reference, [f32_continuation_gradients[continuation]])
+    autograd.adam([resumed], 0.0002)
+    autograd.adam([reference], 0.0002)
+    autograd.adam([resumed_bf16], 0.001)
+    autograd.adam([bf16_reference], 0.001)
+    autograd.adam([resumed_f32], 0.0005)
+    autograd.adam([f32_reference], 0.0005)
+    continuation is continuation + 1
+  end
+  resumed_data is json_stringify(autograd.data(resumed))
+  reference_data is json_stringify(autograd.data(reference))
+  assert_eq(resumed_data, reference_data)
+  resumed_bf16_data is json_stringify(autograd.data(resumed_bf16))
+  reference_bf16_data is json_stringify(autograd.data(bf16_reference))
+  assert_eq(resumed_bf16_data, reference_bf16_data)
+  resumed_f32_data is json_stringify(autograd.data(resumed_f32))
+  reference_f32_data is json_stringify(autograd.data(f32_reference))
+  assert_eq(resumed_f32_data, reference_f32_data)
+
+  file_delete(optimizer_path)
+  file_delete(roundtrip_path)
+  file_delete(corrupt_path)
+  file_delete(f32_only_path)
+else
+  print("31_cuda_adam_checkpoint: SKIP ({info.error})")
+end
+
+print("31_cuda_adam_checkpoint: PASS")

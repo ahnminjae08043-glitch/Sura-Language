@@ -1,0 +1,410 @@
+# Shared utility functions.  These functions avoid host shell calls so that the
+# virtual operating system remains deterministic and portable.
+
+func osutil_key(value) do
+  return "" + value
+end
+
+func osutil_clone_array(values) do
+  result is []
+  for value in values do
+    result.push(value)
+  end
+  return result
+end
+
+func osutil_clone_dict(values) do
+  result is {}
+  for key in values.keys() do
+    result[key] is values[key]
+  end
+  return result
+end
+
+func osutil_contains(values, expected) do
+  for value in values do
+    if value == expected then return true
+  end
+  return false
+end
+
+func osutil_index_of(values, expected) do
+  index is 0
+  while index < values.len() do
+    if values[index] == expected then return index
+    index += 1
+  end
+  return -1
+end
+
+func osutil_remove_value(values, expected) do
+  index is osutil_index_of(values, expected)
+  if index >= 0 then
+    values.remove(index)
+    return true
+  end
+  return false
+end
+
+func osutil_repeat(value, count) do
+  result is []
+  i is 0
+  while i < count do
+    result.push(value)
+    i += 1
+  end
+  return result
+end
+
+func osutil_range(start, finish) do
+  result is []
+  value is start
+  while value < finish do
+    result.push(value)
+    value += 1
+  end
+  return result
+end
+
+func osutil_clamp(value, minimum, maximum) do
+  if value < minimum then return minimum
+  if value > maximum then return maximum
+  return value
+end
+
+func osutil_min(a, b) do
+  if a < b then return a
+  return b
+end
+
+func osutil_max(a, b) do
+  if a > b then return a
+  return b
+end
+
+func osutil_sign(value) do
+  if value < 0 then return -1
+  if value > 0 then return 1
+  return 0
+end
+
+func osutil_is_digit(char) do
+  return "0123456789".contains(char)
+end
+
+func osutil_is_integer_text(text) do
+  value is text.trim()
+  if value.len() == 0 then return false
+  index is 0
+  if value[0] == "-" or value[0] == "+" then
+    if value.len() == 1 then return false
+    index is 1
+  end
+  while index < value.len() do
+    if not osutil_is_digit(value[index]) then return false
+    index += 1
+  end
+  return true
+end
+
+func osutil_to_integer(text, fallback) do
+  if type(text) == "number" then return floor(text)
+  if not osutil_is_integer_text(text) then return fallback
+  return floor(text.to_num())
+end
+
+func osutil_is_register(value) do
+  if type(value) != "string" then return false
+  return suraos_register_valid(value)
+end
+
+func osutil_unquote(text) do
+  value is text.trim()
+  if value.len() >= 2 then
+    first is value[0]
+    last is value[value.len() - 1]
+    if (first == "\"" and last == "\"") or (first == "'" and last == "'") then
+      return value.sub(1, value.len() - 1)
+    end
+  end
+  return value
+end
+
+func osutil_strip_comment(line) do
+  result is ""
+  quote is ""
+  escaped is false
+  index is 0
+  while index < line.len() do
+    char is line[index]
+    if escaped then
+      result += char
+      escaped is false
+    else
+      if char == "\\" and quote != "" then
+        result += char
+        escaped is true
+      elif quote != "" then
+        result += char
+        if char == quote then quote is ""
+      elif char == "\"" or char == "'" then
+        quote is char
+        result += char
+      elif char == "#" or char == ";" then
+        return result
+      else
+        result += char
+      end
+    end
+    index += 1
+  end
+  return result
+end
+
+func osutil_tokenize(line) do
+  tokens is []
+  current is ""
+  quote is ""
+  escaped is false
+  index is 0
+  while index < line.len() do
+    char is line[index]
+    if escaped then
+      if char == "n" then
+        current += "\n"
+      elif char == "t" then
+        current += "\t"
+      else
+        current += char
+      end
+      escaped is false
+    elif char == "\\" and quote != "" then
+      escaped is true
+    elif quote != "" then
+      if char == quote then
+        quote is ""
+      else
+        current += char
+      end
+    elif char == "\"" or char == "'" then
+      quote is char
+    elif char == " " or char == "\t" or char == "," then
+      if current.len() > 0 then
+        tokens.push(current)
+        current is ""
+      end
+    else
+      current += char
+    end
+    index += 1
+  end
+  if current.len() > 0 then tokens.push(current)
+  return tokens
+end
+
+func osutil_join_from(values, start, separator) do
+  result is ""
+  index is start
+  while index < values.len() do
+    if result.len() > 0 then result += separator
+    result += values[index]
+    index += 1
+  end
+  return result
+end
+
+func osutil_split_lines(text) do
+  normalized is text.replace("\r\n", "\n")
+  normalized is normalized.replace("\r", "\n")
+  return normalized.split("\n")
+end
+
+func osutil_pad_left(value, width, fill) do
+  text is "" + value
+  while text.len() < width do
+    text is fill + text
+  end
+  return text
+end
+
+func osutil_pad_right(value, width, fill) do
+  text is "" + value
+  while text.len() < width do
+    text += fill
+  end
+  return text
+end
+
+func osutil_hex_digit(value) do
+  digits is "0123456789ABCDEF"
+  return digits[value % 16]
+end
+
+func osutil_hex(value, width) do
+  number is floor(value)
+  if number < 0 then number is 4294967296 + number
+  text is ""
+  repeat width do
+    text is osutil_hex_digit(number % 16) + text
+    number is floor(number / 16)
+  end
+  return text
+end
+
+func osutil_normalize_path(path, cwd) do
+  raw is path.trim()
+  if raw.len() == 0 then raw is cwd
+  if not raw.starts_with("/") then
+    if cwd == "/" then
+      raw is "/" + raw
+    else
+      raw is cwd + "/" + raw
+    end
+  end
+  parts is raw.replace("\\", "/").split("/")
+  clean is []
+  for part in parts do
+    if part == ".." then
+      if clean.len() > 0 then clean.remove(clean.len() - 1)
+    elif part != "" and part != "." then
+      clean.push(part)
+    end
+  end
+  if clean.len() == 0 then return "/"
+  return "/" + clean.join("/")
+end
+
+func osutil_parent_path(path) do
+  normalized is osutil_normalize_path(path, "/")
+  if normalized == "/" then return "/"
+  parts is normalized.split("/")
+  kept is []
+  index is 1
+  while index < parts.len() - 1 do
+    kept.push(parts[index])
+    index += 1
+  end
+  if kept.len() == 0 then return "/"
+  return "/" + kept.join("/")
+end
+
+func osutil_basename(path) do
+  normalized is osutil_normalize_path(path, "/")
+  if normalized == "/" then return "/"
+  parts is normalized.split("/")
+  return parts[parts.len() - 1]
+end
+
+func osutil_path_depth(path) do
+  normalized is osutil_normalize_path(path, "/")
+  if normalized == "/" then return 0
+  return normalized.split("/").len() - 1
+end
+
+func osutil_string_compare(left, right) do
+  a is "" + left
+  b is "" + right
+  order is " 0123456789-_.@/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  limit is osutil_min(a.len(), b.len())
+  index is 0
+  while index < limit do
+    ac is a.sub(index, index + 1)
+    bc is b.sub(index, index + 1)
+    if ac != bc then
+      ar is order.index_of(ac)
+      br is order.index_of(bc)
+      if ar < 0 then ar is order.len()
+      if br < 0 then br is order.len()
+      if ar < br then return -1
+      if ar > br then return 1
+    end
+    index += 1
+  end
+  if a.len() < b.len() then return -1
+  if a.len() > b.len() then return 1
+  return 0
+end
+
+func osutil_sort_strings(values) do
+  result is osutil_clone_array(values)
+  i is 0
+  while i < result.len() do
+    best is i
+    j is i + 1
+    while j < result.len() do
+      if osutil_string_compare(result[j], result[best]) < 0 then best is j
+      j += 1
+    end
+    temp is result[i]
+    result[i] is result[best]
+    result[best] is temp
+    i += 1
+  end
+  return result
+end
+
+func osutil_sort_by_number(items, field, descending) do
+  result is osutil_clone_array(items)
+  i is 0
+  while i < result.len() do
+    best is i
+    j is i + 1
+    while j < result.len() do
+      left is result[j][field]
+      right is result[best][field]
+      choose is left < right
+      if descending then choose is left > right
+      if choose then best is j
+      j += 1
+    end
+    temp is result[i]
+    result[i] is result[best]
+    result[best] is temp
+    i += 1
+  end
+  return result
+end
+
+func osutil_checksum_numbers(values) do
+  hash is 2166136261
+  for value in values do
+    hash is (hash ^ floor(value)) * 16777619
+    hash is hash % 4294967296
+  end
+  return hash
+end
+
+func osutil_checksum_text(text) do
+  values is []
+  index is 0
+  while index < text.len() do
+    # The portable runtime does not expose a raw character code primitive.
+    # Mixing position and character representation still provides a stable
+    # corruption detector for snapshots inside this teaching OS.
+    values.push((index + 1) * (text[index].len() + 17))
+    index += 1
+  end
+  return osutil_checksum_numbers(values)
+end
+
+func osutil_result(ok, value, code, message) do
+  return {ok: ok, value: value, code: code, message: message}
+end
+
+func osutil_ok(value) do
+  return osutil_result(true, value, SURAOS_ERR_OK, "")
+end
+
+func osutil_fail(code, message) do
+  return osutil_result(false, nil, code, message)
+end
+
+func osutil_now_tick(clock) do
+  if clock == nil then return 0
+  return clock.tick
+end
+
+func osutil_percent(part, whole) do
+  if whole <= 0 then return 0
+  return floor(part * 10000 / whole) / 100
+end

@@ -1,0 +1,1102 @@
+{
+    "schema":  "sura.release.evidence_gate.v1",
+    "generated_utc":  "2026-07-16T15:13:37Z",
+    "artifacts_dir":  "<local-repository>\\artifacts",
+    "passed":  true,
+    "required_count":  157,
+    "passed_count":  157,
+    "failed_count":  0,
+    "artifacts":  [
+                      {
+                          "key":  "dashboard_html",
+                          "path":  "bench_dashboard.html",
+                          "kind":  "html",
+                          "exists":  true,
+                          "bytes":  15731,
+                          "sha256":  "D93911744171D33482667DB7D1EE3A2A743303DDF9645B21D6FF8FDBF7B1ABE2"
+                      },
+                      {
+                          "key":  "dashboard_json",
+                          "path":  "bench_dashboard.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  52610,
+                          "sha256":  "3600E6D5DFD6867E0F9FCB7ADC40DB34BED93448507B2CF59181EC3D13EDDA4E"
+                      },
+                      {
+                          "key":  "benchmark_summary",
+                          "path":  "bench_summary.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  3433,
+                          "sha256":  "7D7BD1EED043DA143E1CE252A626A77CD28A57CD1A61A7C8656B370771AAC031"
+                      },
+                      {
+                          "key":  "benchmark_release_notes",
+                          "path":  "bench_release_notes.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  1751,
+                          "sha256":  "A94D21652285D56FAE50C47CD406096308F2FC439267293DF446F5CE406A47E9"
+                      },
+                      {
+                          "key":  "benchmark_history",
+                          "path":  "bench_history.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  1108827,
+                          "sha256":  "702337C01F5974E431864284F0F8561A8781AA71A39C7D5C879DC6217D56C764"
+                      },
+                      {
+                          "key":  "ci_coverage",
+                          "path":  "ci_coverage_gate.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  142544,
+                          "sha256":  "4364E2FAC26AE057EFDC7D421853AE92CA0DBB41D877B28B033201B3F2AC9B48"
+                      },
+                      {
+                          "key":  "version_contract",
+                          "path":  "version_contract.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  5819,
+                          "sha256":  "D77EEDA40C60384478C0D559F2627E70908CF8B984C368516920484E38DA5DE2"
+                      },
+                      {
+                          "key":  "compatibility_contract",
+                          "path":  "compatibility_report.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  11075,
+                          "sha256":  "E97BA91156ED369C4E264C5955DB43E0A0DFA570C43A6FAE7C5D818599288C00"
+                      },
+                      {
+                          "key":  "windows_signature",
+                          "path":  "windows_signature.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  2483,
+                          "sha256":  "D7FF5E7DE8CB382CBD8BAB46C4278A367E85E24A0B7C808811460B642C59119F"
+                      },
+                      {
+                          "key":  "native_performance",
+                          "path":  "native_perf.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  10377,
+                          "sha256":  "64D20600B943422E48083B25387CD7BCD0D79957CA494DBD8C66B18C71362ED6"
+                      },
+                      {
+                          "key":  "native_performance_summary",
+                          "path":  "native_perf.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  1173,
+                          "sha256":  "C9F5969C7D4CDCB319B520D0254F4AFE8957374500003D05A0BE2622A5BB2F23"
+                      },
+                      {
+                          "key":  "target_lowering_audit",
+                          "path":  "target_lowering_audit.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  124534,
+                          "sha256":  "27D9820A6542E227FB8FF9022E9E09BDE2FF288D97A602A3698CF04AF3A55493"
+                      },
+                      {
+                          "key":  "target_lowering_audit_summary",
+                          "path":  "target_lowering_audit.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  2373,
+                          "sha256":  "2A6348AB347D6F5BBFE0F80B0E925352A01EC365956AF0D46A40C2382789FB22"
+                      },
+                      {
+                          "key":  "goal_audit",
+                          "path":  "goal_audit.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  112789,
+                          "sha256":  "C6169E777250E0B43EE52872A9E3F5517DBCD89AC7264F3C4B01F0301F5C14EB"
+                      },
+                      {
+                          "key":  "goal_audit_summary",
+                          "path":  "goal_audit.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  688,
+                          "sha256":  "74DA6E987AE14F6D8BCA851A978F3E311E9EF4D196151818AFEEC546ECB80068"
+                      },
+                      {
+                          "key":  "security_audit_handoff",
+                          "path":  "security_audit_bundle.json",
+                          "kind":  "json",
+                          "exists":  true,
+                          "bytes":  1120,
+                          "sha256":  "38F7A47F32A27059C00BC6CB75FFA825F229EED3C0482C4F762996963F40BC76"
+                      },
+                      {
+                          "key":  "security_audit_handoff_summary",
+                          "path":  "security_audit_bundle.md",
+                          "kind":  "markdown",
+                          "exists":  true,
+                          "bytes":  535,
+                          "sha256":  "D0A7CA6B448432D79271FD1FE4CDBF569460E6FE90AEF827891229892FB94D7C"
+                      },
+                      {
+                          "key":  "security_audit_handoff_archive",
+                          "path":  "sura-security-audit-1.11.1.zip",
+                          "kind":  "zip",
+                          "exists":  true,
+                          "bytes":  830162,
+                          "sha256":  "3DCA0C949691BB44A049E8593826BEA20425ADF8D165238C24ADBE323AB69B0C"
+                      }
+                  ],
+    "checks":  [
+                   {
+                       "name":  "artifact exists: bench_dashboard.html",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep bench_dashboard.html before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: bench_dashboard.html",
+                       "passed":  true,
+                       "message":  "artifact size: 15731",
+                       "action":  "regenerate bench_dashboard.html"
+                   },
+                   {
+                       "name":  "artifact exists: bench_dashboard.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep bench_dashboard.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: bench_dashboard.json",
+                       "passed":  true,
+                       "message":  "artifact size: 52610",
+                       "action":  "regenerate bench_dashboard.json"
+                   },
+                   {
+                       "name":  "artifact exists: bench_summary.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep bench_summary.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: bench_summary.md",
+                       "passed":  true,
+                       "message":  "artifact size: 3433",
+                       "action":  "regenerate bench_summary.md"
+                   },
+                   {
+                       "name":  "artifact exists: bench_release_notes.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep bench_release_notes.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: bench_release_notes.md",
+                       "passed":  true,
+                       "message":  "artifact size: 1751",
+                       "action":  "regenerate bench_release_notes.md"
+                   },
+                   {
+                       "name":  "artifact exists: bench_history.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep bench_history.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: bench_history.json",
+                       "passed":  true,
+                       "message":  "artifact size: 1108827",
+                       "action":  "regenerate bench_history.json"
+                   },
+                   {
+                       "name":  "artifact exists: ci_coverage_gate.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep ci_coverage_gate.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: ci_coverage_gate.json",
+                       "passed":  true,
+                       "message":  "artifact size: 142544",
+                       "action":  "regenerate ci_coverage_gate.json"
+                   },
+                   {
+                       "name":  "artifact exists: version_contract.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep version_contract.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: version_contract.json",
+                       "passed":  true,
+                       "message":  "artifact size: 5819",
+                       "action":  "regenerate version_contract.json"
+                   },
+                   {
+                       "name":  "artifact exists: compatibility_report.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep compatibility_report.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: compatibility_report.json",
+                       "passed":  true,
+                       "message":  "artifact size: 11075",
+                       "action":  "regenerate compatibility_report.json"
+                   },
+                   {
+                       "name":  "artifact exists: windows_signature.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep windows_signature.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: windows_signature.json",
+                       "passed":  true,
+                       "message":  "artifact size: 2483",
+                       "action":  "regenerate windows_signature.json"
+                   },
+                   {
+                       "name":  "artifact exists: native_perf.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep native_perf.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: native_perf.json",
+                       "passed":  true,
+                       "message":  "artifact size: 10377",
+                       "action":  "regenerate native_perf.json"
+                   },
+                   {
+                       "name":  "artifact exists: native_perf.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep native_perf.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: native_perf.md",
+                       "passed":  true,
+                       "message":  "artifact size: 1173",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "artifact exists: target_lowering_audit.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep target_lowering_audit.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: target_lowering_audit.json",
+                       "passed":  true,
+                       "message":  "artifact size: 124534",
+                       "action":  "regenerate target_lowering_audit.json"
+                   },
+                   {
+                       "name":  "artifact exists: target_lowering_audit.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep target_lowering_audit.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: target_lowering_audit.md",
+                       "passed":  true,
+                       "message":  "artifact size: 2373",
+                       "action":  "regenerate target_lowering_audit.md"
+                   },
+                   {
+                       "name":  "artifact exists: goal_audit.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep goal_audit.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: goal_audit.json",
+                       "passed":  true,
+                       "message":  "artifact size: 112789",
+                       "action":  "regenerate goal_audit.json"
+                   },
+                   {
+                       "name":  "artifact exists: goal_audit.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep goal_audit.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: goal_audit.md",
+                       "passed":  true,
+                       "message":  "artifact size: 688",
+                       "action":  "regenerate goal_audit.md"
+                   },
+                   {
+                       "name":  "artifact exists: security_audit_bundle.json",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep security_audit_bundle.json before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: security_audit_bundle.json",
+                       "passed":  true,
+                       "message":  "artifact size: 1120",
+                       "action":  "regenerate security_audit_bundle.json"
+                   },
+                   {
+                       "name":  "artifact exists: security_audit_bundle.md",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep security_audit_bundle.md before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: security_audit_bundle.md",
+                       "passed":  true,
+                       "message":  "artifact size: 535",
+                       "action":  "regenerate security_audit_bundle.md"
+                   },
+                   {
+                       "name":  "artifact exists: sura-security-audit-1.11.1.zip",
+                       "passed":  true,
+                       "message":  "required release evidence artifact",
+                       "action":  "generate and keep sura-security-audit-1.11.1.zip before uploading release evidence"
+                   },
+                   {
+                       "name":  "artifact non-empty: sura-security-audit-1.11.1.zip",
+                       "passed":  true,
+                       "message":  "artifact size: 830162",
+                       "action":  "regenerate sura-security-audit-1.11.1.zip"
+                   },
+                   {
+                       "name":  "dashboard generated timestamp",
+                       "passed":  true,
+                       "message":  "bench_dashboard.json has generated_utc",
+                       "action":  "regenerate benchmark dashboard JSON"
+                   },
+                   {
+                       "name":  "dashboard summary present",
+                       "passed":  true,
+                       "message":  "bench_dashboard.json has summary",
+                       "action":  "regenerate benchmark dashboard JSON"
+                   },
+                   {
+                       "name":  "dashboard release notes present",
+                       "passed":  true,
+                       "message":  "bench_dashboard.json has release_notes",
+                       "action":  "regenerate benchmark dashboard JSON with -ReleaseNotesOut"
+                   },
+                   {
+                       "name":  "required benchmark: bench_fib.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_fib.sura",
+                       "action":  "restore bench_fib.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_ai_schema.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_ai_schema.sura",
+                       "action":  "restore bench_ai_schema.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_rag_vector.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_rag_vector.sura",
+                       "action":  "restore bench_rag_vector.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_tool_routing.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_tool_routing.sura",
+                       "action":  "restore bench_tool_routing.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_policy_gate.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_policy_gate.sura",
+                       "action":  "restore bench_policy_gate.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_guardrail.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_guardrail.sura",
+                       "action":  "restore bench_guardrail.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_dependency_resolver.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_dependency_resolver.sura",
+                       "action":  "restore bench_dependency_resolver.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_workflow_scheduler.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_workflow_scheduler.sura",
+                       "action":  "restore bench_workflow_scheduler.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_telemetry_window.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_telemetry_window.sura",
+                       "action":  "restore bench_telemetry_window.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_fraud_scoring.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_fraud_scoring.sura",
+                       "action":  "restore bench_fraud_scoring.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_feature_flags.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_feature_flags.sura",
+                       "action":  "restore bench_feature_flags.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_physics.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_physics.sura",
+                       "action":  "restore bench_physics.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_physics_inplace.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_physics_inplace.sura",
+                       "action":  "restore bench_physics_inplace.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_physics3d.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_physics3d.sura",
+                       "action":  "restore bench_physics3d.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required benchmark: bench_market.sura",
+                       "passed":  true,
+                       "message":  "benchmark evidence must include bench_market.sura",
+                       "action":  "restore bench_market.sura to the dashboard benchmark set"
+                   },
+                   {
+                       "name":  "required Python comparison: fib(30)",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include fib(30)",
+                       "action":  "restore fib(30) to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: AI JSON/schema validation",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include AI JSON/schema validation",
+                       "action":  "restore AI JSON/schema validation to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: RAG vector ranking",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include RAG vector ranking",
+                       "action":  "restore RAG vector ranking to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: AI tool policy gate",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include AI tool policy gate",
+                       "action":  "restore AI tool policy gate to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: AI guardrail event scoring",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include AI guardrail event scoring",
+                       "action":  "restore AI guardrail event scoring to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: dependency resolver hot loop",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include dependency resolver hot loop",
+                       "action":  "restore dependency resolver hot loop to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: automation workflow scheduler",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include automation workflow scheduler",
+                       "action":  "restore automation workflow scheduler to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: telemetry rolling window",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include telemetry rolling window",
+                       "action":  "restore telemetry rolling window to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: payment fraud scoring",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include payment fraud scoring",
+                       "action":  "restore payment fraud scoring to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: feature flag rollout",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include feature flag rollout",
+                       "action":  "restore feature flag rollout to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: game physics Vec2 loop",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include game physics Vec2 loop",
+                       "action":  "restore game physics Vec2 loop to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: game physics in-place Vec2 loop",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include game physics in-place Vec2 loop",
+                       "action":  "restore game physics in-place Vec2 loop to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: game physics Vec3 loop",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include game physics Vec3 loop",
+                       "action":  "restore game physics Vec3 loop to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "required Python comparison: market simulation objects",
+                       "passed":  true,
+                       "message":  "Python comparison evidence must include market simulation objects",
+                       "action":  "restore market simulation objects to the dashboard Python comparison set"
+                   },
+                   {
+                       "name":  "dashboard benchmark count",
+                       "passed":  true,
+                       "message":  "benchmark_count=20",
+                       "action":  "regenerate benchmark dashboard with required benchmarks"
+                   },
+                   {
+                       "name":  "dashboard Python comparison count",
+                       "passed":  true,
+                       "message":  "python_comparison_count=19",
+                       "action":  "regenerate benchmark dashboard with required Python comparisons"
+                   },
+                   {
+                       "name":  "benchmark summary contains # Sura Benchmark Summary",
+                       "passed":  true,
+                       "message":  "required text: # Sura Benchmark Summary",
+                       "action":  "regenerate bench_summary.md"
+                   },
+                   {
+                       "name":  "benchmark summary contains Average JIT speedup",
+                       "passed":  true,
+                       "message":  "required text: Average JIT speedup",
+                       "action":  "regenerate bench_summary.md"
+                   },
+                   {
+                       "name":  "benchmark summary contains Python Comparison",
+                       "passed":  true,
+                       "message":  "required text: Python Comparison",
+                       "action":  "regenerate bench_summary.md"
+                   },
+                   {
+                       "name":  "benchmark release notes contains # Sura Benchmark Release Notes",
+                       "passed":  true,
+                       "message":  "required text: # Sura Benchmark Release Notes",
+                       "action":  "regenerate bench_release_notes.md"
+                   },
+                   {
+                       "name":  "benchmark release notes contains Faster-than-Python cases",
+                       "passed":  true,
+                       "message":  "required text: Faster-than-Python cases",
+                       "action":  "regenerate bench_release_notes.md"
+                   },
+                   {
+                       "name":  "benchmark release notes contains Python Comparison Highlights",
+                       "passed":  true,
+                       "message":  "required text: Python Comparison Highlights",
+                       "action":  "regenerate bench_release_notes.md"
+                   },
+                   {
+                       "name":  "benchmark release notes contains Dashboard JSON includes",
+                       "passed":  true,
+                       "message":  "required text: Dashboard JSON includes",
+                       "action":  "regenerate bench_release_notes.md"
+                   },
+                   {
+                       "name":  "benchmark dashboard HTML contains \u003csvg",
+                       "passed":  true,
+                       "message":  "required text: \u003csvg",
+                       "action":  "regenerate bench_dashboard.html"
+                   },
+                   {
+                       "name":  "benchmark dashboard HTML contains JIT Speedup Chart",
+                       "passed":  true,
+                       "message":  "required text: JIT Speedup Chart",
+                       "action":  "regenerate bench_dashboard.html"
+                   },
+                   {
+                       "name":  "benchmark dashboard HTML contains Benchmark Summary",
+                       "passed":  true,
+                       "message":  "required text: Benchmark Summary",
+                       "action":  "regenerate bench_dashboard.html"
+                   },
+                   {
+                       "name":  "benchmark history entries",
+                       "passed":  true,
+                       "message":  "history entries=18",
+                       "action":  "regenerate bench_history.json"
+                   },
+                   {
+                       "name":  "benchmark history includes current dashboard",
+                       "passed":  true,
+                       "message":  "history should include 2026-07-16T15:13:22.9121342Z",
+                       "action":  "rerun dashboard with -HistoryIn/-HistoryOut"
+                   },
+                   {
+                       "name":  "CI coverage schema",
+                       "passed":  true,
+                       "message":  "ci_coverage_gate.json schema",
+                       "action":  "rerun sura_ci_coverage_gate.ps1"
+                   },
+                   {
+                       "name":  "CI coverage passed",
+                       "passed":  true,
+                       "message":  "ci coverage must pass",
+                       "action":  "fix CI coverage gate failures before release upload"
+                   },
+                   {
+                       "name":  "CI coverage category: cross_platform",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: cross_platform",
+                       "action":  "restore CI coverage category cross_platform"
+                   },
+                   {
+                       "name":  "CI coverage category: stable_engine",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: stable_engine",
+                       "action":  "restore CI coverage category stable_engine"
+                   },
+                   {
+                       "name":  "CI coverage category: package_ecosystem",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: package_ecosystem",
+                       "action":  "restore CI coverage category package_ecosystem"
+                   },
+                   {
+                       "name":  "CI coverage category: performance",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: performance",
+                       "action":  "restore CI coverage category performance"
+                   },
+                   {
+                       "name":  "CI coverage category: protected_release",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: protected_release",
+                       "action":  "restore CI coverage category protected_release"
+                   },
+                   {
+                       "name":  "CI coverage category: interop",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: interop",
+                       "action":  "restore CI coverage category interop"
+                   },
+                   {
+                       "name":  "CI coverage category: registry_security",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: registry_security",
+                       "action":  "restore CI coverage category registry_security"
+                   },
+                   {
+                       "name":  "CI coverage category: ai_stdlib_automation",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: ai_stdlib_automation",
+                       "action":  "restore CI coverage category ai_stdlib_automation"
+                   },
+                   {
+                       "name":  "CI coverage category: developer_tools",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: developer_tools",
+                       "action":  "restore CI coverage category developer_tools"
+                   },
+                   {
+                       "name":  "CI coverage category: goal_audit",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: goal_audit",
+                       "action":  "restore CI coverage category goal_audit"
+                   },
+                   {
+                       "name":  "CI coverage category: ci_coverage_gate",
+                       "passed":  true,
+                       "message":  "required CI coverage category must pass: ci_coverage_gate",
+                       "action":  "restore CI coverage category ci_coverage_gate"
+                   },
+                   {
+                       "name":  "version contract schema",
+                       "passed":  true,
+                       "message":  "version_contract.json schema",
+                       "action":  "rerun sura_version_sync.ps1"
+                   },
+                   {
+                       "name":  "version contract passed",
+                       "passed":  true,
+                       "message":  "version contract must pass",
+                       "action":  "fix release version drift before upload"
+                   },
+                   {
+                       "name":  "version contract release",
+                       "passed":  true,
+                       "message":  "version contract must match version.json",
+                       "action":  "rerun sura_version_sync.ps1 after rebuilding release artifacts"
+                   },
+                   {
+                       "name":  "compatibility contract schema",
+                       "passed":  true,
+                       "message":  "compatibility_report.json schema",
+                       "action":  "rerun sura_compatibility_gate.ps1"
+                   },
+                   {
+                       "name":  "compatibility contract passed",
+                       "passed":  true,
+                       "message":  "compatibility source, bytecode, and ABI checks must pass",
+                       "action":  "fix compatibility regressions before release upload"
+                   },
+                   {
+                       "name":  "compatibility contract release",
+                       "passed":  true,
+                       "message":  "compatibility report must match version.json",
+                       "action":  "rerun compatibility gate with the release engine"
+                   },
+                   {
+                       "name":  "compatibility fixture coverage",
+                       "passed":  true,
+                       "message":  "core, object, and stdlib compatibility fixtures must run",
+                       "action":  "restore the 1.11 compatibility fixture set"
+                   },
+                   {
+                       "name":  "historical compatibility coverage",
+                       "passed":  true,
+                       "message":  "at least one pre-guarantee runtime series must have explicit verification-only evidence",
+                       "action":  "rerun the compatibility gate with the archived runtime probe"
+                   },
+                   {
+                       "name":  "historical fixtures on current runtime",
+                       "passed":  true,
+                       "message":  "historical core, object, and stdlib probes must pass on the release runtime",
+                       "action":  "fix the historical source regression before upload"
+                   },
+                   {
+                       "name":  "archived runtime and bytecode evidence",
+                       "passed":  true,
+                       "message":  "the signed/hash-checked archived Windows runtime must execute the probes and its bytecode must load in the release runtime",
+                       "action":  "run compatibility evidence on Windows x64 before upload"
+                   },
+                   {
+                       "name":  "Windows signature schema",
+                       "passed":  true,
+                       "message":  "windows_signature.json schema",
+                       "action":  "rerun sura_windows_signature_gate.ps1"
+                   },
+                   {
+                       "name":  "Windows signature audit passed",
+                       "passed":  true,
+                       "message":  "signature audit must contain no invalid signatures or manifest mismatch",
+                       "action":  "fix invalid signatures or public manifest drift"
+                   },
+                   {
+                       "name":  "Windows signature file inventory",
+                       "passed":  true,
+                       "message":  "engine, package manager, and direct installer signatures must be audited",
+                       "action":  "rerun signature gate with all Windows executables"
+                   },
+                   {
+                       "name":  "unsigned direct-download action recorded",
+                       "passed":  true,
+                       "message":  "unsigned releases must record the Store or trusted-certificate next action",
+                       "action":  "record the signing or Store publication action"
+                   },
+                   {
+                       "name":  "native performance schema",
+                       "passed":  true,
+                       "message":  "native_perf.json schema",
+                       "action":  "rerun sura_native_perf_baseline.ps1"
+                   },
+                   {
+                       "name":  "native performance passed",
+                       "passed":  true,
+                       "message":  "native performance baseline must run successfully",
+                       "action":  "fix native baseline generation before release upload"
+                   },
+                   {
+                       "name":  "native performance Sura timing",
+                       "passed":  true,
+                       "message":  "sura_jit_ms must be positive",
+                       "action":  "rerun native baseline with SuraLanguage"
+                   },
+                   {
+                       "name":  "native performance C++ timing",
+                       "passed":  true,
+                       "message":  "native_ms must be positive",
+                       "action":  "rerun native baseline with a C++ compiler"
+                   },
+                   {
+                       "name":  "native performance ratio",
+                       "passed":  true,
+                       "message":  "sura_native_ratio must be positive",
+                       "action":  "rerun native baseline and keep ratio evidence"
+                   },
+                   {
+                       "name":  "native performance fair scope",
+                       "passed":  true,
+                       "message":  "native baseline must prove Sura and C++ timed the same inner physics loop scope",
+                       "action":  "rerun sura_native_perf_baseline.ps1 after keeping the shared 100k physics loop workload"
+                   },
+                   {
+                       "name":  "native performance 3D fair scope",
+                       "passed":  true,
+                       "message":  "native_perf.json must include a fair-scope 3D Vec3 C++ baseline",
+                       "action":  "rerun sura_native_perf_baseline.ps1 after keeping bench_physics3d.sura aligned with the C++ Vec3 loop"
+                   },
+                   {
+                       "name":  "dashboard native performance present",
+                       "passed":  true,
+                       "message":  "bench_dashboard.json must surface native_perf.json evidence",
+                       "action":  "regenerate benchmark dashboard with -NativePerfIn native_perf.json"
+                   },
+                   {
+                       "name":  "dashboard native performance ratio",
+                       "passed":  true,
+                       "message":  "dashboard native ratio must be positive",
+                       "action":  "regenerate benchmark dashboard with native performance evidence"
+                   },
+                   {
+                       "name":  "dashboard native performance matches artifact",
+                       "passed":  true,
+                       "message":  "dashboard native ratio should match native_perf.json",
+                       "action":  "regenerate dashboard after native performance baseline"
+                   },
+                   {
+                       "name":  "dashboard native performance 3D present",
+                       "passed":  true,
+                       "message":  "bench_dashboard.json must surface native_perf.json 3D baseline evidence",
+                       "action":  "regenerate benchmark dashboard with the updated native_perf.json"
+                   },
+                   {
+                       "name":  "benchmark dashboard native HTML contains Native C++ Baseline",
+                       "passed":  true,
+                       "message":  "required text: Native C++ Baseline",
+                       "action":  "regenerate bench_dashboard.html with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark dashboard native HTML contains Sura/native ratio",
+                       "passed":  true,
+                       "message":  "required text: Sura/native ratio",
+                       "action":  "regenerate bench_dashboard.html with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark dashboard native HTML contains game physics Vec3 loop",
+                       "passed":  true,
+                       "message":  "required text: game physics Vec3 loop",
+                       "action":  "regenerate bench_dashboard.html with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark summary native evidence contains Native C++ Baseline",
+                       "passed":  true,
+                       "message":  "required text: Native C++ Baseline",
+                       "action":  "regenerate bench_summary.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark summary native evidence contains Sura/native ratio",
+                       "passed":  true,
+                       "message":  "required text: Sura/native ratio",
+                       "action":  "regenerate bench_summary.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark summary native evidence contains Native C++ 3D comparison",
+                       "passed":  true,
+                       "message":  "required text: Native C++ 3D comparison",
+                       "action":  "regenerate bench_summary.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark release native evidence contains Native C++ Baseline",
+                       "passed":  true,
+                       "message":  "required text: Native C++ Baseline",
+                       "action":  "regenerate bench_release_notes.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark release native evidence contains Sura/native ratio",
+                       "passed":  true,
+                       "message":  "required text: Sura/native ratio",
+                       "action":  "regenerate bench_release_notes.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "benchmark release native evidence contains Native C++ 3D baseline",
+                       "passed":  true,
+                       "message":  "required text: Native C++ 3D baseline",
+                       "action":  "regenerate bench_release_notes.md with -NativePerfIn"
+                   },
+                   {
+                       "name":  "native performance summary contains # Sura Native Performance Baseline",
+                       "passed":  true,
+                       "message":  "required text: # Sura Native Performance Baseline",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "native performance summary contains Sura/native ratio",
+                       "passed":  true,
+                       "message":  "required text: Sura/native ratio",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "native performance summary contains 3D Sura/native ratio",
+                       "passed":  true,
+                       "message":  "required text: 3D Sura/native ratio",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "native performance summary contains Timed region",
+                       "passed":  true,
+                       "message":  "required text: Timed region",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "native performance summary contains C++ flags",
+                       "passed":  true,
+                       "message":  "required text: C++ flags",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "native performance summary contains Fair scope check",
+                       "passed":  true,
+                       "message":  "required text: Fair scope check",
+                       "action":  "regenerate native_perf.md"
+                   },
+                   {
+                       "name":  "target lowering audit schema",
+                       "passed":  true,
+                       "message":  "target_lowering_audit.json schema",
+                       "action":  "rerun sura_target_lowering_audit.ps1"
+                   },
+                   {
+                       "name":  "target lowering audit AST count",
+                       "passed":  true,
+                       "message":  "target lowering audit maps AST node coverage",
+                       "action":  "rerun sura_target_lowering_audit.ps1 after keeping ast.hpp coverage mapped"
+                   },
+                   {
+                       "name":  "target lowering audit frontier visibility",
+                       "passed":  true,
+                       "message":  "target lowering audit records whether JS/WASM use AST/bytecode frontends",
+                       "action":  "rerun sura_target_lowering_audit.ps1"
+                   },
+                   {
+                       "name":  "target lowering audit summary contains # Sura Target Lowering Audit",
+                       "passed":  true,
+                       "message":  "required text: # Sura Target Lowering Audit",
+                       "action":  "regenerate target_lowering_audit.md"
+                   },
+                   {
+                       "name":  "target lowering audit summary contains Full AST/bytecode frontend",
+                       "passed":  true,
+                       "message":  "required text: Full AST/bytecode frontend",
+                       "action":  "regenerate target_lowering_audit.md"
+                   },
+                   {
+                       "name":  "target lowering audit summary contains Partial Or Missing Nodes",
+                       "passed":  true,
+                       "message":  "required text: Partial Or Missing Nodes",
+                       "action":  "regenerate target_lowering_audit.md"
+                   },
+                   {
+                       "name":  "goal audit schema",
+                       "passed":  true,
+                       "message":  "goal_audit.json schema",
+                       "action":  "rerun sura_goal_audit.ps1"
+                   },
+                   {
+                       "name":  "goal audit progress recorded",
+                       "passed":  true,
+                       "message":  "progress_percent=99.2",
+                       "action":  "rerun sura_goal_audit.ps1"
+                   },
+                   {
+                       "name":  "goal audit check count",
+                       "passed":  true,
+                       "message":  "required_count=127",
+                       "action":  "keep the goal audit mapped to the full active goal including non-negotiable frontier work"
+                   },
+                   {
+                       "name":  "goal audit categories recorded",
+                       "passed":  true,
+                       "message":  "goal categories must be present",
+                       "action":  "restore goal audit category coverage"
+                   },
+                   {
+                       "name":  "goal audit remaining work recorded",
+                       "passed":  true,
+                       "message":  "remaining_work count=1",
+                       "action":  "record remaining work when the world-class goal is not complete"
+                   },
+                   {
+                       "name":  "goal audit summary contains # Sura Goal Audit",
+                       "passed":  true,
+                       "message":  "required text: # Sura Goal Audit",
+                       "action":  "regenerate goal_audit.md"
+                   },
+                   {
+                       "name":  "goal audit summary contains Progress:",
+                       "passed":  true,
+                       "message":  "required text: Progress:",
+                       "action":  "regenerate goal_audit.md"
+                   },
+                   {
+                       "name":  "goal audit summary contains Remaining Work",
+                       "passed":  true,
+                       "message":  "required text: Remaining Work",
+                       "action":  "regenerate goal_audit.md"
+                   },
+                   {
+                       "name":  "security audit handoff schema",
+                       "passed":  true,
+                       "message":  "security_audit_bundle.json schema",
+                       "action":  "rerun sura_security_audit_bundle.ps1"
+                   },
+                   {
+                       "name":  "security audit handoff status",
+                       "passed":  true,
+                       "message":  "handoff generator must complete",
+                       "action":  "rerun sura_security_audit_bundle.ps1"
+                   },
+                   {
+                       "name":  "security audit honest status",
+                       "passed":  true,
+                       "message":  "no independent external audit is currently recorded",
+                       "action":  "do not claim an independent audit without its report"
+                   },
+                   {
+                       "name":  "security audit source inventory",
+                       "passed":  true,
+                       "message":  "hashed source inventory must be present",
+                       "action":  "restore the complete security review handoff inventory"
+                   },
+                   {
+                       "name":  "security audit handoff archive hash",
+                       "passed":  true,
+                       "message":  "report archive SHA-256 must match uploaded ZIP",
+                       "action":  "regenerate the handoff report and ZIP together"
+                   },
+                   {
+                       "name":  "security audit handoff summary contains Independent external audit performed: no",
+                       "passed":  true,
+                       "message":  "required text: Independent external audit performed: no",
+                       "action":  "regenerate security_audit_bundle.md without unsupported assurance claims"
+                   },
+                   {
+                       "name":  "security audit handoff summary contains not a security certification",
+                       "passed":  true,
+                       "message":  "required text: not a security certification",
+                       "action":  "regenerate security_audit_bundle.md without unsupported assurance claims"
+                   },
+                   {
+                       "name":  "security audit handoff summary contains does not prove the absence",
+                       "passed":  true,
+                       "message":  "required text: does not prove the absence",
+                       "action":  "regenerate security_audit_bundle.md without unsupported assurance claims"
+                   }
+               ],
+    "next_actions":  [
+
+                     ]
+}

@@ -1,0 +1,199 @@
+use autograd
+use array
+
+# Public eager causal-attention benchmark. The always-available CPU path is the
+# current online-softmax reference. When CUDA is available, the same rank-4
+# [B,H,T,D] float32 values exercise the default resident f32 warp online-softmax
+# forward plus deterministic no-O(T^2)-workspace fused recomputation backward
+# when T>=8. SURA_CUDA_ATTENTION_FUSED=0 selects the legacy packed-backward
+# fallback, and SURA_CUDA_ATTENTION_PARALLEL=0 selects the reference path. Process
+# startup, input construction/upload, gradient clearing, synchronization before
+# each sample, and final host observation are outside the measured region.
+batch_size is to_int(env_get("SURA_ATTENTION_BENCH_BATCH", "1"))
+heads is to_int(env_get("SURA_ATTENTION_BENCH_HEADS", "4"))
+sequence is to_int(env_get("SURA_ATTENTION_BENCH_SEQUENCE", "64"))
+head_dim is to_int(env_get("SURA_ATTENTION_BENCH_HEAD_DIM", "32"))
+warmup is to_int(env_get("SURA_ATTENTION_BENCH_WARMUP", "3"))
+runs is to_int(env_get("SURA_ATTENTION_BENCH_RUNS", "10"))
+
+if batch_size < 1 or heads < 1 or sequence < 1 or head_dim < 1 then
+  throw "attention benchmark dimensions must be positive"
+end
+if warmup < 0 or runs < 1 then
+  throw "attention benchmark warmup must be non-negative and runs must be positive"
+end
+
+func median(values) do
+  ordered is array.sort(array.clone(values))
+  middle is floor(ordered.len() / 2)
+  if ordered.len() % 2 == 0 then
+    return (ordered[middle - 1] + ordered[middle]) / 2
+  end
+  return ordered[middle]
+end
+
+func p95(values) do
+  ordered is array.sort(array.clone(values))
+  index is ceil(ordered.len() * 0.95) - 1
+  return ordered[index]
+end
+
+func rank4_stats(values) do
+  total is 0
+  l1 is 0
+  b is 0
+  while b < values.len() do
+    h is 0
+    while h < values[b].len() do
+      t is 0
+      while t < values[b][h].len() do
+        d is 0
+        while d < values[b][h][t].len() do
+          value is values[b][h][t][d]
+          total is total + value
+          l1 is l1 + abs(value)
+          d is d + 1
+        end
+        t is t + 1
+      end
+      h is h + 1
+    end
+    b is b + 1
+  end
+  return {sum: total, l1: l1}
+end
+
+func gradient_fingerprint(loss, q, k, v) do
+  q_stats is rank4_stats(autograd.grad(q))
+  k_stats is rank4_stats(autograd.grad(k))
+  v_stats is rank4_stats(autograd.grad(v))
+  return {loss: autograd.item(loss), q_grad_sum: q_stats.sum, q_grad_l1: q_stats.l1, k_grad_sum: k_stats.sum, k_grad_l1: k_stats.l1, v_grad_sum: v_stats.sum, v_grad_l1: v_stats.l1}
+end
+
+shape is [batch_size, heads, sequence, head_dim]
+q_host is autograd.randn(shape, {seed: 1107, dtype: "float32"})
+k_host is autograd.randn(shape, {seed: 2209, dtype: "float32"})
+v_host is autograd.randn(shape, {seed: 3301, dtype: "float32"})
+q_values is autograd.data(q_host)
+k_values is autograd.data(k_host)
+v_values is autograd.data(v_host)
+input_checksum is rank4_stats(q_values).sum + rank4_stats(k_values).sum + rank4_stats(v_values).sum
+
+shared_inputs is env_get("SURA_ATTENTION_BENCH_INPUTS", "")
+if shared_inputs != "" then
+  autograd.save_safetensors({q: q_host, k: k_host, v: v_host}, shared_inputs)
+end
+
+# CPU online-softmax reference. Gradient clearing happens before the clock so
+# every sample measures causal_attention + scalar sum + backward only.
+cpu_q is autograd.parameter(q_values, {dtype: "float32"})
+cpu_k is autograd.parameter(k_values, {dtype: "float32"})
+cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+cpu_parameters is [cpu_q, cpu_k, cpu_v]
+
+i is 0
+cpu_output is nil
+cpu_loss is nil
+while i < warmup do
+  autograd.zero_grad(cpu_parameters)
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {precision: "auto"})
+  cpu_loss is autograd.sum(cpu_output)
+  autograd.backward(cpu_loss)
+  i is i + 1
+end
+
+cpu_samples_ms is []
+i is 0
+while i < runs do
+  autograd.zero_grad(cpu_parameters)
+  started is clock()
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {precision: "auto"})
+  cpu_loss is autograd.sum(cpu_output)
+  autograd.backward(cpu_loss)
+  cpu_samples_ms.push((clock() - started) * 1000)
+  i is i + 1
+end
+cpu_fingerprint is gradient_fingerprint(cpu_loss, cpu_q, cpu_k, cpu_v)
+cpu_report is {status: "ok", device: "cpu", backend: "online-softmax-reference", compute: "double-over-float32-storage", precision: "auto", workload: "causal_attention+sum+backward", median_ms: median(cpu_samples_ms), p95_ms: p95(cpu_samples_ms), raw_ms: cpu_samples_ms, fingerprint: cpu_fingerprint}
+
+cuda is autograd.cuda_info()
+limits is autograd.limits()
+cuda_attention_available is cuda.available and cuda.kernel_coverage.contains("causal_attention")
+cuda_report is {status: "unavailable", reason: nil, device: nil, device_index: nil, compute_capability: nil, backend: nil, precision: "auto", workload: "causal_attention+sum+backward", median_ms: nil, p95_ms: nil, raw_ms: [], fingerprint: nil, stats_before_read: nil, stats_after_read: nil, resident_transfer_free: nil, attention_launches_per_run: nil, reference_attention_launches: nil, warp_attention_launches: nil, parallel_attention_launches: nil, fused_attention_launches: nil, fast_attention_forward_launches: nil, reference_attention_launches_per_run: nil, warp_attention_launches_per_run: nil, parallel_attention_launches_per_run: nil, fused_attention_launches_per_run: nil, fast_attention_forward_launches_per_run: nil, parallel_enabled: limits.cuda_attention_parallel, fused_enabled: limits.cuda_attention_fused, parallel_min_sequence: limits.cuda_attention_parallel_min_sequence, workspace_limit_bytes: limits.cuda_attention_workspace_limit_bytes}
+
+if not cuda.available then
+  cuda_report.reason is cuda.error
+end
+if cuda.available and not cuda_attention_available then
+  cuda_report.reason is "resident causal_attention kernel is not reported by cuda_info().kernel_coverage"
+  cuda_report.device is cuda.device_name
+  cuda_report.device_index is cuda.device_index
+  cuda_report.compute_capability is cuda.compute_capability
+  cuda_report.backend is cuda.backend
+end
+
+if cuda_attention_available then
+  # Parameter uploads are setup and precede both warmup and counter reset.
+  cuda_q is autograd.parameter(q_values, {dtype: "float32", device: "cuda"})
+  cuda_k is autograd.parameter(k_values, {dtype: "float32", device: "cuda"})
+  cuda_v is autograd.parameter(v_values, {dtype: "float32", device: "cuda"})
+  cuda_parameters is [cuda_q, cuda_k, cuda_v]
+
+  i is 0
+  cuda_output is nil
+  cuda_loss is nil
+  while i < warmup do
+    autograd.zero_grad(cuda_parameters)
+    cuda_output is autograd.causal_attention(cuda_q, cuda_k, cuda_v, {precision: "auto"})
+    cuda_loss is autograd.sum(cuda_output)
+    autograd.backward(cuda_loss)
+    i is i + 1
+  end
+  autograd.cuda_synchronize()
+
+  autograd.cuda_reset_stats()
+  cuda_samples_ms is []
+  i is 0
+  while i < runs do
+    autograd.zero_grad(cuda_parameters)
+    autograd.cuda_synchronize()
+    started is clock()
+    cuda_output is autograd.causal_attention(cuda_q, cuda_k, cuda_v, {precision: "auto"})
+    cuda_loss is autograd.sum(cuda_output)
+    autograd.backward(cuda_loss)
+    autograd.cuda_synchronize()
+    cuda_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+
+  cuda_before_read is autograd.cuda_stats()
+  cuda_fingerprint is gradient_fingerprint(cuda_loss, cuda_q, cuda_k, cuda_v)
+  cuda_after_read is autograd.cuda_stats()
+  cuda_report.status is "ok"
+  cuda_report.reason is nil
+  cuda_report.device is cuda.device_name
+  cuda_report.device_index is cuda.device_index
+  cuda_report.compute_capability is cuda.compute_capability
+  cuda_report.backend is cuda.backend
+  cuda_report.median_ms is median(cuda_samples_ms)
+  cuda_report.p95_ms is p95(cuda_samples_ms)
+  cuda_report.raw_ms is cuda_samples_ms
+  cuda_report.fingerprint is cuda_fingerprint
+  cuda_report.stats_before_read is cuda_before_read
+  cuda_report.stats_after_read is cuda_after_read
+  cuda_report.resident_transfer_free is cuda_before_read.h2d_bytes == 0 and cuda_before_read.d2h_bytes == 0
+  cuda_report.attention_launches_per_run is cuda_before_read.attention_launches / runs
+  cuda_report.reference_attention_launches is cuda_before_read.reference_attention_launches
+  cuda_report.warp_attention_launches is cuda_before_read.warp_attention_launches
+  cuda_report.parallel_attention_launches is cuda_before_read.parallel_attention_launches
+  cuda_report.fused_attention_launches is cuda_before_read.fused_attention_launches
+  cuda_report.fast_attention_forward_launches is cuda_before_read.fast_attention_forward_launches
+  cuda_report.reference_attention_launches_per_run is cuda_before_read.reference_attention_launches / runs
+  cuda_report.warp_attention_launches_per_run is cuda_before_read.warp_attention_launches / runs
+  cuda_report.parallel_attention_launches_per_run is cuda_before_read.parallel_attention_launches / runs
+  cuda_report.fused_attention_launches_per_run is cuda_before_read.fused_attention_launches / runs
+  cuda_report.fast_attention_forward_launches_per_run is cuda_before_read.fast_attention_forward_launches / runs
+end
+
+report is {schema: "sura.attention-benchmark.v1", status: "ok", workload: "causal_attention_f32_forward_backward", shape: {batch: batch_size, heads: heads, sequence: sequence, head_dim: head_dim}, layout: "B,H,T,D", dtype: "float32", precision: "auto", causal: true, scale: "1/sqrt(head_dim)", loss_reduction: "sum", transpose_included: false, projections_included: false, warmup: warmup, runs: runs, process_startup_excluded: true, setup_and_upload_excluded: true, gradient_zeroing_excluded: true, input_checksum: input_checksum, cpu: cpu_report, cuda: cuda_report}
+print(json_stringify(report))

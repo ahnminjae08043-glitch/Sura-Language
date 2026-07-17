@@ -5,6 +5,7 @@
 // 내장 명령어 (main.cpp 지원):
 //   now 변수     → 현재 유닉스 타임스탬프 (초 단위)
 //   sleep 밀리초 → 지정 시간만큼 대기
+//   wait(ms)     → sleep_ms(ms)와 같은 밀리초 대기 함수
 
 // time_now: current_time에 현재 시각 저장
 func time_now do

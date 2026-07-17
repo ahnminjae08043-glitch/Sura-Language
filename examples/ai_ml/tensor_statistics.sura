@@ -1,0 +1,16 @@
+use tensor
+
+# Portable tensor helpers are useful for preprocessing and inspection.
+features is [[1, 2, 3], [4, 5, 6]]
+weights is [[0.5, -0.2], [0.1, 0.3], [-0.4, 0.8]]
+projected is tensor.matmul(features, weights)
+probabilities is tensor.softmax(projected)
+
+print("shape={tensor.shape(projected)}")
+print("projected={projected}")
+print("softmax={probabilities}")
+print("mean={tensor.mean(features)} std={tensor.std(features)}")
+
+assert_eq(tensor.shape(projected).join(","), "2,2")
+probability_sum is probabilities[0][0] + probabilities[0][1] + probabilities[1][0] + probabilities[1][1]
+assert_approx(probability_sum, 1, 0.000001)

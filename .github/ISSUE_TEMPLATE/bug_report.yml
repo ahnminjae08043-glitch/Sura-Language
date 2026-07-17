@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a reproducible Sura language, runtime, package, editor, or documentation defect.
+title: "[Bug] "
+labels: [bug]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Parser or type checker
+        - Register VM or bytecode
+        - Native JIT
+        - Standard library
+        - Package manager or registry
+        - VS Code or LSP
+        - Installer or website
+        - Documentation
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Sura version
+      description: Paste the output of `sura --version`.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest `.sura` program and the exact command.
+      render: sura
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Actual result
+      description: Include the complete error and exit behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: Windows 11 x86-64, Ubuntu x86-64, macOS ARM64
+    validations:
+      required: true

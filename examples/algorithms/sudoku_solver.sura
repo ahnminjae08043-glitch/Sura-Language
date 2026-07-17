@@ -1,0 +1,64 @@
+# Backtracking Sudoku solver. Zero means an empty cell.
+
+board is [5, 3, 0, 0, 7, 0, 0, 0, 0, 6, 0, 0, 1, 9, 5, 0, 0, 0, 0, 9, 8, 0, 0, 0, 0, 6, 0, 8, 0, 0, 0, 6, 0, 0, 0, 3, 4, 0, 0, 8, 0, 3, 0, 0, 1, 7, 0, 0, 0, 2, 0, 0, 0, 6, 0, 6, 0, 0, 0, 0, 2, 8, 0, 0, 0, 0, 4, 1, 9, 0, 0, 5, 0, 0, 0, 0, 8, 0, 0, 7, 9]
+
+func valid_at(pos, value) do
+  row is floor(pos / 9)
+  col is pos % 9
+
+  i is 0
+  while i < 9 do
+    if board[row * 9 + i] == value then return false
+    if board[i * 9 + col] == value then return false
+    i += 1
+  end
+
+  box_row is floor(row / 3) * 3
+  box_col is floor(col / 3) * 3
+  y is 0
+  while y < 3 do
+    x is 0
+    while x < 3 do
+      if board[(box_row + y) * 9 + box_col + x] == value then return false
+      x += 1
+    end
+    y += 1
+  end
+  return true
+end
+
+func solve_from(pos) do
+  while pos < 81 and board[pos] != 0 do
+    pos += 1
+  end
+  if pos == 81 then return true
+
+  value is 1
+  while value <= 9 do
+    if valid_at(pos, value) then
+      board[pos] is value
+      if solve_from(pos + 1) then return true
+      board[pos] is 0
+    end
+    value += 1
+  end
+  return false
+end
+
+solved is solve_from(0)
+print("Sudoku solved: {solved}")
+y is 0
+while y < 9 do
+  row is []
+  x is 0
+  while x < 9 do
+    row.push(board[y * 9 + x])
+    x += 1
+  end
+  print(row.join(" "))
+  y += 1
+end
+
+assert(solved)
+assert_eq(board[0], 5)
+assert_eq(board[80], 9)

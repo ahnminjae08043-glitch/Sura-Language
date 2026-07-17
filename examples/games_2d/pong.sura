@@ -1,0 +1,93 @@
+# Pong: W/S or arrow keys move the left paddle. Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 720
+H is 440
+if not win_init(W, H, "Sura Pong") then
+  print("win_init failed")
+  exit(1)
+end
+
+paddle_h is 90
+player_y is H / 2 - paddle_h / 2
+cpu_y is player_y
+ball_x is W / 2
+ball_y is H / 2
+ball_vx is -5
+ball_vy is 3
+left_score is 0
+right_score is 0
+frame is 0
+running is true
+
+func clamp(v, low, high) do
+  if v < low then return low
+  if v > high then return high
+  return v
+end
+
+func reset_ball(direction) do
+  ball_x is W / 2
+  ball_y is H / 2
+  ball_vx is 5 * direction
+  ball_vy is 3
+end
+
+while running do
+  frame += 1
+  move is 0
+  if key_down("w") or key_down("up") then move -= 7
+  if key_down("s") or key_down("down") then move += 7
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then move is sin(frame / 4) * 4
+  player_y is clamp(player_y + move, 10, H - paddle_h - 10)
+
+  cpu_target is ball_y - paddle_h / 2
+  if cpu_y < cpu_target then cpu_y += 4
+  if cpu_y > cpu_target then cpu_y -= 4
+  cpu_y is clamp(cpu_y, 10, H - paddle_h - 10)
+
+  ball_x += ball_vx
+  ball_y += ball_vy
+  if ball_y < 12 or ball_y > H - 12 then ball_vy *= -1
+
+  if ball_vx < 0 and ball_x <= 34 and ball_x >= 22 and ball_y >= player_y and ball_y <= player_y + paddle_h then
+    ball_x is 35
+    ball_vx *= -1.06
+    ball_vy += (ball_y - player_y - paddle_h / 2) / 18
+  end
+  if ball_vx > 0 and ball_x >= W - 34 and ball_x <= W - 22 and ball_y >= cpu_y and ball_y <= cpu_y + paddle_h then
+    ball_x is W - 35
+    ball_vx *= -1.06
+    ball_vy += (ball_y - cpu_y - paddle_h / 2) / 18
+  end
+
+  if ball_x < 0 then
+    right_score += 1
+    reset_ball(1)
+  end
+  if ball_x > W then
+    left_score += 1
+    reset_ball(-1)
+  end
+
+  win_clear(8, 14, 28)
+  y is 12
+  while y < H do
+    win_rect(W / 2 - 2, y, 4, 14, 50, 70, 100)
+    y += 25
+  end
+  win_rect(22, player_y, 12, paddle_h, 80, 220, 255)
+  win_rect(W - 34, cpu_y, 12, paddle_h, 255, 120, 100)
+  win_circle(ball_x, ball_y, 9, 245, 245, 220)
+  win_text("{left_score} : {right_score}", W / 2 - 28, 20, 230, 240, 255)
+  win_text("W/S move  Q quit", 18, H - 28, 150, 180, 210)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("pong: frames={frame}, score={left_score}:{right_score}")
+assert(frame > 0)
+

@@ -1,0 +1,32 @@
+# The exact strict-loop proof is structural: user type and function names do
+# not need to match the benchmark's Vec2/step names.
+struct MotionPoint do
+    x is 0
+    y is 0
+
+    func add(other) do
+        return MotionPoint(self.x + other.x, self.y + other.y)
+    end
+
+    func scale(k) do
+        return MotionPoint(self.x * k, self.y * k)
+    end
+end
+
+func advance_position(position, velocity, delta) do
+    return position.add(velocity.scale(delta))
+end
+
+position is MotionPoint(0, 0)
+velocity is MotionPoint(1, 2)
+delta is 0.016
+counter is 0
+while counter < 100000 do
+    position is advance_position(position, velocity, delta)
+    counter is counter + 1
+end
+
+assert_eq(round(position.x), 1600)
+assert_eq(round(position.y), 3200)
+assert_eq(counter, 100000)
+print "67_jit_strict_vector_generalization: PASS"

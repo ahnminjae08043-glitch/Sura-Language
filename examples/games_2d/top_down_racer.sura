@@ -1,0 +1,78 @@
+# Top-down racer: A/D or arrows change lanes. Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 640
+H is 600
+if not win_init(W, H, "Sura Top-Down Racer") then
+  print("win_init failed")
+  exit(1)
+end
+
+road_left is 140
+road_right is 500
+car_x is W / 2 - 18
+car_y is H - 105
+enemy_x is [200, 305, 410, 250, 365]
+enemy_y is [-40, -190, -330, -510, -690]
+enemy_speed is [5, 6, 5.5, 7, 6.5]
+stripe_offset is 0
+distance is 0
+frame is 0
+running is true
+
+func clamp(v, low, high) do
+  if v < low then return low
+  if v > high then return high
+  return v
+end
+
+while running do
+  frame += 1
+  if key_down("a") or key_down("left") then car_x -= 7
+  if key_down("d") or key_down("right") then car_x += 7
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then car_x is W / 2 - 18 + sin(frame / 5) * 35
+  car_x is clamp(car_x, road_left + 12, road_right - 48)
+  stripe_offset is (stripe_offset + 8) % 80
+  distance += 1
+
+  i is 0
+  while i < enemy_x.len() do
+    enemy_y[i] += enemy_speed[i]
+    if enemy_y[i] > H + 60 then
+      enemy_y[i] is random(-500, -80)
+      enemy_x[i] is random(road_left + 20, road_right - 55)
+    end
+    hit_x is abs((enemy_x[i] + 18) - (car_x + 18)) < 32
+    hit_y is abs((enemy_y[i] + 30) - (car_y + 30)) < 54
+    if not SMOKE and hit_x and hit_y then running is false
+    i += 1
+  end
+
+  win_clear(25, 75, 45)
+  win_rect(road_left, 0, road_right - road_left, H, 45, 48, 58)
+  win_rect(road_left, 0, 7, H, 235, 235, 210)
+  win_rect(road_right - 7, 0, 7, H, 235, 235, 210)
+  y is stripe_offset - 80
+  while y < H do
+    win_rect(W / 2 - 4, y, 8, 42, 230, 220, 150)
+    y += 80
+  end
+  i is 0
+  while i < enemy_x.len() do
+    win_rect(enemy_x[i], enemy_y[i], 36, 62, 235, 90 + i * 20, 80)
+    win_rect(enemy_x[i] + 7, enemy_y[i] + 8, 22, 16, 130, 190, 230)
+    i += 1
+  end
+  win_rect(car_x, car_y, 36, 62, 60, 190, 255)
+  win_rect(car_x + 7, car_y + 8, 22, 16, 170, 225, 255)
+  win_text("DISTANCE {distance}", 18, 18, 245, 245, 230)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("top_down_racer: distance={distance}")
+assert(distance > 0)
+

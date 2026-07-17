@@ -1,0 +1,26 @@
+nil_profile is nil
+profile is {name: "Ada"}
+
+optional_dot_nil_value is nil_profile?.name
+optional_nested_nil_value is nil_profile?.profile?.name
+optional_existing_value is profile?.name
+optional_interp_label is "Maybe {nil_profile?.name ?? \"anon\"} Existing {profile?.name ?? \"anon\"}"
+
+falsey_holder is {active: false, count: 0}
+optional_false_value is falsey_holder?.active ?? true
+optional_zero_value is falsey_holder?.count ?? 99
+optional_false_fallback_value is nil_profile?.active ?? true
+optional_zero_fallback_value is nil_profile?.count ?? 99
+
+assert_eq(optional_dot_nil_value, nil)
+assert_eq(optional_nested_nil_value, nil)
+assert_eq(optional_existing_value, "Ada")
+assert_eq(type(optional_dot_nil_value), "nil")
+assert_eq(to_str(optional_nested_nil_value), "nil")
+assert_eq(optional_interp_label, "Maybe anon Existing Ada")
+assert_eq(optional_false_value, false)
+assert_eq(optional_zero_value, 0)
+assert_eq(optional_false_fallback_value, true)
+assert_eq(optional_zero_fallback_value, 99)
+
+print "Ada nil"

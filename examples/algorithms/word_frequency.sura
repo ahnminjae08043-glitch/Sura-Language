@@ -1,0 +1,45 @@
+use string
+
+# Count and rank words without external packages.
+text is "Sura makes games. Sura trains small models. Games and models become examples, and examples help Sura grow."
+clean is text.lower()
+clean is clean.replace(".", "")
+clean is clean.replace(",", "")
+words is string.words(clean)
+counts is {}
+
+for word in words do
+  if word in counts then
+    counts[word] += 1
+  else
+    counts[word] is 1
+  end
+end
+
+ranking is []
+for entry in counts.items() do
+  ranking.push({word: entry.key, count: entry.value})
+end
+
+# Selection sort keeps the example independent of a custom comparator API.
+i is 0
+while i < ranking.len() do
+  best is i
+  j is i + 1
+  while j < ranking.len() do
+    if ranking[j].count > ranking[best].count then best is j
+    j += 1
+  end
+  temp is ranking[i]
+  ranking[i] is ranking[best]
+  ranking[best] is temp
+  i += 1
+end
+
+print("Word frequency")
+for item in ranking do
+  print("{item.word}: {item.count}")
+end
+
+assert_eq(counts.sura, 3)
+assert_eq(counts.examples, 2)

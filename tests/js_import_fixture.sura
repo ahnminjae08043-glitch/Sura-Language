@@ -1,0 +1,5 @@
+func imported_double(value) do
+  return value * 2
+end
+
+js_import_value is 21

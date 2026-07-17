@@ -1,0 +1,96 @@
+# One-screen platformer: A/D move, Space/W/Up jumps. Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 760
+H is 520
+if not win_init(W, H, "Sura Platformer") then
+  print("win_init failed")
+  exit(1)
+end
+
+px is 70
+py is 410
+vx is 0
+vy is 0
+on_ground is false
+platform_x is [0, 165, 335, 520, 650]
+platform_y is [470, 390, 320, 245, 165]
+platform_w is [760, 115, 125, 120, 90]
+coins_x is [220, 390, 575, 690]
+coins_y is [355, 285, 210, 130]
+coins_alive is [1, 1, 1, 1]
+score is 0
+frame is 0
+running is true
+
+while running do
+  frame += 1
+  vx is 0
+  if key_down("a") or key_down("left") then vx is -4.5
+  if key_down("d") or key_down("right") then vx is 4.5
+  jump is key_down("space") or key_down("w") or key_down("up")
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then vx is 3
+  if jump and on_ground then
+    vy is -11
+    on_ground is false
+  end
+
+  px += vx
+  if px < 0 then px is 0
+  if px > W - 24 then px is W - 24
+  previous_bottom is py + 34
+  vy += 0.55
+  py += vy
+  on_ground is false
+
+  i is 0
+  while i < platform_x.len() do
+    new_bottom is py + 34
+    overlaps_x is px + 24 > platform_x[i] and px < platform_x[i] + platform_w[i]
+    if vy >= 0 and overlaps_x and previous_bottom <= platform_y[i] and new_bottom >= platform_y[i] then
+      py is platform_y[i] - 34
+      vy is 0
+      on_ground is true
+    end
+    i += 1
+  end
+
+  i is 0
+  while i < coins_x.len() do
+    if coins_alive[i] == 1 and abs((px + 12) - coins_x[i]) < 22 and abs((py + 17) - coins_y[i]) < 25 then
+      coins_alive[i] is 0
+      score += 1
+    end
+    i += 1
+  end
+  if py > H + 50 then
+    px is 70
+    py is 410
+    vy is 0
+  end
+
+  win_clear(80, 165, 230)
+  win_circle(650, 70, 34, 255, 235, 130)
+  i is 0
+  while i < platform_x.len() do
+    win_rect(platform_x[i], platform_y[i], platform_w[i], 18, 70, 120, 65)
+    win_rect(platform_x[i], platform_y[i], platform_w[i], 5, 125, 200, 95)
+    i += 1
+  end
+  i is 0
+  while i < coins_x.len() do
+    if coins_alive[i] == 1 then win_circle(coins_x[i], coins_y[i], 9, 255, 215, 40)
+    i += 1
+  end
+  win_rect(px, py, 24, 34, 70, 80, 220)
+  win_rect(px + 5, py + 7, 5, 5, 245, 245, 255)
+  win_text("PLATFORMER  coins {score}/4", 18, 16, 25, 45, 90)
+  if not win_update() then running is false
+  if SMOKE and frame >= 16 then running is false
+  wait(16)
+end
+
+win_close()
+print("platformer: frames={frame}, coins={score}")
+assert(frame > 0)

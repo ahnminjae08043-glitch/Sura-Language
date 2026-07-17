@@ -1,0 +1,16 @@
+﻿{
+    "version":  1,
+    "engine":  "build\\SuraAttentionF32.exe",
+    "jit":  false,
+    "passed":  1,
+    "failed":  0,
+    "tests":  [
+                  {
+                      "path":  ".\\tests\\50_cuda_typed_storage.sura",
+                      "status":  "pass",
+                      "exitCode":  0,
+                      "durationMs":  254,
+                      "output":  "50_cuda_typed_storage: SKIP (cuModuleLoadData failed: CUDA_ERROR_INVALID_PTX: a PTX JIT compilation failed)\n50_cuda_typed_storage: PASS"
+                  }
+              ]
+}

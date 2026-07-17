@@ -1,0 +1,134 @@
+# Runtime safety contract: invalid operations must throw instead of silently
+# producing nil or another sentinel value.
+
+func dynamic_subtract(left, right) do
+  return left - right
+end
+
+func dynamic_divide(left, right) do
+  return left / right
+end
+
+func dynamic_modulo(left, right) do
+  return left % right
+end
+
+func dynamic_negate(value) do
+  return -value
+end
+
+try
+  ignored is dynamic_subtract("unsafe", 1)
+  throw "invalid subtraction did not fail"
+catch error
+  assert_contains(error, "E200")
+end
+
+try
+  ignored is dynamic_divide(1, 0)
+  throw "division by zero did not fail"
+catch error
+  assert_contains(error, "zero")
+end
+
+func dynamic_less(left, right) do
+  return left < right
+end
+
+func dynamic_bit_and(left, right) do
+  return left & right
+end
+
+
+func dynamic_shift_left(left, right) do
+  return left << right
+end
+
+func dynamic_shift_right(left, right) do
+  return left >> right
+end
+
+# Warm functions past the lazy-JIT threshold before changing argument types.
+repeat 10 do
+  assert_eq(dynamic_subtract(5, 2), 3)
+  assert_eq(dynamic_modulo(7, 4), 3)
+  assert_eq(dynamic_negate(5), -5)
+  assert(dynamic_less(1, 2))
+  assert_eq(dynamic_bit_and(7, 3), 3)
+  assert_eq(dynamic_shift_left(1, 3), 8)
+  assert_eq(dynamic_shift_right(-3, 1), -2)
+end
+
+subtract_rejected is false
+try
+  ignored is dynamic_subtract("unsafe", 1)
+catch error
+  subtract_rejected is true
+end
+assert(subtract_rejected, "mixed-type subtraction after JIT warmup must fail")
+
+modulo_rejected is false
+try
+  ignored is dynamic_modulo(7, 0)
+catch error
+  modulo_rejected is true
+end
+assert(modulo_rejected, "modulo by zero after JIT warmup must fail")
+
+negate_rejected is false
+try
+  ignored is dynamic_negate("unsafe")
+catch error
+  negate_rejected is true
+end
+assert(negate_rejected, "mixed-type negation after JIT warmup must fail")
+
+comparison_rejected is false
+try
+  ignored is dynamic_less("unsafe", 1)
+catch error
+  comparison_rejected is true
+end
+assert(comparison_rejected, "mixed-type ordering comparison must fail")
+
+bitwise_rejected is false
+try
+  ignored is dynamic_bit_and("unsafe", 1)
+catch error
+  bitwise_rejected is true
+end
+assert(bitwise_rejected, "mixed-type bitwise operation must fail")
+
+fractional_bitwise_rejected is false
+try
+  ignored is dynamic_bit_and(1.5, 1)
+catch error
+  fractional_bitwise_rejected is true
+end
+assert(fractional_bitwise_rejected, "fractional bitwise operand must fail")
+
+negative_shift_rejected is false
+try
+  ignored is dynamic_shift_left(1, -1)
+catch error
+  negative_shift_rejected is true
+end
+assert(negative_shift_rejected, "negative shift count must fail")
+
+wide_shift_rejected is false
+try
+  ignored is dynamic_shift_left(1, 64)
+catch error
+  wide_shift_rejected is true
+end
+assert(wide_shift_rejected, "shift count >= 64 must fail")
+
+overflowing_shift_rejected is false
+try
+  ignored is dynamic_shift_left(9007199254740991, 1)
+catch error
+  overflowing_shift_rejected is true
+end
+assert(overflowing_shift_rejected, "left shift beyond the safe integer range must fail")
+
+print("runtime_safety_invalid_ops: PASS")

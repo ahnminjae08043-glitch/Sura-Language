@@ -1,0 +1,56 @@
+{
+  "schema": "sura.public.release.v1",
+  "product": "Sura Language",
+  "version": "1.10.0",
+  "published": "2026-07-13",
+  "platform": "windows-x64",
+  "runtime": {
+    "engine": "register VM",
+    "optional_jit": {
+      "flag": "--jit",
+      "platform_abi": "Windows x64 / Win64",
+      "mode": "lazy partial compilation inside the register VM",
+      "fallback": "unsupported bodies remain in the register VM"
+    },
+    "diagnostics_default": "English",
+    "diagnostics_korean": "--lang ko or SURA_LANG=ko"
+  },
+  "installer_requirements": [
+    "Windows x64",
+    ".NET Framework CLR",
+    "Windows PowerShell or PowerShell"
+  ],
+  "optional_integrations": {
+    "ffmpeg": "local media and video decoding",
+    "curl": "native HTTP, async HTTP, and HTTP-backed LLM requests",
+    "nodejs": "JavaScript target, VS Code tooling, http.serve_routes, and preferred http.serve_static runtime",
+    "python": "Python bridge and http.serve_static fallback",
+    "c_cpp_toolchain": "source build, embedding, FFI bindings, and plugins",
+    "cuda_driver_and_optional_cublas": "CUDA tensor operations"
+  },
+  "signing": {
+    "authenticode": "NotSigned",
+    "vsix_signature": "Not provided"
+  },
+  "license": {
+    "root_license_file": "Not provided",
+    "vscode_package_field": "UNLICENSED"
+  },
+  "artifacts": [
+    {
+      "name": "SuraLanguageSetup-1.10.0.exe",
+      "bytes": 23366656,
+      "sha256": "5b13f37f4b49764eb24a61d0d5a2fe90c8f023e620868f931c20a9080e91bc8d"
+    },
+    {
+      "name": "SuraLanguage-1.10.0-windows-x64.zip",
+      "bytes": 8020953,
+      "sha256": "5b84f6a4d5a4c48e24159705bd0846d0814be16f90f1273dd8d78436b5a3343e"
+    },
+    {
+      "name": "SuraLanguage-VSCode-1.10.0.vsix",
+      "bytes": 58304,
+      "sha256": "2bb6028bc0f64115ee549716b60bbc5bbc8978e0a3d001b899066e4d11a2a474"
+    }
+  ]
+}

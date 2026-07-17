@@ -1,0 +1,481 @@
+# In-memory hierarchical filesystem with Unix-like ownership and permissions.
+# A disk can optionally be persisted as versioned JSON, but normal demos and
+# tests stay entirely in memory.
+
+func fs_create(tick) do
+  root is {inode: 1, path: "/", name: "/", parent: "/", kind: SURAOS_NODE_DIR, owner: "root", group: "root", permissions: 7, content: "", children: [], size: 0, created_tick: tick, modified_tick: tick, device: "", metadata: {}}
+  nodes is {"/": root}
+  return {schema: SURAOS_DISK_SCHEMA, label: "SuraOS Virtual Disk", nodes: nodes, next_inode: 2, capacity: 16777216, used: 0, reads: 0, writes: 0, creates: 1, deletes: 0, opens: 0, closes: 0, errors: 0, mounted: true, dirty: false}
+end
+
+func fs_get(fs, path, cwd) do
+  normalized is osutil_normalize_path(path, cwd)
+  nodes is fs.nodes
+  if normalized in nodes then return nodes[normalized]
+  return nil
+end
+
+func fs_exists(fs, path, cwd) do
+  return fs_get(fs, path, cwd) != nil
+end
+
+func fs_is_dir(fs, path, cwd) do
+  node is fs_get(fs, path, cwd)
+  return node != nil and node.kind == SURAOS_NODE_DIR
+end
+
+func fs_is_file(fs, path, cwd) do
+  node is fs_get(fs, path, cwd)
+  return node != nil and node.kind == SURAOS_NODE_FILE
+end
+
+func fs_permission_value(node, user) do
+  if user == "root" then return 7
+  if user == node.owner then return node.permissions
+  # SuraOS v1 stores a compact owner permission value.  Non-owners receive
+  # read permission for world-readable system content and no write access.
+  if (node.permissions & SURAOS_PERM_READ) != 0 then return SURAOS_PERM_READ
+  return 0
+end
+
+func fs_can(node, user, operation) do
+  permissions is fs_permission_value(node, user)
+  if operation == "read" then return (permissions & SURAOS_PERM_READ) != 0
+  if operation == "write" then return (permissions & SURAOS_PERM_WRITE) != 0
+  if operation == "execute" then return (permissions & SURAOS_PERM_EXEC) != 0
+  return false
+end
+
+func fs_mark_error(fs) do
+  fs.errors += 1
+end
+
+func fs_add_child(parent, name) do
+  children is parent.children
+  if not children.contains(name) then children.push(name)
+end
+
+func fs_remove_child(parent, name) do
+  children is parent.children
+  index is osutil_index_of(children, name)
+  if index >= 0 then children.remove(index)
+end
+
+func fs_new_node(fs, path, kind, owner, permissions, tick) do
+  normalized is osutil_normalize_path(path, "/")
+  parent_path is osutil_parent_path(normalized)
+  node is {inode: fs.next_inode, path: normalized, name: osutil_basename(normalized), parent: parent_path, kind: kind, owner: owner, group: owner, permissions: permissions, content: "", children: [], size: 0, created_tick: tick, modified_tick: tick, device: "", metadata: {}}
+  fs.next_inode += 1
+  return node
+end
+
+func fs_create_node(fs, path, kind, owner, permissions, tick) do
+  normalized is osutil_normalize_path(path, "/")
+  if normalized.len() > SURAOS_MAX_PATH then return osutil_fail(SURAOS_ERR_LIMIT, "path too long")
+  if fs_exists(fs, normalized, "/") then return osutil_fail(SURAOS_ERR_EXISTS, "path already exists")
+  parent_path is osutil_parent_path(normalized)
+  parent is fs_get(fs, parent_path, "/")
+  if parent == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "parent directory not found")
+  if parent.kind != SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_NOT_DIR, "parent is not a directory")
+  if not fs_can(parent, owner, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "parent is not writable")
+  node is fs_new_node(fs, normalized, kind, owner, permissions, tick)
+  nodes is fs.nodes
+  nodes[normalized] is node
+  fs_add_child(parent, node.name)
+  parent.modified_tick is tick
+  fs.creates += 1
+  fs.dirty is true
+  return osutil_ok(node)
+end
+
+func fs_mkdir(fs, path, owner, recursive, tick) do
+  normalized is osutil_normalize_path(path, "/")
+  existing is fs_get(fs, normalized, "/")
+  if existing != nil then
+    if existing.kind == SURAOS_NODE_DIR then return osutil_ok(existing)
+    return osutil_fail(SURAOS_ERR_EXISTS, "a non-directory node already exists")
+  end
+  parent_path is osutil_parent_path(normalized)
+  if recursive and not fs_exists(fs, parent_path, "/") then
+    parent_result is fs_mkdir(fs, parent_path, owner, true, tick)
+    if not parent_result.ok then return parent_result
+  end
+  return fs_create_node(fs, normalized, SURAOS_NODE_DIR, owner, SURAOS_PERM_DEFAULT_DIR, tick)
+end
+
+func fs_touch(fs, path, owner, tick) do
+  node is fs_get(fs, path, "/")
+  if node != nil then
+    if node.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_IS_DIR, "cannot touch directory")
+    if not fs_can(node, owner, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not writable")
+    node.modified_tick is tick
+    return osutil_ok(node)
+  end
+  return fs_create_node(fs, path, SURAOS_NODE_FILE, owner, SURAOS_PERM_DEFAULT_FILE, tick)
+end
+
+func fs_read_file(fs, path, user, cwd) do
+  node is fs_get(fs, path, cwd)
+  if node == nil then
+    fs_mark_error(fs)
+    return osutil_fail(SURAOS_ERR_NOT_FOUND, "file not found")
+  end
+  if node.kind == SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_IS_DIR, "path is a directory")
+  if node.kind != SURAOS_NODE_FILE and node.kind != SURAOS_NODE_DEVICE then return osutil_fail(SURAOS_ERR_INVALID, "node cannot be read")
+  if not fs_can(node, user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not readable")
+  fs.reads += 1
+  return osutil_ok(node.content)
+end
+
+func fs_write_file(fs, path, content, user, cwd, tick) do
+  normalized is osutil_normalize_path(path, cwd)
+  node is fs_get(fs, normalized, "/")
+  if node == nil then
+    created is fs_create_node(fs, normalized, SURAOS_NODE_FILE, user, SURAOS_PERM_DEFAULT_FILE, tick)
+    if not created.ok then return created
+    node is created.value
+  end
+  if node.kind == SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_IS_DIR, "path is a directory")
+  if node.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_INVALID, "node is not a regular file")
+  if not fs_can(node, user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not writable")
+  text is "" + content
+  if text.len() > SURAOS_MAX_FILE_BYTES then return osutil_fail(SURAOS_ERR_LIMIT, "file exceeds maximum size")
+  old_size is node.size
+  node.content is text
+  node.size is text.len()
+  node.modified_tick is tick
+  fs.used += node.size - old_size
+  fs.writes += 1
+  fs.dirty is true
+  return osutil_ok(node.size)
+end
+
+func fs_append_file(fs, path, content, user, cwd, tick) do
+  normalized is osutil_normalize_path(path, cwd)
+  node is fs_get(fs, normalized, "/")
+  if node == nil then return fs_write_file(fs, normalized, content, user, "/", tick)
+  if node.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_IS_DIR, "path is not a file")
+  return fs_write_file(fs, normalized, node.content + content, user, "/", tick)
+end
+
+func fs_list(fs, path, user, cwd) do
+  node is fs_get(fs, path, cwd)
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "directory not found")
+  if node.kind != SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_NOT_DIR, "path is not a directory")
+  if not fs_can(node, user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "directory is not readable")
+  names is osutil_sort_strings(node.children)
+  entries is []
+  for name in names do
+    child_path is node.path
+    if child_path == "/" then child_path += name else child_path += "/" + name
+    child is fs_get(fs, child_path, "/")
+    if child != nil then entries.push(child)
+  end
+  fs.reads += 1
+  return osutil_ok(entries)
+end
+
+func fs_stat(fs, path, user, cwd) do
+  node is fs_get(fs, path, cwd)
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "path not found")
+  if not fs_can(node, user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "path is not readable")
+  return osutil_ok({inode: node.inode, path: node.path, name: node.name, kind: node.kind, owner: node.owner, group: node.group, permissions: node.permissions, size: node.size, children: node.children.len(), created_tick: node.created_tick, modified_tick: node.modified_tick, device: node.device})
+end
+
+func fs_chmod(fs, path, permissions, user, cwd, tick) do
+  node is fs_get(fs, path, cwd)
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "path not found")
+  if user != "root" and user != node.owner then return osutil_fail(SURAOS_ERR_PERMISSION, "only owner may change permissions")
+  value is floor(permissions)
+  if value < 0 or value > 7 then return osutil_fail(SURAOS_ERR_INVALID, "permission must be 0..7")
+  node.permissions is value
+  node.modified_tick is tick
+  fs.dirty is true
+  return osutil_ok(value)
+end
+
+func fs_chown(fs, path, new_owner, user, cwd, tick) do
+  node is fs_get(fs, path, cwd)
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "path not found")
+  if user != "root" then return osutil_fail(SURAOS_ERR_PERMISSION, "only root may change owner")
+  node.owner is new_owner
+  node.group is new_owner
+  node.modified_tick is tick
+  fs.dirty is true
+  return osutil_ok(new_owner)
+end
+
+func fs_collect_subtree(fs, path) do
+  normalized is osutil_normalize_path(path, "/")
+  result is []
+  prefix is normalized + "/"
+  if normalized == "/" then prefix is "/"
+  for node in fs.nodes.values() do
+    if node.path == normalized or node.path.starts_with(prefix) then result.push(node)
+  end
+  return osutil_sort_by_number(result, "inode", true)
+end
+
+func fs_remove(fs, path, user, cwd, recursive, tick) do
+  normalized is osutil_normalize_path(path, cwd)
+  if normalized == "/" then return osutil_fail(SURAOS_ERR_PERMISSION, "cannot remove root")
+  node is fs_get(fs, normalized, "/")
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "path not found")
+  parent is fs_get(fs, node.parent, "/")
+  if user != "root" and user != node.owner and not fs_can(parent, user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "cannot remove path")
+  if node.kind == SURAOS_NODE_DIR and node.children.len() > 0 and not recursive then return osutil_fail(SURAOS_ERR_BUSY, "directory is not empty")
+  targets is fs_collect_subtree(fs, normalized)
+  nodes is fs.nodes
+  removed_bytes is 0
+  for target in targets do
+    removed_bytes += target.size
+    nodes.delete(target.path)
+    fs.deletes += 1
+  end
+  if parent != nil then
+    fs_remove_child(parent, node.name)
+    parent.modified_tick is tick
+  end
+  fs.used -= removed_bytes
+  if fs.used < 0 then fs.used is 0
+  fs.dirty is true
+  return osutil_ok(targets.len())
+end
+
+func fs_copy(fs, source_path, destination_path, user, cwd, tick) do
+  source is fs_get(fs, source_path, cwd)
+  if source == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "source not found")
+  if source.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_INVALID, "only regular files can be copied")
+  if not fs_can(source, user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "source is not readable")
+  destination is osutil_normalize_path(destination_path, cwd)
+  if fs_is_dir(fs, destination, "/") then
+    if destination == "/" then destination += source.name else destination += "/" + source.name
+  end
+  result is fs_write_file(fs, destination, source.content, user, "/", tick)
+  if not result.ok then return result
+  return osutil_ok(destination)
+end
+
+func fs_move(fs, source_path, destination_path, user, cwd, tick) do
+  source is fs_get(fs, source_path, cwd)
+  if source == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "source not found")
+  if source.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_INVALID, "v1 move supports regular files")
+  copied is fs_copy(fs, source.path, destination_path, user, "/", tick)
+  if not copied.ok then return copied
+  removed is fs_remove(fs, source.path, user, "/", false, tick)
+  if not removed.ok then return removed
+  return copied
+end
+
+func fs_tree_lines(fs, path, user, cwd) do
+  root is fs_get(fs, path, cwd)
+  if root == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "path not found")
+  if not fs_can(root, user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "path is not readable")
+  subtree is fs_collect_subtree(fs, root.path)
+  paths is []
+  for node in subtree do
+    paths.push(node.path)
+  end
+  paths is osutil_sort_strings(paths)
+  rows is []
+  for node_path in paths do
+    node is fs_get(fs, node_path, "/")
+    depth is osutil_path_depth(node.path) - osutil_path_depth(root.path)
+    prefix is ""
+    repeat depth do
+      prefix += "  "
+    end
+    marker is ""
+    if node.kind == SURAOS_NODE_DIR and node.path != "/" then marker is "/"
+    rows.push(prefix + node.name + marker)
+  end
+  return osutil_ok(rows)
+end
+
+func fs_open(fs, process, path, mode, tick) do
+  if process.open_files.keys().len() >= SURAOS_MAX_OPEN_FILES then return osutil_fail(SURAOS_ERR_LIMIT, "open file limit reached")
+  normalized is osutil_normalize_path(path, process.cwd)
+  node is fs_get(fs, normalized, "/")
+  wants_write is mode == SURAOS_OPEN_WRITE or mode == SURAOS_OPEN_APPEND or mode == SURAOS_OPEN_READ_WRITE
+  if node == nil and wants_write then
+    created is fs_create_node(fs, normalized, SURAOS_NODE_FILE, process.user, SURAOS_PERM_DEFAULT_FILE, tick)
+    if not created.ok then return created
+    node is created.value
+  end
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "file not found")
+  if node.kind != SURAOS_NODE_FILE and node.kind != SURAOS_NODE_DEVICE then return osutil_fail(SURAOS_ERR_IS_DIR, "cannot open directory")
+  if (mode == SURAOS_OPEN_READ or mode == SURAOS_OPEN_READ_WRITE) and not fs_can(node, process.user, "read") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not readable")
+  if wants_write and not fs_can(node, process.user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not writable")
+  if mode == SURAOS_OPEN_WRITE and node.kind == SURAOS_NODE_FILE then
+    fs_write_file(fs, normalized, "", process.user, "/", tick)
+  end
+  fd is process.next_fd
+  process.next_fd += 1
+  position is 0
+  if mode == SURAOS_OPEN_APPEND then position is node.size
+  descriptor is {fd: fd, path: normalized, inode: node.inode, mode: mode, position: position, opened_tick: tick, reads: 0, writes: 0}
+  open_files is process.open_files
+  open_files[osutil_key(fd)] is descriptor
+  fs.opens += 1
+  return osutil_ok(fd)
+end
+
+func fs_descriptor(process, fd) do
+  open_files is process.open_files
+  key is osutil_key(fd)
+  if key in open_files then return open_files[key]
+  return nil
+end
+
+func fs_read_fd(fs, process, fd, length) do
+  descriptor is fs_descriptor(process, fd)
+  if descriptor == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "bad file descriptor")
+  if descriptor.mode != SURAOS_OPEN_READ and descriptor.mode != SURAOS_OPEN_READ_WRITE then return osutil_fail(SURAOS_ERR_PERMISSION, "descriptor is not readable")
+  node is fs_get(fs, descriptor.path, "/")
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "opened node disappeared")
+  count is floor(length)
+  if count < 0 then count is node.size - descriptor.position
+  finish is descriptor.position + count
+  if finish > node.size then finish is node.size
+  content is node.content.sub(descriptor.position, finish)
+  descriptor.position is finish
+  descriptor.reads += 1
+  fs.reads += 1
+  return osutil_ok(content)
+end
+
+func fs_write_fd(fs, process, fd, content, tick) do
+  descriptor is fs_descriptor(process, fd)
+  if descriptor == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "bad file descriptor")
+  if descriptor.mode == SURAOS_OPEN_READ then return osutil_fail(SURAOS_ERR_PERMISSION, "descriptor is not writable")
+  node is fs_get(fs, descriptor.path, "/")
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "opened node disappeared")
+  text is "" + content
+  before is node.content.sub(0, descriptor.position)
+  after_start is descriptor.position + text.len()
+  after is ""
+  if after_start < node.content.len() then after is node.content.sub(after_start, node.content.len())
+  result is fs_write_file(fs, node.path, before + text + after, process.user, "/", tick)
+  if not result.ok then return result
+  descriptor.position += text.len()
+  descriptor.writes += 1
+  return osutil_ok(text.len())
+end
+
+func fs_seek(fs, process, fd, offset, origin) do
+  descriptor is fs_descriptor(process, fd)
+  if descriptor == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "bad file descriptor")
+  node is fs_get(fs, descriptor.path, "/")
+  if node == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "opened node disappeared")
+  target is floor(offset)
+  if origin == SURAOS_SEEK_CURRENT then target += descriptor.position
+  if origin == SURAOS_SEEK_END then target += node.size
+  target is osutil_clamp(target, 0, node.size)
+  descriptor.position is target
+  return osutil_ok(target)
+end
+
+func fs_close(fs, process, fd) do
+  open_files is process.open_files
+  key is osutil_key(fd)
+  if not (key in open_files) then return osutil_fail(SURAOS_ERR_BAD_FD, "bad file descriptor")
+  open_files.delete(key)
+  fs.closes += 1
+  return osutil_ok(fd)
+end
+
+func fs_mount_device(fs, path, device_name, owner, tick) do
+  result is fs_create_node(fs, path, SURAOS_NODE_DEVICE, owner, 6, tick)
+  if not result.ok then return result
+  node is result.value
+  node.device is device_name
+  return result
+end
+
+func fs_format_default(fs, tick) do
+  directories is ["/boot", "/bin", "/dev", "/etc", "/home", "/home/user", "/packages", "/tmp", "/var", "/var/log"]
+  for path in directories do
+    fs_mkdir(fs, path, "root", true, tick)
+  end
+  home_node is fs_get(fs, "/home/user", "/")
+  home_node.owner is "user"
+  home_node.group is "users"
+  fs_write_file(fs, "/etc/hostname", "sura-machine\n", "root", "/", tick)
+  fs_write_file(fs, "/etc/os-release", "NAME=SuraOS\nVERSION=" + SURAOS_VERSION + "\nARCH=" + SURAOS_ARCH + "\n", "root", "/", tick)
+  fs_write_file(fs, "/etc/motd", "Welcome to " + suraos_banner() + "\nType 'help' for commands.\n", "root", "/", tick)
+  fs_write_file(fs, "/home/user/readme.txt", "This virtual disk, kernel, CPU and shell are implemented in Sura.\n", "user", "/", tick)
+  fs_write_file(fs, "/var/log/boot.log", "filesystem initialized at tick " + tick + "\n", "root", "/", tick)
+  fs_mount_device(fs, "/dev/console", "console", "root", tick)
+  fs_mount_device(fs, "/dev/clock", "clock", "root", tick)
+  fs_mount_device(fs, "/dev/random", "random", "root", tick)
+  fs_mount_device(fs, "/dev/null", "null", "root", tick)
+  return fs
+end
+
+func fs_usage(fs) do
+  return {label: fs.label, capacity: fs.capacity, used: fs.used, free: fs.capacity - fs.used, utilization: osutil_percent(fs.used, fs.capacity), nodes: fs.nodes.keys().len(), reads: fs.reads, writes: fs.writes, creates: fs.creates, deletes: fs.deletes, opens: fs.opens, closes: fs.closes, errors: fs.errors, dirty: fs.dirty}
+end
+
+func fs_validate(fs) do
+  errors is []
+  nodes is fs.nodes
+  if not ("/" in nodes) then errors.push("root directory missing")
+  calculated_used is 0
+  for node in nodes.values() do
+    if node.path != "/" and not (node.parent in nodes) then errors.push("missing parent for " + node.path)
+    if node.kind == SURAOS_NODE_DIR then
+      for child_name in node.children do
+        child_path is node.path
+        if child_path == "/" then child_path += child_name else child_path += "/" + child_name
+        if not (child_path in nodes) then errors.push("missing child node " + child_path)
+      end
+    end
+    if node.kind == SURAOS_NODE_FILE then
+      if node.size != node.content.len() then errors.push("size mismatch for " + node.path)
+      calculated_used += node.size
+    end
+  end
+  if calculated_used != fs.used then errors.push("filesystem used-byte counter mismatch")
+  return {ok: errors.len() == 0, errors: errors, calculated_used: calculated_used}
+end
+
+func fs_export(fs) do
+  nodes is []
+  for node in fs.nodes.values() do
+    nodes.push({inode: node.inode, path: node.path, name: node.name, parent: node.parent, kind: node.kind, owner: node.owner, group: node.group, permissions: node.permissions, content: node.content, children: osutil_clone_array(node.children), size: node.size, created_tick: node.created_tick, modified_tick: node.modified_tick, device: node.device, metadata: osutil_clone_dict(node.metadata)})
+  end
+  nodes is osutil_sort_by_number(nodes, "inode", false)
+  return {schema: SURAOS_DISK_SCHEMA, label: fs.label, capacity: fs.capacity, next_inode: fs.next_inode, nodes: nodes}
+end
+
+func fs_import(data) do
+  if data.schema != SURAOS_DISK_SCHEMA then return osutil_fail(SURAOS_ERR_INVALID, "unsupported disk schema")
+  fs is fs_create(0)
+  fs.label is data.label
+  fs.capacity is data.capacity
+  fs.next_inode is data.next_inode
+  fs.nodes is {}
+  fs.used is 0
+  nodes is fs.nodes
+  for node in data.nodes do
+    nodes[node.path] is node
+    if node.kind == SURAOS_NODE_FILE then fs.used += node.size
+  end
+  validation is fs_validate(fs)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  fs.dirty is false
+  return osutil_ok(fs)
+end
+
+func fs_save_host(fs, host_path) do
+  validation is fs_validate(fs)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, "refusing to save invalid filesystem")
+  file_write_json(host_path, fs_export(fs))
+  fs.dirty is false
+  return osutil_ok(host_path)
+end
+
+func fs_load_host(host_path) do
+  if not file_exists(host_path) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "disk image not found")
+  return fs_import(file_read_json(host_path))
+end

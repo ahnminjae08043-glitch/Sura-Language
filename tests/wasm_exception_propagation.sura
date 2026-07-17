@@ -1,0 +1,95 @@
+side_effect_count is 0
+
+func throw_leaf(kind) do
+  if kind == 0 then
+    throw "boom"
+  end
+  throw 7
+end
+
+func throw_middle(kind) do
+  global side_effect_count
+  value is throw_leaf(kind)
+  side_effect_count += 100
+  return value
+end
+
+func throw_outer(kind) do
+  global side_effect_count
+  value is throw_middle(kind)
+  side_effect_count += 10
+  return value
+end
+
+func exception_identity(value) do
+  return value
+end
+
+string_caught is false
+try
+  throw_outer(0)
+catch err
+  string_caught is type(err) == "string" and err == "boom"
+end
+
+assert_eq(string_caught, true)
+assert_eq(side_effect_count, 0)
+
+number_caught is false
+try
+  throw_outer(1)
+catch err
+  number_caught is type(err) == "number" and err == 7
+end
+
+assert_eq(number_caught, true)
+assert_eq(side_effect_count, 0)
+
+binary_caught is false
+try
+  binary_value is 1 + throw_outer(1)
+catch err
+  binary_caught is type(err) == "number" and err == 7
+end
+assert_eq(binary_caught, true)
+assert_eq(side_effect_count, 0)
+
+argument_caught is false
+try
+  argument_value is exception_identity(throw_outer(0))
+catch err
+  argument_caught is type(err) == "string" and err == "boom"
+end
+assert_eq(argument_caught, true)
+assert_eq(side_effect_count, 0)
+
+condition_caught is false
+try
+  if throw_outer(1) > 0 then
+    condition_caught is false
+  end
+catch err
+  condition_caught is type(err) == "number" and err == 7
+end
+assert_eq(condition_caught, true)
+assert_eq(side_effect_count, 0)
+
+interpolation_caught is false
+try
+  interpolation_value is "value {throw_outer(0)}"
+catch err
+  interpolation_caught is type(err) == "string" and err == "boom"
+end
+assert_eq(interpolation_caught, true)
+assert_eq(side_effect_count, 0)
+
+collection_caught is false
+try
+  collection_value is [1, {value: throw_outer(1)}]
+catch err
+  collection_caught is type(err) == "number" and err == 7
+end
+assert_eq(collection_caught, true)
+assert_eq(side_effect_count, 0)
+
+print 73

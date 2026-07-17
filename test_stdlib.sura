@@ -1,0 +1,47 @@
+// Standard library smoke test
+
+// Math
+print "=== Math ==="
+print sqrt(16)
+print floor(3.7)
+print ceil(3.2)
+print abs(-5)
+print pow(2, 10)
+print clamp(15, 0, 10)
+print min(5, 3, 8, 1, 9)
+print max(5, 3, 8, 1, 9)
+
+// String
+print "=== String ==="
+print upper("hello")
+print lower("WORLD")
+print trim("  spaced  ")
+print contains("hello world", "world")
+print startsWith("abc", "a")
+print endsWith("abc", "c")
+print indexOf("hello", "ll")
+print substring("hello", 1, 4)
+print replace("foo bar foo", "foo", "BAZ")
+
+s is split("a,b,c,d", ",")
+print s
+print join(s, " | ")
+
+// Array
+print "=== Array ==="
+nums is [3, 1, 4, 1, 5, 9, 2, 6]
+print length(nums)
+print slice(nums, 2, 5)
+sort(nums)
+print nums
+reverse(nums)
+print nums
+print concat([1,2], [3,4], [5])
+
+// Type conversion
+print "=== Type conversion ==="
+print to_int("42")
+print to_float("3.14")
+print to_str(123)
+print to_bool(0)
+print to_bool("hi")

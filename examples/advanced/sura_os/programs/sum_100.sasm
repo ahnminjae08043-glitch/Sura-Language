@@ -1,0 +1,19 @@
+.name sum-100
+.entry start
+
+# Sum all integers from 1 through 100.
+start:
+MOVI R0 0
+MOVI R1 1
+MOVI R2 100
+
+sum_loop:
+ADD R0 R1
+INC R1
+CMP R1 R2
+JLE sum_loop
+
+SYSCALL PRINT_NUMBER
+MOVI R0 0
+SYSCALL EXIT
+

@@ -1,0 +1,221 @@
+# Virtual devices: console, keyboard, clock, deterministic random source, null,
+# and an in-memory loopback network adapter.
+
+func device_console_create() do
+  return {name: "console", kind: "character", output: [], input: [], bytes_written: 0, bytes_read: 0, echo: true, foreground_pid: 0, width: 80, height: 25}
+end
+
+func device_keyboard_create() do
+  return {name: "keyboard", kind: "input", queue: [], events: 0, dropped: 0, limit: 256}
+end
+
+func device_clock_create() do
+  return {name: "clock", kind: "timer", tick: 0, frequency: 100, alarms: [], interrupts: 0}
+end
+
+func device_random_create(seed) do
+  return {name: "random", kind: "entropy", state: floor(seed) % 2147483647, generated: 0}
+end
+
+func device_null_create() do
+  return {name: "null", kind: "sink", bytes_discarded: 0}
+end
+
+func device_network_create() do
+  return {name: "net0", kind: "network", address: "127.0.0.1", mtu: 512, incoming: [], outgoing: [], sent: 0, received: 0, dropped: 0, enabled: true}
+end
+
+func device_manager_create(seed) do
+  return {console: device_console_create(), keyboard: device_keyboard_create(), clock: device_clock_create(), random: device_random_create(seed), null_device: device_null_create(), net0: device_network_create(), ticks: 0}
+end
+
+func device_console_write(console, value, newline) do
+  text is "" + value
+  if newline then text += "\n"
+  output is console.output
+  output.push(text)
+  console.bytes_written += text.len()
+  return text.len()
+end
+
+func device_console_read(console) do
+  input_queue is console.input
+  if input_queue.len() == 0 then return osutil_fail(SURAOS_ERR_NOT_FOUND, "console input empty")
+  value is input_queue.remove(0)
+  console.bytes_read += value.len()
+  return osutil_ok(value)
+end
+
+func device_console_feed(console, text) do
+  input_queue is console.input
+  input_queue.push(text)
+  return input_queue.len()
+end
+
+func device_console_text(console) do
+  return console.output.join("")
+end
+
+func device_console_lines(console) do
+  return osutil_split_lines(device_console_text(console))
+end
+
+func device_console_clear(console) do
+  console.output is []
+  return true
+end
+
+func device_console_drain(console) do
+  text is device_console_text(console)
+  console.output is []
+  return text
+end
+
+func device_keyboard_push(keyboard, key, pressed, tick) do
+  queue is keyboard.queue
+  if queue.len() >= keyboard.limit then
+    queue.remove(0)
+    keyboard.dropped += 1
+  end
+  event is {key: key, pressed: pressed, tick: tick}
+  queue.push(event)
+  keyboard.events += 1
+  return event
+end
+
+func device_keyboard_pop(keyboard) do
+  queue is keyboard.queue
+  if queue.len() == 0 then return osutil_fail(SURAOS_ERR_NOT_FOUND, "keyboard queue empty")
+  return osutil_ok(queue.remove(0))
+end
+
+func device_clock_alarm(clock, pid, target_tick, message) do
+  alarms is clock.alarms
+  alarm is {pid: pid, target_tick: target_tick, message: message, fired: false}
+  alarms.push(alarm)
+  return alarm
+end
+
+func device_clock_tick(clock, tick) do
+  clock.tick is tick
+  fired is []
+  for alarm in clock.alarms do
+    if not alarm.fired and alarm.target_tick <= tick then
+      alarm.fired is true
+      fired.push(alarm)
+      clock.interrupts += 1
+    end
+  end
+  return fired
+end
+
+func device_random_next(random_device) do
+  state is random_device.state
+  state is (state * 48271) % 2147483647
+  if state <= 0 then state += 2147483646
+  random_device.state is state
+  random_device.generated += 1
+  return state
+end
+
+func device_random_range(random_device, minimum, maximum) do
+  low is floor(minimum)
+  high is floor(maximum)
+  if high < low then
+    temp is low
+    low is high
+    high is temp
+  end
+  width is high - low + 1
+  if width <= 0 then return low
+  return low + device_random_next(random_device) % width
+end
+
+func device_network_send(network, from_pid, port, payload, tick) do
+  if not network.enabled then return osutil_fail(SURAOS_ERR_IO, "network disabled")
+  text is "" + payload
+  if text.len() > network.mtu then
+    network.dropped += 1
+    return osutil_fail(SURAOS_ERR_LIMIT, "packet exceeds MTU")
+  end
+  packet is {id: network.sent + 1, from_pid: from_pid, destination: network.address, port: port, payload: text, tick: tick}
+  outgoing is network.outgoing
+  incoming is network.incoming
+  outgoing.push(packet)
+  incoming.push(packet)
+  network.sent += 1
+  return osutil_ok(packet.id)
+end
+
+func device_network_receive(network, port) do
+  incoming is network.incoming
+  index is 0
+  while index < incoming.len() do
+    packet is incoming[index]
+    if port < 0 or packet.port == port then
+      incoming.remove(index)
+      network.received += 1
+      return osutil_ok(packet)
+    end
+    index += 1
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "no packet available")
+end
+
+func device_tick_all(devices, tick) do
+  devices.ticks += 1
+  device_clock_tick(devices.clock, tick)
+  return tick
+end
+
+func device_get(devices, name) do
+  if name == "console" then return devices.console
+  if name == "keyboard" then return devices.keyboard
+  if name == "clock" then return devices.clock
+  if name == "random" then return devices.random
+  if name == "null" then return devices.null_device
+  if name == "net0" then return devices.net0
+  return nil
+end
+
+func device_read(devices, name, options) do
+  if name == "console" then return device_console_read(devices.console)
+  if name == "keyboard" then return device_keyboard_pop(devices.keyboard)
+  if name == "clock" then return osutil_ok(devices.clock.tick)
+  if name == "random" then return osutil_ok(device_random_next(devices.random))
+  if name == "null" then return osutil_ok("")
+  if name == "net0" then
+    port is -1
+    if options != nil and "port" in options then port is options.port
+    return device_network_receive(devices.net0, port)
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "device not found")
+end
+
+func device_write(devices, name, value, options) do
+  if name == "console" then
+    newline is false
+    if options != nil and "newline" in options then newline is options.newline
+    return osutil_ok(device_console_write(devices.console, value, newline))
+  end
+  if name == "null" then
+    text is "" + value
+    null_device is devices.null_device
+    null_device.bytes_discarded += text.len()
+    return osutil_ok(text.len())
+  end
+  if name == "net0" then
+    from_pid is 0
+    port is 0
+    tick is devices.clock.tick
+    if options != nil and "from_pid" in options then from_pid is options.from_pid
+    if options != nil and "port" in options then port is options.port
+    return device_network_send(devices.net0, from_pid, port, value, tick)
+  end
+  return osutil_fail(SURAOS_ERR_PERMISSION, "device is not writable")
+end
+
+func device_stats(devices) do
+  return {ticks: devices.ticks, console: {bytes_written: devices.console.bytes_written, bytes_read: devices.console.bytes_read, buffered_chunks: devices.console.output.len()}, keyboard: {events: devices.keyboard.events, queued: devices.keyboard.queue.len(), dropped: devices.keyboard.dropped}, clock: {tick: devices.clock.tick, alarms: devices.clock.alarms.len(), interrupts: devices.clock.interrupts}, random: {generated: devices.random.generated}, null_device: {bytes_discarded: devices.null_device.bytes_discarded}, network: {sent: devices.net0.sent, received: devices.net0.received, incoming: devices.net0.incoming.len(), dropped: devices.net0.dropped}}
+end
+

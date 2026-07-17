@@ -1,0 +1,154 @@
+﻿<!doctype html>
+<meta charset="utf-8">
+<title>Sura Benchmark Dashboard</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;margin:32px;line-height:1.4;color:#18181b}
+table{border-collapse:collapse;min-width:640px}
+td,th{border:1px solid #bbb;padding:8px 12px;text-align:left}
+th{background:#f2f2f2}
+.chart{display:block;width:min(100%,860px);height:auto;margin:12px 0 24px}
+.chart-label{font-size:12px;fill:#3f3f46}
+.chart-value{font-size:12px;fill:#52525b}
+.empty{color:#71717a;font-style:italic}
+</style>
+<h1>Sura Benchmark Dashboard</h1>
+<h2>Benchmark Summary</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Benchmarks</td><td>19</td></tr>
+<tr><td>Average JIT speedup</td><td>7.77x</td></tr>
+<tr><td>Python comparison cases</td><td>18</td></tr>
+<tr><td>Cases faster than Python</td><td>18</td></tr>
+<tr><td>Average Sura/Python ratio</td><td>7.07x</td></tr>
+<tr><td>Best Python comparison</td><td>game physics Vec2 loop (65.10x)</td></tr>
+<tr><td>Native C++ comparison</td><td>Sura/native 1.08x</td></tr>
+</table>
+<h2>Native C++ Baseline</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Status</td><td>PASS</td></tr>
+<tr><td>Benchmark</td><td>game physics Vec2 loop</td></tr>
+<tr><td>Sura JIT loop avg</td><td>0.052 ms</td></tr>
+<tr><td>Native C++ avg</td><td>0.048 ms</td></tr>
+<tr><td>Sura/native ratio</td><td>1.08x</td></tr>
+<tr><td>Timing source</td><td>script_loop / native_avg</td></tr>
+<tr><td>Evidence</td><td>bench_physics.sura vs bench_physics_native.cpp</td></tr>
+<tr><td>Warnings</td><td>none</td></tr>
+</table>
+<h2>JIT Speedup Chart</h2>
+<svg class="chart" viewBox="0 0 860 408" role="img">
+<line x1="210" y1="10" x2="210" y2="398" stroke="#d4d4d8"/>
+<text x="0" y="39" class="chart-label">bench_physics.sura</text>
+<rect x="210" y="20" width="580" height="28" rx="4" fill="#2563eb"></rect>
+<text x="798" y="39" class="chart-value">106.94x</text>
+<text x="0" y="77" class="chart-label">bench_physics_inplace.sura</text>
+<rect x="210" y="58" width="31" height="28" rx="4" fill="#2563eb"></rect>
+<text x="249" y="77" class="chart-value">5.79x</text>
+<text x="0" y="115" class="chart-label">bench_fib.sura</text>
+<rect x="210" y="96" width="24" height="28" rx="4" fill="#2563eb"></rect>
+<text x="242" y="115" class="chart-value">4.47x</text>
+<text x="0" y="153" class="chart-label">bench_market.sura</text>
+<rect x="210" y="134" width="23" height="28" rx="4" fill="#2563eb"></rect>
+<text x="241" y="153" class="chart-value">4.20x</text>
+<text x="0" y="191" class="chart-label">bench_jit.sura</text>
+<rect x="210" y="172" width="20" height="28" rx="4" fill="#2563eb"></rect>
+<text x="238" y="191" class="chart-value">3.60x</text>
+<text x="0" y="229" class="chart-label">bench_dependency_resolver.sura</text>
+<rect x="210" y="210" width="13" height="28" rx="4" fill="#2563eb"></rect>
+<text x="231" y="229" class="chart-value">2.42x</text>
+<text x="0" y="267" class="chart-label">bench_policy_gate.sura</text>
+<rect x="210" y="248" width="12" height="28" rx="4" fill="#2563eb"></rect>
+<text x="230" y="267" class="chart-value">2.23x</text>
+<text x="0" y="305" class="chart-label">bench_agent_scoring.sura</text>
+<rect x="210" y="286" width="11" height="28" rx="4" fill="#2563eb"></rect>
+<text x="229" y="305" class="chart-value">1.95x</text>
+<text x="0" y="343" class="chart-label">bench_tool_routing.sura</text>
+<rect x="210" y="324" width="10" height="28" rx="4" fill="#2563eb"></rect>
+<text x="228" y="343" class="chart-value">1.76x</text>
+<text x="0" y="381" class="chart-label">bench_fraud_scoring.sura</text>
+<rect x="210" y="362" width="9" height="28" rx="4" fill="#2563eb"></rect>
+<text x="227" y="381" class="chart-value">1.75x</text>
+</svg>
+<table>
+<tr><th>Benchmark</th><th>Interpreter Execute</th><th>JIT Execute</th><th>Speedup</th></tr>
+<tr><td>bench_jit.sura</td><td>60.487 ms</td><td>16.799 ms</td><td>3.60x</td></tr>
+<tr><td>bench_fib.sura</td><td>426.079 ms</td><td>95.396 ms</td><td>4.47x</td></tr>
+<tr><td>bench_agent_scoring.sura</td><td>61.796 ms</td><td>31.615 ms</td><td>1.95x</td></tr>
+<tr><td>bench_ai_schema.sura</td><td>2344.28 ms</td><td>2346.78 ms</td><td>1.00x</td></tr>
+<tr><td>bench_api_log_etl.sura</td><td>422.1 ms</td><td>305.152 ms</td><td>1.38x</td></tr>
+<tr><td>bench_rag_vector.sura</td><td>150.919 ms</td><td>121.772 ms</td><td>1.24x</td></tr>
+<tr><td>bench_tool_routing.sura</td><td>183.76 ms</td><td>104.427 ms</td><td>1.76x</td></tr>
+<tr><td>bench_policy_gate.sura</td><td>552.081 ms</td><td>247.797 ms</td><td>2.23x</td></tr>
+<tr><td>bench_guardrail.sura</td><td>315.423 ms</td><td>191.928 ms</td><td>1.64x</td></tr>
+<tr><td>bench_dependency_resolver.sura</td><td>2543.18 ms</td><td>1051.1 ms</td><td>2.42x</td></tr>
+<tr><td>bench_workflow_scheduler.sura</td><td>7531.98 ms</td><td>4927.21 ms</td><td>1.53x</td></tr>
+<tr><td>bench_order_etl.sura</td><td>595.202 ms</td><td>537.011 ms</td><td>1.11x</td></tr>
+<tr><td>bench_telemetry_window.sura</td><td>953.286 ms</td><td>707.099 ms</td><td>1.35x</td></tr>
+<tr><td>bench_log_regex.sura</td><td>5757.65 ms</td><td>3546.54 ms</td><td>1.62x</td></tr>
+<tr><td>bench_fraud_scoring.sura</td><td>376.979 ms</td><td>215.724 ms</td><td>1.75x</td></tr>
+<tr><td>bench_feature_flags.sura</td><td>517.975 ms</td><td>330.091 ms</td><td>1.57x</td></tr>
+<tr><td>bench_physics.sura</td><td>51.011 ms</td><td>0.477 ms</td><td>106.94x</td></tr>
+<tr><td>bench_physics_inplace.sura</td><td>15.605 ms</td><td>2.695 ms</td><td>5.79x</td></tr>
+<tr><td>bench_market.sura</td><td>76.06 ms</td><td>18.095 ms</td><td>4.20x</td></tr>
+</table>
+<h2>Python Comparison</h2>
+<svg class="chart" viewBox="0 0 860 408" role="img">
+<line x1="210" y1="10" x2="210" y2="398" stroke="#d4d4d8"/>
+<text x="0" y="39" class="chart-label">game physics Vec2 loop</text>
+<rect x="210" y="20" width="580" height="28" rx="4" fill="#16a34a"></rect>
+<text x="798" y="39" class="chart-value">65.10x</text>
+<text x="0" y="77" class="chart-label">game physics in-place Vec2 loop</text>
+<rect x="210" y="58" width="55" height="28" rx="4" fill="#16a34a"></rect>
+<text x="273" y="77" class="chart-value">6.19x</text>
+<text x="0" y="115" class="chart-label">fib(30)</text>
+<rect x="210" y="96" width="48" height="28" rx="4" fill="#16a34a"></rect>
+<text x="266" y="115" class="chart-value">5.37x</text>
+<text x="0" y="153" class="chart-label">AI tool routing scheduler</text>
+<rect x="210" y="134" width="43" height="28" rx="4" fill="#16a34a"></rect>
+<text x="261" y="153" class="chart-value">4.88x</text>
+<text x="0" y="191" class="chart-label">AI guardrail event scoring</text>
+<rect x="210" y="172" width="39" height="28" rx="4" fill="#16a34a"></rect>
+<text x="257" y="191" class="chart-value">4.38x</text>
+<text x="0" y="229" class="chart-label">market simulation objects</text>
+<rect x="210" y="210" width="37" height="28" rx="4" fill="#16a34a"></rect>
+<text x="255" y="229" class="chart-value">4.14x</text>
+<text x="0" y="267" class="chart-label">AI agent task scoring</text>
+<rect x="210" y="248" width="37" height="28" rx="4" fill="#16a34a"></rect>
+<text x="255" y="267" class="chart-value">4.11x</text>
+<text x="0" y="305" class="chart-label">dependency resolver hot loop</text>
+<rect x="210" y="286" width="36" height="28" rx="4" fill="#16a34a"></rect>
+<text x="254" y="305" class="chart-value">4.06x</text>
+<text x="0" y="343" class="chart-label">feature flag rollout</text>
+<rect x="210" y="324" width="35" height="28" rx="4" fill="#16a34a"></rect>
+<text x="253" y="343" class="chart-value">3.92x</text>
+<text x="0" y="381" class="chart-label">payment fraud scoring</text>
+<rect x="210" y="362" width="32" height="28" rx="4" fill="#16a34a"></rect>
+<text x="250" y="381" class="chart-value">3.62x</text>
+</svg>
+<table>
+<tr><th>Benchmark</th><th>Python</th><th>Sura JIT</th><th>Sura Faster By</th></tr>
+<tr><td>fib(30)</td><td>107.82 ms</td><td>20.093920 ms</td><td>5.37x</td></tr>
+<tr><td>AI agent task scoring</td><td>25.39 ms</td><td>6.183240 ms</td><td>4.11x</td></tr>
+<tr><td>AI JSON/schema validation</td><td>575.92 ms</td><td>477.326460 ms</td><td>1.21x</td></tr>
+<tr><td>API log ETL aggregation</td><td>180.34 ms</td><td>59.662300 ms</td><td>3.02x</td></tr>
+<tr><td>RAG vector ranking</td><td>71.51 ms</td><td>23.471120 ms</td><td>3.05x</td></tr>
+<tr><td>AI tool routing scheduler</td><td>100.22 ms</td><td>20.557500 ms</td><td>4.88x</td></tr>
+<tr><td>AI tool policy gate</td><td>213.15 ms</td><td>58.956260 ms</td><td>3.62x</td></tr>
+<tr><td>AI guardrail event scoring</td><td>133.70 ms</td><td>30.534180 ms</td><td>4.38x</td></tr>
+<tr><td>dependency resolver hot loop</td><td>936.34 ms</td><td>230.798220 ms</td><td>4.06x</td></tr>
+<tr><td>automation workflow scheduler</td><td>3396.72 ms</td><td>1016.751260 ms</td><td>3.34x</td></tr>
+<tr><td>order CSV normalization ETL</td><td>299.87 ms</td><td>118.765540 ms</td><td>2.52x</td></tr>
+<tr><td>telemetry rolling window</td><td>420.84 ms</td><td>126.962660 ms</td><td>3.31x</td></tr>
+<tr><td>regex log summarization</td><td>1079.17 ms</td><td>716.326940 ms</td><td>1.51x</td></tr>
+<tr><td>payment fraud scoring</td><td>169.59 ms</td><td>46.860220 ms</td><td>3.62x</td></tr>
+<tr><td>feature flag rollout</td><td>217.93 ms</td><td>55.646020 ms</td><td>3.92x</td></tr>
+<tr><td>game physics Vec2 loop</td><td>43.16 ms</td><td>0.663 ms</td><td>65.10x</td></tr>
+<tr><td>game physics in-place Vec2 loop</td><td>16.75 ms</td><td>2.705 ms</td><td>6.19x</td></tr>
+<tr><td>market simulation objects</td><td>67.78 ms</td><td>16.388 ms</td><td>4.14x</td></tr>
+</table>
+<h2>Recent Benchmark History</h2>
+<p class="empty">Add more benchmark history entries to show trend lines.</p>
+<table>
+<tr><th>Generated UTC</th><th>Sura Benches</th><th>Python Comparisons</th><th>Avg JIT Speedup</th><th>Avg Sura/Python Ratio</th></tr>
+<tr><td>2026-05-18T00:00:55.1624918Z</td><td>19</td><td>18</td><td>7.77x</td><td>7.07x</td></tr>
+</table>

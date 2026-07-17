@@ -1,0 +1,20 @@
+# Exact-width plain-record constructor throughput. The final field assertion
+# prevents the allocation loop from becoming dead work in future tiers.
+struct PerfRecord3 do
+  x is 0
+  y is 0
+  z is 0
+end
+
+last is PerfRecord3(0, 0, 0)
+i is 0
+t is clock()
+while i < 100000 do
+  last is PerfRecord3(i, i + 1, i + 2)
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+assert_eq(last.x, 99999)
+assert_eq(last.y, 100000)
+assert_eq(last.z, 100001)
+print("record ctor 100k x  {ms} ms")

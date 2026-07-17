@@ -1,0 +1,48 @@
+use async
+
+limits is async.limits()
+assert(limits.max_workers >= 1)
+assert(limits.max_workers <= 8)
+assert(limits.max_queue >= 1)
+
+timer is async.sleep(20)
+assert(async.status(timer).known)
+assert_eq(async.await(timer), "")
+
+cancelled_timer is async.sleep(5000)
+assert(async.cancel(cancelled_timer))
+assert(async.status(cancelled_timer).cancel_requested)
+try
+  async.await(cancelled_timer)
+  assert(false)
+catch error
+  assert_contains(error, "cancelled")
+end
+
+scope is async.scope()
+first is async.sleep(5000, scope)
+second is async.sleep(5000)
+assert(async.scope_attach(scope, second))
+scope_before is async.scope_status(scope)
+assert_eq(scope_before.total, 2)
+closed is async.scope_close(scope, 1000)
+if not closed.closed then
+  print("scope close timeout: first={async.status(first)}, second={async.status(second)}, limits={async.limits()}")
+end
+assert(closed.closed)
+assert_eq(closed.cancelled, 2)
+assert(not async.status(first).known)
+assert(not async.status(second).known)
+assert(not async.scope_status(scope).known)
+
+joined_scope is async.scope()
+j1 is async.sleep(5, joined_scope)
+j2 is async.sleep(10, joined_scope)
+joined is async.scope_join(joined_scope, 1000)
+assert(joined.closed)
+assert_eq(joined.succeeded, 2)
+assert(not async.status(j1).known)
+assert(not async.status(j2).known)
+
+assert_eq(length(async.pending()), 0)
+print "structured async smoke: PASS"

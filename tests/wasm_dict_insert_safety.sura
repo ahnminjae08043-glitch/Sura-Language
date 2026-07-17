@@ -1,0 +1,14 @@
+key is "agent"
+profile is {}
+profile[key] is "Ada"
+
+assert_eq(length(profile), 1)
+assert_eq(profile[key], "Ada")
+
+profile["score"] is 7
+profile[key] is "Grace"
+
+assert_eq(length(profile), 2)
+assert_eq(profile.score, 7)
+assert_eq(profile[key], "Grace")
+print "{profile[key]} {profile.score} {length(profile.keys())}"

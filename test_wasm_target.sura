@@ -1,0 +1,1461 @@
+use math
+use array
+use string
+use vector
+import "tests/wasm_import_fixture.sura"
+
+assert_eq(wasm_import_double(wasm_import_value), 42)
+
+func square(x: int) -> int do
+  return x * x
+end
+
+func sum_to(n: int) -> int do
+  total: int is 0
+  i: int is 1
+  while i <= n do
+    total += i
+    i += 1
+  end
+  return total
+end
+
+func bump_param(x: int) -> int do
+  x is x + 2
+  return x
+end
+
+func captured_function_alias_call_ast() do
+  handler is bump_param
+  wrapper is func(value) do
+    return handler(value)
+  end
+  return wrapper(40)
+end
+
+func captured_inline_function_alias_chain_ast() do
+  inner is func(value) do
+    return value + 1
+  end
+  alias is inner
+  outer is func(value) do
+    return alias(value)
+  end
+  return outer(5)
+end
+
+func captured_runtime_function_ternary_ast(flag) do
+  handler is flag ? square : bump_param
+  wrapper is func(value) do
+    return handler(value)
+  end
+  return wrapper(5)
+end
+
+func returned_param_function_capture_source_ast(handler) do
+  return func(value) do
+    return handler(value)
+  end
+end
+
+func zero_a_ast() -> int do
+  return 11
+end
+
+func zero_b_ast() -> int do
+  return 17
+end
+
+func call_dynamic_zero_function_ast(flag) do
+  handler is flag ? zero_a_ast : zero_b_ast
+  return handler()
+end
+
+func add_pair_ast(a: int, b: int) -> int do
+  return a + b
+end
+
+func mul_pair_ast(a: int, b: int) -> int do
+  return a * b
+end
+
+func sum_triple_ast(a: int, b: int, c: int) -> int do
+  return a + b + c
+end
+
+func mul_add_triple_ast(a: int, b: int, c: int) -> int do
+  return a * b + c
+end
+
+func sum_quad_ast(a: int, b: int, c: int, d: int) -> int do
+  return a + b + c + d
+end
+
+func mul_add_quad_ast(a: int, b: int, c: int, d: int) -> int do
+  return a * b + c + d
+end
+
+func sum_five_ast(a: int, b: int, c: int, d: int, e: int) -> int do
+  return a + b + c + d + e
+end
+
+func mul_add_five_ast(a: int, b: int, c: int, d: int, e: int) -> int do
+  return a * b + c + d + e
+end
+
+func sum_eight_ast(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> int do
+  return a + b + c + d + e + f + g + h
+end
+
+func mul_add_eight_ast(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int) -> int do
+  return a * b + c + d + e + f + g + h
+end
+
+func prefix_a_ast(value) do
+  return "A" + value
+end
+
+func prefix_b_ast(value) do
+  return "B" + value
+end
+
+func positive_ast(value) do
+  return value > 0
+end
+
+func over_ten_ast(value) do
+  return value > 10
+end
+
+func pair_array_a_ast(value) do
+  return [value, "a"]
+end
+
+func pair_array_b_ast(value) do
+  return [value + 1, "b"]
+end
+
+func nil_a_ast(value) do
+  return nil
+end
+
+func nil_b_ast(value) do
+  return nil
+end
+
+func profile_a_ast(value) do
+  return {score: value, name: "a"}
+end
+
+func profile_b_ast(value) do
+  return {score: value + 1, name: "b"}
+end
+
+func return_add_pair_ast(value) do
+  return add_pair_ast
+end
+
+func return_mul_pair_ast(value) do
+  return mul_pair_ast
+end
+
+func call_dynamic_binary_function_ast(flag, left, right) do
+  handler is flag ? add_pair_ast : mul_pair_ast
+  return handler(left, right)
+end
+
+func call_dynamic_triple_function_ast(flag, left, middle, right) do
+  handler is flag ? sum_triple_ast : mul_add_triple_ast
+  return handler(left, middle, right)
+end
+
+func call_dynamic_quad_function_ast(flag, a, b, c, d) do
+  handler is flag ? sum_quad_ast : mul_add_quad_ast
+  return handler(a, b, c, d)
+end
+
+func call_dynamic_five_function_ast(flag, a, b, c, d, e) do
+  handler is flag ? sum_five_ast : mul_add_five_ast
+  return handler(a, b, c, d, e)
+end
+
+func call_dynamic_eight_function_ast(flag, a, b, c, d, e, f, g, h) do
+  handler is flag ? sum_eight_ast : mul_add_eight_ast
+  return handler(a, b, c, d, e, f, g, h)
+end
+
+func call_dynamic_string_function_ast(flag, value) do
+  handler is flag ? prefix_a_ast : prefix_b_ast
+  return handler(value)
+end
+
+func call_dynamic_bool_function_ast(flag, value) do
+  handler is flag ? positive_ast : over_ten_ast
+  return handler(value)
+end
+
+func call_dynamic_array_function_ast(flag, value) do
+  handler is flag ? pair_array_a_ast : pair_array_b_ast
+  return handler(value)
+end
+
+func call_dynamic_nil_function_ast(flag, value) do
+  handler is flag ? nil_a_ast : nil_b_ast
+  return handler(value)
+end
+
+func call_dynamic_dict_return_function_ast(flag, value) do
+  handler is flag ? profile_a_ast : profile_b_ast
+  return handler(value)
+end
+
+func call_dynamic_function_return_function_ast(flag, value) do
+  handler is flag ? return_add_pair_ast : return_mul_pair_ast
+  return handler(value)
+end
+
+func call_dynamic_dict_lookup_dict_return_function_ast(flag, value) do
+  handlers is {first: profile_a_ast, second: profile_b_ast}
+  key is flag ? "first" : "second"
+  handler is handlers[key]
+  return handler(value)
+end
+
+func call_dynamic_array_lookup_function_return_function_ast(flag, value) do
+  handlers is [return_add_pair_ast, return_mul_pair_ast]
+  index is flag ? 0 : 1
+  handler is handlers[index]
+  return handler(value)
+end
+
+func call_dynamic_binary_dict_function_ast(flag, left, right) do
+  handlers is {add: add_pair_ast, mul: mul_pair_ast}
+  key is flag ? "add" : "mul"
+  handler is handlers[key]
+  return handler(left, right)
+end
+
+func call_dynamic_binary_array_function_ast(flag, left, right) do
+  handlers is [add_pair_ast, mul_pair_ast]
+  index is flag ? 0 : 1
+  handler is handlers[index]
+  return handler(left, right)
+end
+
+func call_dynamic_binary_param_function_ast(handler, left, right) do
+  return handler(left, right)
+end
+
+func fib(n: int) -> int do
+  if n <= 1 then return n
+  return fib(n - 1) + fib(n - 2)
+end
+
+func sum3(values) -> int do
+  return values[0] + values[1] + values[2]
+end
+
+func make_values() do
+  return [2, 4, 6]
+end
+
+func make_mixed_values() do
+  return [32, "ok", true, nil]
+end
+
+func make_mixed_profile() do
+  return {score: 32, name: "ok", active: true, missing: nil}
+end
+
+func return_direct_string() do
+  return "returned"
+end
+
+func return_direct_bool() do
+  return true
+end
+
+func return_direct_nil() do
+  return nil
+end
+
+func return_direct_array() do
+  return [1, "x", true, nil]
+end
+
+func return_direct_dict() do
+  return {name: "returned", ok: true, missing: nil}
+end
+
+func return_direct_function() do
+  return fib
+end
+
+func pass_wasm_values(items) do
+  return items
+end
+
+func pass_wasm_profile(info) do
+  return info
+end
+
+func bare_return_zero() -> int do
+  return
+end
+
+func throw_value_source(x: int) -> int do
+  return x + 1
+end
+
+func wasm_pick_label(flag) do
+  return flag ? "on" : "off"
+end
+
+func wasm_pick_bool(flag) do
+  return flag ? true : false
+end
+
+func wasm_pick_nil(flag) do
+  return flag ? nil : nil
+end
+
+func wasm_first_label_from_foreach() do
+  labels is ["red", "blue"]
+  for label in labels do
+    return label
+  end
+end
+
+func wasm_label_from_match(flag) do
+  match flag
+  when true then return "yes"
+  when _ then return "no"
+  end
+end
+
+func wasm_label_from_if(flag) do
+  if flag then
+    return "yes"
+  else
+    return "no"
+  end
+end
+
+func wasm_mixed_from_if(flag) do
+  if flag then
+    return "yes"
+  else
+    return 7
+  end
+end
+
+enum WasmMode do
+  READY is 7
+  SCORE is 11
+end
+
+enum WasmLabel do
+  READY
+  CUSTOM is "custom"
+end
+
+class WasmLookupFunctionHolder do
+  func dict_handler_profile(flag, value) do
+    handlers is {first: profile_a_ast, second: profile_b_ast}
+    key is flag ? "first" : "second"
+    handler is handlers[key]
+    return handler(value)
+  end
+  func array_handler_function(flag, value) do
+    handlers is [return_add_pair_ast, return_mul_pair_ast]
+    index is flag ? 0 : 1
+    handler is handlers[index]
+    return handler(value)
+  end
+end
+
+result: int is sum_to(5) + square(3)
+choose_square_handler is false
+dynamic_unary_handler is choose_square_handler ? square : bump_param
+assert_eq(dynamic_unary_handler(10), 12)
+assert_eq(captured_function_alias_call_ast(), 42)
+assert_eq(captured_inline_function_alias_chain_ast(), 6)
+assert_eq(captured_runtime_function_ternary_ast(false), 7)
+returned_param_function_capture_source is returned_param_function_capture_source_ast(bump_param)
+assert_eq(returned_param_function_capture_source(9), 11)
+returned_param_function_capture_source_label is "SourceReturnedFunctionCapture {type(returned_param_function_capture_source)} {to_bool(returned_param_function_capture_source)} {returned_param_function_capture_source(9)}"
+assert_eq(returned_param_function_capture_source_label, "SourceReturnedFunctionCapture function true 11")
+assert_eq(call_dynamic_zero_function_ast(true), 11)
+assert_eq(call_dynamic_zero_function_ast(false), 17)
+dynamic_zero_function_call_label is "DynamicZeroFunction {call_dynamic_zero_function_ast(true)} {call_dynamic_zero_function_ast(false)}"
+assert_eq(dynamic_zero_function_call_label, "DynamicZeroFunction 11 17")
+assert_eq(call_dynamic_binary_function_ast(true, 3, 4), 7)
+assert_eq(call_dynamic_binary_function_ast(false, 3, 4), 12)
+dynamic_binary_function_call_label is "DynamicBinaryFunction {call_dynamic_binary_function_ast(true, 3, 4)} {call_dynamic_binary_function_ast(false, 3, 4)}"
+assert_eq(dynamic_binary_function_call_label, "DynamicBinaryFunction 7 12")
+assert_eq(call_dynamic_triple_function_ast(true, 2, 3, 4), 9)
+assert_eq(call_dynamic_triple_function_ast(false, 2, 3, 4), 10)
+dynamic_triple_function_call_label is "DynamicTripleFunction {call_dynamic_triple_function_ast(true, 2, 3, 4)} {call_dynamic_triple_function_ast(false, 2, 3, 4)}"
+assert_eq(dynamic_triple_function_call_label, "DynamicTripleFunction 9 10")
+assert_eq(call_dynamic_quad_function_ast(true, 1, 2, 3, 4), 10)
+assert_eq(call_dynamic_quad_function_ast(false, 1, 2, 3, 4), 9)
+dynamic_quad_function_call_label is "DynamicQuadFunction {call_dynamic_quad_function_ast(true, 1, 2, 3, 4)} {call_dynamic_quad_function_ast(false, 1, 2, 3, 4)}"
+assert_eq(dynamic_quad_function_call_label, "DynamicQuadFunction 10 9")
+assert_eq(call_dynamic_five_function_ast(true, 1, 2, 3, 4, 5), 15)
+assert_eq(call_dynamic_five_function_ast(false, 1, 2, 3, 4, 5), 14)
+dynamic_five_function_call_label is "DynamicFiveFunction {call_dynamic_five_function_ast(true, 1, 2, 3, 4, 5)} {call_dynamic_five_function_ast(false, 1, 2, 3, 4, 5)}"
+assert_eq(dynamic_five_function_call_label, "DynamicFiveFunction 15 14")
+assert_eq(call_dynamic_eight_function_ast(true, 1, 2, 3, 4, 5, 6, 7, 8), 36)
+assert_eq(call_dynamic_eight_function_ast(false, 1, 2, 3, 4, 5, 6, 7, 8), 35)
+dynamic_eight_function_call_label is "DynamicEightFunction {call_dynamic_eight_function_ast(true, 1, 2, 3, 4, 5, 6, 7, 8)} {call_dynamic_eight_function_ast(false, 1, 2, 3, 4, 5, 6, 7, 8)}"
+assert_eq(dynamic_eight_function_call_label, "DynamicEightFunction 36 35")
+assert_eq(call_dynamic_string_function_ast(true, "x"), "Ax")
+assert_eq(call_dynamic_string_function_ast(false, "x"), "Bx")
+dynamic_string_function_call_label is "DynamicStringFunction {call_dynamic_string_function_ast(true, \"x\")} {call_dynamic_string_function_ast(false, \"x\")}"
+assert_eq(dynamic_string_function_call_label, "DynamicStringFunction Ax Bx")
+assert_eq(call_dynamic_bool_function_ast(true, 5), true)
+assert_eq(call_dynamic_bool_function_ast(false, 5), false)
+dynamic_bool_function_call_label is "DynamicBoolFunction {call_dynamic_bool_function_ast(true, 5)} {call_dynamic_bool_function_ast(false, 5)} {to_bool(call_dynamic_bool_function_ast(false, 5))}"
+assert_eq(dynamic_bool_function_call_label, "DynamicBoolFunction true false false")
+assert_eq(length(call_dynamic_array_function_ast(true, 7)), 2)
+assert_eq(call_dynamic_array_function_ast(true, 7)[1], "a")
+assert_eq(call_dynamic_array_function_ast(false, 7)[1], "b")
+dynamic_array_function_call_label is "DynamicArrayFunction {length(call_dynamic_array_function_ast(true, 7))} {to_str(call_dynamic_array_function_ast(false, 7))}"
+assert_eq(dynamic_array_function_call_label, "DynamicArrayFunction 2 [8, \"b\"]")
+assert_eq(type(call_dynamic_nil_function_ast(true, 0)), "nil")
+dynamic_nil_function_call_label is "DynamicNilFunction {type(call_dynamic_nil_function_ast(false, 0))} {to_bool(call_dynamic_nil_function_ast(false, 0))}"
+assert_eq(dynamic_nil_function_call_label, "DynamicNilFunction nil false")
+assert_eq(length(call_dynamic_dict_return_function_ast(true, 7)), 2)
+assert_eq(call_dynamic_dict_return_function_ast(true, 7).name, "a")
+assert_eq(call_dynamic_dict_return_function_ast(false, 7).score, 8)
+dynamic_dict_return_function_call_label is "DynamicDictReturnFunction {length(call_dynamic_dict_return_function_ast(true, 7))} {to_str(call_dynamic_dict_return_function_ast(false, 7).name)}"
+assert_eq(dynamic_dict_return_function_call_label, "DynamicDictReturnFunction 2 b")
+dynamic_returned_function_call is call_dynamic_function_return_function_ast(false, 0)
+assert_eq(dynamic_returned_function_call(3, 4), 12)
+dynamic_function_return_function_call_label is "DynamicFunctionReturnFunction {type(dynamic_returned_function_call)} {to_bool(dynamic_returned_function_call)} {dynamic_returned_function_call(3, 4)}"
+assert_eq(dynamic_function_return_function_call_label, "DynamicFunctionReturnFunction function true 12")
+assert_eq(call_dynamic_dict_lookup_dict_return_function_ast(false, 7).name, "b")
+dynamic_dict_lookup_dict_return_function_label is "DynamicDictLookupDictReturnFunction {length(call_dynamic_dict_lookup_dict_return_function_ast(true, 7))} {call_dynamic_dict_lookup_dict_return_function_ast(false, 7).score} {to_str(call_dynamic_dict_lookup_dict_return_function_ast(false, 7).name)}"
+assert_eq(dynamic_dict_lookup_dict_return_function_label, "DynamicDictLookupDictReturnFunction 2 8 b")
+dynamic_array_lookup_returned_function is call_dynamic_array_lookup_function_return_function_ast(false, 0)
+assert_eq(dynamic_array_lookup_returned_function(3, 4), 12)
+dynamic_array_lookup_function_return_label is "DynamicArrayLookupFunctionReturn {type(dynamic_array_lookup_returned_function)} {to_bool(dynamic_array_lookup_returned_function)} {dynamic_array_lookup_returned_function(3, 4)}"
+assert_eq(dynamic_array_lookup_function_return_label, "DynamicArrayLookupFunctionReturn function true 12")
+lookup_function_holder is new WasmLookupFunctionHolder()
+lookup_function_holder_profile_label is "MethodLookupProfile {length(lookup_function_holder.dict_handler_profile(true, 7))} {lookup_function_holder.dict_handler_profile(false, 7).score} {to_str(lookup_function_holder.dict_handler_profile(false, 7).name)}"
+assert_eq(lookup_function_holder_profile_label, "MethodLookupProfile 2 8 b")
+lookup_function_holder_returned_function is lookup_function_holder.array_handler_function(false, 0)
+assert_eq(lookup_function_holder_returned_function(3, 4), 12)
+lookup_function_holder_return_label is "MethodLookupFunctionReturn {type(lookup_function_holder_returned_function)} {to_bool(lookup_function_holder_returned_function)} {lookup_function_holder_returned_function(3, 4)}"
+assert_eq(lookup_function_holder_return_label, "MethodLookupFunctionReturn function true 12")
+assert_eq(call_dynamic_binary_dict_function_ast(true, 5, 6), 11)
+assert_eq(call_dynamic_binary_dict_function_ast(false, 5, 6), 30)
+dynamic_binary_dict_function_call_label is "DynamicBinaryDictFunction {call_dynamic_binary_dict_function_ast(true, 5, 6)} {call_dynamic_binary_dict_function_ast(false, 5, 6)}"
+assert_eq(dynamic_binary_dict_function_call_label, "DynamicBinaryDictFunction 11 30")
+assert_eq(call_dynamic_binary_array_function_ast(true, 7, 8), 15)
+assert_eq(call_dynamic_binary_array_function_ast(false, 7, 8), 56)
+dynamic_binary_array_function_call_label is "DynamicBinaryArrayFunction {call_dynamic_binary_array_function_ast(true, 7, 8)} {call_dynamic_binary_array_function_ast(false, 7, 8)}"
+assert_eq(dynamic_binary_array_function_call_label, "DynamicBinaryArrayFunction 15 56")
+assert_eq(call_dynamic_binary_param_function_ast(add_pair_ast, 9, 10), 19)
+assert_eq(call_dynamic_binary_param_function_ast(mul_pair_ast, 9, 10), 90)
+dynamic_binary_param_function_call_label is "DynamicBinaryParamFunction {call_dynamic_binary_param_function_ast(add_pair_ast, 9, 10)} {call_dynamic_binary_param_function_ast(mul_pair_ast, 9, 10)}"
+assert_eq(dynamic_binary_param_function_call_label, "DynamicBinaryParamFunction 19 90")
+wasm_values is [4, 5, 6]
+assert_eq(wasm_values.len(), 3)
+assert_eq(wasm_values.length(), 3)
+assert_eq(wasm_values.size(), 3)
+assert_eq(wasm_values[1], 5)
+wasm_values[1] is 7
+assert_eq(wasm_values[1], 7)
+assert_eq(sum3(wasm_values), 17)
+assert_eq(array.len(wasm_values), 3)
+assert_eq(array.length(wasm_values), 3)
+assert_eq(array.size(wasm_values), 3)
+assert_eq(array_len(wasm_values), 3)
+assert_eq(array_length(wasm_values), 3)
+assert_eq(array_size(wasm_values), 3)
+assert_eq(array.sum(wasm_values), 17)
+assert_eq(array.avg([2, 4, 6]), 4)
+assert_eq(array.average([3, 6, 9]), 6)
+assert_eq(array_avg([10, 20, 30]), 20)
+assert_eq(array.min(wasm_values), 4)
+assert_eq(array.max(wasm_values), 7)
+assert_eq(array_min([8, -3, 5]), -3)
+assert_eq(array_max([8, -3, 5]), 8)
+assert_eq(array.index_of(wasm_values, 7), 1)
+assert_eq(array.index(wasm_values, 99), -1)
+assert_eq(array.contains(wasm_values, 6), true)
+assert_eq(array.contains(wasm_values, 99), false)
+assert_eq(array_sum([2, 3, 5]), 10)
+range_values is array.range(2, 8, 2)
+assert_eq(range_values.len(), 3)
+assert_eq(length(range_values), 3)
+assert_eq(type(range_values), "array")
+assert_eq(to_bool(range_values), true)
+assert_eq(to_str(range_values), "[2, 4, 6]")
+assert_eq(range_values[0], 2)
+assert_eq(range_values[2], 6)
+assert_eq(array.sum(range_values), 12)
+assert_eq(range_values.contains(4), true)
+assert_eq(range_values.index_of(6), 2)
+assert_eq(array_range(4)[3], 3)
+assert_eq(array.range(5, 1, -2)[1], 3)
+assert_eq(length(array.range(1, 6, 2)), 3)
+assert_eq(type(array.range(1, 6, 2)), "array")
+assert_eq(to_bool(array.range(1, 6, 2)), true)
+assert_eq(to_str(array.range(1, 6, 2)), "[1, 3, 5]")
+assert_eq(array.range(1, 6, 2).contains(3), true)
+assert_eq(array.range(1, 6, 2).index_of(5), 2)
+direct_range_for_total is 0
+for direct_range_item in array.range(1, 6, 2) do
+  direct_range_for_total += direct_range_item
+end
+assert_eq(direct_range_for_total, 9)
+assert_eq(sum3([8, 9, 10]), 27)
+assert_eq([2, 3, 4][2], 4)
+made_values is make_values()
+assert_eq(made_values.len(), 3)
+assert_eq(made_values[2], 6)
+assert_eq(make_values()[0], 2)
+assert_eq(sum3(make_values()), 12)
+mixed_from_function is make_mixed_values()
+assert_eq(type(mixed_from_function), "array")
+assert_eq(type(mixed_from_function[0]), "number")
+assert_eq(type(mixed_from_function[1]), "string")
+assert_eq(type(mixed_from_function[2]), "bool")
+assert_eq(type(mixed_from_function[3]), "nil")
+assert_eq(to_str(mixed_from_function[0]), "32")
+assert_eq(to_str(mixed_from_function[1]), "ok")
+assert_eq(to_str(mixed_from_function[2]), "true")
+assert_eq(to_str(mixed_from_function[3]), "nil")
+function_mixed_label is "FunctionMixed {to_str(mixed_from_function[0])} {to_str(mixed_from_function[1])} {to_str(mixed_from_function[2])} {type(mixed_from_function[3])}"
+assert_eq(function_mixed_label, "FunctionMixed 32 ok true nil")
+assert_eq(type(make_mixed_values()[1]), "string")
+assert_eq(length(make_mixed_values()[1]), 2)
+assert_eq(to_str(make_mixed_values()[2]), "true")
+assert_eq(to_bool(make_mixed_values()[2]), true)
+direct_function_mixed_label is "DirectFunctionMixed {type(make_mixed_values()[0])} {to_str(make_mixed_values()[1])} {to_str(make_mixed_values()[2])} {type(make_mixed_values()[3])}"
+assert_eq(direct_function_mixed_label, "DirectFunctionMixed number ok true nil")
+assert_eq(to_str(make_mixed_values()), "[32, \"ok\", true, nil]")
+direct_function_mixed_array_to_str_label is "DirectFunctionMixedArrayString {to_str(make_mixed_values())}"
+assert_eq(direct_function_mixed_array_to_str_label, "DirectFunctionMixedArrayString [32, \"ok\", true, nil]")
+direct_function_mixed_array_interp_label is "DirectFunctionMixedArrayInterp {make_mixed_values()}"
+assert_eq(direct_function_mixed_array_interp_label, "DirectFunctionMixedArrayInterp [32, \"ok\", true, nil]")
+direct_function_mixed_array_concat_label is "DirectFunctionMixedArrayConcat " + make_mixed_values()
+assert_eq(direct_function_mixed_array_concat_label, "DirectFunctionMixedArrayConcat [32, \"ok\", true, nil]")
+direct_function_collection_runtime_label is "DirectFunctionCollectionRuntime {length(make_mixed_values())} {to_bool(make_mixed_values())}"
+assert_eq(direct_function_collection_runtime_label, "DirectFunctionCollectionRuntime 4 true")
+assert_eq(type(make_mixed_profile()["score"]), "number")
+assert_eq(length(make_mixed_profile()["name"]), 2)
+assert_eq(to_str(make_mixed_profile()["active"]), "true")
+assert_eq(to_bool(make_mixed_profile()["active"]), true)
+direct_function_mixed_dict_label is "DirectFunctionMixedDict {type(make_mixed_profile()[\"score\"])} {to_str(make_mixed_profile()[\"name\"])} {to_str(make_mixed_profile()[\"active\"])} {type(make_mixed_profile()[\"missing\"])}"
+assert_eq(direct_function_mixed_dict_label, "DirectFunctionMixedDict number ok true nil")
+direct_function_mixed_profile_text is to_str(make_mixed_profile())
+assert(contains(direct_function_mixed_profile_text, "\"score\": 32"))
+assert(contains(direct_function_mixed_profile_text, "\"name\": \"ok\""))
+assert(contains(direct_function_mixed_profile_text, "\"active\": true"))
+assert(contains(direct_function_mixed_profile_text, "\"missing\": nil"))
+direct_function_mixed_dict_to_str_label is "DirectFunctionMixedDictString {to_str(make_mixed_profile())}"
+assert(contains(direct_function_mixed_dict_to_str_label, "DirectFunctionMixedDictString"))
+assert(contains(direct_function_mixed_dict_to_str_label, "\"score\": 32"))
+assert(contains(direct_function_mixed_dict_to_str_label, "\"name\": \"ok\""))
+direct_function_mixed_dict_interp_label is "DirectFunctionMixedDictInterp {make_mixed_profile()}"
+assert(contains(direct_function_mixed_dict_interp_label, "DirectFunctionMixedDictInterp"))
+assert(contains(direct_function_mixed_dict_interp_label, "\"active\": true"))
+assert(contains(direct_function_mixed_dict_interp_label, "\"missing\": nil"))
+direct_function_mixed_dict_concat_label is "DirectFunctionMixedDictConcat " + make_mixed_profile()
+assert(contains(direct_function_mixed_dict_concat_label, "DirectFunctionMixedDictConcat"))
+assert(contains(direct_function_mixed_dict_concat_label, "\"score\": 32"))
+assert(contains(direct_function_mixed_dict_concat_label, "\"name\": \"ok\""))
+direct_function_dict_runtime_label is "DirectFunctionDictRuntime {length(make_mixed_profile())} {to_bool(make_mixed_profile())}"
+assert_eq(direct_function_dict_runtime_label, "DirectFunctionDictRuntime 4 true")
+direct_function_arg_collection_runtime_label is "DirectFunctionArgCollectionRuntime {length(pass_wasm_values(make_mixed_values()))} {to_bool(pass_wasm_values(make_mixed_values()))} {length(pass_wasm_profile(make_mixed_profile()))} {to_bool(pass_wasm_profile(make_mixed_profile()))}"
+assert_eq(direct_function_arg_collection_runtime_label, "DirectFunctionArgCollectionRuntime 4 true 4 true")
+direct_return_runtime_label is "DirectReturnRuntime {type(return_direct_string())} {to_str(return_direct_string())} {type(return_direct_bool())} {to_bool(return_direct_bool())} {type(return_direct_nil())} {to_bool(return_direct_nil())} {type(return_direct_array())} {length(return_direct_array())} {to_str(return_direct_array())} {type(return_direct_dict())} {length(return_direct_dict())} {to_str(return_direct_dict())} {type(return_direct_function())} {to_bool(return_direct_function())}"
+assert(contains(direct_return_runtime_label, "DirectReturnRuntime string returned bool true nil false array 4 [1, \"x\", true, nil] dict 3"))
+assert(contains(direct_return_runtime_label, "\"name\": \"returned\""))
+assert(contains(direct_return_runtime_label, "\"ok\": true"))
+assert(contains(direct_return_runtime_label, "\"missing\": nil"))
+assert(contains(direct_return_runtime_label, "function true"))
+runtime_truthy_dict is {ok: true}
+ternary_array_value is [1, "x"]
+ternary_array_full_value is [1, "x", true]
+ternary_dict_value is {name: "no"}
+if_runtime_label is ""
+if make_mixed_profile()["active"] then
+  if_runtime_label is "IfRuntime then {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+else
+  if_runtime_label is "IfRuntime bad"
+end
+assert_eq(if_runtime_label, "IfRuntime then array 2 true function true <Func fib>")
+if_else_runtime_label is ""
+if make_mixed_profile()["missing"] then
+  if_else_runtime_label is "IfRuntime bad"
+else
+  if_else_runtime_label is "IfRuntime else {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+end
+assert_eq(if_else_runtime_label, "IfRuntime else array 2 true function true <Func fib>")
+ternary_runtime_label is "TernaryRuntime {type(true ? ternary_array_value : ternary_dict_value)} {type(false ? ternary_array_value : ternary_dict_value)} {length(true ? ternary_array_full_value : ternary_dict_value)} {length(false ? ternary_array_full_value : ternary_dict_value)} {to_bool(true ? runtime_truthy_dict : nil)} {to_bool(false ? runtime_truthy_dict : nil)} {to_str(true ? ternary_array_value : ternary_dict_value)} {to_str(false ? ternary_array_value : ternary_dict_value)} {type(true ? return_direct_function() : return_direct_string())} {to_bool(true ? return_direct_function() : nil)}"
+assert(contains(ternary_runtime_label, "TernaryRuntime array dict 3 1 true false [1, \"x\"]"))
+assert(contains(ternary_runtime_label, "\"name\": \"no\""))
+assert(contains(ternary_runtime_label, "function true"))
+assert_eq(type(make_mixed_profile().score), "number")
+assert_eq(length(make_mixed_profile().name), 2)
+assert_eq(to_str(make_mixed_profile().active), "true")
+assert_eq(to_bool(make_mixed_profile().active), true)
+direct_function_mixed_dot_label is "DirectFunctionMixedDot {type(make_mixed_profile().score)} {to_str(make_mixed_profile().name)} {to_str(make_mixed_profile().active)} {type(make_mixed_profile().missing)}"
+assert_eq(direct_function_mixed_dot_label, "DirectFunctionMixedDot number ok true nil")
+wasm_p3 is vec3(1, 2, 3)
+wasm_q3 is vector3(4, 6, 8)
+assert_eq(wasm_p3.len(), 3)
+assert_eq(vec3_add(wasm_p3, wasm_q3)[2], 11)
+assert_eq(vec3_sub(wasm_q3, wasm_p3)[1], 4)
+assert_eq(vec3_dot(wasm_p3, wasm_q3), 40)
+wasm_cross3 is vec3_cross([1, 0, 0], [0, 1, 0])
+assert_eq(wasm_cross3[2], 1)
+assert_eq(vec3_scale(wasm_p3, 2)[1], 4)
+assert_eq(vec3_norm([2, 3, 6]), 7)
+assert_eq(vec3_distance([1, 2, 3], [4, 6, 3]), 5)
+assert_eq(vector.dot3(vector.vec3(1, 2, 3), [4, 6, 8]), 40)
+assert_eq(vector.cross([1, 0, 0], [0, 1, 0])[2], 1)
+assert_eq(vector.distance3([1, 2, 3], [4, 6, 3]), 5)
+array_for_total is 0
+for item in wasm_values do
+  array_for_total += item
+end
+assert_eq(array_for_total, 17)
+inline_array_for_total is 0
+for item in [1, 2, 3] do
+  inline_array_for_total += item
+end
+assert_eq(inline_array_for_total, 6)
+array_indexed_total is 0
+for idx_item, indexed_item in wasm_values do
+  array_indexed_total += idx_item * indexed_item
+end
+assert_eq(array_indexed_total, 19)
+inline_indexed_total is 0
+for inline_idx, inline_item in [2, 4, 6] do
+  inline_indexed_total += inline_idx + inline_item
+end
+assert_eq(inline_indexed_total, 15)
+enum_pick is WasmMode.READY + WasmMode.SCORE
+assert_eq(enum_pick, 18)
+enum_label is WasmLabel.READY + "-" + WasmLabel.CUSTOM
+assert_eq(enum_label, "READY-custom")
+assert_eq(WasmLabel.READY, "READY")
+assert_eq(WasmLabel.CUSTOM, "custom")
+assert_eq(wasm_pick_label(true), "on")
+assert_eq("Pick: " + wasm_pick_label(false), "Pick: off")
+assert_eq(wasm_pick_bool(true), true)
+assert_eq(wasm_pick_nil(false), nil)
+assert_eq("Nil pick: " + wasm_pick_nil(true), "Nil pick: nil")
+assert_eq(wasm_first_label_from_foreach(), "red")
+assert_eq("Loop pick: " + wasm_first_label_from_foreach(), "Loop pick: red")
+assert_eq(wasm_label_from_match(true), "yes")
+assert_eq("Match pick: " + wasm_label_from_match(false), "Match pick: no")
+assert_eq(wasm_label_from_if(true), "yes")
+assert_eq("If pick: " + wasm_label_from_if(false), "If pick: no")
+if_mixed_after is wasm_mixed_from_if(false) + 1
+runtime_false_flag is wasm_pick_bool(false)
+runtime_true_flag is wasm_pick_bool(true)
+dynamic_num_add is wasm_mixed_from_if(runtime_false_flag) + 1
+dynamic_string_add is wasm_mixed_from_if(runtime_true_flag) + 1
+dynamic_sub is dynamic_num_add - 3
+dynamic_mul is dynamic_num_add * 2
+dynamic_div is dynamic_num_add / 2
+dynamic_mod is dynamic_num_add % 3
+dynamic_lt is dynamic_num_add < 9
+dynamic_shift is dynamic_num_add >> 1
+assert_eq(dynamic_num_add, 8)
+assert_eq(dynamic_string_add, "yes1")
+assert_eq(dynamic_sub, 5)
+assert_eq(dynamic_mul, 16)
+assert_eq(dynamic_div, 4)
+assert_eq(dynamic_mod, 2)
+assert_eq(dynamic_lt, true)
+assert_eq(dynamic_shift, 4)
+bit_score is (6 & 3) + (4 | 1) + (7 ^ 2)
+assert_eq(bit_score, 12)
+shift_score is (1 << 4) + (16 >> 2)
+assert_eq(shift_score, 20)
+not_score is ~7
+assert_eq(not_score, -8)
+unary_array_not is not [1]
+unary_empty_array_not is not []
+unary_dict_not is not {ok: true}
+unary_empty_dict_not is not {}
+unary_function_not is not fib
+assert_eq(unary_array_not, false)
+assert_eq(unary_empty_array_not, true)
+assert_eq(unary_dict_not, false)
+assert_eq(unary_empty_dict_not, true)
+assert_eq(unary_function_not, false)
+
+repeat 2 do
+  result += 1
+end
+
+repeat_limit is 3
+repeat_fixed_count is 0
+repeat repeat_limit do
+  repeat_fixed_count += 1
+  repeat_limit is 0
+end
+assert_eq(repeat_fixed_count, 3)
+
+repeat_conflict_probe is 0
+repeat 0 do
+  repeat_conflict_probe is "skip"
+end
+repeat_conflict_after is repeat_conflict_probe + 1
+assert_eq(repeat_conflict_after, 1)
+repeat_conflict_profile is {tag: 0}
+repeat 0 do
+  repeat_conflict_profile.tag is "skip"
+end
+repeat_conflict_field_after is repeat_conflict_profile.tag + 1
+assert_eq(repeat_conflict_field_after, 1)
+
+repeat_dynamic_counts is [2]
+repeat_runtime_label is ""
+repeat repeat_dynamic_counts[0] do
+  repeat_runtime_label is "RepeatRuntime {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+end
+assert_eq(repeat_runtime_label, "RepeatRuntime array 2 true function true <Func fib>")
+
+for n in 1 to 3 do
+  result += n
+end
+
+for_conflict_probe is 0
+for n in 2 to 1 do
+  for_conflict_probe is "skip"
+end
+for_conflict_after is for_conflict_probe + 1
+assert_eq(for_conflict_after, 1)
+for_conflict_profile is {tag: 0}
+for for_conflict_field_i in 2 to 1 do
+  for_conflict_profile.tag is "skip"
+end
+for_conflict_field_after is for_conflict_profile.tag + 1
+assert_eq(for_conflict_field_after, 1)
+
+for_dynamic_froms is [1]
+for_dynamic_tos is [2]
+for_dynamic_steps is [1]
+for_runtime_label is ""
+for for_runtime_i in for_dynamic_froms[0] to for_dynamic_tos[0] step for_dynamic_steps[0] do
+  for_runtime_label is "ForRuntime {for_runtime_i} {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+end
+assert_eq(for_runtime_label, "ForRuntime 2 array 2 true function true <Func fib>")
+
+foreach_array_conflict_probe is 0
+empty_loop_items is []
+for empty_item in empty_loop_items do
+  foreach_array_conflict_probe is "skip"
+end
+foreach_array_conflict_after is foreach_array_conflict_probe + 1
+assert_eq(foreach_array_conflict_after, 1)
+foreach_array_conflict_profile is {tag: 0}
+for empty_field_item in empty_loop_items do
+  foreach_array_conflict_profile.tag is "skip"
+end
+foreach_array_conflict_field_after is foreach_array_conflict_profile.tag + 1
+assert_eq(foreach_array_conflict_field_after, 1)
+
+foreach_dict_conflict_probe is 0
+empty_loop_profile is {}
+for empty_key, empty_value in empty_loop_profile do
+  foreach_dict_conflict_probe is "skip"
+end
+foreach_dict_conflict_after is foreach_dict_conflict_probe + 1
+assert_eq(foreach_dict_conflict_after, 1)
+foreach_dict_conflict_profile is {tag: 0}
+for empty_field_key, empty_field_value in empty_loop_profile do
+  foreach_dict_conflict_profile.tag is "skip"
+end
+foreach_dict_conflict_field_after is foreach_dict_conflict_profile.tag + 1
+assert_eq(foreach_dict_conflict_field_after, 1)
+
+foreach_value_label is ""
+foreach_string_values is ["Su", "ra"]
+for foreach_string_value in foreach_string_values do
+  foreach_value_label += foreach_string_value
+end
+foreach_bool_score is 0
+foreach_bool_values is [true, false]
+for foreach_bool_value in foreach_bool_values do
+  if foreach_bool_value then
+    foreach_bool_score += 10
+  else
+    foreach_bool_score += 1
+  end
+end
+foreach_nil_score is 0
+foreach_nil_values is [nil]
+for foreach_nil_value in foreach_nil_values do
+  if not foreach_nil_value then
+    foreach_nil_score += 5
+  end
+end
+foreach_array_total is 0
+foreach_array_values is [[1], [2, 3]]
+for foreach_array_value in foreach_array_values do
+  foreach_array_total += length(foreach_array_value)
+end
+foreach_dict_score is 0
+foreach_dict_values is [{ok: true}, {}]
+for foreach_dict_value in foreach_dict_values do
+  if to_bool(foreach_dict_value) then
+    foreach_dict_score += 7
+  else
+    foreach_dict_score += 2
+  end
+end
+foreach_function_label is ""
+foreach_function_values is [fib, return_direct_function]
+for foreach_function_value in foreach_function_values do
+  foreach_function_label += type(foreach_function_value)
+  if to_bool(foreach_function_value) then
+    foreach_function_label += "!"
+  end
+end
+foreach_value_summary is "ForeachValues {foreach_value_label} {foreach_bool_score} {foreach_nil_score} {foreach_array_total} {foreach_dict_score} {foreach_function_label}"
+assert_eq(foreach_value_summary, "ForeachValues Sura 11 5 3 9 function!function!")
+
+tilde_total is 0
+for n in 1 ~ 3 do
+  tilde_total += n
+end
+assert_eq(tilde_total, 6)
+
+step_total is 0
+for n in 5 to 1 step -2 do
+  step_total += n
+end
+assert_eq(step_total, 9)
+
+assert_eq(result, 32)
+assert result == 32
+assert_eq result, 32
+assert_ne result, 0
+ternary_score is result == 32 ? 100 : 200
+assert_eq(ternary_score, 100)
+assign_score is 10
+assign_score is assign_score + 5
+assert_eq(assign_score, 15)
+assign_string_value is "assigned"
+assign_bool_value is true
+assign_nil_value is nil
+assign_array_value is [1, "x", false]
+assign_dict_value is {name: "su", ok: true, count: 2}
+assign_function_value is fib
+assert_eq(type(assign_string_value), "string")
+assert_eq(type(assign_bool_value), "bool")
+assert_eq(type(assign_nil_value), "nil")
+assert_eq(type(assign_array_value), "array")
+assert_eq(type(assign_dict_value), "dict")
+assert_eq(type(assign_function_value), "function")
+assert_eq(to_bool(assign_array_value), true)
+assert_eq(to_bool(assign_dict_value), true)
+assign_array_text is to_str(assign_array_value)
+assign_dict_text is to_str(assign_dict_value)
+assign_function_text is to_str(assign_function_value)
+wasm_compound_names is ["Su"]
+wasm_compound_profile is {name: "Su"}
+wasm_compound_key is "name"
+wasm_compound_names[0] += "ra"
+wasm_compound_profile.name += "ra"
+wasm_compound_profile[wasm_compound_key] += "!"
+wasm_compound_string_label is "CompoundStrings {wasm_compound_names[0]} {wasm_compound_profile.name} {wasm_compound_profile[wasm_compound_key]}"
+assert_eq(wasm_compound_string_label, "CompoundStrings Sura Sura! Sura!")
+wasm_compound_score is 30
+wasm_compound_score -= 4
+wasm_compound_score *= 3
+wasm_compound_score /= 2
+wasm_compound_score %= 10
+wasm_compound_local_text is "Su"
+wasm_compound_local_text += "ra"
+wasm_compound_numbers is [2, 3]
+wasm_compound_numbers[1] += 4
+wasm_compound_num_profile is {score: 7}
+wasm_compound_num_key is "score"
+wasm_compound_num_profile.score += 5
+wasm_compound_num_profile[wasm_compound_num_key] += 6
+wasm_compound_ops_label is "CompoundOps {wasm_compound_score} {wasm_compound_local_text} {wasm_compound_numbers[1]} {wasm_compound_num_profile.score} {wasm_compound_num_profile[wasm_compound_num_key]}"
+assert_eq(wasm_compound_ops_label, "CompoundOps 9 Sura 7 18 18")
+wasm_field_values is {text: "", active: false, missing: nil, items: [], meta: {}, handler: return_direct_string}
+wasm_field_values.text is "field"
+wasm_field_values.active is true
+wasm_field_values.missing is nil
+wasm_field_values.items is [1, "x"]
+wasm_field_values.meta is {ok: true}
+wasm_field_values.handler is fib
+wasm_field_assign_label is "FieldAssign {type(wasm_field_values.text)} {to_str(wasm_field_values.text)} {type(wasm_field_values.active)} {to_bool(wasm_field_values.active)} {type(wasm_field_values.missing)} {to_bool(wasm_field_values.missing)} {type(wasm_field_values.items)} {length(wasm_field_values.items)} {type(wasm_field_values.meta)} {to_bool(wasm_field_values.meta)} {type(wasm_field_values.handler)} {to_bool(wasm_field_values.handler)} {to_str(wasm_field_values.handler)}"
+assert_eq(wasm_field_assign_label, "FieldAssign string field bool true nil false array 2 dict true function true <Func fib>")
+wasm_index_values is [nil, nil, nil, nil, nil, nil]
+wasm_index_values[0] is "idx"
+wasm_index_values[1] is true
+wasm_index_values[2] is nil
+wasm_index_values[3] is [1, "x"]
+wasm_index_values[4] is {ok: true}
+wasm_index_values[5] is fib
+wasm_index_dict is {}
+wasm_index_key_text is "text"
+wasm_index_key_bool is "active"
+wasm_index_key_missing is "missing"
+wasm_index_key_items is "items"
+wasm_index_key_meta is "meta"
+wasm_index_key_handler is "handler"
+wasm_index_dict[wasm_index_key_text] is "dict"
+wasm_index_dict[wasm_index_key_bool] is false
+wasm_index_dict[wasm_index_key_missing] is nil
+wasm_index_dict[wasm_index_key_items] is [2, "y"]
+wasm_index_dict[wasm_index_key_meta] is {ready: true}
+wasm_index_dict[wasm_index_key_handler] is fib
+wasm_index_assign_label is "IndexAssign {type(wasm_index_values[0])} {to_str(wasm_index_values[0])} {type(wasm_index_values[1])} {to_bool(wasm_index_values[1])} {type(wasm_index_values[2])} {to_bool(wasm_index_values[2])} {type(wasm_index_values[3])} {length(wasm_index_values[3])} {type(wasm_index_values[4])} {to_bool(wasm_index_values[4])} {type(wasm_index_values[5])} {to_bool(wasm_index_values[5])}"
+assert_eq(wasm_index_assign_label, "IndexAssign string idx bool true nil false array 2 dict true function true")
+expr_stmt_value is 4
+(expr_stmt_value + 5)
+(assign_string_value)
+(assign_bool_value)
+(assign_nil_value)
+(assign_array_value)
+(assign_dict_value)
+(assign_function_value)
+(to_str(assign_array_value))
+(to_bool(assign_dict_value))
+assert_eq(expr_stmt_value, 4)
+assert_eq(bump_param(5), 7)
+assert_eq(fib(10), 55)
+print(result)
+print_n(result)
+print_n result
+print_no_nl(result)
+print_no_nl result
+print("Result", result, true, nil, [1, "x"], {ok: true})
+print "Static print {result}"
+console.log("console", "api", result)
+console.info("console", true, nil)
+console.warn("console", "warn")
+console.error("console", "error")
+console_log("direct", "console", result)
+assert_eq(math.floor(result), 32)
+assert_eq(math.ceil(result), 32)
+assert_eq(math.round(result), 32)
+assert_eq(to_int(result), 32)
+assert_eq(to_float(result), 32)
+assert_eq(to_bool(result), true)
+assert_eq(to_bool(0), false)
+assert_eq(to_bool(nil), false)
+assert_eq(nil == nil, true)
+runtime_type_profile is {name: "Sura", active: true}
+runtime_type_label is "RuntimeTypes {type(result)} {type(true)} {type(nil)} {type(runtime_type_profile)} {type(wasm_values)}"
+assert_eq(runtime_type_label, "RuntimeTypes number bool nil dict array")
+runtime_length_label is "RuntimeLengths {length(runtime_type_profile)} {length(wasm_values)}"
+assert_eq(runtime_length_label, "RuntimeLengths 2 3")
+wasm_string is "sura"
+runtime_to_str_label is "RuntimeStrings {to_str(32)} {to_str(true)} {to_str(nil)} {to_str(wasm_string)}"
+assert_eq(runtime_to_str_label, "RuntimeStrings 32 true nil sura")
+wasm_names_to_str is ["Sura", "WASM"]
+wasm_profile_to_str is {name: "Sura", active: true}
+wasm_nested_profile_to_str is {names: wasm_names_to_str, profile: wasm_profile_to_str}
+nested_collection_to_str_label is "NestedCollections {to_str([wasm_names_to_str, wasm_profile_to_str])} {to_str(wasm_nested_profile_to_str)}"
+assert(contains(nested_collection_to_str_label, "NestedCollections [[\"Sura\", \"WASM\"],"))
+assert(contains(nested_collection_to_str_label, "\"name\": \"Sura\""))
+assert(contains(nested_collection_to_str_label, "\"active\": true"))
+assert(contains(nested_collection_to_str_label, "\"names\": [\"Sura\", \"WASM\"]"))
+assert(contains(nested_collection_to_str_label, "\"profile\":"))
+runtime_collection_dict is {answer: 32, ok: true, none: nil}
+runtime_collection_to_str_label is "RuntimeCollections {to_str([32, \"ok\", true, nil])} {to_str(runtime_collection_dict)}"
+assert(contains(runtime_collection_to_str_label, "RuntimeCollections [32, \"ok\", true, nil]"))
+assert(contains(runtime_collection_to_str_label, "\"answer\": 32"))
+assert(contains(runtime_collection_to_str_label, "\"ok\": true"))
+assert(contains(runtime_collection_to_str_label, "\"none\": nil"))
+array_literal_runtime_label is "ArrayLiteralRuntime {type([1, \"x\", true, nil])} {length([1, \"x\", true, nil])} {to_bool([1, \"x\"])} {to_bool([])} {to_str([[1, 2], [\"a\"], [true], [nil]])}"
+assert_eq(array_literal_runtime_label, "ArrayLiteralRuntime array 4 true false [[1, 2], [\"a\"], [true], [nil]]")
+dict_literal_runtime_value is {name: "Ada", score: 16, active: true, missing: nil}
+dict_literal_truthy_value is {name: "Ada"}
+dict_literal_empty_value is {}
+dict_literal_nested_value is {profile: {name: "Ada"}, names: ["Ada", "Grace"], ok: true}
+dict_literal_runtime_label is "DictLiteralRuntime {type(dict_literal_runtime_value)} {length(dict_literal_runtime_value)} {to_bool(dict_literal_truthy_value)} {to_bool(dict_literal_empty_value)} {to_str(dict_literal_nested_value)}"
+assert(contains(dict_literal_runtime_label, "DictLiteralRuntime dict 4 true false"))
+assert(contains(dict_literal_runtime_label, "\"profile\":"))
+assert(contains(dict_literal_runtime_label, "\"name\": \"Ada\""))
+assert(contains(dict_literal_runtime_label, "\"names\": [\"Ada\", \"Grace\"]"))
+assert(contains(dict_literal_runtime_label, "\"ok\": true"))
+assert_eq(wasm_string.len(), 4)
+assert_eq(wasm_string.length(), 4)
+assert_eq(wasm_string.size(), 4)
+assert_eq(string.length(wasm_string), 4)
+assert_eq(string.size(wasm_string), 4)
+string_direct_length_label is "DirectLength {string_len(wasm_string)} {string_length(wasm_string)}"
+assert_eq(string_len(wasm_string), 4)
+assert_eq(string_length(wasm_string), 4)
+assert_eq(string_size(wasm_string), 4)
+assert_eq(string_direct_length_label, "DirectLength 4 4")
+string_index_label is "Chars {wasm_string[0]} {wasm_string[-1]} {length(wasm_string[1])}"
+assert_eq(wasm_string[0], "s")
+assert_eq(wasm_string[1], "u")
+assert_eq(wasm_string[-1], "a")
+assert_eq(type(wasm_string[0]), "string")
+assert_eq(length(wasm_string[1]), 1)
+assert_eq(to_str(wasm_string[2]), "r")
+assert_eq(string_index_label, "Chars s a 1")
+string_oob_idx is 99
+string_neg_oob_idx is -99
+assert_eq(type(wasm_string[99]), "nil")
+assert_eq(type(wasm_string[string_oob_idx]), "nil")
+assert_eq(type(wasm_string[string_neg_oob_idx]), "nil")
+assert_eq(wasm_string[99], nil)
+assert_eq(wasm_string[string_oob_idx], nil)
+assert_eq(to_str(wasm_string[99]), "nil")
+string_runtime_idx is result - 31
+string_runtime_oob_idx is result + 67
+string_dynamic_label is "Dyn {wasm_string[string_runtime_idx]} {type(wasm_string[string_runtime_oob_idx])} {to_str(wasm_string[string_runtime_oob_idx])}"
+assert_eq(type(wasm_string[string_runtime_idx]), "string")
+assert_eq(length(wasm_string[string_runtime_idx]), 1)
+assert_eq(type(wasm_string[string_runtime_oob_idx]), "nil")
+assert_eq(to_str(wasm_string[string_runtime_oob_idx]), "nil")
+assert_eq(wasm_string[string_runtime_oob_idx], nil)
+assert_eq(string_dynamic_label, "Dyn u nil nil")
+string_truth_label is "Truth {to_bool(wasm_string[string_runtime_idx])} {to_bool(wasm_string[string_runtime_oob_idx])} {not wasm_string[string_runtime_oob_idx]}"
+truth_branch is "unset"
+if wasm_string[string_runtime_idx] then
+  truth_branch is "in"
+end
+if wasm_string[string_runtime_oob_idx] then
+  truth_branch is "bad"
+else
+  truth_branch is truth_branch + "-out"
+end
+assert_eq(to_bool(wasm_string[string_runtime_idx]), true)
+assert_eq(to_bool(wasm_string[string_runtime_oob_idx]), false)
+assert_eq(not wasm_string[string_runtime_oob_idx], true)
+assert_eq(string_truth_label, "Truth true false true")
+assert_eq(truth_branch, "in-out")
+string_search_label is "Search {contains(wasm_string, \"ur\")} {startsWith(wasm_string, \"su\")} {endsWith(wasm_string, \"ra\")} {string.contains(wasm_string, \"zz\")}"
+assert_eq(contains(wasm_string, "ur"), true)
+assert_eq(contains(wasm_string, "zz"), false)
+assert_eq(startsWith(wasm_string, "su"), true)
+assert_eq(startsWith(wasm_string, "ra"), false)
+assert_eq(endsWith(wasm_string, "ra"), true)
+assert_eq(endsWith(wasm_string, "su"), false)
+assert_eq(string.contains(wasm_string, "ur"), true)
+assert_eq(string.starts_with(wasm_string, "su"), true)
+assert_eq(string.ends_with(wasm_string, "ra"), true)
+assert_eq(string_search_label, "Search true true true false")
+string_camel_alias_label is "CamelAlias {string_indexOf(wasm_string, \"ur\")} {string_startsWith(wasm_string, \"su\")} {string_endsWith(wasm_string, \"ra\")}"
+assert_eq(string_indexOf(wasm_string, "ur"), 1)
+assert_eq(string_startsWith(wasm_string, "su"), true)
+assert_eq(string_endsWith(wasm_string, "ra"), true)
+assert_eq(string_camel_alias_label, "CamelAlias 1 true true")
+string_direct_alias_label is "DirectAlias {string_contains(wasm_string, \"ur\")} {string_index_of(wasm_string, \"ra\")} {string_starts_with(wasm_string, \"su\")} {string_ends_with(wasm_string, \"ra\")}"
+assert_eq(string_contains(wasm_string, "ur"), true)
+assert_eq(string_index_of(wasm_string, "ra"), 2)
+assert_eq(string_starts_with(wasm_string, "su"), true)
+assert_eq(string_ends_with(wasm_string, "ra"), true)
+assert_eq(string_direct_alias_label, "DirectAlias true 2 true true")
+string_index_of_label is "Index {indexOf(wasm_string, \"ur\")} {indexOf(wasm_string, \"zz\")} {string.index_of(wasm_string, \"ra\")} {wasm_string.index_of(\"a\")}"
+assert_eq(indexOf(wasm_string, "ur"), 1)
+assert_eq(indexOf(wasm_string, "zz"), -1)
+assert_eq(indexOf(wasm_string, ""), 0)
+assert_eq(string.index_of(wasm_string, "ra"), 2)
+assert_eq(string.indexOf(wasm_string, "su"), 0)
+assert_eq(wasm_string.index_of("a"), 3)
+assert_eq(wasm_string.indexOf("u"), 1)
+assert_eq(string_index_of_label, "Index 1 -1 2 3")
+wasm_dirty_text is "  Sura AI  "
+string_transform_label is "Transform {upper(wasm_string)} {lower(\"SURA\")} {trim(wasm_dirty_text)} {string.upper(\"ok\")} {wasm_string.upper()} {\"SURA\".lower()} {\"  core  \".trim()}"
+assert_eq(upper(wasm_string), "SURA")
+assert_eq(lower("SURA"), "sura")
+assert_eq(trim(wasm_dirty_text), "Sura AI")
+string_direct_transform_label is "DirectTransform {string_upper(wasm_string)} {string_lower(\"SURA\")} {string_trim(wasm_dirty_text)}"
+assert_eq(string_upper(wasm_string), "SURA")
+assert_eq(string_lower("SURA"), "sura")
+assert_eq(string_trim(wasm_dirty_text), "Sura AI")
+assert_eq(string_direct_transform_label, "DirectTransform SURA sura Sura AI")
+assert_eq(string.upper("ok"), "OK")
+assert_eq(string.lower("AI"), "ai")
+assert_eq(string.trim("  wasm  "), "wasm")
+assert_eq(wasm_string.upper(), "SURA")
+assert_eq("SURA".lower(), "sura")
+assert_eq("  core  ".trim(), "core")
+assert_eq(wasm_string.contains("ur"), true)
+assert_eq(wasm_string.starts_with("su"), true)
+assert_eq(wasm_string.ends_with("ra"), true)
+assert_eq(string_transform_label, "Transform SURA sura Sura AI OK SURA sura core")
+string_replace_label is "Replace {replace(wasm_string, \"ur\", \"oo\")} {replace(wasm_string, \"\", \"x\")} {string.replace(\"sura sura\", \"sura\", \"SURA\")} {\"banana\".replace(\"na\", \"NA\")}"
+assert_eq(replace(wasm_string, "ur", "oo"), "sooa")
+assert_eq(replace(wasm_string, "", "x"), "sura")
+assert_eq(string.replace("sura sura", "sura", "SURA"), "SURA SURA")
+assert_eq("banana".replace("na", "NA"), "baNANA")
+assert_eq(string_replace_label, "Replace sooa sura SURA SURA baNANA")
+string_direct_replace_slice_label is "DirectReplaceSlice {string_replace(wasm_string, \"ur\", \"oo\")} {string_substring(wasm_string, 1, 3)} {string_slice(wasm_string, -3, -1)} {string_sub(wasm_string, 0, 2)}"
+assert_eq(string_replace(wasm_string, "ur", "oo"), "sooa")
+assert_eq(string_substring(wasm_string, 1, 3), "ur")
+assert_eq(string_slice(wasm_string, -3, -1), "ur")
+assert_eq(string_sub(wasm_string, 0, 2), "su")
+assert_eq(string_direct_replace_slice_label, "DirectReplaceSlice sooa ur ur su")
+string_slice_label is "Slice {substring(wasm_string, 1, 3)} {substring(wasm_string, 2)} {slice(wasm_string, -3, -1)} {string.substring(wasm_string, 1, 4)} {string.sub(wasm_string, 1, 3)} {wasm_string.sub(1, 3)} {wasm_string.slice(1)} {wasm_string.substring(0, 2)}"
+assert_eq(substring(wasm_string, 1, 3), "ur")
+assert_eq(substring(wasm_string, 2), "ra")
+assert_eq(substring(wasm_string, -3, 99), "sura")
+assert_eq(slice(wasm_string, -3, -1), "ur")
+assert_eq(string.substring(wasm_string, 1, 4), "ura")
+assert_eq(string.sub(wasm_string, 1, 3), "ur")
+assert_eq(string.slice(wasm_string, -2), "ra")
+assert_eq(wasm_string.sub(1, 3), "ur")
+assert_eq(wasm_string.slice(1), "ura")
+assert_eq(wasm_string.substring(0, 2), "su")
+assert_eq(string_slice_label, "Slice ur ra ur ura ur ur ura su")
+assert_eq(floor(3.9), 3)
+assert_eq(ceil(3.1), 4)
+assert_eq(round(3.5), 4)
+assert_eq(math.floor(2.9), 2)
+assert_eq(round(-3.4), -3)
+assert_eq(round(-3.5), -4)
+assert_eq(round(-3.6), -4)
+assert_eq(floor(-3.1), -4)
+assert_eq(ceil(-3.9), -3)
+assert_eq(math.floor(math.pi), 3)
+assert(math.pi > 3.14)
+assert(math.pi < 3.15)
+assert(3.14 < math.pi)
+assert_eq(math.abs(-7), 7)
+assert_eq(math.min(result, 40), 32)
+assert_eq(math.max(result, 10), 32)
+assert_eq(math.clamp(result + 5, 0, 32), 32)
+assert_eq(math.sign(result), 1)
+assert_eq(math.sqrt(144), 12)
+assert_eq(math.pow(2, 5), 32)
+assert_eq(math.min(8, 2, 5), 2)
+assert_eq(math.max(3, 9, 1), 9)
+assert_eq(sign(-9), -1)
+assert_eq(abs(-7), 7)
+assert_eq(sqrt(81), 9)
+assert_eq(min(result, 40), 32)
+assert_eq(max(result, 10), 32)
+assert_eq(min(8, 2, 5), 2)
+assert_eq(max(3, 9, 1), 9)
+assert_eq(clamp(result + 5, 0, 32), 32)
+assert_eq(pow(3, 3), 27)
+assert_eq(pow(5, 0), 1)
+
+logic_ok is 0
+if result == 32 and square(2) == 4 then
+  logic_ok is 1
+else
+  logic_ok is 0
+end
+
+assert(logic_ok == 1)
+assert(result == 0 or result == 32)
+assert(not (result < 0))
+assert(not (result == 0 or result < 0))
+short_circuit_and_ok is false and (1 / 0 == 0)
+short_circuit_or_ok is true or (1 / 0 == 0)
+assert_eq(short_circuit_and_ok, false)
+assert_eq(short_circuit_or_ok, true)
+
+branch is 0
+if result < 0 then
+  branch is 1
+elif result == 31 then
+  branch is 2
+elif result == 32 then
+  branch is 3
+else
+  branch is 4
+end
+assert_eq(branch, 3)
+
+no_else_branch is 0
+if result < 0 then
+  no_else_branch is 1
+elif result == 32 then
+  no_else_branch is 2
+end
+assert_eq(no_else_branch, 2)
+
+throw_guard is 0
+if false then
+  throw throw_value_source(41)
+else
+  throw_guard is 1
+end
+assert_eq(throw_guard, 1)
+
+inline_elif is 0
+if result < 0 then
+  inline_elif is 1
+elif result == 31 then inline_elif is 2
+elif result == 32 then inline_elif is 3
+else
+  inline_elif is 4
+end
+assert_eq(inline_elif, 3)
+
+inline_else is 0
+if result < 0 then
+  inline_else is 1
+else then inline_else is 2
+end
+assert_eq(inline_else, 2)
+
+if result == 32 then inline_if_local is 41
+assert_eq(inline_if_local, 41)
+
+if result < 0 then
+  print 0
+else then inline_else_local is 42
+end
+assert_eq(inline_else_local, 42)
+
+if result < 0 then
+  print 0
+elif result == 32 then inline_elif_local is 43
+end
+assert_eq(inline_elif_local, 43)
+
+control_sum is 0
+i is 0
+while i < 6 do
+  i += 1
+  if i == 2 then continue
+  if i == 5 then break
+  control_sum += i
+end
+
+while_conflict_probe is 0
+while false do
+  while_conflict_probe is "skip"
+end
+while_conflict_after is while_conflict_probe + 1
+assert_eq(while_conflict_after, 1)
+while_conflict_profile is {tag: 0}
+while false do
+  while_conflict_profile.tag is "skip"
+end
+while_conflict_field_after is while_conflict_profile.tag + 1
+assert_eq(while_conflict_field_after, 1)
+
+while_dynamic_limits is [2]
+while_runtime_counter is 0
+while_runtime_label is ""
+while while_runtime_counter < while_dynamic_limits[0] do
+  while_runtime_counter += 1
+  while_runtime_label is "WhileRuntime {while_runtime_counter} {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+end
+assert_eq(while_runtime_label, "WhileRuntime 2 array 2 true function true <Func fib>")
+
+for m in 1 to 5 do
+  if m == 2 then continue
+  if m == 5 then break
+  control_sum += m
+end
+
+r is 0
+repeat 5 do
+  r += 1
+  if r == 2 then continue
+  if r == 5 then break
+  control_sum += r
+end
+
+assert_eq(control_sum, 24)
+
+when_pick is 0
+when result do
+is 31 then
+  when_pick is 1
+in 32 to 40 then
+  when_pick is 2
+else then
+  when_pick is 3
+end
+assert_eq(when_pick, 2)
+
+when_tilde is 0
+when result do
+in 30 ~ 35 then
+  when_tilde is 5
+else then
+  when_tilde is 6
+end
+assert_eq(when_tilde, 5)
+
+when_inline is 0
+when 7 do
+is 1 then when_inline is 1
+else then when_inline is 7
+end
+assert_eq(when_inline, 7)
+
+when result do
+is 32 then inline_when_local is 44
+end
+assert_eq(inline_when_local, 44)
+
+when_first_else is 0
+when result do
+else then when_first_else is 9
+end
+assert_eq(when_first_else, 9)
+
+when_middle_else is 0
+when result do
+else then when_middle_else is 7
+is 32 then when_middle_else is 8
+end
+assert_eq(when_middle_else, 8)
+
+when_matched_before_else is 0
+when result do
+is 32 then when_matched_before_else is 4
+else then when_matched_before_else is 5
+is 32 then when_matched_before_else is 6
+end
+assert_eq(when_matched_before_else, 4)
+
+match_pick is 0
+match result
+when 31 then match_pick is 1
+when 32 then match_pick is 2
+when _ then match_pick is 3
+end
+assert_eq(match_pick, 2)
+
+match_wildcard is 0
+match 99
+when 1 then match_wildcard is 1
+when _ then match_wildcard is 7
+end
+assert_eq(match_wildcard, 7)
+
+match_block_pick is 0
+match result
+when 31
+  match_block_pick is 1
+when 32
+  match_block_pick is 2
+when _
+  match_block_pick is 3
+end
+assert_eq(match_block_pick, 2)
+
+match_first_wildcard is 0
+match result
+when _ then match_first_wildcard is 9
+end
+assert_eq(match_first_wildcard, 9)
+
+match_middle_wildcard is 0
+match result
+when _ then match_middle_wildcard is 7
+when 32 then match_middle_wildcard is 8
+end
+assert_eq(match_middle_wildcard, 8)
+
+match_matched_before_wildcard is 0
+match result
+when 32 then match_matched_before_wildcard is 4
+when _ then match_matched_before_wildcard is 5
+when 32 then match_matched_before_wildcard is 6
+end
+assert_eq(match_matched_before_wildcard, 4)
+
+match result
+when 32 then inline_match_local is 45
+end
+assert_eq(inline_match_local, 45)
+
+string_match_pick is 0
+match WasmLabel.CUSTOM
+when "READY" then string_match_pick is 1
+when "custom" then string_match_pick is 2
+when _ then string_match_pick is 3
+end
+assert_eq(string_match_pick, 2)
+bool_match_pick is 0
+match true
+when false then bool_match_pick is 1
+when true then bool_match_pick is 2
+when _ then bool_match_pick is 3
+end
+assert_eq(bool_match_pick, 2)
+nil_match_pick is 0
+match nil
+when "missing" then nil_match_pick is 1
+when nil then nil_match_pick is 2
+when _ then nil_match_pick is 3
+end
+assert_eq(nil_match_pick, 2)
+match_runtime_label is ""
+match make_mixed_profile()["active"]
+when false then match_runtime_label is "MatchRuntime bad"
+when true then match_runtime_label is "MatchRuntime bool {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+when _ then match_runtime_label is "MatchRuntime miss"
+end
+assert_eq(match_runtime_label, "MatchRuntime bool array 2 true function true <Func fib>")
+match_nil_runtime_label is ""
+match make_mixed_profile()["missing"]
+when true then match_nil_runtime_label is "MatchRuntime bad"
+when nil then match_nil_runtime_label is "MatchRuntime nil {type(ternary_array_value)} {length(ternary_array_value)} {to_bool(runtime_truthy_dict)} {type(return_direct_function())} {to_bool(return_direct_function())} {to_str(return_direct_function())}"
+when _ then match_nil_runtime_label is "MatchRuntime miss"
+end
+assert_eq(match_nil_runtime_label, "MatchRuntime nil array 2 true function true <Func fib>")
+match_join_label is ""
+match WasmLabel.CUSTOM
+when "READY" then match_join_label is "ready"
+when _ then match_join_label is "custom"
+end
+assert_eq(match_join_label + "!", "custom!")
+match_conflict_probe is 0
+match result
+when 0 then match_conflict_probe is 7
+when _ then match_conflict_probe is "fallback"
+end
+match_conflict_after is match_conflict_probe + 1
+match_conflict_profile is {tag: 0}
+match result
+when 0 then match_conflict_profile.tag is 7
+when _ then match_conflict_profile.tag is "fallback"
+end
+match_conflict_field_after is match_conflict_profile.tag + 1
+match_conflict_names is [0]
+match result
+when 0 then match_conflict_names[0] is 7
+when _ then match_conflict_names[0] is "fallback"
+end
+match_conflict_index_after is match_conflict_names[0] + 1
+
+assert_ne(result, 0)
+assert_neq(result, 31)
+assert_between(result, 30, 40)
+assert_approx(result + 1, 33, 0)
+assert(true)
+assert(not false)
+
+bool_score is 0
+if true and not false then
+  bool_score is 1
+else
+  bool_score is 2
+end
+assert_eq(bool_score, 1)
+
+dynamic_while_score is 0
+while "loop" do
+  dynamic_while_score += 1
+  break
+end
+assert_eq(dynamic_while_score, 1)
+
+if result == 32 then
+  print result
+else
+  print 0
+end

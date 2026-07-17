@@ -1,0 +1,22 @@
+func raw_f64_affine(value: double, scale: double) -> double do
+  return value * scale + 0.5
+end
+
+func raw_f64_ratio(left: double, right: double) -> double do
+  return left / right
+end
+
+func raw_f64_constant() -> double do
+  return 1.25 + 2.5
+end
+
+func raw_f64_identity(value: double) -> double do
+  return value
+end
+
+assert_eq(raw_f64_affine(1.5, 2.0), 3.5)
+assert_eq(raw_f64_ratio(7.0, 2.0), 3.5)
+assert_eq(raw_f64_constant(), 3.75)
+assert_eq(raw_f64_identity(-0.0), 0.0)
+
+print_no_nl("raw f64 export ok")

@@ -1,0 +1,164 @@
+# Automation workload: summarize structured service logs with regex extraction.
+# Models route/status/latency parsing for API monitoring and CI log triage.
+
+use regex
+
+func level_for(i) do
+  if i % 97 == 0 then
+    return "ERROR"
+  end
+  if i % 29 == 0 then
+    return "WARN"
+  end
+  return "INFO"
+end
+
+func route_for(i) do
+  r is i % 6
+  if r == 0 then
+    return "/api/agents/run"
+  end
+  if r == 1 then
+    return "/api/tools/http"
+  end
+  if r == 2 then
+    return "/api/rag/search"
+  end
+  if r == 3 then
+    return "/api/packages/publish"
+  end
+  if r == 4 then
+    return "/api/games/session"
+  end
+  return "/api/jobs/status"
+end
+
+func status_for(i) do
+  if i % 97 == 0 then
+    return 500
+  end
+  if i % 41 == 0 then
+    return 429
+  end
+  if i % 19 == 0 then
+    return 404
+  end
+  return 200
+end
+
+func latency_for(i) do
+  return 18 + ((i * 37 + i * i * 3) % 820)
+end
+
+func request_id(i) do
+  return (i * 7919 + 17) % 1000000
+end
+
+func user_id(i) do
+  return (i * 193 + 11) % 50000
+end
+
+func log_line(i) do
+  second is i % 60
+  level is level_for(i)
+  route is route_for(i)
+  status is status_for(i)
+  latency is latency_for(i)
+  req is request_id(i)
+  user is user_id(i)
+  return "ts=2026-05-17T12:00:{second}Z level={level} route={route} status={status} latency={latency}ms req=req-{req} user=user-{user}"
+end
+
+func event_score(level, status, latency, route_hits, number_hits) do
+  score is 0
+  if level == "ERROR" then
+    score is score + 120
+  end
+  if level == "WARN" then
+    score is score + 35
+  end
+  if status >= 500 then
+    score is score + 90
+  end
+  if status == 429 then
+    score is score + 60
+  end
+  if latency > 700 then
+    score is score + 45
+  end
+  if latency > 350 then
+    score is score + 15
+  end
+  seed is status + latency + route_hits * 17 + number_hits * 31
+  pulse is 0
+  j is 0
+  while j < 384 do
+    seed is (seed * 37 + j * 17 + status) % 1000003
+    pulse is pulse + (seed % 101)
+    if seed % 97 == 0 then
+      score is score + 3
+    end
+    j is j + 1
+  end
+  return score + route_hits * 3 + number_hits + pulse
+end
+
+runs is 5
+lines is 18000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  errors is 0
+  warnings is 0
+  throttles is 0
+  slow is 0
+  status_total is 0
+  latency_total is 0
+  route_total is 0
+  number_total is 0
+  score_total is 0
+  while i < lines do
+    line is log_line(i)
+    level_match is regex.find_all(line, "level=(INFO|WARN|ERROR)")[0]
+    status_match is regex.find_all(line, "status=[0-9]+")[0]
+    latency_match is regex.find_all(line, "latency=[0-9]+ms")[0]
+    route_hits is regex.find_all(line, "route=/[A-Za-z0-9_/.-]+").len()
+    number_hits is regex.find_all(line, "[0-9]+").len()
+
+    level is level_match.split("=")[1]
+    status is to_int(status_match.split("=")[1])
+    latency_piece is latency_match.split("=")[1]
+    latency is to_int(latency_piece.split("ms")[0])
+
+    if level == "ERROR" then
+      errors is errors + 1
+    end
+    if regex.match(line, "level=(WARN|ERROR)") then
+      warnings is warnings + 1
+    end
+    if status == 429 then
+      throttles is throttles + 1
+    end
+    if latency > 500 then
+      slow is slow + 1
+    end
+
+    status_total is status_total + status
+    latency_total is latency_total + latency
+    route_total is route_total + route_hits
+    number_total is number_total + number_hits
+    score_total is score_total + event_score(level, status, latency, route_hits, number_hits)
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is errors * 17 + warnings * 13 + throttles * 11 + slow * 7 + status_total + latency_total + route_total * 5 + number_total + score_total
+end
+
+avg is total_ms / runs
+print "log regex lines: {lines}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

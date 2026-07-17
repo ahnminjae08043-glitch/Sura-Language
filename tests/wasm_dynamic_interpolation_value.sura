@@ -1,0 +1,42 @@
+func wasm_interp_echo(value) do
+  return value
+end
+
+func wasm_interp_named() do
+  return 1
+end
+
+func wasm_interp_throw_object(value) do
+  throw value
+end
+
+class WasmInterpBox do
+  func init(code) do
+    self.code is code
+  end
+end
+
+numbers is [1, 2, 3]
+config is {label: "sura"}
+box is new WasmInterpBox(7)
+
+selected_number is wasm_interp_echo(42)
+selected_string is wasm_interp_echo("sura")
+selected_bool is wasm_interp_echo(true)
+selected_nil is wasm_interp_echo(nil)
+selected_array is wasm_interp_echo(numbers)
+selected_dynamic_array is wasm_interp_echo([1, "two", true])
+selected_identity_array is wasm_interp_echo([box, wasm_interp_named])
+selected_dict is wasm_interp_echo(config)
+selected_function is wasm_interp_echo(wasm_interp_named)
+selected_object is ""
+try
+  ignored_object is wasm_interp_throw_object(box)
+catch err
+  selected_object is "{err}"
+end
+
+result is "{selected_number}|{selected_string}|{selected_bool}|{selected_nil}|{selected_array}|{selected_dynamic_array}|{selected_identity_array}|{selected_dict}|{selected_function}|{selected_object}"
+expected is "42|sura|true|nil|[1, 2, 3]|[1, \"two\", true]|[<Instance WasmInterpBox>, <Func wasm_interp_named>]|" + to_str({label: "sura"}) + "|<Func wasm_interp_named>|<Instance WasmInterpBox>"
+assert_eq(result, expected)
+print_no_nl(result)

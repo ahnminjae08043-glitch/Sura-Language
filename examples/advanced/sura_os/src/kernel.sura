@@ -1,0 +1,348 @@
+# SuraOS kernel coordinator and system-call boundary.
+
+func kernel_create(memory_size, quantum, seed) do
+  devices is device_manager_create(seed)
+  system_clock is devices.clock
+  filesystem is fs_create(0)
+  fs_format_default(filesystem, 0)
+  security is security_create()
+  security_bootstrap(security)
+  scheduler is scheduler_create(quantum)
+  log is diag_create(1024)
+  services is service_manager_create()
+  service_install_defaults(services)
+  packages is pkg_manager_create()
+  pkg_install_default_repository(packages)
+  network is net_stack_create(devices.net0)
+  net_bootstrap(network, 0)
+  monitor is monitor_create(256)
+  monitor_install_default_rules(monitor)
+  snapshots is snapshot_manager_create(16)
+  return {name: SURAOS_NAME, version: SURAOS_VERSION, architecture: SURAOS_ARCH, booted: false, shutdown_requested: false, shutdown_reason: "", panic: nil, clock: system_clock, memory: mem_create(memory_size), fs: filesystem, devices: devices, security: security, scheduler: scheduler, log: log, processes: {}, process_count: 0, next_pid: 1, total_created: 0, total_exited: 0, current_user: "user", session_id: -1, programs: {}, next_message_id: 1, syscalls: 0, interrupts: 0, boot_messages: [], config: {hostname: "sura-machine", max_cycles: 10000, reap_automatically: false}, services: services, packages: packages, network: network, monitor: monitor, snapshots: snapshots, bootloader: nil}
+end
+
+func kernel_boot_message(kernel, message) do
+  boot_messages is kernel.boot_messages
+  boot_messages.push(message)
+  device_console_write(kernel.devices.console, "[boot] " + message, true)
+  diag_info(kernel.log, "boot", message, {}, kernel.clock.tick)
+end
+
+func kernel_register_program(kernel, name, program) do
+  if not program.assembled then return osutil_fail(SURAOS_ERR_INVALID, "program contains assembly errors")
+  validation is asm_validate_program(program)
+  if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, validation.errors.join(", "))
+  programs is kernel.programs
+  programs[name] is program
+  return osutil_ok(name)
+end
+
+func kernel_program(kernel, name) do
+  programs is kernel.programs
+  if name in programs then return programs[name]
+  return nil
+end
+
+func kernel_install_builtin_programs(kernel) do
+  hello is asm_assemble(asm_hello_source(), "hello")
+  counter is asm_assemble(asm_counter_source(10), "counter")
+  cooperative is asm_assemble(asm_yield_source(), "cooperative")
+  kernel_register_program(kernel, "hello", hello)
+  kernel_register_program(kernel, "counter", counter)
+  kernel_register_program(kernel, "cooperative", cooperative)
+  fs_write_file(kernel.fs, "/bin/hello.sasm", asm_hello_source(), "root", "/", kernel.clock.tick)
+  fs_write_file(kernel.fs, "/bin/counter.sasm", asm_counter_source(10), "root", "/", kernel.clock.tick)
+  fs_write_file(kernel.fs, "/bin/cooperative.sasm", asm_yield_source(), "root", "/", kernel.clock.tick)
+end
+
+func kernel_boot(kernel) do
+  if kernel.booted then return osutil_ok(kernel)
+  kernel_boot_message(kernel, suraos_banner())
+  kernel_boot_message(kernel, "initializing sparse memory: " + kernel.memory.size + " bytes")
+  kernel_boot_message(kernel, "mounting virtual filesystem")
+  validation is fs_validate(kernel.fs)
+  if not validation.ok then return kernel_panic(kernel, "filesystem validation failed: " + validation.errors.join(", "))
+  kernel_boot_message(kernel, "loading security database")
+  login is security_authenticate(kernel.security, "user", "sura", kernel.clock.tick)
+  if not login.ok then return kernel_panic(kernel, "default user authentication failed")
+  kernel.session_id is login.value.id
+  kernel.current_user is login.value.username
+  kernel_boot_message(kernel, "installing built-in SVM32 programs")
+  kernel_install_builtin_programs(kernel)
+  kernel.booted is true
+  kernel_boot_message(kernel, "scheduler ready, quantum=" + kernel.scheduler.quantum)
+  kernel_boot_message(kernel, "boot complete")
+  return osutil_ok(kernel)
+end
+
+func kernel_panic(kernel, message) do
+  panic is {message: message, tick: kernel.clock.tick, process: kernel.scheduler.current_pid}
+  kernel.panic is panic
+  kernel.shutdown_requested is true
+  kernel.shutdown_reason is "panic"
+  diag_error(kernel.log, "kernel", "PANIC: " + message, panic, kernel.clock.tick)
+  device_console_write(kernel.devices.console, "KERNEL PANIC: " + message, true)
+  return osutil_fail(SURAOS_ERR_FAULT, message)
+end
+
+func kernel_spawn_program(kernel, program, name, user, parent_pid, priority) do
+  if not kernel.booted then return osutil_fail(SURAOS_ERR_BUSY, "kernel is not booted")
+  permission is security_require(kernel.security, user, "process.spawn")
+  if not permission.ok and user != "root" then return permission
+  return proc_create(kernel, program, name, user, parent_pid, priority)
+end
+
+func kernel_spawn_registered(kernel, name, user, parent_pid, priority) do
+  program is kernel_program(kernel, name)
+  if program == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "program not installed: " + name)
+  return kernel_spawn_program(kernel, program, name, user, parent_pid, priority)
+end
+
+func kernel_spawn_source(kernel, source, name, user, parent_pid, priority) do
+  program is asm_assemble(source, name)
+  if not program.assembled then return osutil_fail(SURAOS_ERR_INVALID, asm_diagnostic_text(program))
+  return kernel_spawn_program(kernel, program, name, user, parent_pid, priority)
+end
+
+func kernel_set_return(process, value) do
+  cpu_set(process.cpu, "R0", value)
+  return value
+end
+
+func kernel_syscall_result(process, result) do
+  if result.ok then
+    kernel_set_return(process, result.value)
+  else
+    kernel_set_return(process, result.code)
+    process.last_error is result.message
+  end
+  return result
+end
+
+func kernel_handle_syscall(kernel, process, number) do
+  process.syscalls += 1
+  kernel.syscalls += 1
+  cpu is process.cpu
+  r0 is cpu_get(cpu, "R0")
+  r1 is cpu_get(cpu, "R1")
+  r2 is cpu_get(cpu, "R2")
+  name is suraos_syscall_name(number)
+  diag_trace(kernel.log, "syscall", name, {pid: process.pid, r0: r0, r1: r1, r2: r2}, kernel.clock.tick)
+
+  if number == SURAOS_SYSCALL_EXIT then
+    proc_exit(kernel, process, osutil_to_integer(r0, 0), "exit syscall")
+    return {status: "halt"}
+  end
+
+  if number == SURAOS_SYSCALL_PRINT then
+    text is "" + r0
+    device_console_write(kernel.devices.console, text, true)
+    process.output_bytes += text.len() + 1
+    kernel_set_return(process, text.len())
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_PRINT_NUMBER then
+    text is "" + r0
+    device_console_write(kernel.devices.console, text, true)
+    process.output_bytes += text.len() + 1
+    kernel_set_return(process, r0)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_GET_PID then
+    kernel_set_return(process, process.pid)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_SLEEP then
+    proc_sleep(kernel, process, osutil_max(1, osutil_to_integer(r0, 1)), "sleep")
+    return {status: "blocked"}
+  end
+
+  if number == SURAOS_SYSCALL_YIELD then
+    return {status: "yield"}
+  end
+
+  if number == SURAOS_SYSCALL_OPEN then
+    result is fs_open(kernel.fs, process, "" + r0, "" + r1, kernel.clock.tick)
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_READ then
+    result is fs_read_fd(kernel.fs, process, osutil_to_integer(r0, -1), osutil_to_integer(r1, -1))
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_WRITE then
+    result is fs_write_fd(kernel.fs, process, osutil_to_integer(r0, -1), r1, kernel.clock.tick)
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_CLOSE then
+    result is fs_close(kernel.fs, process, osutil_to_integer(r0, -1))
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_SPAWN then
+    result is kernel_spawn_registered(kernel, "" + r0, process.user, process.pid, osutil_to_integer(r1, process.priority))
+    if result.ok then kernel_set_return(process, result.value.pid) else kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_WAIT then
+    result is proc_wait_for(kernel, process, osutil_to_integer(r0, -1))
+    if not result.ok then
+      kernel_syscall_result(process, result)
+      return {status: "ok"}
+    end
+    if process.state == SURAOS_PROCESS_WAITING then return {status: "blocked"}
+    kernel_set_return(process, result.value)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_ALLOC then
+    result is mem_heap_alloc(kernel.memory, process, osutil_to_integer(r0, 0))
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_FREE then
+    result is mem_heap_free(kernel.memory, process, osutil_to_integer(r0, -1))
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_GET_TIME then
+    kernel_set_return(process, kernel.clock.tick)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_SEND then
+    result is proc_send_message(kernel, process.pid, osutil_to_integer(r0, -1), r1, "user")
+    kernel_syscall_result(process, result)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_RECEIVE then
+    result is proc_receive_message(process, "" + r0)
+    if not result.ok then
+      process.wake_tick is nil
+      proc_set_state(kernel, process, SURAOS_PROCESS_WAITING, "message")
+      scheduler_remove(kernel, process.pid)
+      return {status: "blocked"}
+    end
+    kernel_set_return(process, result.value.payload)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_LIST_DIR then
+    result is fs_list(kernel.fs, "" + r0, process.user, process.cwd)
+    if result.ok then
+      names is []
+      for node in result.value do
+        names.push(node.name)
+      end
+      kernel_set_return(process, names.join(" "))
+    else
+      kernel_syscall_result(process, result)
+    end
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_GET_USER then
+    kernel_set_return(process, process.user)
+    return {status: "ok"}
+  end
+
+  if number == SURAOS_SYSCALL_RANDOM then
+    minimum is osutil_to_integer(r0, 0)
+    maximum is osutil_to_integer(r1, 2147483646)
+    kernel_set_return(process, device_random_range(kernel.devices.random, minimum, maximum))
+    return {status: "ok"}
+  end
+
+  process.last_error is "unknown syscall " + number
+  kernel_set_return(process, SURAOS_ERR_INVALID)
+  return {status: "ok"}
+end
+
+func kernel_signal(kernel, sender_user, sender_pid, target_pid, signal) do
+  target is proc_get(kernel, target_pid)
+  if target == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "process not found")
+  if not security_can_signal(kernel.security, sender_user, target) then return osutil_fail(SURAOS_ERR_PERMISSION, "signal denied")
+  return proc_queue_signal(kernel, target_pid, signal, sender_pid)
+end
+
+func kernel_run(kernel, cycles) do
+  if not kernel.booted then return osutil_fail(SURAOS_ERR_BUSY, "kernel not booted")
+  report is scheduler_run(kernel, cycles)
+  service_tick(kernel.services, kernel)
+  net_poll(kernel.network, kernel.clock.tick, 64)
+  monitor_sample(kernel.monitor, kernel)
+  if kernel.config.reap_automatically then kernel_reap_all(kernel)
+  return osutil_ok(report)
+end
+
+func kernel_reap_all(kernel) do
+  pids is []
+  for process in kernel.processes.values() do
+    if process.state == SURAOS_PROCESS_TERMINATED then pids.push(process.pid)
+  end
+  count is 0
+  for pid in pids do
+    result is proc_reap(kernel, pid, 0)
+    if result.ok then count += 1
+  end
+  return count
+end
+
+func kernel_shutdown(kernel, reason, requester_user) do
+  permission is security_require(kernel.security, requester_user, "system.shutdown")
+  if not permission.ok and requester_user != "root" then return permission
+  kernel.shutdown_requested is true
+  kernel.shutdown_reason is reason
+  pids is []
+  for process in kernel.processes.values() do
+    if suraos_process_is_alive(process.state) then pids.push(process.pid)
+  end
+  for pid in pids do
+    process is proc_get(kernel, pid)
+    if process != nil then proc_exit(kernel, process, 0, "system shutdown")
+  end
+  device_console_write(kernel.devices.console, "SuraOS shutdown: " + reason, true)
+  diag_info(kernel.log, "kernel", "shutdown", {reason: reason}, kernel.clock.tick)
+  return osutil_ok(true)
+end
+
+func kernel_health(kernel) do
+  memory_validation is mem_validate(kernel.memory)
+  fs_validation is fs_validate(kernel.fs)
+  healthy is kernel.panic == nil and memory_validation.ok and fs_validation.ok
+  return {healthy: healthy, booted: kernel.booted, panic: kernel.panic, memory: memory_validation, filesystem: fs_validation, processes: kernel.process_count, live_processes: scheduler_live_count(kernel), log_errors: kernel.log.errors}
+end
+
+func kernel_stats(kernel) do
+  return {banner: suraos_banner(), hostname: kernel.config.hostname, booted: kernel.booted, tick: kernel.clock.tick, current_user: kernel.current_user, process_count: kernel.process_count, total_created: kernel.total_created, total_exited: kernel.total_exited, syscalls: kernel.syscalls, interrupts: kernel.interrupts, memory: mem_stats(kernel.memory), filesystem: fs_usage(kernel.fs), scheduler: scheduler_stats(kernel), devices: device_stats(kernel.devices), security: security_stats(kernel.security), diagnostics: diag_summary(kernel.log), services: service_manager_stats(kernel.services), packages: pkg_manager_stats(kernel.packages), network: net_stats(kernel.network), monitor: monitor_stats(kernel.monitor), snapshots: snapshot_manager_stats(kernel.snapshots)}
+end
+
+func kernel_snapshot(kernel) do
+  processes is []
+  for process in kernel.processes.values() do
+    processes.push(proc_snapshot(process))
+  end
+  return {schema: SURAOS_SNAPSHOT_SCHEMA, version: SURAOS_VERSION, clock: kernel.clock.tick, memory: mem_snapshot(kernel.memory), filesystem: fs_export(kernel.fs), processes: processes, scheduler: {ready: osutil_clone_array(kernel.scheduler.ready), current_pid: kernel.scheduler.current_pid, quantum: kernel.scheduler.quantum}, current_user: kernel.current_user, config: osutil_clone_dict(kernel.config), stats: {total_created: kernel.total_created, total_exited: kernel.total_exited, syscalls: kernel.syscalls}}
+end
+
+func kernel_snapshot_save(kernel, host_path, requester_user) do
+  permission is security_require(kernel.security, requester_user, "system.snapshot")
+  if not permission.ok and requester_user != "root" then return permission
+  health is kernel_health(kernel)
+  if not health.healthy then return osutil_fail(SURAOS_ERR_INVALID, "cannot snapshot unhealthy kernel")
+  file_write_json(host_path, kernel_snapshot(kernel))
+  return osutil_ok(host_path)
+end

@@ -1,0 +1,79 @@
+# Infinite 3D starfield. A/D steer, W/S change speed, Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 800
+H is 540
+FOV is 430
+if not win_init(W, H, "Sura Starfield Flight 3D") then
+  print("win_init failed")
+  exit(1)
+end
+
+sx is []
+sy is []
+sz is []
+i is 0
+while i < 140 do
+  sx.push(random(-650, 650))
+  sy.push(random(-430, 430))
+  sz.push(random(30, 900))
+  i += 1
+end
+
+camera_x is 0
+speed is 8
+frame is 0
+distance is 0
+running is true
+
+func screen_x(x, z) do
+  return W / 2 + (x - camera_x) * FOV / z
+end
+
+func screen_y(y, z) do
+  return H / 2 + y * FOV / z
+end
+
+while running do
+  frame += 1
+  if key_down("a") or key_down("left") then camera_x -= 7
+  if key_down("d") or key_down("right") then camera_x += 7
+  if key_down("w") or key_down("up") then speed += 0.2
+  if key_down("s") or key_down("down") then speed -= 0.2
+  if speed < 2 then speed is 2
+  if speed > 24 then speed is 24
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then camera_x is sin(frame / 5) * 45
+  distance += speed
+
+  win_clear(2, 3, 12)
+  i is 0
+  while i < sx.len() do
+    old_z is sz[i]
+    old_x is screen_x(sx[i], old_z)
+    old_y is screen_y(sy[i], old_z)
+    sz[i] -= speed
+    if sz[i] < 18 then
+      sx[i] is random(-650, 650) + camera_x
+      sy[i] is random(-430, 430)
+      sz[i] is random(700, 950)
+    end
+    px is screen_x(sx[i], sz[i])
+    py is screen_y(sy[i], sz[i])
+    if px >= 0 and px < W and py >= 0 and py < H then
+      brightness is 255 - floor(sz[i] / 5)
+      if brightness < 70 then brightness is 70
+      win_line(old_x, old_y, px, py, brightness, brightness, 255)
+      if sz[i] < 180 then win_circle(px, py, 2, 220, 235, 255)
+    end
+    i += 1
+  end
+  win_text("STARFIELD  speed {speed}  distance {floor(distance)}", 18, 16, 215, 230, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("starfield_flight: distance={distance}")
+assert(distance > 0)

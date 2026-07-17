@@ -1,0 +1,76 @@
+# Particles orbit a central gravity well. Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 760
+H is 540
+CX is W / 2
+CY is H / 2
+if not win_init(W, H, "Sura Particle Gravity") then
+  print("win_init failed")
+  exit(1)
+end
+
+px is []
+py is []
+pvx is []
+pvy is []
+i is 0
+while i < 46 do
+  radius is random(70, 235)
+  angle is i * 0.73
+  x is CX + cos(angle) * radius
+  y is CY + sin(angle) * radius
+  orbital is sqrt(900 / radius)
+  px.push(x)
+  py.push(y)
+  pvx.push(-sin(angle) * orbital)
+  pvy.push(cos(angle) * orbital)
+  i += 1
+end
+
+frame is 0
+running is true
+while running do
+  frame += 1
+  if key_down("q") or key_down("escape") then running is false
+  i is 0
+  while i < px.len() do
+    dx is CX - px[i]
+    dy is CY - py[i]
+    d2 is dx * dx + dy * dy
+    distance is sqrt(d2)
+    if distance < 18 then distance is 18
+    acceleration is 52 / (distance * distance)
+    pvx[i] += dx / distance * acceleration
+    pvy[i] += dy / distance * acceleration
+    px[i] += pvx[i]
+    py[i] += pvy[i]
+    if px[i] < -30 or px[i] > W + 30 or py[i] < -30 or py[i] > H + 30 then
+      angle is i * 0.73 + frame * 0.01
+      px[i] is CX + cos(angle) * 220
+      py[i] is CY + sin(angle) * 220
+      pvx[i] is -sin(angle) * 2
+      pvy[i] is cos(angle) * 2
+    end
+    i += 1
+  end
+
+  win_clear(3, 5, 14)
+  win_circle(CX, CY, 24, 255, 175, 55)
+  win_circle(CX, CY, 10, 255, 245, 210)
+  i is 0
+  while i < px.len() do
+    color is 120 + i % 5 * 25
+    win_circle(px[i], py[i], 3, color, 190, 255)
+    i += 1
+  end
+  win_text("PARTICLE GRAVITY  bodies {px.len()}", 18, 14, 220, 235, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("particle_gravity: frames={frame}")
+assert(frame > 0)
+

@@ -1,0 +1,135 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  assert_eq(info.mixed_matmul_compute_dtypes.join(","), "float16,bfloat16")
+  assert(info.mixed_matmul_backend.len() > 0)
+
+  input_values is [[[0.3333, -1.2345, 2.718], [3.1415, 0.0078125, -0.125]]]
+  weight_values is [[1.111, -0.3333], [0.5, 2.25], [-1.75, 0.0625]]
+  seed_values is [[[0.75, -1.25], [2, 0.5]]]
+
+  # A CPU oracle first quantizes operands to f16 and casts them back to f32.
+  # Exact-representable upstream values make the matching mixed backward
+  # quantization observable without introducing an oracle mismatch.
+  cpu_f16_input_source is autograd.parameter(input_values, {dtype: "float16"})
+  cpu_f16_weight_source is autograd.parameter(weight_values, {dtype: "float16"})
+  cpu_f16_input is autograd.cast(cpu_f16_input_source, "float32")
+  cpu_f16_weight is autograd.cast(cpu_f16_weight_source, "float32")
+  cpu_f16_output is autograd.matmul(cpu_f16_input, cpu_f16_weight)
+  autograd.backward(cpu_f16_output, seed_values)
+  cpu_f16_output_data is autograd.data(cpu_f16_output)
+  cpu_f16_input_grad is autograd.grad(cpu_f16_input_source)
+  cpu_f16_weight_grad is autograd.grad(cpu_f16_weight_source)
+
+  gpu_f16_input is autograd.parameter(input_values, {device: "cuda"})
+  gpu_f16_weight is autograd.parameter(weight_values, {device: "cuda"})
+  gpu_f16_seed is autograd.tensor(seed_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  gpu_f16_output is autograd.matmul(gpu_f16_input, gpu_f16_weight, {compute_dtype: "float16"})
+  assert_eq(autograd.dtype(gpu_f16_output), "float32")
+  assert_eq(autograd.storage_bytes(gpu_f16_output), 16)
+  autograd.backward(gpu_f16_output, gpu_f16_seed)
+  f16_stats is autograd.cuda_stats()
+  assert_eq(f16_stats.matmul_launches, 3)
+  assert_eq(f16_stats.float32_matmul_launches, 0)
+  assert_eq(f16_stats.float16_matmul_launches, 3)
+  assert_eq(f16_stats.bfloat16_matmul_launches, 0)
+  assert_eq(f16_stats.cublas_fast_matmul_launches + f16_stats.mixed_matmul_fallback_launches, 3)
+  assert_eq(f16_stats.cublas_matmul_launches + f16_stats.reference_matmul_launches, 3)
+  assert_eq(f16_stats.h2d_bytes, 0)
+  assert_eq(f16_stats.d2h_bytes, 0)
+  approx_rank3(autograd.data(gpu_f16_output), cpu_f16_output_data, 0.005)
+  approx_rank3(autograd.grad(gpu_f16_input), cpu_f16_input_grad, 0.005)
+  approx_rank2(autograd.grad(gpu_f16_weight), cpu_f16_weight_grad, 0.005)
+
+  # The same contract for bfloat16: f32 public storage and gradients, bf16
+  # operand math for forward and both matmul backward launches.
+  cpu_bf16_input_source is autograd.parameter(input_values, {dtype: "bfloat16"})
+  cpu_bf16_weight_source is autograd.parameter(weight_values, {dtype: "bfloat16"})
+  cpu_bf16_input is autograd.cast(cpu_bf16_input_source, "float32")
+  cpu_bf16_weight is autograd.cast(cpu_bf16_weight_source, "float32")
+  cpu_bf16_output is autograd.matmul(cpu_bf16_input, cpu_bf16_weight)
+  autograd.backward(cpu_bf16_output, seed_values)
+  cpu_bf16_output_data is autograd.data(cpu_bf16_output)
+  cpu_bf16_input_grad is autograd.grad(cpu_bf16_input_source)
+  cpu_bf16_weight_grad is autograd.grad(cpu_bf16_weight_source)
+
+  gpu_bf16_input is autograd.parameter(input_values, {device: "cuda"})
+  gpu_bf16_weight is autograd.parameter(weight_values, {device: "cuda"})
+  gpu_bf16_seed is autograd.tensor(seed_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  gpu_bf16_output is autograd.matmul(gpu_bf16_input, gpu_bf16_weight, {compute_dtype: "bfloat16"})
+  autograd.backward(gpu_bf16_output, gpu_bf16_seed)
+  bf16_stats is autograd.cuda_stats()
+  assert_eq(bf16_stats.matmul_launches, 3)
+  assert_eq(bf16_stats.float32_matmul_launches, 0)
+  assert_eq(bf16_stats.float16_matmul_launches, 0)
+  assert_eq(bf16_stats.bfloat16_matmul_launches, 3)
+  assert_eq(bf16_stats.cublas_fast_matmul_launches + bf16_stats.mixed_matmul_fallback_launches, 3)
+  assert_eq(bf16_stats.cublas_matmul_launches + bf16_stats.reference_matmul_launches, 3)
+  assert_eq(bf16_stats.h2d_bytes, 0)
+  assert_eq(bf16_stats.d2h_bytes, 0)
+  approx_rank3(autograd.data(gpu_bf16_output), cpu_bf16_output_data, 0.025)
+  approx_rank3(autograd.grad(gpu_bf16_input), cpu_bf16_input_grad, 0.025)
+  approx_rank2(autograd.grad(gpu_bf16_weight), cpu_bf16_weight_grad, 0.025)
+
+  # Default matmul remains the existing f32 contract.
+  frozen_left is autograd.tensor([[1, 2], [3, 4]], {device: "cuda"})
+  frozen_right is autograd.tensor([[1, 0], [0, 1]], {device: "cuda"})
+  autograd.cuda_reset_stats()
+  frozen_output is autograd.matmul(frozen_left, frozen_right)
+  autograd.cuda_synchronize()
+  frozen_stats is autograd.cuda_stats()
+  assert_eq(frozen_stats.matmul_launches, 1)
+  assert_eq(frozen_stats.float32_matmul_launches, 1)
+  assert_eq(frozen_stats.float16_matmul_launches, 0)
+  assert_eq(frozen_stats.bfloat16_matmul_launches, 0)
+
+  cpu_mixed_rejected is false
+  try
+    autograd.matmul(autograd.tensor([[1]], "float32"), autograd.tensor([[1]], "float32"), {compute_dtype: "float16"})
+  catch error
+    cpu_mixed_rejected is true
+  end
+  assert(cpu_mixed_rejected)
+
+  f64_compute_rejected is false
+  try
+    autograd.matmul(frozen_left, frozen_right, {compute_dtype: "float64"})
+  catch error
+    f64_compute_rejected is true
+  end
+  assert(f64_compute_rejected)
+else
+  print "47_cuda_mixed_matmul: SKIP ({info.error})"
+end
+
+print "47_cuda_mixed_matmul: PASS"

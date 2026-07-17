@@ -1,0 +1,51 @@
+func wasm_dynamic_add_one(value) do
+  return value + 1
+end
+
+class WasmDynamicPoint do
+  func init(x) do
+    self.x is x
+  end
+
+  func shifted(delta) do
+    return self.x + delta
+  end
+end
+
+class WasmDynamicField do
+  func init(value) do
+    self.value is value
+  end
+
+  func bump() do
+    return self.value + 1
+  end
+end
+
+assert_eq(wasm_dynamic_add_one(4), 5)
+assert_eq(wasm_dynamic_add_one("agent"), "agent1")
+dynamic_value_label is "Values {wasm_dynamic_add_one(4)} {wasm_dynamic_add_one("agent")}"
+assert_eq(dynamic_value_label, "Values 5 agent1")
+
+dynamic_point is new WasmDynamicPoint(6)
+assert_eq(dynamic_point.shifted(3), 9)
+assert_eq(dynamic_point.shifted("bad"), "6bad")
+
+dynamic_number_field is new WasmDynamicField(4)
+dynamic_string_field is new WasmDynamicField("bad")
+assert_eq(dynamic_number_field.bump(), 5)
+assert_eq(dynamic_string_field.bump(), "bad1")
+
+dynamic_catch_result is 0
+try
+  if false then
+    throw "boom"
+  else
+    throw 7
+  end
+catch err
+  dynamic_catch_result is err + 1
+end
+assert_eq(dynamic_catch_result, 8)
+
+print("dynamic-value-abi-ok")

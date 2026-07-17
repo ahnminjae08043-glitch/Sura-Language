@@ -1,0 +1,7 @@
+language: string is "Sura"
+version: number is 1.11
+ready: bool is true
+
+print("언어: {language}")
+print("버전: {version}")
+print("실행 준비: {ready}")

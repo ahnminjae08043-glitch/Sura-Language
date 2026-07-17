@@ -1,0 +1,8 @@
+languages is ["Sura", "Python", "Lua"]
+languages.push("Rust")
+print(languages.join(", "))
+
+project is {name: "Sura Language", version: "1.11.1", stable: true}
+
+print("{project.name} {project.version}")
+print("예제 수: {languages.len()}")

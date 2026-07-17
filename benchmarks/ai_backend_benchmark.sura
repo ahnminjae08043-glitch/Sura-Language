@@ -1,0 +1,104 @@
+use autograd
+use array
+
+# Same-process, same-input rank-2 float32 matmul benchmark. Timing excludes
+# process startup and includes each public API's normal synchronization/copies.
+size is 256
+warmup is 3
+runs is 12
+
+left is autograd.randn([size, size], {seed: 1107, dtype: "float32"})
+right is autograd.randn([size, size], {seed: 2209, dtype: "float32"})
+shared_inputs is env_get("SURA_BENCH_INPUTS", "")
+if shared_inputs != "" then
+  autograd.save_safetensors({left: left, right: right}, shared_inputs)
+end
+
+func median(values) do
+  ordered is array.sort(array.clone(values))
+  middle is floor(ordered.len() / 2)
+  if ordered.len() % 2 == 0 then
+    return (ordered[middle - 1] + ordered[middle]) / 2
+  end
+  return ordered[middle]
+end
+
+func p95(values) do
+  ordered is array.sort(array.clone(values))
+  index is ceil(ordered.len() * 0.95) - 1
+  return ordered[index]
+end
+
+i is 0
+while i < warmup do
+  autograd.matmul(left, right)
+  i is i + 1
+end
+
+cpu_samples_ms is []
+cpu_output is nil
+i is 0
+while i < runs do
+  started is clock()
+  cpu_output is autograd.matmul(left, right)
+  cpu_samples_ms.push((clock() - started) * 1000)
+  i is i + 1
+end
+
+cuda is autograd.cuda_info()
+cuda_samples_ms is []
+cuda_output is nil
+max_abs_error is nil
+cpu_data is autograd.data(cpu_output)
+cpu_checksum is 0
+row is 0
+while row < size do
+  col is 0
+  while col < size do
+    cpu_checksum is cpu_checksum + cpu_data[row][col]
+    col is col + 1
+  end
+  row is row + 1
+end
+cuda_checksum is nil
+if cuda.available then
+  i is 0
+  while i < warmup do
+    autograd.matmul(left, right, {backend: "cuda"})
+    i is i + 1
+  end
+  i is 0
+  while i < runs do
+    started is clock()
+    cuda_output is autograd.matmul(left, right, {backend: "cuda"})
+    cuda_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+  cuda_data is autograd.data(cuda_output)
+  max_abs_error is 0
+  cuda_checksum is 0
+  row is 0
+  while row < size do
+    col is 0
+    while col < size do
+      difference is abs(cpu_data[row][col] - cuda_data[row][col])
+      if difference > max_abs_error then max_abs_error is difference
+      cuda_checksum is cuda_checksum + cuda_data[row][col]
+      col is col + 1
+    end
+    row is row + 1
+  end
+end
+
+cpu_report is {status: "ok", median_ms: median(cpu_samples_ms), p95_ms: p95(cpu_samples_ms), raw_ms: cpu_samples_ms, checksum: cpu_checksum}
+cuda_report is {status: "unavailable", device: nil, compute_capability: nil, kernel_coverage: cuda.kernel_coverage, median_ms: nil, p95_ms: nil, raw_ms: cuda_samples_ms, max_abs_error: max_abs_error, checksum: cuda_checksum}
+if cuda.available then
+  cuda_report.status is "ok"
+  cuda_report.device is cuda.device_name
+  cuda_report.compute_capability is cuda.compute_capability
+  cuda_report.median_ms is median(cuda_samples_ms)
+  cuda_report.p95_ms is p95(cuda_samples_ms)
+end
+report is {schema: "sura.ai-benchmark.v1", workload: "rank2_matmul_f32_forward", matrix_size: size, warmup: warmup, runs: runs, cpu: cpu_report, cuda: cuda_report}
+
+print(json_stringify(report))

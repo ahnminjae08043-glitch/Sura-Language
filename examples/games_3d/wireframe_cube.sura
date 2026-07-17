@@ -1,0 +1,79 @@
+# Rotating 3D wireframe cube rendered through perspective projection.
+# Arrow keys rotate, Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 720
+H is 520
+FOV is 360
+if not win_init(W, H, "Sura Wireframe Cube 3D") then
+  print("win_init failed")
+  exit(1)
+end
+
+vertices is [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]]
+edges is [[0, 1], [1, 2], [2, 3], [3, 0], [4, 5], [5, 6], [6, 7], [7, 4], [0, 4], [1, 5], [2, 6], [3, 7]]
+angle_x is 0.35
+angle_y is 0.5
+frame is 0
+running is true
+
+func transform(point) do
+  x is point[0]
+  y is point[1]
+  z is point[2]
+  x1 is x * cos(angle_y) - z * sin(angle_y)
+  z1 is x * sin(angle_y) + z * cos(angle_y)
+  y2 is y * cos(angle_x) - z1 * sin(angle_x)
+  z2 is y * sin(angle_x) + z1 * cos(angle_x)
+  return {x: x1 * 105, y: y2 * 105, z: z2 * 105 + 420}
+end
+
+func project(point) do
+  return {x: W / 2 + point.x * FOV / point.z, y: H / 2 + point.y * FOV / point.z}
+end
+
+while running do
+  frame += 1
+  if key_down("left") then angle_y -= 0.04
+  if key_down("right") then angle_y += 0.04
+  if key_down("up") then angle_x -= 0.04
+  if key_down("down") then angle_x += 0.04
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then
+    angle_x += 0.025
+    angle_y += 0.04
+  end
+
+  projected is []
+  depths is []
+  for vertex in vertices do
+    transformed is transform(vertex)
+    projected.push(project(transformed))
+    depths.push(transformed.z)
+  end
+
+  win_clear(5, 8, 20)
+  i is 0
+  while i < edges.len() do
+    a is edges[i][0]
+    b is edges[i][1]
+    depth is (depths[a] + depths[b]) / 2
+    blue is 255 - floor((depth - 280) / 2)
+    if blue < 100 then blue is 100
+    win_line(projected[a].x, projected[a].y, projected[b].x, projected[b].y, 80, 210, blue)
+    i += 1
+  end
+  for point in projected do
+    win_circle(point.x, point.y, 4, 255, 190, 80)
+  end
+  win_text("WIREFRAME CUBE 3D", 18, 16, 220, 235, 255)
+  win_text("Arrow keys rotate  Q quit", 18, H - 28, 140, 170, 205)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("wireframe_cube: frames={frame}")
+assert(frame > 0)
+

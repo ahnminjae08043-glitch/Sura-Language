@@ -1,0 +1,14 @@
+func large_identity(value) do
+  return value
+end
+
+func large_add_one(value) do
+  return value + 1
+end
+
+assert_eq(large_identity(2147483648), 2147483648)
+assert_eq(large_identity(-2147483649), -2147483649)
+assert_eq(large_identity(9007199254740991), 9007199254740991)
+assert_eq(large_add_one(2147483648), 2147483649)
+
+print_no_nl("direct large literal call ok")

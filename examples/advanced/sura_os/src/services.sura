@@ -1,0 +1,365 @@
+# SuraOS userspace service manager.
+# Services wrap installed SVM32 programs with dependencies, restart policy,
+# health state, structured events and deterministic lifecycle transitions.
+
+func service_manager_create() do
+  return {services: {}, targets: {}, events: [], sequence: 0, starts: 0, stops: 0, restarts: 0, failures: 0, active_target: "default", max_events: 512}
+end
+
+func service_validate_name(name) do
+  clean is name.trim().lower()
+  if clean.len() == 0 then return false
+  allowed is "abcdefghijklmnopqrstuvwxyz0123456789-_@."
+  for char in clean.split("") do
+    if not allowed.contains(char) then return false
+  end
+  return true
+end
+
+func service_event(manager, tick, level, name, action, message, data) do
+  manager.sequence += 1
+  event is {sequence: manager.sequence, tick: tick, level: level, service: name, action: action, message: message, data: data}
+  events is manager.events
+  events.push(event)
+  while events.len() > manager.max_events do
+    events.remove(0)
+  end
+  return event
+end
+
+func service_define(manager, name, program, options) do
+  clean is name.trim().lower()
+  if not service_validate_name(clean) then return osutil_fail(SURAOS_ERR_INVALID, "invalid service name")
+  services is manager.services
+  if clean in services then return osutil_fail(SURAOS_ERR_EXISTS, "service already exists")
+  description is clean + " service"
+  user is "root"
+  priority is 5
+  restart is "no"
+  max_restarts is 3
+  restart_delay is 2
+  enabled is true
+  dependencies is []
+  wanted_by is ["default"]
+  environment is {}
+  working_directory is "/"
+  if options != nil then
+    if "description" in options then description is options.description
+    if "user" in options then user is options.user
+    if "priority" in options then priority is osutil_clamp(osutil_to_integer(options.priority, 5), 0, 10)
+    if "restart" in options then restart is options.restart
+    if "max_restarts" in options then max_restarts is osutil_max(0, osutil_to_integer(options.max_restarts, 3))
+    if "restart_delay" in options then restart_delay is osutil_max(0, osutil_to_integer(options.restart_delay, 2))
+    if "enabled" in options then enabled is options.enabled
+    if "dependencies" in options then dependencies is osutil_clone_array(options.dependencies)
+    if "wanted_by" in options then wanted_by is osutil_clone_array(options.wanted_by)
+    if "environment" in options then environment is osutil_clone_dict(options.environment)
+    if "working_directory" in options then working_directory is options.working_directory
+  end
+  valid_policies is ["no", "always", "on-failure"]
+  if not valid_policies.contains(restart) then return osutil_fail(SURAOS_ERR_INVALID, "invalid restart policy")
+  unit is {name: clean, description: description, program: program, user: user, priority: priority, restart: restart, max_restarts: max_restarts, restart_delay: restart_delay, enabled: enabled, dependencies: dependencies, wanted_by: wanted_by, environment: environment, working_directory: working_directory, state: "inactive", substate: "dead", pid: -1, starts: 0, stops: 0, restart_count: 0, consecutive_failures: 0, last_exit_code: nil, last_error: "", started_tick: -1, stopped_tick: -1, next_start_tick: -1, health: "unknown"}
+  services[clean] is unit
+  service_event(manager, 0, SURAOS_LOG_INFO, clean, "define", "service defined", {program: program})
+  return osutil_ok(unit)
+end
+
+func service_get(manager, name) do
+  services is manager.services
+  key is name.trim().lower()
+  if key in services then return services[key]
+  return nil
+end
+
+func service_remove(manager, name, tick) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found")
+  if unit.state == "active" or unit.state == "activating" then return osutil_fail(SURAOS_ERR_BUSY, "service is running")
+  services is manager.services
+  services.delete(unit.name)
+  service_event(manager, tick, SURAOS_LOG_INFO, unit.name, "remove", "service removed", {})
+  return osutil_ok(unit.name)
+end
+
+func service_enable(manager, name, enabled, tick) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found")
+  unit.enabled is enabled
+  action is "disable"
+  if enabled then action is "enable"
+  service_event(manager, tick, SURAOS_LOG_INFO, unit.name, action, "enabled=" + enabled, {})
+  return osutil_ok(enabled)
+end
+
+func service_dependencies_ready(manager, unit) do
+  missing is []
+  inactive is []
+  for dependency_name in unit.dependencies do
+    dependency is service_get(manager, dependency_name)
+    if dependency == nil then
+      missing.push(dependency_name)
+    elif dependency.state != "active" then
+      inactive.push(dependency_name)
+    end
+  end
+  return {ok: missing.len() == 0 and inactive.len() == 0, missing: missing, inactive: inactive}
+end
+
+func service_start_dependencies(manager, kernel, unit, stack) do
+  if stack.contains(unit.name) then return osutil_fail(SURAOS_ERR_INVALID, "circular service dependency: " + stack.join(" -> "))
+  next_stack is osutil_clone_array(stack)
+  next_stack.push(unit.name)
+  for dependency_name in unit.dependencies do
+    dependency is service_get(manager, dependency_name)
+    if dependency == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "dependency not found: " + dependency_name)
+    if dependency.state != "active" then
+      nested is service_start_dependencies(manager, kernel, dependency, next_stack)
+      if not nested.ok then return nested
+      started is service_start(manager, kernel, dependency.name, false)
+      if not started.ok then return started
+    end
+  end
+  return osutil_ok(true)
+end
+
+func service_start(manager, kernel, name, include_dependencies) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found: " + name)
+  if unit.state == "active" or unit.state == "activating" then return osutil_ok(unit)
+  if not unit.enabled then return osutil_fail(SURAOS_ERR_PERMISSION, "service is disabled")
+  if kernel_program(kernel, unit.program) == nil then
+    unit.state is "failed"
+    unit.last_error is "program not installed: " + unit.program
+    manager.failures += 1
+    service_event(manager, kernel.clock.tick, SURAOS_LOG_ERROR, unit.name, "start", unit.last_error, {})
+    return osutil_fail(SURAOS_ERR_NOT_FOUND, unit.last_error)
+  end
+
+  if include_dependencies then
+    dependencies is service_start_dependencies(manager, kernel, unit, [])
+    if not dependencies.ok then return dependencies
+  end
+  if not include_dependencies then
+    readiness is service_dependencies_ready(manager, unit)
+    if not readiness.ok then return osutil_fail(SURAOS_ERR_BUSY, "dependencies are not active: " + readiness.inactive.join(", "))
+  end
+
+  unit.state is "activating"
+  unit.substate is "spawning"
+  spawn is kernel_spawn_registered(kernel, unit.program, unit.user, 0, unit.priority)
+  if not spawn.ok then
+    unit.state is "failed"
+    unit.substate is "spawn-error"
+    unit.last_error is spawn.message
+    unit.consecutive_failures += 1
+    manager.failures += 1
+    service_event(manager, kernel.clock.tick, SURAOS_LOG_ERROR, unit.name, "start", spawn.message, {})
+    return spawn
+  end
+  process is spawn.value
+  process.cwd is unit.working_directory
+  unit.pid is process.pid
+  unit.state is "active"
+  unit.substate is "running"
+  unit.health is "starting"
+  unit.started_tick is kernel.clock.tick
+  unit.stopped_tick is -1
+  unit.next_start_tick is -1
+  unit.starts += 1
+  manager.starts += 1
+  service_event(manager, kernel.clock.tick, SURAOS_LOG_INFO, unit.name, "start", "started pid " + unit.pid, {pid: unit.pid})
+  return osutil_ok(unit)
+end
+
+func service_stop(manager, kernel, name, force) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found")
+  if unit.state == "inactive" then return osutil_ok(unit)
+  process is proc_get(kernel, unit.pid)
+  if process != nil and suraos_process_is_alive(process.state) then
+    signal is SURAOS_SIGNAL_TERM
+    if force then signal is SURAOS_SIGNAL_KILL
+    proc_signal(kernel, process, signal, 0)
+    proc_deliver_signals(kernel, process)
+  end
+  unit.state is "inactive"
+  unit.substate is "dead"
+  unit.health is "stopped"
+  unit.stopped_tick is kernel.clock.tick
+  unit.pid is -1
+  unit.stops += 1
+  manager.stops += 1
+  service_event(manager, kernel.clock.tick, SURAOS_LOG_INFO, unit.name, "stop", "service stopped", {force: force})
+  return osutil_ok(unit)
+end
+
+func service_restart(manager, kernel, name) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found")
+  stopped is service_stop(manager, kernel, name, false)
+  if not stopped.ok then return stopped
+  unit.restart_count += 1
+  manager.restarts += 1
+  service_event(manager, kernel.clock.tick, SURAOS_LOG_INFO, unit.name, "restart", "manual restart", {})
+  return service_start(manager, kernel, name, true)
+end
+
+func service_should_restart(unit, exit_code) do
+  if unit.restart_count >= unit.max_restarts then return false
+  if unit.restart == "always" then return true
+  if unit.restart == "on-failure" and exit_code != 0 then return true
+  return false
+end
+
+func service_observe_unit(manager, kernel, unit) do
+  if unit.state != "active" then return
+  process is proc_get(kernel, unit.pid)
+  if process == nil then
+    unit.state is "failed"
+    unit.substate is "missing"
+    unit.health is "failed"
+    unit.last_error is "process disappeared"
+    manager.failures += 1
+    service_event(manager, kernel.clock.tick, SURAOS_LOG_ERROR, unit.name, "observe", unit.last_error, {})
+    return
+  end
+  if process.state == SURAOS_PROCESS_TERMINATED then
+    exit_code is process.exit_code
+    unit.last_exit_code is exit_code
+    unit.stopped_tick is kernel.clock.tick
+    unit.pid is -1
+    if exit_code == 0 then
+      unit.consecutive_failures is 0
+      unit.health is "exited"
+    else
+      unit.consecutive_failures += 1
+      unit.health is "failed"
+      manager.failures += 1
+    end
+    if service_should_restart(unit, exit_code) then
+      unit.state is "waiting"
+      unit.substate is "restart-delay"
+      unit.next_start_tick is kernel.clock.tick + unit.restart_delay
+      service_event(manager, kernel.clock.tick, SURAOS_LOG_WARN, unit.name, "schedule-restart", "exit=" + exit_code, {next_tick: unit.next_start_tick})
+    else
+      unit.state is "inactive"
+      unit.substate is "dead"
+      service_event(manager, kernel.clock.tick, SURAOS_LOG_INFO, unit.name, "exit", "exit=" + exit_code, {})
+    end
+  else
+    unit.health is "healthy"
+  end
+end
+
+func service_tick(manager, kernel) do
+  for unit in manager.services.values() do
+    service_observe_unit(manager, kernel, unit)
+    if unit.state == "waiting" and kernel.clock.tick >= unit.next_start_tick then
+      unit.restart_count += 1
+      manager.restarts += 1
+      result is service_start(manager, kernel, unit.name, true)
+      if not result.ok then
+        unit.state is "failed"
+        unit.last_error is result.message
+      end
+    end
+  end
+  return service_manager_stats(manager)
+end
+
+func service_target_define(manager, name, service_names) do
+  targets is manager.targets
+  targets[name] is osutil_clone_array(service_names)
+  return osutil_ok(name)
+end
+
+func service_target_start(manager, kernel, name) do
+  targets is manager.targets
+  if not (name in targets) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "target not found")
+  results is []
+  failed is 0
+  for service_name in targets[name] do
+    result is service_start(manager, kernel, service_name, true)
+    results.push({name: service_name, ok: result.ok, message: result.message})
+    if not result.ok then failed += 1
+  end
+  manager.active_target is name
+  return {ok: failed == 0, target: name, failed: failed, results: results}
+end
+
+func service_target_stop(manager, kernel, name) do
+  targets is manager.targets
+  if not (name in targets) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "target not found")
+  names is osutil_clone_array(targets[name])
+  names.reverse()
+  for service_name in names do
+    service_stop(manager, kernel, service_name, false)
+  end
+  return osutil_ok(name)
+end
+
+func service_install_defaults(manager) do
+  service_define(manager, "welcome", "hello", {description: "One-shot login greeting", user: "user", restart: "no", wanted_by: ["default"]})
+  service_define(manager, "counter-worker", "counter", {description: "Deterministic counter workload", user: "user", restart: "no", wanted_by: ["multi-user"]})
+  service_define(manager, "cooperative-worker", "cooperative", {description: "Scheduler cooperation sample", user: "user", restart: "on-failure", max_restarts: 2, wanted_by: ["default", "multi-user"]})
+  service_target_define(manager, "default", ["welcome", "cooperative-worker"])
+  service_target_define(manager, "multi-user", ["welcome", "counter-worker", "cooperative-worker"])
+  service_target_define(manager, "rescue", ["welcome"])
+  return manager
+end
+
+func service_list(manager) do
+  names is osutil_sort_strings(manager.services.keys())
+  rows is []
+  for name in names do
+    unit is service_get(manager, name)
+    rows.push({name: unit.name, description: unit.description, program: unit.program, state: unit.state, substate: unit.substate, pid: unit.pid, enabled: unit.enabled, user: unit.user, restart: unit.restart, restarts: unit.restart_count, health: unit.health})
+  end
+  return rows
+end
+
+func service_status(manager, name) do
+  unit is service_get(manager, name)
+  if unit == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "service not found")
+  readiness is service_dependencies_ready(manager, unit)
+  return osutil_ok({name: unit.name, description: unit.description, program: unit.program, user: unit.user, priority: unit.priority, enabled: unit.enabled, state: unit.state, substate: unit.substate, pid: unit.pid, health: unit.health, started_tick: unit.started_tick, stopped_tick: unit.stopped_tick, starts: unit.starts, stops: unit.stops, restart_policy: unit.restart, restart_count: unit.restart_count, max_restarts: unit.max_restarts, last_exit_code: unit.last_exit_code, last_error: unit.last_error, dependencies: unit.dependencies, dependencies_ready: readiness.ok})
+end
+
+func service_events(manager, name, limit) do
+  result is []
+  for event in manager.events do
+    if name == "" or event.service == name then result.push(event)
+  end
+  start is result.len() - limit
+  if start < 0 then start is 0
+  return result.slice(start, result.len())
+end
+
+func service_manager_stats(manager) do
+  active is 0
+  inactive is 0
+  failed is 0
+  waiting is 0
+  enabled is 0
+  for unit in manager.services.values() do
+    if unit.state == "active" then
+      active += 1
+    elif unit.state == "failed" then
+      failed += 1
+    elif unit.state == "waiting" then
+      waiting += 1
+    else
+      inactive += 1
+    end
+    if unit.enabled then enabled += 1
+  end
+  return {units: manager.services.keys().len(), enabled: enabled, active: active, inactive: inactive, failed: failed, waiting: waiting, starts: manager.starts, stops: manager.stops, restarts: manager.restarts, failures: manager.failures, events: manager.events.len(), active_target: manager.active_target}
+end
+
+func service_table(manager) do
+  lines is ["UNIT                 STATE       PID  ENABLED  DESCRIPTION"]
+  for row in service_list(manager) do
+    lines.push(osutil_pad_right(row.name, 20, " ") + " " + osutil_pad_right(row.state, 11, " ") + " " + osutil_pad_left(row.pid, 4, " ") + " " + osutil_pad_right(row.enabled, 8, " ") + " " + row.description)
+  end
+  return lines.join("\n")
+end

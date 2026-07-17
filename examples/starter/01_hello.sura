@@ -1,0 +1,3 @@
+name is "Sura"
+print("안녕하세요, {name}!")
+print("첫 번째 Sura 프로그램이 실행되었습니다.")

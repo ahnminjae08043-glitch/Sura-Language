@@ -1,0 +1,133 @@
+use tokenizer
+use dataset
+use autograd
+
+tokenizer_path is path_join(temp_dir(), "sura-tokenizer-" + uuid_v4() + ".suratok")
+tokenizer_corrupt_path is tokenizer_path + ".corrupt"
+dataset_path is path_join(temp_dir(), "sura-dataset-" + uuid_v4() + ".suradata")
+dataset_corrupt_path is dataset_path + ".corrupt"
+source_path is path_join(temp_dir(), "수라-token-source-" + uuid_v4() + ".txt")
+file_dataset_path is dataset_path + ".file"
+
+# UTF-8 is encoded as deterministic raw bytes. Optional special IDs live
+# above the complete 0..255 byte vocabulary.
+tok is tokenizer.byte({bos_id: 256, eos_id: 257, pad_id: 258})
+tok_info is tokenizer.info(tok)
+assert_eq(tok_info.type, "byte")
+assert_eq(tok_info.vocab_size, 259)
+assert_eq(tok_info.bos_id, 256)
+assert_eq(tok_info.eos_id, 257)
+assert_eq(tok_info.pad_id, 258)
+
+utf8_text is "수라🙂"
+encoded is tokenizer.encode(tok, utf8_text, {add_bos: true, add_eos: true})
+assert_eq(encoded[0], 256)
+assert_eq(encoded[encoded.len() - 1], 257)
+assert_eq(tokenizer.decode(tok, encoded), utf8_text)
+assert_eq(tokenizer.decode(tok, encoded, {skip_special: false}), "<bos>" + utf8_text + "<eos>")
+
+# Versioned save/load preserves byte and special-token behavior.
+assert_eq(tokenizer.save(tok, tokenizer_path), 40)
+loaded_tok is tokenizer.load(tokenizer_path)
+assert_eq(tokenizer.decode(loaded_tok, tokenizer.encode(loaded_tok, utf8_text)), utf8_text)
+assert_eq(tokenizer.info(loaded_tok).vocab_size, 259)
+
+tokenizer_bytes is file_read_bytes(tokenizer_path)
+tokenizer_bytes[tokenizer_bytes.len() - 1] is (tokenizer_bytes[tokenizer_bytes.len() - 1] + 1) % 256
+file_write_bytes(tokenizer_corrupt_path, tokenizer_bytes)
+tokenizer_corruption_rejected is false
+try
+  tokenizer.load(tokenizer_corrupt_path)
+catch error
+  tokenizer_corruption_rejected is true
+end
+assert(tokenizer_corruption_rejected)
+
+# Literal text is packed without reading the whole dataset back into Sura.
+# With T=2 and stride=2, the first two samples are ab->bc and cd->de.
+byte_tok is tokenizer.byte()
+packed is dataset.pack_text("abcdefghijklmnopq", byte_tok, dataset_path, {input: "text", chunk_bytes: 2})
+assert_eq(packed.token_count, 17)
+assert_eq(packed.vocab_size, 256)
+
+loader is dataset.open(dataset_path, {batch_size: 2, sequence_length: 2, stride: 2, shuffle: false})
+loader_info is dataset.info(loader)
+assert_eq(loader_info.sample_count, 8)
+assert_eq(loader_info.id_dtype, "float32")
+assert_eq(loader_info.io, "seek")
+
+batch is dataset.next(loader)
+assert_eq(autograd.dtype(batch.input_ids), "float32")
+assert_eq(autograd.dtype(batch.target_ids), "float32")
+assert_eq(json_stringify(autograd.data(batch.input_ids)), "[[97,98],[99,100]]")
+assert_eq(json_stringify(autograd.data(batch.target_ids)), "[[98,99],[100,101]]")
+assert_eq(batch.sample_ids.join(","), "0,1")
+assert_eq(dataset.info(loader).position, 2)
+
+# Dataset tensors plug directly into embedding and sparse cross entropy.
+embedding_weight is autograd.randn([256, 4], {seed: 23, std: 0.05, requires_grad: true, dtype: "float32"})
+head_weight is autograd.randn([4, 256], {seed: 24, std: 0.05, requires_grad: true, dtype: "float32"})
+embedded is autograd.embedding(batch.input_ids, embedding_weight)
+logits is autograd.matmul(embedded, head_weight)
+loss is autograd.cross_entropy_ids(logits, batch.target_ids)
+assert(autograd.item(loss) > 0)
+autograd.backward(loss)
+assert_eq(type(autograd.grad(embedding_weight)), "array")
+assert_eq(type(autograd.grad(head_weight)), "array")
+
+# reset is deterministic, and rank assignment stays disjoint under shuffle.
+dataset.reset(loader, 0)
+repeat_batch is dataset.next(loader)
+assert_eq(repeat_batch.sample_ids.join(","), "0,1")
+
+rank0 is dataset.open(dataset_path, {batch_size: 4, sequence_length: 2, stride: 2, shuffle: true, seed: 99, epoch: 3, rank: 0, world_size: 2})
+rank1 is dataset.open(dataset_path, {batch_size: 4, sequence_length: 2, stride: 2, shuffle: true, seed: 99, epoch: 3, rank: 1, world_size: 2})
+rank0_batch is dataset.next(rank0)
+rank1_batch is dataset.next(rank1)
+assert_eq(rank0_batch.sample_ids.len(), 4)
+assert_eq(rank1_batch.sample_ids.len(), 4)
+for sample_id in rank0_batch.sample_ids do
+  assert(not rank1_batch.sample_ids.contains(sample_id))
+end
+
+# File mode streams even one-byte chunks and preserves Korean/emoji bytes.
+file_write(source_path, utf8_text)
+file_packed is dataset.pack_text([source_path], tok, file_dataset_path, {input: "files", chunk_bytes: 1})
+assert_eq(file_packed.token_count, tokenizer.encode(tok, utf8_text).len())
+file_loader is dataset.open(file_dataset_path, {batch_size: 1, sequence_length: 2})
+assert_eq(dataset.info(file_loader).token_count, tokenizer.encode(tok, utf8_text).len())
+
+# A closed logical handle fails closed, and a footer mutation is rejected by
+# the streaming validation pass performed by dataset.open.
+assert(dataset.close(loader))
+assert_eq(dataset.close(loader), false)
+closed_rejected is false
+try
+  dataset.next(loader)
+catch error
+  closed_rejected is true
+end
+assert(closed_rejected)
+
+dataset_bytes is file_read_bytes(dataset_path)
+dataset_bytes[dataset_bytes.len() - 1] is (dataset_bytes[dataset_bytes.len() - 1] + 1) % 256
+file_write_bytes(dataset_corrupt_path, dataset_bytes)
+dataset_corruption_rejected is false
+try
+  dataset.open(dataset_corrupt_path, {sequence_length: 2})
+catch error
+  dataset_corruption_rejected is true
+end
+assert(dataset_corruption_rejected)
+
+dataset.close(rank0)
+dataset.close(rank1)
+dataset.close(file_loader)
+file_delete(tokenizer_path)
+file_delete(tokenizer_corrupt_path)
+file_delete(dataset_path)
+file_delete(dataset_corrupt_path)
+file_delete(source_path)
+file_delete(file_dataset_path)
+
+print "23_tokenizer_dataset: PASS"

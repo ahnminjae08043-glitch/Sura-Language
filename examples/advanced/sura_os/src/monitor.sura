@@ -1,0 +1,272 @@
+# SuraOS system monitor, time-series sampler and alert engine.
+
+func monitor_create(history_limit) do
+  return {history: [], history_limit: osutil_max(10, history_limit), rules: {}, alerts: [], next_alert: 1, samples: 0, alerts_fired: 0, alerts_resolved: 0, last_tick: -1, enabled: true}
+end
+
+func monitor_rule_define(monitor, name, metric, operator, threshold, severity, description) do
+  valid_operators is [">", ">=", "<", "<=", "==", "!="]
+  valid_severities is [SURAOS_LOG_INFO, SURAOS_LOG_WARN, SURAOS_LOG_ERROR]
+  if name.trim().len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "rule name is empty")
+  if not valid_operators.contains(operator) then return osutil_fail(SURAOS_ERR_INVALID, "invalid alert operator")
+  if not valid_severities.contains(severity) then return osutil_fail(SURAOS_ERR_INVALID, "invalid alert severity")
+  rules is monitor.rules
+  if name in rules then return osutil_fail(SURAOS_ERR_EXISTS, "rule already exists")
+  rule is {name: name, metric: metric, operator: operator, threshold: threshold, severity: severity, description: description, enabled: true, active: false, evaluations: 0, fires: 0, last_value: nil, last_change_tick: -1}
+  rules[name] is rule
+  return osutil_ok(rule)
+end
+
+func monitor_rule_remove(monitor, name) do
+  rules is monitor.rules
+  if not (name in rules) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "rule not found")
+  rules.delete(name)
+  return osutil_ok(name)
+end
+
+func monitor_rule_enable(monitor, name, enabled) do
+  rules is monitor.rules
+  if not (name in rules) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "rule not found")
+  rule is rules[name]
+  rule.enabled is enabled
+  if not enabled then rule.active is false
+  return osutil_ok(enabled)
+end
+
+func monitor_compare(value, operator, threshold) do
+  if operator == ">" then return value > threshold
+  if operator == ">=" then return value >= threshold
+  if operator == "<" then return value < threshold
+  if operator == "<=" then return value <= threshold
+  if operator == "==" then return value == threshold
+  if operator == "!=" then return value != threshold
+  return false
+end
+
+func monitor_metric(sample, path) do
+  if path == "cpu.load" then return sample.cpu_load
+  if path == "cpu.ticks" then return sample.cpu_ticks
+  if path == "memory.used" then return sample.memory_used
+  if path == "memory.percent" then return sample.memory_percent
+  if path == "memory.faults" then return sample.memory_faults
+  if path == "disk.used" then return sample.disk_used
+  if path == "disk.percent" then return sample.disk_percent
+  if path == "disk.errors" then return sample.disk_errors
+  if path == "process.total" then return sample.process_total
+  if path == "process.live" then return sample.process_live
+  if path == "process.failed" then return sample.process_failed
+  if path == "kernel.syscalls" then return sample.syscalls
+  if path == "kernel.log_errors" then return sample.log_errors
+  if path == "network.sent" then return sample.network_sent
+  if path == "network.received" then return sample.network_received
+  if path == "network.dropped" then return sample.network_dropped
+  if path == "services.failed" then return sample.services_failed
+  if path == "packages.installed" then return sample.packages_installed
+  return nil
+end
+
+func monitor_process_counts(kernel) do
+  live is 0
+  failed is 0
+  sleeping is 0
+  stopped is 0
+  for process in kernel.processes.values() do
+    if suraos_process_is_alive(process.state) then live += 1
+    if process.state == SURAOS_PROCESS_WAITING then sleeping += 1
+    if process.state == SURAOS_PROCESS_STOPPED then stopped += 1
+    if process.state == SURAOS_PROCESS_TERMINATED and process.exit_code != 0 then failed += 1
+  end
+  return {total: kernel.process_count, live: live, failed: failed, sleeping: sleeping, stopped: stopped}
+end
+
+func monitor_capture(kernel) do
+  memory is mem_stats(kernel.memory)
+  disk is fs_usage(kernel.fs)
+  scheduler is scheduler_stats(kernel)
+  process_counts is monitor_process_counts(kernel)
+  network_sent is kernel.devices.net0.sent
+  network_received is kernel.devices.net0.received
+  network_dropped is kernel.devices.net0.dropped
+  services_failed is 0
+  packages_installed is 0
+  if "services" in kernel then services_failed is service_manager_stats(kernel.services).failed
+  if "packages" in kernel then packages_installed is pkg_manager_stats(kernel.packages).installed
+  return {tick: kernel.clock.tick, cpu_load: scheduler.load_percent, cpu_ticks: scheduler.total_ticks, context_switches: scheduler.context_switches, idle_ticks: scheduler.idle_ticks, memory_used: memory.reserved, memory_percent: memory.utilization, memory_faults: memory.faults, disk_used: disk.used, disk_percent: disk.utilization, disk_errors: disk.errors, process_total: process_counts.total, process_live: process_counts.live, process_failed: process_counts.failed, process_sleeping: process_counts.sleeping, process_stopped: process_counts.stopped, syscalls: kernel.syscalls, interrupts: kernel.interrupts, log_errors: kernel.log.errors, network_sent: network_sent, network_received: network_received, network_dropped: network_dropped, services_failed: services_failed, packages_installed: packages_installed}
+end
+
+func monitor_alert_open(monitor, rule, value, tick) do
+  id is monitor.next_alert
+  monitor.next_alert += 1
+  alert is {id: id, rule: rule.name, metric: rule.metric, severity: rule.severity, threshold: rule.threshold, value: value, opened_tick: tick, resolved_tick: -1, active: true, message: rule.description}
+  alerts is monitor.alerts
+  alerts.push(alert)
+  monitor.alerts_fired += 1
+  rule.active is true
+  rule.fires += 1
+  rule.last_change_tick is tick
+  return alert
+end
+
+func monitor_alert_resolve(monitor, rule, tick) do
+  index is monitor.alerts.len() - 1
+  while index >= 0 do
+    alert is monitor.alerts[index]
+    if alert.rule == rule.name and alert.active then
+      alert.active is false
+      alert.resolved_tick is tick
+      monitor.alerts_resolved += 1
+      rule.active is false
+      rule.last_change_tick is tick
+      return alert
+    end
+    index -= 1
+  end
+  rule.active is false
+  return nil
+end
+
+func monitor_evaluate_rule(monitor, rule, sample) do
+  if not rule.enabled then return nil
+  value is monitor_metric(sample, rule.metric)
+  rule.evaluations += 1
+  rule.last_value is value
+  if value == nil then return nil
+  triggered is monitor_compare(value, rule.operator, rule.threshold)
+  if triggered and not rule.active then return monitor_alert_open(monitor, rule, value, sample.tick)
+  if not triggered and rule.active then return monitor_alert_resolve(monitor, rule, sample.tick)
+  return nil
+end
+
+func monitor_sample(monitor, kernel) do
+  if not monitor.enabled then return osutil_fail(SURAOS_ERR_PERMISSION, "monitor is disabled")
+  sample is monitor_capture(kernel)
+  history is monitor.history
+  history.push(sample)
+  while history.len() > monitor.history_limit do
+    history.remove(0)
+  end
+  monitor.samples += 1
+  monitor.last_tick is sample.tick
+  changes is []
+  for name in osutil_sort_strings(monitor.rules.keys()) do
+    changed is monitor_evaluate_rule(monitor, monitor.rules[name], sample)
+    if changed != nil then changes.push(changed)
+  end
+  return osutil_ok({sample: sample, alert_changes: changes})
+end
+
+func monitor_install_default_rules(monitor) do
+  monitor_rule_define(monitor, "memory-pressure", "memory.percent", ">=", 85, SURAOS_LOG_WARN, "virtual memory reservation exceeds 85 percent")
+  monitor_rule_define(monitor, "disk-pressure", "disk.percent", ">=", 90, SURAOS_LOG_WARN, "virtual disk utilization exceeds 90 percent")
+  monitor_rule_define(monitor, "memory-faults", "memory.faults", ">", 0, SURAOS_LOG_ERROR, "memory protection fault recorded")
+  monitor_rule_define(monitor, "disk-errors", "disk.errors", ">", 0, SURAOS_LOG_ERROR, "virtual filesystem error recorded")
+  monitor_rule_define(monitor, "failed-process", "process.failed", ">", 0, SURAOS_LOG_WARN, "one or more processes exited with failure")
+  monitor_rule_define(monitor, "failed-service", "services.failed", ">", 0, SURAOS_LOG_ERROR, "service manager reports a failed service")
+  monitor_rule_define(monitor, "network-drops", "network.dropped", ">", 10, SURAOS_LOG_WARN, "more than ten virtual packets were dropped")
+  monitor_rule_define(monitor, "kernel-log-errors", "kernel.log_errors", ">", 0, SURAOS_LOG_ERROR, "kernel diagnostic log contains errors")
+  return monitor
+end
+
+func monitor_latest(monitor) do
+  if monitor.history.len() == 0 then return nil
+  return monitor.history[monitor.history.len() - 1]
+end
+
+func monitor_history_range(monitor, start_tick, finish_tick) do
+  result is []
+  for sample in monitor.history do
+    if sample.tick >= start_tick and sample.tick <= finish_tick then result.push(sample)
+  end
+  return result
+end
+
+func monitor_average(monitor, metric, count) do
+  if count < 1 then return nil
+  start is monitor.history.len() - count
+  if start < 0 then start is 0
+  total is 0
+  values is 0
+  index is start
+  while index < monitor.history.len() do
+    value is monitor_metric(monitor.history[index], metric)
+    if value != nil then
+      total += value
+      values += 1
+    end
+    index += 1
+  end
+  if values == 0 then return nil
+  return total / values
+end
+
+func monitor_active_alerts(monitor) do
+  result is []
+  for alert in monitor.alerts do
+    if alert.active then result.push(alert)
+  end
+  return result
+end
+
+func monitor_alert_acknowledge(monitor, id, username, tick) do
+  for alert in monitor.alerts do
+    if alert.id == id then
+      alert.acknowledged_by is username
+      alert.acknowledged_tick is tick
+      return osutil_ok(alert)
+    end
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "alert not found")
+end
+
+func monitor_rule_list(monitor) do
+  rows is []
+  for name in osutil_sort_strings(monitor.rules.keys()) do
+    rule is monitor.rules[name]
+    rows.push({name: name, metric: rule.metric, condition: rule.operator + " " + rule.threshold, severity: rule.severity, enabled: rule.enabled, active: rule.active, evaluations: rule.evaluations, fires: rule.fires, last_value: rule.last_value})
+  end
+  return rows
+end
+
+func monitor_stats(monitor) do
+  return {enabled: monitor.enabled, samples: monitor.samples, retained_samples: monitor.history.len(), history_limit: monitor.history_limit, rules: monitor.rules.keys().len(), active_alerts: monitor_active_alerts(monitor).len(), total_alerts: monitor.alerts.len(), alerts_fired: monitor.alerts_fired, alerts_resolved: monitor.alerts_resolved, last_tick: monitor.last_tick}
+end
+
+func monitor_bar(value, maximum, width) do
+  ratio is 0
+  if maximum > 0 then ratio is value / maximum
+  if ratio < 0 then ratio is 0
+  if ratio > 1 then ratio is 1
+  filled is floor(ratio * width)
+  text is "["
+  index is 0
+  while index < width do
+    if index < filled then text += "#" else text += "."
+    index += 1
+  end
+  return text + "]"
+end
+
+func monitor_dashboard(monitor, kernel) do
+  sample is monitor_latest(monitor)
+  if sample == nil then
+    result is monitor_sample(monitor, kernel)
+    if not result.ok then return "monitor unavailable"
+    sample is result.value.sample
+  end
+  memory_stats is mem_stats(kernel.memory)
+  disk_stats is fs_usage(kernel.fs)
+  lines is []
+  lines.push("SuraOS system monitor @ tick " + sample.tick)
+  lines.push("CPU  " + monitor_bar(sample.cpu_load, 100, 30) + " " + sample.cpu_load + "%  ticks=" + sample.cpu_ticks)
+  lines.push("MEM  " + monitor_bar(sample.memory_used, memory_stats.size, 30) + " " + sample.memory_used + "/" + memory_stats.size)
+  lines.push("DISK " + monitor_bar(sample.disk_used, disk_stats.capacity, 30) + " " + sample.disk_used + "/" + disk_stats.capacity)
+  lines.push("PROC total=" + sample.process_total + " live=" + sample.process_live + " failed=" + sample.process_failed + " sleeping=" + sample.process_sleeping)
+  lines.push("NET  sent=" + sample.network_sent + " received=" + sample.network_received + " dropped=" + sample.network_dropped)
+  lines.push("KERN syscalls=" + sample.syscalls + " interrupts=" + sample.interrupts + " log_errors=" + sample.log_errors)
+  lines.push("ALERTS active=" + monitor_active_alerts(monitor).len() + " total=" + monitor.alerts.len())
+  return lines.join("\n")
+end
+
+func monitor_export(monitor) do
+  return {schema: "suraos.monitor.v1", stats: monitor_stats(monitor), rules: monitor_rule_list(monitor), alerts: osutil_clone_array(monitor.alerts), history: osutil_clone_array(monitor.history)}
+end

@@ -1,0 +1,12 @@
+.name clock-reader
+.entry start
+.data label Current virtual tick
+
+start:
+MOVI R0 @label
+SYSCALL PRINT
+SYSCALL GET_TIME
+SYSCALL PRINT_NUMBER
+MOVI R0 0
+SYSCALL EXIT
+

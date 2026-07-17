@@ -1,0 +1,82 @@
+use autograd
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  batch is 0
+  while batch < actual.len() do
+    row is 0
+    while row < actual[batch].len() do
+      col is 0
+      while col < actual[batch][row].len() do
+        assert_approx(actual[batch][row][col], expected[batch][row][col], epsilon)
+        col is col + 1
+      end
+      row is row + 1
+    end
+    batch is batch + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # Equal values near FLT_MAX must stay finite. An unnormalized online
+  # accumulator would overflow to infinity before the final division.
+  huge is 300000000000000000000000000000000000000
+  zero_q is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  zero_k is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  huge_v is autograd.tensor([[[huge], [huge]]], {device: "cuda"})
+  huge_output is autograd.data(autograd.causal_attention(zero_q, zero_k, huge_v))
+  assert_approx(huge_output[0][0][0] / huge, 1, 0.000001)
+  assert_approx(huge_output[0][1][0] / huge, 1, 0.000001)
+
+  # q*k is about 9e76, far beyond float32 but well within the f64 score
+  # reference path. Equal scores still form the exact causal average.
+  q_values is [[[huge], [huge]]]
+  k_values is [[[huge], [huge]]]
+  v_values is [[[2, 10], [4, 20]]]
+  cpu_q is autograd.tensor(q_values, {dtype: "float32"})
+  cpu_k is autograd.tensor(k_values, {dtype: "float32"})
+  cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {scale: 1})
+  cpu_data is autograd.data(cpu_output)
+  approx_rank3(cpu_data, [[[2, 10], [3, 15]]], 0.000001)
+  autograd.backward(autograd.sum(cpu_output))
+  cpu_v_grad is autograd.grad(cpu_v)
+
+  gpu_q is autograd.tensor(q_values, {device: "cuda"})
+  gpu_k is autograd.tensor(k_values, {device: "cuda"})
+  gpu_v is autograd.parameter(v_values, {device: "cuda"})
+  gpu_output is autograd.causal_attention(gpu_q, gpu_k, gpu_v, {scale: 1})
+  autograd.backward(autograd.sum(gpu_output))
+  approx_rank3(autograd.data(gpu_output), cpu_data, 0.0002)
+  approx_rank3(autograd.grad(gpu_v), cpu_v_grad, 0.0003)
+
+  # T=8 normally selects the fused f32 path. Explicit strict precision keeps
+  # the f64 score reference for finite f32 operands whose product exceeds the
+  # f32 range, and the sticky graph plan also keeps strict backward.
+  strict_q_values is [[[huge], [huge], [huge], [huge], [huge], [huge], [huge], [huge]]]
+  strict_k_values is [[[huge], [huge], [huge], [huge], [huge], [huge], [huge], [huge]]]
+  strict_v_values is [[[1], [2], [3], [4], [5], [6], [7], [8]]]
+  strict_cpu_q is autograd.tensor(strict_q_values, {dtype: "float32"})
+  strict_cpu_k is autograd.tensor(strict_k_values, {dtype: "float32"})
+  strict_cpu_v is autograd.parameter(strict_v_values, {dtype: "float32"})
+  strict_cpu_output is autograd.causal_attention(strict_cpu_q, strict_cpu_k, strict_cpu_v, {scale: 1, precision: "strict"})
+  autograd.backward(autograd.sum(strict_cpu_output))
+
+  strict_gpu_q is autograd.tensor(strict_q_values, {device: "cuda"})
+  strict_gpu_k is autograd.tensor(strict_k_values, {device: "cuda"})
+  strict_gpu_v is autograd.parameter(strict_v_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  strict_gpu_output is autograd.causal_attention(strict_gpu_q, strict_gpu_k, strict_gpu_v, {scale: 1, precision: "strict"})
+  autograd.backward(autograd.sum(strict_gpu_output))
+  strict_stats is autograd.cuda_stats()
+  assert_eq(strict_stats.fused_attention_launches, 0)
+  assert_eq(strict_stats.fast_attention_forward_launches, 0)
+  assert_eq(strict_stats.reference_attention_launches, 2)
+  approx_rank3(autograd.data(strict_gpu_output), autograd.data(strict_cpu_output), 0.0002)
+  approx_rank3(autograd.grad(strict_gpu_v), autograd.grad(strict_cpu_v), 0.0003)
+else
+  print "41_cuda_causal_attention_extreme: SKIP ({info.error})"
+end
+
+print "41_cuda_causal_attention_extreme: PASS"

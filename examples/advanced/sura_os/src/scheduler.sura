@@ -1,0 +1,201 @@
+# Preemptive round-robin scheduler with priorities, sleeping processes, and
+# starvation prevention.
+
+func scheduler_create(quantum) do
+  return {ready: [], current_pid: -1, quantum: osutil_max(1, floor(quantum)), switches: 0, idle_ticks: 0, dispatches: 0, wakeups: 0, preemptions: 0, last_pid: -1}
+end
+
+func scheduler_contains(kernel, pid) do
+  scheduler is kernel.scheduler
+  return osutil_contains(scheduler.ready, pid)
+end
+
+func scheduler_enqueue(kernel, pid) do
+  process is proc_get(kernel, pid)
+  if process == nil or process.state != SURAOS_PROCESS_READY then return false
+  scheduler is kernel.scheduler
+  ready is scheduler.ready
+  if not osutil_contains(ready, pid) then ready.push(pid)
+  return true
+end
+
+func scheduler_remove(kernel, pid) do
+  scheduler is kernel.scheduler
+  ready is scheduler.ready
+  removed is false
+  index is ready.len() - 1
+  while index >= 0 do
+    if ready[index] == pid then
+      ready.remove(index)
+      removed is true
+    end
+    index -= 1
+  end
+  if scheduler.current_pid == pid then
+    scheduler.current_pid is -1
+  end
+  return removed
+end
+
+func scheduler_wake_sleepers(kernel) do
+  woke is 0
+  for process in kernel.processes.values() do
+    if process.state == SURAOS_PROCESS_WAITING and process.wake_tick != nil and process.wake_tick <= kernel.clock.tick then
+      if proc_wake(kernel, process, "timer") then woke += 1
+    end
+  end
+  scheduler is kernel.scheduler
+  scheduler.wakeups += woke
+  return woke
+end
+
+func scheduler_effective_priority(kernel, process) do
+  age is kernel.clock.tick - process.created_tick - process.cpu_ticks
+  bonus is floor(age / 100)
+  if bonus > 3 then bonus is 3
+  return process.priority + bonus
+end
+
+func scheduler_select_index(kernel) do
+  scheduler is kernel.scheduler
+  ready is scheduler.ready
+  if ready.len() == 0 then return -1
+  best_index is 0
+  best_priority is -1
+  index is 0
+  while index < ready.len() do
+    process is proc_get(kernel, ready[index])
+    if process == nil or process.state != SURAOS_PROCESS_READY then
+      ready.remove(index)
+    else
+      effective is scheduler_effective_priority(kernel, process)
+      if effective > best_priority then
+        best_priority is effective
+        best_index is index
+      end
+      index += 1
+    end
+  end
+  if ready.len() == 0 then return -1
+  if best_index >= ready.len() then best_index is 0
+  return best_index
+end
+
+func scheduler_next(kernel) do
+  index is scheduler_select_index(kernel)
+  if index < 0 then return nil
+  scheduler is kernel.scheduler
+  ready is scheduler.ready
+  pid is ready.remove(index)
+  process is proc_get(kernel, pid)
+  if process == nil or process.state != SURAOS_PROCESS_READY then return scheduler_next(kernel)
+  return process
+end
+
+func scheduler_context_switch(kernel, process) do
+  scheduler is kernel.scheduler
+  scheduler.last_pid is scheduler.current_pid
+  scheduler.current_pid is process.pid
+  scheduler.switches += 1
+  scheduler.dispatches += 1
+  process.context_switches += 1
+  proc_set_state(kernel, process, SURAOS_PROCESS_RUNNING, "dispatched")
+  return process
+end
+
+func scheduler_finish_slice(kernel, process, result) do
+  scheduler is kernel.scheduler
+  scheduler.current_pid is -1
+  status is result.status
+  if status == "quantum" then
+    scheduler.preemptions += 1
+    if process.state == SURAOS_PROCESS_RUNNING then
+      proc_set_state(kernel, process, SURAOS_PROCESS_READY, "preempted")
+      scheduler_enqueue(kernel, process.pid)
+    end
+  elif status == "yield" then
+    if process.state == SURAOS_PROCESS_RUNNING then
+      proc_set_state(kernel, process, SURAOS_PROCESS_READY, "yielded")
+      scheduler_enqueue(kernel, process.pid)
+    end
+  elif status == "blocked" then
+    # System call already moved the process to WAITING.
+  elif status == "halt" or status == "halted" then
+    proc_exit(kernel, process, cpu_get(process.cpu, "R0"), "halted")
+  elif status == "trap" then
+    process.faults += 1
+    detail is result.detail
+    message is "CPU trap"
+    if detail != nil and detail.detail != nil and detail.detail.trap != nil then message is detail.detail.trap.message
+    proc_exit(kernel, process, 128, message)
+  end
+end
+
+func scheduler_tick(kernel) do
+  virtual_clock is kernel.clock
+  virtual_clock.tick += 1
+  scheduler_wake_sleepers(kernel)
+  device_tick_all(kernel.devices, virtual_clock.tick)
+end
+
+func scheduler_step(kernel) do
+  scheduler_tick(kernel)
+  process is scheduler_next(kernel)
+  if process == nil then
+    scheduler is kernel.scheduler
+    scheduler.idle_ticks += 1
+    return {status: "idle", executed: 0, pid: -1}
+  end
+  signal_status is proc_handle_signals(kernel, process)
+  if signal_status == "terminated" or signal_status == "stopped" then return {status: signal_status, executed: 0, pid: process.pid}
+  scheduler_context_switch(kernel, process)
+  scheduler is kernel.scheduler
+  result is cpu_run_quantum(kernel, process, scheduler.quantum)
+  scheduler_finish_slice(kernel, process, result)
+  return {status: result.status, executed: result.executed, pid: process.pid}
+end
+
+func scheduler_run(kernel, max_cycles) do
+  cycles is 0
+  instructions is 0
+  idle_streak is 0
+  while cycles < max_cycles and not kernel.shutdown_requested do
+    result is scheduler_step(kernel)
+    cycles += 1
+    instructions += result.executed
+    if result.status == "idle" then
+      idle_streak += 1
+    else
+      idle_streak is 0
+    end
+    if scheduler_live_count(kernel) == 0 then break
+    if idle_streak > 1000 then break
+  end
+  return {cycles: cycles, instructions: instructions, tick: kernel.clock.tick, live: scheduler_live_count(kernel), idle_ticks: kernel.scheduler.idle_ticks}
+end
+
+func scheduler_live_count(kernel) do
+  count is 0
+  for process in kernel.processes.values() do
+    if suraos_process_is_alive(process.state) then count += 1
+  end
+  return count
+end
+
+func scheduler_ready_count(kernel) do
+  scheduler is kernel.scheduler
+  return scheduler.ready.len()
+end
+
+func scheduler_load(kernel) do
+  total is kernel.clock.tick
+  if total <= 0 then return 0
+  scheduler is kernel.scheduler
+  busy is total - scheduler.idle_ticks
+  return osutil_percent(busy, total)
+end
+
+func scheduler_stats(kernel) do
+  scheduler is kernel.scheduler
+  return {tick: kernel.clock.tick, quantum: scheduler.quantum, ready: scheduler_ready_count(kernel), live: scheduler_live_count(kernel), current_pid: scheduler.current_pid, context_switches: scheduler.switches, dispatches: scheduler.dispatches, preemptions: scheduler.preemptions, wakeups: scheduler.wakeups, idle_ticks: scheduler.idle_ticks, load_percent: scheduler_load(kernel)}
+end

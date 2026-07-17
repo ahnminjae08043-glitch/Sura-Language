@@ -1,0 +1,12 @@
+.name sleeping-worker
+.entry start
+.data awake Worker resumed after virtual sleep
+
+start:
+MOVI R0 5
+SYSCALL SLEEP
+MOVI R0 @awake
+SYSCALL PRINT
+MOVI R0 0
+SYSCALL EXIT
+

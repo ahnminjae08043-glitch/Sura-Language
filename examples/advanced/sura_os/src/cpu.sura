@@ -1,0 +1,380 @@
+# SVM32 virtual CPU.
+#
+# The CPU operates on decoded instruction dictionaries produced by the SuraOS
+# assembler.  It models registers, flags, a call/data stack, protection mode,
+# traps, instruction accounting, and kernel system-call transitions.
+
+func cpu_create(stack_top) do
+  registers is {R0: 0, R1: 0, R2: 0, R3: 0, R4: 0, R5: 0, R6: 0, R7: 0, PC: 0, SP: stack_top, BP: stack_top}
+  flags is {zero: false, negative: false, carry: false, overflow: false, compare: 0}
+  stats is {instructions: 0, arithmetic: 0, branches: 0, loads: 0, stores: 0, syscalls: 0, traps: 0, stack_ops: 0}
+  return {registers: registers, flags: flags, stack: [], call_stack: [], mode: SURAOS_MODE_USER, halted: false, trap: nil, last_instruction: nil, stats: stats, trace_enabled: false, trace: [], trace_limit: 128}
+end
+
+func cpu_clone(cpu) do
+  copy is cpu_create(cpu.registers.SP)
+  copy.registers is osutil_clone_dict(cpu.registers)
+  copy.flags is osutil_clone_dict(cpu.flags)
+  copy.stack is osutil_clone_array(cpu.stack)
+  copy.call_stack is osutil_clone_array(cpu.call_stack)
+  copy.mode is cpu.mode
+  copy.halted is cpu.halted
+  copy.trap is cpu.trap
+  copy.last_instruction is cpu.last_instruction
+  copy.stats is osutil_clone_dict(cpu.stats)
+  copy.trace_enabled is cpu.trace_enabled
+  copy.trace is osutil_clone_array(cpu.trace)
+  copy.trace_limit is cpu.trace_limit
+  return copy
+end
+
+func cpu_get(cpu, register_name) do
+  name is register_name.upper()
+  registers is cpu.registers
+  if not (name in registers) then return 0
+  return registers[name]
+end
+
+func cpu_set(cpu, register_name, value) do
+  name is register_name.upper()
+  if not suraos_register_valid(name) then return osutil_fail(SURAOS_ERR_INVALID, "unknown register " + name)
+  registers is cpu.registers
+  registers[name] is value
+  return osutil_ok(value)
+end
+
+func cpu_pc(cpu) do
+  return floor(cpu_get(cpu, "PC"))
+end
+
+func cpu_set_pc(cpu, value) do
+  registers is cpu.registers
+  registers.PC is floor(value)
+end
+
+func cpu_advance(cpu) do
+  cpu_set_pc(cpu, cpu_pc(cpu) + 1)
+end
+
+func cpu_value(cpu, operand) do
+  if operand == nil then return 0
+  if type(operand) == "number" or type(operand) == "bool" then return operand
+  if type(operand) == "dict" then
+    if operand.kind == "string" then return operand.value
+    if operand.kind == "number" then return operand.value
+    if operand.kind == "address" then return operand.value
+    if operand.kind == "register" then return cpu_get(cpu, operand.value)
+  end
+  if type(operand) == "string" and suraos_register_valid(operand) then return cpu_get(cpu, operand)
+  return operand
+end
+
+func cpu_number(cpu, operand) do
+  value is cpu_value(cpu, operand)
+  if type(value) == "number" then return value
+  if type(value) == "bool" then
+    if value then return 1 else return 0
+  end
+  if type(value) == "string" and osutil_is_integer_text(value) then return osutil_to_integer(value, 0)
+  return 0
+end
+
+func cpu_set_flags(cpu, value) do
+  flags is cpu.flags
+  flags.zero is value == 0
+  flags.negative is value < 0
+  flags.compare is osutil_sign(value)
+end
+
+func cpu_compare(cpu, left, right) do
+  difference is cpu_number(cpu, left) - cpu_number(cpu, right)
+  cpu_set_flags(cpu, difference)
+  return difference
+end
+
+func cpu_trace_add(cpu, process, instruction) do
+  if not cpu.trace_enabled then return nil
+  trace is cpu.trace
+  trace.push({pid: process.pid, pc: cpu_pc(cpu), op: instruction.op, a: instruction.a, b: instruction.b, c: instruction.c, source_line: instruction.line})
+  while trace.len() > cpu.trace_limit do
+    trace.remove(0)
+  end
+  return trace[trace.len() - 1]
+end
+
+func cpu_trap(cpu, process, code, message, instruction) do
+  trap is {code: code, message: message, pc: cpu_pc(cpu), pid: process.pid, instruction: instruction, source_line: instruction.line}
+  cpu.trap is trap
+  cpu.halted is true
+  stats is cpu.stats
+  stats.traps += 1
+  return {status: "trap", trap: trap}
+end
+
+func cpu_push(cpu, value) do
+  stack is cpu.stack
+  if stack.len() >= SURAOS_DEFAULT_STACK then return osutil_fail(SURAOS_ERR_LIMIT, "stack overflow")
+  stack.push(value)
+  registers is cpu.registers
+  registers.SP -= 1
+  stats is cpu.stats
+  stats.stack_ops += 1
+  return osutil_ok(value)
+end
+
+func cpu_pop(cpu) do
+  stack is cpu.stack
+  if stack.len() == 0 then return osutil_fail(SURAOS_ERR_FAULT, "stack underflow")
+  value is stack.remove(stack.len() - 1)
+  registers is cpu.registers
+  registers.SP += 1
+  stats is cpu.stats
+  stats.stack_ops += 1
+  return osutil_ok(value)
+end
+
+func cpu_binary_write(cpu, destination, source, operation) do
+  if not osutil_is_register(destination) then return osutil_fail(SURAOS_ERR_INVALID, "destination must be a register")
+  left is cpu_number(cpu, destination)
+  right is cpu_number(cpu, source)
+  result is 0
+  if operation == "ADD" then
+    result is left + right
+  elif operation == "SUB" then
+    result is left - right
+  elif operation == "MUL" then
+    result is left * right
+  elif operation == "DIV" then
+    if right == 0 then return osutil_fail(SURAOS_ERR_FAULT, "division by zero")
+    result is floor(left / right)
+  elif operation == "MOD" then
+    if right == 0 then return osutil_fail(SURAOS_ERR_FAULT, "modulo by zero")
+    result is left % right
+  elif operation == "AND" then
+    result is floor(left) & floor(right)
+  elif operation == "OR" then
+    result is floor(left) | floor(right)
+  elif operation == "XOR" then
+    result is floor(left) ^ floor(right)
+  elif operation == "SHL" then
+    result is floor(left) << floor(right)
+  elif operation == "SHR" then
+    result is floor(left) >> floor(right)
+  else
+    return osutil_fail(SURAOS_ERR_INVALID, "unknown arithmetic operation")
+  end
+  cpu_set(cpu, destination, result)
+  cpu_set_flags(cpu, result)
+  stats is cpu.stats
+  stats.arithmetic += 1
+  return osutil_ok(result)
+end
+
+func cpu_branch_condition(cpu, operation) do
+  flags is cpu.flags
+  if operation == SURAOS_OPCODE_JMP then return true
+  if operation == SURAOS_OPCODE_JZ then return flags.zero
+  if operation == SURAOS_OPCODE_JNZ then return not flags.zero
+  if operation == SURAOS_OPCODE_JG then return flags.compare > 0
+  if operation == SURAOS_OPCODE_JGE then return flags.compare >= 0
+  if operation == SURAOS_OPCODE_JL then return flags.compare < 0
+  if operation == SURAOS_OPCODE_JLE then return flags.compare <= 0
+  return false
+end
+
+func cpu_instruction(op, a, b, c, line, text) do
+  return {op: op.upper(), a: a, b: b, c: c, line: line, text: text}
+end
+
+func cpu_nop_instruction(line) do
+  return cpu_instruction(SURAOS_OPCODE_NOP, nil, nil, nil, line, "NOP")
+end
+
+func cpu_execute(cpu, process, kernel, instruction) do
+  if cpu.halted then return {status: "halted"}
+  op is instruction.op.upper()
+  cpu.last_instruction is instruction
+  cpu_trace_add(cpu, process, instruction)
+  stats is cpu.stats
+  stats.instructions += 1
+  process.cpu_ticks += 1
+  process.quantum_ticks += 1
+  current_pc is cpu_pc(cpu)
+  cpu_advance(cpu)
+
+  if op == SURAOS_OPCODE_NOP then
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_MOV or op == SURAOS_OPCODE_MOVI then
+    if not osutil_is_register(instruction.a) then return cpu_trap(cpu, process, SURAOS_ERR_INVALID, "MOV destination must be register", instruction)
+    cpu_set(cpu, instruction.a, cpu_value(cpu, instruction.b))
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_LOAD then
+    if not osutil_is_register(instruction.a) then return cpu_trap(cpu, process, SURAOS_ERR_INVALID, "LOAD destination must be register", instruction)
+    address is cpu_number(cpu, instruction.b)
+    loaded is mem_read_u32(kernel.memory, process.pid, address, cpu.mode == SURAOS_MODE_KERNEL)
+    if not loaded.ok then return cpu_trap(cpu, process, loaded.code, loaded.message, instruction)
+    cpu_set(cpu, instruction.a, loaded.value)
+    stats.loads += 1
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_STORE then
+    address is cpu_number(cpu, instruction.a)
+    value is cpu_number(cpu, instruction.b)
+    stored is mem_write_u32(kernel.memory, process.pid, address, value, cpu.mode == SURAOS_MODE_KERNEL)
+    if not stored.ok then return cpu_trap(cpu, process, stored.code, stored.message, instruction)
+    stats.stores += 1
+    return {status: "ok"}
+  end
+
+  arithmetic_ops is [SURAOS_OPCODE_ADD, SURAOS_OPCODE_ADDI, SURAOS_OPCODE_SUB, SURAOS_OPCODE_SUBI, SURAOS_OPCODE_MUL, SURAOS_OPCODE_DIV, SURAOS_OPCODE_MOD, SURAOS_OPCODE_AND, SURAOS_OPCODE_OR, SURAOS_OPCODE_XOR, SURAOS_OPCODE_SHL, SURAOS_OPCODE_SHR]
+  if arithmetic_ops.contains(op) then
+    base_op is op
+    if op == SURAOS_OPCODE_ADDI then base_op is "ADD"
+    if op == SURAOS_OPCODE_SUBI then base_op is "SUB"
+    result is cpu_binary_write(cpu, instruction.a, instruction.b, base_op)
+    if not result.ok then return cpu_trap(cpu, process, result.code, result.message, instruction)
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_INC or op == SURAOS_OPCODE_DEC then
+    amount is 1
+    if op == SURAOS_OPCODE_DEC then amount is -1
+    result is cpu_binary_write(cpu, instruction.a, amount, "ADD")
+    if not result.ok then return cpu_trap(cpu, process, result.code, result.message, instruction)
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_NOT then
+    if not osutil_is_register(instruction.a) then return cpu_trap(cpu, process, SURAOS_ERR_INVALID, "NOT destination must be register", instruction)
+    value is ~floor(cpu_number(cpu, instruction.a))
+    cpu_set(cpu, instruction.a, value)
+    cpu_set_flags(cpu, value)
+    stats.arithmetic += 1
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_CMP then
+    cpu_compare(cpu, instruction.a, instruction.b)
+    return {status: "ok"}
+  end
+
+  branch_ops is [SURAOS_OPCODE_JMP, SURAOS_OPCODE_JZ, SURAOS_OPCODE_JNZ, SURAOS_OPCODE_JG, SURAOS_OPCODE_JGE, SURAOS_OPCODE_JL, SURAOS_OPCODE_JLE]
+  if branch_ops.contains(op) then
+    stats.branches += 1
+    if cpu_branch_condition(cpu, op) then cpu_set_pc(cpu, cpu_number(cpu, instruction.a))
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_PUSH then
+    pushed is cpu_push(cpu, cpu_value(cpu, instruction.a))
+    if not pushed.ok then return cpu_trap(cpu, process, pushed.code, pushed.message, instruction)
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_POP then
+    if not osutil_is_register(instruction.a) then return cpu_trap(cpu, process, SURAOS_ERR_INVALID, "POP destination must be register", instruction)
+    popped is cpu_pop(cpu)
+    if not popped.ok then return cpu_trap(cpu, process, popped.code, popped.message, instruction)
+    cpu_set(cpu, instruction.a, popped.value)
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_CALL then
+    call_stack is cpu.call_stack
+    call_stack.push(cpu_pc(cpu))
+    cpu_set_pc(cpu, cpu_number(cpu, instruction.a))
+    stats.branches += 1
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_RET then
+    call_stack is cpu.call_stack
+    if call_stack.len() == 0 then return cpu_trap(cpu, process, SURAOS_ERR_FAULT, "return stack underflow", instruction)
+    target is call_stack.remove(call_stack.len() - 1)
+    cpu_set_pc(cpu, target)
+    stats.branches += 1
+    return {status: "ok"}
+  end
+
+  if op == SURAOS_OPCODE_SYSCALL then
+    stats.syscalls += 1
+    previous_mode is cpu.mode
+    cpu.mode is SURAOS_MODE_KERNEL
+    response is kernel_handle_syscall(kernel, process, cpu_number(cpu, instruction.a))
+    cpu.mode is previous_mode
+    return response
+  end
+
+  if op == SURAOS_OPCODE_HALT then
+    cpu.halted is true
+    return {status: "halt"}
+  end
+
+  if op == SURAOS_OPCODE_TRAP then
+    return cpu_trap(cpu, process, SURAOS_ERR_FAULT, "software trap " + cpu_value(cpu, instruction.a), instruction)
+  end
+
+  cpu_set_pc(cpu, current_pc)
+  return cpu_trap(cpu, process, SURAOS_ERR_INVALID, "unknown opcode " + op, instruction)
+end
+
+func cpu_fetch(process) do
+  pc is cpu_pc(process.cpu)
+  if pc < 0 or pc >= process.program.instructions.len() then return osutil_fail(SURAOS_ERR_FAULT, "program counter outside code")
+  return osutil_ok(process.program.instructions[pc])
+end
+
+func cpu_run_quantum(kernel, process, quantum) do
+  executed is 0
+  process.quantum_ticks is 0
+  while executed < quantum and process.state == SURAOS_PROCESS_RUNNING do
+    fetched is cpu_fetch(process)
+    if not fetched.ok then
+      fake is cpu_instruction("FETCH", nil, nil, nil, 0, "")
+      trapped is cpu_trap(process.cpu, process, fetched.code, fetched.message, fake)
+      return {status: "trap", executed: executed, detail: trapped}
+    end
+    result is cpu_execute(process.cpu, process, kernel, fetched.value)
+    executed += 1
+    if result.status != "ok" then return {status: result.status, executed: executed, detail: result}
+  end
+  return {status: "quantum", executed: executed}
+end
+
+func cpu_register_dump(cpu) do
+  rows is []
+  for name in SURAOS_REGISTER_NAMES do
+    rows.push({name: name, value: cpu_get(cpu, name), hex: "0x" + osutil_hex(cpu_number(cpu, name), 8)})
+  end
+  return rows
+end
+
+func cpu_disassemble_instruction(instruction) do
+  parts is [instruction.op]
+  if instruction.a != nil then parts.push("" + instruction.a)
+  if instruction.b != nil then parts.push("" + instruction.b)
+  if instruction.c != nil then parts.push("" + instruction.c)
+  return parts.join(" ")
+end
+
+func cpu_snapshot(cpu) do
+  return {registers: osutil_clone_dict(cpu.registers), flags: osutil_clone_dict(cpu.flags), stack: osutil_clone_array(cpu.stack), call_stack: osutil_clone_array(cpu.call_stack), mode: cpu.mode, halted: cpu.halted, trap: cpu.trap, stats: osutil_clone_dict(cpu.stats)}
+end
+
+func cpu_restore(snapshot) do
+  cpu is cpu_create(snapshot.registers.SP)
+  cpu.registers is osutil_clone_dict(snapshot.registers)
+  cpu.flags is osutil_clone_dict(snapshot.flags)
+  cpu.stack is osutil_clone_array(snapshot.stack)
+  cpu.call_stack is osutil_clone_array(snapshot.call_stack)
+  cpu.mode is snapshot.mode
+  cpu.halted is snapshot.halted
+  cpu.trap is snapshot.trap
+  cpu.stats is osutil_clone_dict(snapshot.stats)
+  return cpu
+end

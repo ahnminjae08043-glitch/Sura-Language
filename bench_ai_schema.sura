@@ -1,0 +1,77 @@
+# AI automation workload: validate structured agent outputs against a JSON-style schema.
+# Models schema-constrained LLM responses with nested tool steps, token usage, and risk metadata.
+
+step_schema is {"type": "dict", "required": ["tool", "approved", "cost"], "properties": {tool: {"enum": ["search", "http", "summarize"]}, approved: {"type": "bool"}, cost: {"type": "number", "min": 0, "max": 50}}, "additional": false}
+usage_schema is {"type": "dict", "required": ["input_tokens", "output_tokens"], "properties": {input_tokens: {"type": "integer", "min": 1, "max": 2000}, output_tokens: {"type": "integer", "min": 1, "max": 1000}}, "additional": false}
+meta_schema is {"type": "dict", "required": ["risk", "kind"], "properties": {risk: {"type": "integer", "min": 0, "max": 10}, kind: {"enum": ["agent", "workflow"]}}, "additional": false}
+agent_schema is {"type": "dict", "required": ["id", "status", "score", "steps", "usage", "meta"], "properties": {id: {"type": "string", "pattern": "^agent-[0-9]+$"}, status: {"enum": ["ok", "review", "blocked"]}, score: {"type": "integer", "min": 0, "max": 100}, steps: {"type": "array", "min_len": 2, "items": step_schema}, usage: usage_schema, meta: meta_schema}, "additional": false}
+
+func step_tool(i, offset) do
+  code is (i + offset) % 3
+  if code == 0 then
+    return "search"
+  end
+  if code == 1 then
+    return "http"
+  end
+  return "summarize"
+end
+
+func make_payload(i) do
+  status is "ok"
+  if i % 11 == 0 then
+    status is "review"
+  end
+  if i % 37 == 0 then
+    status is "blocked"
+  end
+  kind is "agent"
+  if i % 7 == 0 then
+    kind is "workflow"
+  end
+  return {id: "agent-" + to_str(i % 1000), status: status, score: i % 101, steps: [{tool: step_tool(i, 0), approved: true, cost: (i % 25) + 0.5}, {tool: step_tool(i, 1), approved: i % 5 != 0, cost: (i % 17) + 1}], usage: {input_tokens: 100 + (i % 400), output_tokens: 40 + (i % 200)}, meta: {risk: i % 11, kind: kind}}
+end
+
+func make_bad_payload(i) do
+  return {id: "bad-" + to_str(i), status: "unknown", score: 150, steps: [{tool: "shell", approved: "yes", cost: 99}], usage: {input_tokens: -1}, meta: {risk: 99, kind: "other"}, extra: true}
+end
+
+runs is 5
+items is 30000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  valid_count is 0
+  invalid_count is 0
+  error_count is 0
+  while i < items do
+    payload is nil
+    if i % 8 == 0 then
+      payload is make_bad_payload(i)
+    else
+      payload is make_payload(i)
+    end
+    errors is schema_errors(payload, agent_schema)
+    if length(errors) == 0 then
+      valid_count is valid_count + 1
+    else
+      invalid_count is invalid_count + 1
+      error_count is error_count + length(errors)
+    end
+    if i % 64 == 0 then
+      checksum is checksum + length(json_stringify(schema_to_json_schema(agent_schema)))
+    end
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is checksum + valid_count * 3 + invalid_count * 7 + error_count
+end
+
+avg is total_ms / runs
+print "schema validation payloads: {items}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

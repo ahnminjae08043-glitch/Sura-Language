@@ -1,0 +1,9 @@
+use fs
+
+path is "sura_starter_note.txt"
+fs.write(path, "Sura 파일 예제")
+
+content is fs.read(path)
+print(content)
+
+file_delete(path)

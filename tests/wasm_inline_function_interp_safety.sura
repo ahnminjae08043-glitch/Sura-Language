@@ -1,0 +1,13 @@
+func inline_function_label() do
+  return "DirectInlineFn {type(func(value) do
+    return value + 6
+  end)} {to_bool(func(value) do
+    return value + 7
+  end)} {to_str(func(value) do
+    return value + 8
+  end)}"
+end
+
+label is inline_function_label()
+assert_eq(label, "DirectInlineFn function true <Func <lambda>>")
+print label

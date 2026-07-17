@@ -1,0 +1,435 @@
+# Two-pass assembler for the SVM32 teaching instruction set.
+#
+# Source format:
+#   .name hello
+#   .entry start
+#   .data greeting "Hello from SuraOS"
+#   start:
+#     MOV R0 @greeting
+#     SYSCALL PRINT
+#     MOV R0 0
+#     SYSCALL EXIT
+
+func asm_program(name, source) do
+  return {schema: SURAOS_EXEC_SCHEMA, name: name, source: source, instructions: [], labels: {}, data: {}, data_order: [], entry_label: "", entry: 0, errors: [], warnings: [], line_map: [], assembled: false}
+end
+
+func asm_error(program, line, code, message, source_text) do
+  errors is program.errors
+  diagnostic is {line: line, code: code, message: message, source: source_text}
+  errors.push(diagnostic)
+  return diagnostic
+end
+
+func asm_warning(program, line, code, message, source_text) do
+  warnings is program.warnings
+  diagnostic is {line: line, code: code, message: message, source: source_text}
+  warnings.push(diagnostic)
+  return diagnostic
+end
+
+func asm_clean_line(raw) do
+  return osutil_strip_comment(raw).trim()
+end
+
+func asm_is_label_line(line) do
+  return line.ends_with(":") and not line.starts_with(".")
+end
+
+func asm_label_name(line) do
+  return line.sub(0, line.len() - 1).trim()
+end
+
+func asm_valid_identifier(name) do
+  if name.len() == 0 then return false
+  first is name[0]
+  first_ok is "abcdefghijklmnopqrstuvwxyz".contains(first.lower()) or first == "_"
+  if not first_ok then return false
+  index is 1
+  while index < name.len() do
+    char is name[index]
+    ok is "abcdefghijklmnopqrstuvwxyz".contains(char.lower()) or osutil_is_digit(char) or char == "_"
+    if not ok then return false
+    index += 1
+  end
+  return true
+end
+
+func asm_directive_name(line) do
+  tokens is osutil_tokenize(line)
+  if tokens.len() == 0 then return ""
+  name is tokens[0]
+  if name.starts_with(".") then return name.sub(1, name.len()).lower()
+  return ""
+end
+
+func asm_first_pass(program) do
+  lines is osutil_split_lines(program.source)
+  pc is 0
+  line_number is 0
+  for raw in lines do
+    line_number += 1
+    clean is asm_clean_line(raw)
+    if clean.len() == 0 then
+      # Blank and comment-only lines do not consume code addresses.
+    elif asm_is_label_line(clean) then
+      label is asm_label_name(clean)
+      labels is program.labels
+      if not asm_valid_identifier(label) then
+        asm_error(program, line_number, "A001", "invalid label '" + label + "'", raw)
+      elif label in labels then
+        asm_error(program, line_number, "A002", "duplicate label '" + label + "'", raw)
+      else
+        labels[label] is pc
+      end
+    elif clean.starts_with(".") then
+      # Directives do not consume code addresses.
+    else
+      pc += 1
+    end
+  end
+  return pc
+end
+
+func asm_parse_directive(program, clean, line_number, raw) do
+  tokens is osutil_tokenize(clean)
+  if tokens.len() == 0 then return true
+  directive is asm_directive_name(clean)
+
+  if directive == "name" then
+    if tokens.len() < 2 then
+      asm_error(program, line_number, "A010", ".name requires a value", raw)
+    else
+      program.name is osutil_join_from(tokens, 1, " ")
+    end
+    return true
+  end
+
+  if directive == "entry" then
+    if tokens.len() != 2 then
+      asm_error(program, line_number, "A011", ".entry requires one label", raw)
+    else
+      program.entry_label is tokens[1]
+    end
+    return true
+  end
+
+  if directive == "data" or directive == "string" then
+    if tokens.len() < 3 then
+      asm_error(program, line_number, "A012", ".data requires a name and value", raw)
+      return true
+    end
+    name is tokens[1]
+    data is program.data
+    if name in data then
+      asm_error(program, line_number, "A013", "duplicate data symbol '" + name + "'", raw)
+      return true
+    end
+    value is osutil_join_from(tokens, 2, " ")
+    data[name] is value
+    order is program.data_order
+    order.push(name)
+    return true
+  end
+
+  if directive == "number" then
+    if tokens.len() != 3 or not osutil_is_integer_text(tokens[2]) then
+      asm_error(program, line_number, "A014", ".number requires a name and integer", raw)
+      return true
+    end
+    name is tokens[1]
+    data is program.data
+    if name in data then
+      asm_error(program, line_number, "A013", "duplicate data symbol '" + name + "'", raw)
+      return true
+    end
+    data[name] is osutil_to_integer(tokens[2], 0)
+    order is program.data_order
+    order.push(name)
+    return true
+  end
+
+  if directive == "stack" then
+    # Stack is currently fixed by the process loader.  Accept the directive so
+    # assembly written for a later loader remains forwards-compatible.
+    if tokens.len() != 2 or not osutil_is_integer_text(tokens[1]) then asm_warning(program, line_number, "A020", "invalid .stack hint ignored", raw)
+    return true
+  end
+
+  asm_warning(program, line_number, "A099", "unknown directive '." + directive + "' ignored", raw)
+  return true
+end
+
+func asm_raw_operand(token) do
+  upper is token.upper()
+  if suraos_register_valid(upper) then return {kind: "register", value: upper}
+  if osutil_is_integer_text(token) then return {kind: "number", value: osutil_to_integer(token, 0)}
+  if token.starts_with("@") then return {kind: "data", value: token.sub(1, token.len())}
+  return {kind: "label", value: token}
+end
+
+func asm_operand_value(program, operand, line_number, raw) do
+  if operand == nil then return nil
+  if operand.kind == "register" then return operand.value
+  if operand.kind == "number" then return operand.value
+  if operand.kind == "data" then
+    data is program.data
+    if not (operand.value in data) then
+      asm_error(program, line_number, "A030", "unknown data symbol '" + operand.value + "'", raw)
+      return 0
+    end
+    value is data[operand.value]
+    if type(value) == "string" then return {kind: "string", value: value}
+    return value
+  end
+  if operand.kind == "label" then
+    labels is program.labels
+    if not (operand.value in labels) then
+      asm_error(program, line_number, "A031", "unknown label '" + operand.value + "'", raw)
+      return 0
+    end
+    return labels[operand.value]
+  end
+  return 0
+end
+
+func asm_expect_count(program, tokens, minimum, maximum, line_number, raw) do
+  operands is tokens.len() - 1
+  if operands < minimum or operands > maximum then
+    expected is "" + minimum
+    if maximum != minimum then expected += ".." + maximum
+    asm_error(program, line_number, "A040", tokens[0].upper() + " expects " + expected + " operand(s)", raw)
+    return false
+  end
+  return true
+end
+
+func asm_register_operand(program, token, line_number, raw) do
+  upper is token.upper()
+  if not suraos_register_valid(upper) then
+    asm_error(program, line_number, "A041", "expected register, got '" + token + "'", raw)
+    return "R0"
+  end
+  return upper
+end
+
+func asm_parse_instruction(program, clean, line_number, raw) do
+  tokens is osutil_tokenize(clean)
+  if tokens.len() == 0 then return nil
+  op is tokens[0].upper()
+  instruction is cpu_instruction(op, nil, nil, nil, line_number, raw.trim())
+
+  if not suraos_opcode_valid(op) then
+    if op == "SYS" then
+      op is SURAOS_OPCODE_SYSCALL
+    else
+      asm_error(program, line_number, "A050", "unknown opcode '" + tokens[0] + "'", raw)
+      return cpu_nop_instruction(line_number)
+    end
+  end
+  instruction.op is op
+
+  if op == SURAOS_OPCODE_NOP or op == SURAOS_OPCODE_HALT or op == SURAOS_OPCODE_RET then
+    asm_expect_count(program, tokens, 0, 0, line_number, raw)
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_MOV or op == SURAOS_OPCODE_MOVI then
+    if not asm_expect_count(program, tokens, 2, 2, line_number, raw) then return instruction
+    instruction.a is asm_register_operand(program, tokens[1], line_number, raw)
+    source is asm_raw_operand(tokens[2])
+    instruction.b is asm_operand_value(program, source, line_number, raw)
+    if source.kind == "register" then
+      instruction.op is SURAOS_OPCODE_MOV
+    else
+      instruction.op is SURAOS_OPCODE_MOVI
+    end
+    return instruction
+  end
+
+  binary is [SURAOS_OPCODE_ADD, SURAOS_OPCODE_ADDI, SURAOS_OPCODE_SUB, SURAOS_OPCODE_SUBI, SURAOS_OPCODE_MUL, SURAOS_OPCODE_DIV, SURAOS_OPCODE_MOD, SURAOS_OPCODE_AND, SURAOS_OPCODE_OR, SURAOS_OPCODE_XOR, SURAOS_OPCODE_SHL, SURAOS_OPCODE_SHR]
+  if binary.contains(op) then
+    if not asm_expect_count(program, tokens, 2, 2, line_number, raw) then return instruction
+    instruction.a is asm_register_operand(program, tokens[1], line_number, raw)
+    source is asm_raw_operand(tokens[2])
+    instruction.b is asm_operand_value(program, source, line_number, raw)
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_INC or op == SURAOS_OPCODE_DEC or op == SURAOS_OPCODE_NOT or op == SURAOS_OPCODE_PUSH or op == SURAOS_OPCODE_POP then
+    if not asm_expect_count(program, tokens, 1, 1, line_number, raw) then return instruction
+    if op == SURAOS_OPCODE_PUSH then
+      instruction.a is asm_operand_value(program, asm_raw_operand(tokens[1]), line_number, raw)
+    else
+      instruction.a is asm_register_operand(program, tokens[1], line_number, raw)
+    end
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_CMP then
+    if not asm_expect_count(program, tokens, 2, 2, line_number, raw) then return instruction
+    instruction.a is asm_operand_value(program, asm_raw_operand(tokens[1]), line_number, raw)
+    instruction.b is asm_operand_value(program, asm_raw_operand(tokens[2]), line_number, raw)
+    return instruction
+  end
+
+  branches is [SURAOS_OPCODE_JMP, SURAOS_OPCODE_JZ, SURAOS_OPCODE_JNZ, SURAOS_OPCODE_JG, SURAOS_OPCODE_JGE, SURAOS_OPCODE_JL, SURAOS_OPCODE_JLE, SURAOS_OPCODE_CALL]
+  if branches.contains(op) then
+    if not asm_expect_count(program, tokens, 1, 1, line_number, raw) then return instruction
+    instruction.a is asm_operand_value(program, asm_raw_operand(tokens[1]), line_number, raw)
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_LOAD then
+    if not asm_expect_count(program, tokens, 2, 2, line_number, raw) then return instruction
+    instruction.a is asm_register_operand(program, tokens[1], line_number, raw)
+    instruction.b is asm_operand_value(program, asm_raw_operand(tokens[2]), line_number, raw)
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_STORE then
+    if not asm_expect_count(program, tokens, 2, 2, line_number, raw) then return instruction
+    instruction.a is asm_operand_value(program, asm_raw_operand(tokens[1]), line_number, raw)
+    instruction.b is asm_operand_value(program, asm_raw_operand(tokens[2]), line_number, raw)
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_SYSCALL then
+    if not asm_expect_count(program, tokens, 1, 1, line_number, raw) then return instruction
+    number is suraos_syscall_number(tokens[1])
+    if number < 0 and osutil_is_integer_text(tokens[1]) then number is osutil_to_integer(tokens[1], -1)
+    if number < 0 then asm_error(program, line_number, "A060", "unknown system call '" + tokens[1] + "'", raw)
+    instruction.a is number
+    return instruction
+  end
+
+  if op == SURAOS_OPCODE_TRAP then
+    if not asm_expect_count(program, tokens, 1, 1, line_number, raw) then return instruction
+    instruction.a is osutil_join_from(tokens, 1, " ")
+    return instruction
+  end
+
+  asm_error(program, line_number, "A061", "opcode parser missing for '" + op + "'", raw)
+  return cpu_nop_instruction(line_number)
+end
+
+func asm_second_pass(program) do
+  lines is osutil_split_lines(program.source)
+  instructions is program.instructions
+  line_map is program.line_map
+  line_number is 0
+  for raw in lines do
+    line_number += 1
+    clean is asm_clean_line(raw)
+    if clean.len() == 0 then
+      # Skip.
+    elif asm_is_label_line(clean) then
+      # Label was recorded in pass one.
+    elif clean.starts_with(".") then
+      asm_parse_directive(program, clean, line_number, raw)
+    else
+      instruction is asm_parse_instruction(program, clean, line_number, raw)
+      instructions.push(instruction)
+      line_map.push(line_number)
+    end
+  end
+end
+
+func asm_resolve_entry(program) do
+  if program.entry_label == "" then
+    labels is program.labels
+    if "start" in labels then program.entry is labels.start else program.entry is 0
+    return
+  end
+  labels is program.labels
+  if not (program.entry_label in labels) then
+    asm_error(program, 0, "A070", "entry label not found: " + program.entry_label, "")
+    program.entry is 0
+  else
+    program.entry is labels[program.entry_label]
+  end
+end
+
+func asm_assemble(source, default_name) do
+  program is asm_program(default_name, source)
+  asm_first_pass(program)
+  asm_second_pass(program)
+  asm_resolve_entry(program)
+  program.assembled is program.errors.len() == 0
+  return program
+end
+
+func asm_assemble_file(path) do
+  if not file_exists(path) then
+    program is asm_program(osutil_basename(path), "")
+    asm_error(program, 0, "A080", "source file not found: " + path, "")
+    return program
+  end
+  return asm_assemble(file_read(path), osutil_basename(path))
+end
+
+func asm_validate_program(program) do
+  errors is []
+  if program.schema != SURAOS_EXEC_SCHEMA then errors.push("invalid executable schema")
+  if program.instructions.len() == 0 then errors.push("program has no instructions")
+  if program.entry < 0 or program.entry >= program.instructions.len() then errors.push("entry point outside program")
+  index is 0
+  while index < program.instructions.len() do
+    instruction is program.instructions[index]
+    if not suraos_opcode_valid(instruction.op) then errors.push("invalid opcode at " + index)
+    index += 1
+  end
+  return {ok: errors.len() == 0, errors: errors}
+end
+
+func asm_disassemble(program) do
+  lines is []
+  reverse_labels is {}
+  for entry in program.labels.items() do
+    reverse_labels[osutil_key(entry.value)] is entry.key
+  end
+  index is 0
+  while index < program.instructions.len() do
+    key is osutil_key(index)
+    if key in reverse_labels then lines.push(reverse_labels[key] + ":")
+    instruction is program.instructions[index]
+    address is osutil_pad_left(index, 4, "0")
+    lines.push(address + "  " + cpu_disassemble_instruction(instruction))
+    index += 1
+  end
+  return lines.join("\n")
+end
+
+func asm_listing(program) do
+  rows is []
+  index is 0
+  while index < program.instructions.len() do
+    instruction is program.instructions[index]
+    rows.push({address: index, line: instruction.line, opcode: instruction.op, text: cpu_disassemble_instruction(instruction), source: instruction.text})
+    index += 1
+  end
+  return rows
+end
+
+func asm_diagnostic_text(program) do
+  lines is []
+  for error in program.errors do
+    lines.push("error " + error.code + " line " + error.line + ": " + error.message)
+  end
+  for warning in program.warnings do
+    lines.push("warning " + warning.code + " line " + warning.line + ": " + warning.message)
+  end
+  return lines.join("\n")
+end
+
+func asm_hello_source() do
+  return ".name hello\n.entry start\n.data greeting Hello from SuraOS user space!\nstart:\n  MOV R0 @greeting\n  SYSCALL PRINT\n  MOV R0 0\n  SYSCALL EXIT"
+end
+
+func asm_counter_source(limit) do
+  return ".name counter\n.entry start\nstart:\n  MOV R0 0\n  MOV R1 " + limit + "\nloop:\n  INC R0\n  CMP R0 R1\n  JL loop\n  SYSCALL PRINT_NUMBER\n  MOV R0 0\n  SYSCALL EXIT"
+end
+
+func asm_yield_source() do
+  return ".name cooperative\n.entry start\nstart:\n  MOV R0 1\n  SYSCALL PRINT_NUMBER\n  SYSCALL YIELD\n  MOV R0 2\n  SYSCALL PRINT_NUMBER\n  MOV R0 0\n  SYSCALL EXIT"
+end

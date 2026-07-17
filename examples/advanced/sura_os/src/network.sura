@@ -1,0 +1,428 @@
+# SuraOS virtual IPv4 stack.
+# It models interfaces, routes, sockets, DNS and firewall rules on top of the
+# deterministic loopback device. No packet leaves the SuraOS process.
+
+func net_stack_create(device) do
+  return {device: device, interfaces: {}, routes: [], sockets: {}, next_socket: 1, firewall: [], next_rule: 1, dns: {}, wire_queue: [], packets_sent: 0, packets_received: 0, bytes_sent: 0, bytes_received: 0, packets_dropped: 0, connection_attempts: 0, errors: 0, forwarding: false, default_policy: "allow", events: []}
+end
+
+func net_ipv4_parse(address) do
+  parts is address.trim().split(".")
+  if parts.len() != 4 then return {ok: false, octets: [], message: "IPv4 address needs four octets"}
+  octets is []
+  for part in parts do
+    if part.len() == 0 then return {ok: false, octets: [], message: "empty IPv4 octet"}
+    for char in part.split("") do
+      if not osutil_is_digit(char) then return {ok: false, octets: [], message: "non-numeric IPv4 octet"}
+    end
+    number is osutil_to_integer(part, -1)
+    if number < 0 or number > 255 then return {ok: false, octets: [], message: "IPv4 octet out of range"}
+    octets.push(number)
+  end
+  return {ok: true, octets: octets, message: ""}
+end
+
+func net_ipv4_valid(address) do
+  return net_ipv4_parse(address).ok
+end
+
+func net_cidr_parse(cidr) do
+  parts is cidr.trim().split("/")
+  address is parts[0]
+  prefix is 32
+  if parts.len() > 1 then prefix is osutil_to_integer(parts[1], -1)
+  parsed is net_ipv4_parse(address)
+  if not parsed.ok then return {ok: false, address: address, prefix: prefix, message: parsed.message}
+  if prefix < 0 or prefix > 32 then return {ok: false, address: address, prefix: prefix, message: "CIDR prefix out of range"}
+  return {ok: true, address: address, octets: parsed.octets, prefix: prefix, message: ""}
+end
+
+func net_prefix_match(address, cidr) do
+  actual is net_ipv4_parse(address)
+  network is net_cidr_parse(cidr)
+  if not actual.ok or not network.ok then return false
+  full_octets is floor(network.prefix / 8)
+  remaining is network.prefix % 8
+  index is 0
+  while index < full_octets do
+    if actual.octets[index] != network.octets[index] then return false
+    index += 1
+  end
+  if remaining == 0 then return true
+  divisor is pow(2, 8 - remaining)
+  return floor(actual.octets[index] / divisor) == floor(network.octets[index] / divisor)
+end
+
+func net_event(stack, tick, level, kind, message, data) do
+  events is stack.events
+  events.push({sequence: events.len() + 1, tick: tick, level: level, kind: kind, message: message, data: data})
+  while events.len() > 256 do
+    events.remove(0)
+  end
+end
+
+func net_interface_add(stack, name, address, prefix, mtu) do
+  if name.trim().len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "interface name is empty")
+  interfaces is stack.interfaces
+  if name in interfaces then return osutil_fail(SURAOS_ERR_EXISTS, "interface already exists")
+  cidr is net_cidr_parse(address + "/" + prefix)
+  if not cidr.ok then return osutil_fail(SURAOS_ERR_INVALID, cidr.message)
+  if mtu < 256 or mtu > 65535 then return osutil_fail(SURAOS_ERR_INVALID, "MTU out of range")
+  interface is {name: name, address: address, prefix: prefix, mtu: mtu, up: false, loopback: address.starts_with("127."), tx_packets: 0, rx_packets: 0, tx_bytes: 0, rx_bytes: 0, drops: 0, created_tick: 0}
+  interfaces[name] is interface
+  return osutil_ok(interface)
+end
+
+func net_interface_get(stack, name) do
+  interfaces is stack.interfaces
+  if name in interfaces then return interfaces[name]
+  return nil
+end
+
+func net_interface_set_up(stack, name, up, tick) do
+  interface is net_interface_get(stack, name)
+  if interface == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "interface not found")
+  interface.up is up
+  state is "down"
+  if up then state is "up"
+  net_event(stack, tick, SURAOS_LOG_INFO, "link", name + " is " + state, {interface: name})
+  return osutil_ok(interface)
+end
+
+func net_interface_remove(stack, name, tick) do
+  interface is net_interface_get(stack, name)
+  if interface == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "interface not found")
+  for socket in stack.sockets.values() do
+    if socket.interface == name and socket.state != "closed" then return osutil_fail(SURAOS_ERR_BUSY, "interface has active sockets")
+  end
+  interfaces is stack.interfaces
+  interfaces.delete(name)
+  net_event(stack, tick, SURAOS_LOG_INFO, "link", name + " removed", {})
+  return osutil_ok(name)
+end
+
+func net_route_add(stack, network, gateway, interface_name, metric) do
+  cidr is net_cidr_parse(network)
+  if not cidr.ok then return osutil_fail(SURAOS_ERR_INVALID, cidr.message)
+  if gateway != "" and not net_ipv4_valid(gateway) then return osutil_fail(SURAOS_ERR_INVALID, "invalid gateway")
+  interface is net_interface_get(stack, interface_name)
+  if interface == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "interface not found")
+  route is {network: cidr.address + "/" + cidr.prefix, prefix: cidr.prefix, gateway: gateway, interface: interface_name, metric: osutil_max(0, metric), active: true, hits: 0}
+  routes is stack.routes
+  routes.push(route)
+  return osutil_ok(route)
+end
+
+func net_route_remove(stack, network, interface_name) do
+  routes is stack.routes
+  index is 0
+  while index < routes.len() do
+    route is routes[index]
+    if route.network == network and route.interface == interface_name then
+      routes.remove(index)
+      return osutil_ok(route)
+    end
+    index += 1
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "route not found")
+end
+
+func net_route_lookup(stack, address) do
+  if not net_ipv4_valid(address) then return osutil_fail(SURAOS_ERR_INVALID, "invalid destination address")
+  best is nil
+  for route in stack.routes do
+    interface is net_interface_get(stack, route.interface)
+    if route.active and interface != nil and interface.up and net_prefix_match(address, route.network) then
+      if best == nil then best is route
+      if best != nil and route.prefix > best.prefix then best is route
+      if best != nil and route.prefix == best.prefix and route.metric < best.metric then best is route
+    end
+  end
+  if best == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "no route to host")
+  best.hits += 1
+  return osutil_ok(best)
+end
+
+func net_firewall_add(stack, direction, protocol, source, destination, port, action, description) do
+  if direction != "in" and direction != "out" and direction != "both" then return osutil_fail(SURAOS_ERR_INVALID, "invalid firewall direction")
+  if protocol != "udp" and protocol != "tcp" and protocol != "any" then return osutil_fail(SURAOS_ERR_INVALID, "invalid protocol")
+  if action != "allow" and action != "deny" then return osutil_fail(SURAOS_ERR_INVALID, "invalid firewall action")
+  if source != "any" and not net_cidr_parse(source).ok then return osutil_fail(SURAOS_ERR_INVALID, "invalid source network")
+  if destination != "any" and not net_cidr_parse(destination).ok then return osutil_fail(SURAOS_ERR_INVALID, "invalid destination network")
+  if port < 0 or port > 65535 then return osutil_fail(SURAOS_ERR_INVALID, "invalid port")
+  id is stack.next_rule
+  stack.next_rule += 1
+  rule is {id: id, direction: direction, protocol: protocol, source: source, destination: destination, port: port, action: action, description: description, enabled: true, matches: 0}
+  rules is stack.firewall
+  rules.push(rule)
+  return osutil_ok(rule)
+end
+
+func net_firewall_remove(stack, id) do
+  rules is stack.firewall
+  index is 0
+  while index < rules.len() do
+    if rules[index].id == id then
+      rule is rules[index]
+      rules.remove(index)
+      return osutil_ok(rule)
+    end
+    index += 1
+  end
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "firewall rule not found")
+end
+
+func net_firewall_decide(stack, direction, protocol, source, destination, port) do
+  for rule in stack.firewall do
+    direction_match is rule.direction == "both" or rule.direction == direction
+    protocol_match is rule.protocol == "any" or rule.protocol == protocol
+    source_match is rule.source == "any" or net_prefix_match(source, rule.source)
+    destination_match is rule.destination == "any" or net_prefix_match(destination, rule.destination)
+    port_match is rule.port == 0 or rule.port == port
+    if rule.enabled and direction_match and protocol_match and source_match and destination_match and port_match then
+      rule.matches += 1
+      return {allowed: rule.action == "allow", rule_id: rule.id, action: rule.action}
+    end
+  end
+  return {allowed: stack.default_policy == "allow", rule_id: -1, action: stack.default_policy}
+end
+
+func net_socket_open(stack, protocol, owner_pid, owner_user) do
+  if protocol != "udp" and protocol != "tcp" then return osutil_fail(SURAOS_ERR_INVALID, "unsupported socket protocol")
+  id is stack.next_socket
+  stack.next_socket += 1
+  socket is {id: id, protocol: protocol, owner_pid: owner_pid, owner_user: owner_user, interface: "", local_address: "0.0.0.0", local_port: 0, remote_address: "", remote_port: 0, state: "open", receive_queue: [], send_queue: [], sent: 0, received: 0, errors: 0, created_tick: 0}
+  sockets is stack.sockets
+  sockets[osutil_key(id)] is socket
+  return osutil_ok(socket)
+end
+
+func net_socket_get(stack, id) do
+  sockets is stack.sockets
+  key is osutil_key(id)
+  if key in sockets then return sockets[key]
+  return nil
+end
+
+func net_port_available(stack, protocol, address, port, except_id) do
+  for socket in stack.sockets.values() do
+    if socket.id != except_id and socket.state != "closed" and socket.protocol == protocol and socket.local_port == port then
+      if socket.local_address == "0.0.0.0" or address == "0.0.0.0" or socket.local_address == address then return false
+    end
+  end
+  return true
+end
+
+func net_ephemeral_port(stack, protocol) do
+  port is 49152
+  while port <= 65535 do
+    if net_port_available(stack, protocol, "0.0.0.0", port, -1) then return port
+    port += 1
+  end
+  return -1
+end
+
+func net_socket_bind(stack, id, interface_name, address, port) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  if socket.state != "open" then return osutil_fail(SURAOS_ERR_BUSY, "socket cannot be bound in current state")
+  interface is net_interface_get(stack, interface_name)
+  if interface == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "interface not found")
+  if address != "0.0.0.0" and address != interface.address then return osutil_fail(SURAOS_ERR_INVALID, "address does not belong to interface")
+  actual_port is port
+  if actual_port == 0 then actual_port is net_ephemeral_port(stack, socket.protocol)
+  if actual_port < 1 or actual_port > 65535 then return osutil_fail(SURAOS_ERR_LIMIT, "no port available")
+  if not net_port_available(stack, socket.protocol, address, actual_port, socket.id) then return osutil_fail(SURAOS_ERR_BUSY, "address already in use")
+  socket.interface is interface_name
+  socket.local_address is address
+  socket.local_port is actual_port
+  socket.state is "bound"
+  return osutil_ok(socket)
+end
+
+func net_socket_listen(stack, id) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  if socket.protocol != "tcp" then return osutil_fail(SURAOS_ERR_INVALID, "listen requires TCP")
+  if socket.state != "bound" then return osutil_fail(SURAOS_ERR_BUSY, "socket must be bound")
+  socket.state is "listening"
+  return osutil_ok(socket)
+end
+
+func net_socket_connect(stack, id, destination, port, tick) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  if not net_ipv4_valid(destination) then return osutil_fail(SURAOS_ERR_INVALID, "invalid destination")
+  if port < 1 or port > 65535 then return osutil_fail(SURAOS_ERR_INVALID, "invalid destination port")
+  route_result is net_route_lookup(stack, destination)
+  if not route_result.ok then return route_result
+  route is route_result.value
+  interface is net_interface_get(stack, route.interface)
+  if socket.state == "open" then
+    bind_result is net_socket_bind(stack, id, interface.name, interface.address, 0)
+    if not bind_result.ok then return bind_result
+  end
+  decision is net_firewall_decide(stack, "out", socket.protocol, interface.address, destination, port)
+  if not decision.allowed then
+    stack.packets_dropped += 1
+    return osutil_fail(SURAOS_ERR_PERMISSION, "connection blocked by firewall rule " + decision.rule_id)
+  end
+  socket.remote_address is destination
+  socket.remote_port is port
+  socket.state is "connected"
+  stack.connection_attempts += 1
+  net_event(stack, tick, SURAOS_LOG_INFO, "connect", "socket " + id + " connected", {destination: destination, port: port})
+  return osutil_ok(socket)
+end
+
+func net_socket_send(stack, id, payload, tick) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  if socket.state != "connected" then return osutil_fail(SURAOS_ERR_BUSY, "socket is not connected")
+  interface is net_interface_get(stack, socket.interface)
+  if interface == nil or not interface.up then return osutil_fail(SURAOS_ERR_IO, "network interface is down")
+  if payload.len() > interface.mtu then return osutil_fail(SURAOS_ERR_LIMIT, "payload exceeds interface MTU")
+  decision is net_firewall_decide(stack, "out", socket.protocol, interface.address, socket.remote_address, socket.remote_port)
+  if not decision.allowed then
+    stack.packets_dropped += 1
+    interface.drops += 1
+    return osutil_fail(SURAOS_ERR_PERMISSION, "packet blocked by firewall")
+  end
+  packet is {socket_id: id, protocol: socket.protocol, source: interface.address, source_port: socket.local_port, destination: socket.remote_address, destination_port: socket.remote_port, payload: payload, tick: tick}
+  result is device_network_send(stack.device, id, socket.remote_port, packet, tick)
+  if not result.ok then
+    socket.errors += 1
+    stack.errors += 1
+    return result
+  end
+  socket.sent += 1
+  wire_queue is stack.wire_queue
+  wire_queue.push(packet)
+  stack.packets_sent += 1
+  stack.bytes_sent += payload.len()
+  interface.tx_packets += 1
+  interface.tx_bytes += payload.len()
+  return osutil_ok(result.value)
+end
+
+func net_deliver_packet(stack, packet) do
+  delivered is 0
+  for socket in stack.sockets.values() do
+    port_match is socket.local_port == packet.destination_port
+    protocol_match is socket.protocol == packet.protocol
+    address_match is socket.local_address == "0.0.0.0" or socket.local_address == packet.destination
+    if socket.state != "closed" and port_match and protocol_match and address_match then
+      decision is net_firewall_decide(stack, "in", packet.protocol, packet.source, packet.destination, packet.destination_port)
+      if decision.allowed then
+        queue is socket.receive_queue
+        queue.push(packet)
+        socket.received += 1
+        delivered += 1
+      else
+        stack.packets_dropped += 1
+      end
+    end
+  end
+  return delivered
+end
+
+func net_poll(stack, tick, limit) do
+  polled is 0
+  delivered is 0
+  wire_queue is stack.wire_queue
+  while polled < limit and wire_queue.len() > 0 do
+    packet is wire_queue.remove(0)
+    device_network_receive(stack.device, -1)
+    delivered += net_deliver_packet(stack, packet)
+    stack.packets_received += 1
+    stack.bytes_received += packet.payload.len()
+    interface is net_interface_get(stack, "lo")
+    if interface != nil then
+      interface.rx_packets += 1
+      interface.rx_bytes += packet.payload.len()
+    end
+    polled += 1
+  end
+  if polled > 0 then net_event(stack, tick, SURAOS_LOG_TRACE, "poll", polled + " packet(s) polled", {delivered: delivered})
+  return {polled: polled, delivered: delivered}
+end
+
+func net_socket_receive(stack, id) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  queue is socket.receive_queue
+  if queue.len() == 0 then return osutil_fail(SURAOS_ERR_WOULD_BLOCK, "no packet available")
+  return osutil_ok(queue.remove(0))
+end
+
+func net_socket_close(stack, id, tick) do
+  socket is net_socket_get(stack, id)
+  if socket == nil then return osutil_fail(SURAOS_ERR_BAD_FD, "socket not found")
+  socket.state is "closed"
+  socket.receive_queue is []
+  socket.send_queue is []
+  net_event(stack, tick, SURAOS_LOG_INFO, "close", "socket " + id + " closed", {})
+  return osutil_ok(true)
+end
+
+func net_dns_add(stack, hostname, address) do
+  clean is hostname.trim().lower()
+  if clean.len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "hostname is empty")
+  if not net_ipv4_valid(address) then return osutil_fail(SURAOS_ERR_INVALID, "invalid address")
+  dns is stack.dns
+  dns[clean] is address
+  return osutil_ok(address)
+end
+
+func net_dns_resolve(stack, hostname) do
+  if net_ipv4_valid(hostname) then return osutil_ok(hostname)
+  dns is stack.dns
+  key is hostname.trim().lower()
+  if key in dns then return osutil_ok(dns[key])
+  return osutil_fail(SURAOS_ERR_NOT_FOUND, "host not found: " + hostname)
+end
+
+func net_bootstrap(stack, tick) do
+  net_interface_add(stack, "lo", "127.0.0.1", 8, 65535)
+  net_interface_set_up(stack, "lo", true, tick)
+  net_route_add(stack, "127.0.0.0/8", "", "lo", 0)
+  net_dns_add(stack, "localhost", "127.0.0.1")
+  net_dns_add(stack, "sura-machine", "127.0.0.1")
+  net_firewall_add(stack, "both", "any", "127.0.0.0/8", "127.0.0.0/8", 0, "allow", "allow loopback traffic")
+  return stack
+end
+
+func net_interface_list(stack) do
+  rows is []
+  for name in osutil_sort_strings(stack.interfaces.keys()) do
+    interface is stack.interfaces[name]
+    rows.push({name: name, address: interface.address, prefix: interface.prefix, mtu: interface.mtu, up: interface.up, tx_packets: interface.tx_packets, rx_packets: interface.rx_packets, drops: interface.drops})
+  end
+  return rows
+end
+
+func net_socket_list(stack) do
+  rows is []
+  for socket in stack.sockets.values() do
+    rows.push({id: socket.id, protocol: socket.protocol, state: socket.state, owner_pid: socket.owner_pid, local: socket.local_address + ":" + socket.local_port, remote: socket.remote_address + ":" + socket.remote_port, queued: socket.receive_queue.len(), sent: socket.sent, received: socket.received})
+  end
+  return osutil_sort_by_number(rows, "id", false)
+end
+
+func net_stats(stack) do
+  open_sockets is 0
+  for socket in stack.sockets.values() do
+    if socket.state != "closed" then open_sockets += 1
+  end
+  return {interfaces: stack.interfaces.keys().len(), routes: stack.routes.len(), sockets: stack.sockets.keys().len(), open_sockets: open_sockets, firewall_rules: stack.firewall.len(), dns_records: stack.dns.keys().len(), packets_sent: stack.packets_sent, packets_received: stack.packets_received, bytes_sent: stack.bytes_sent, bytes_received: stack.bytes_received, packets_dropped: stack.packets_dropped, connection_attempts: stack.connection_attempts, errors: stack.errors}
+end
+
+func net_route_table(stack) do
+  lines is ["NETWORK             GATEWAY          IFACE  METRIC HITS"]
+  for route in stack.routes do
+    gateway is route.gateway
+    if gateway == "" then gateway is "on-link"
+    lines.push(osutil_pad_right(route.network, 19, " ") + " " + osutil_pad_right(gateway, 16, " ") + " " + osutil_pad_right(route.interface, 6, " ") + " " + osutil_pad_left(route.metric, 6, " ") + " " + route.hits)
+  end
+  return lines.join("\n")
+end

@@ -1,0 +1,736 @@
+# SuraOS command shell.  Commands operate on virtual kernel objects; they never
+# delegate to the host shell.
+
+use json
+
+func shell_create(kernel, username, host_echo) do
+  user is security_get_user(kernel.security, username)
+  cwd is "/"
+  if user != nil then cwd is user.home
+  environment is {USER: username, HOME: cwd, SHELL: "/bin/sh", HOSTNAME: kernel.config.hostname, PATH: "/bin", OS: SURAOS_NAME, ARCH: SURAOS_ARCH}
+  return {username: username, cwd: cwd, environment: environment, history: [], output: [], running: true, host_echo: host_echo, commands: 0, failures: 0, last_status: 0, prompt_symbol: "$"}
+end
+
+func shell_emit(shell, kernel, text) do
+  value is "" + text
+  output is shell.output
+  output.push(value)
+  device_console_write(kernel.devices.console, value, true)
+  if shell.host_echo then print(value)
+  return value
+end
+
+func shell_error(shell, kernel, message) do
+  shell.failures += 1
+  shell.last_status is 1
+  return shell_emit(shell, kernel, "error: " + message)
+end
+
+func shell_success(shell) do
+  shell.last_status is 0
+end
+
+func shell_prompt(shell, kernel) do
+  marker is shell.prompt_symbol
+  if shell.username == "root" then marker is "#"
+  return shell.username + "@" + kernel.config.hostname + ":" + shell.cwd + marker + " "
+end
+
+func shell_history_add(shell, line) do
+  clean is line.trim()
+  if clean.len() == 0 then return
+  history is shell.history
+  history.push(clean)
+  while history.len() > 200 do
+    history.remove(0)
+  end
+end
+
+func shell_command_help(shell, kernel, args) do
+  topic is ""
+  if args.len() > 0 then topic is args[0].lower()
+  if topic == "" then
+    shell_emit(shell, kernel, "SuraOS shell commands")
+    shell_emit(shell, kernel, "  help about uname uptime health shutdown boot-report")
+    shell_emit(shell, kernel, "  pwd cd ls tree cat write append touch mkdir rm cp mv stat chmod")
+    shell_emit(shell, kernel, "  ps top kill nice run programs assemble disasm")
+    shell_emit(shell, kernel, "  mem disk devices users whoami id env export history log")
+    shell_emit(shell, kernel, "  services service pkg ip monitor snapshot")
+    shell_emit(shell, kernel, "  random net-send net-recv echo clear exit")
+    shell_emit(shell, kernel, "Use: help <command> for selected details.")
+    return
+  end
+  details is {run: "run <program> [cycles] - spawn an installed SVM32 program", assemble: "assemble <virtual-file> [name] - assemble source from SuraOS disk", write: "write <path> <text> - replace a virtual file", kill: "kill <pid> [TERM|KILL|STOP|CONT] - queue a process signal", chmod: "chmod <0..7> <path> - change compact owner permissions", export: "export NAME VALUE - set a shell environment variable", shutdown: "shutdown - request an orderly virtual kernel shutdown"}
+  if topic in details then shell_emit(shell, kernel, details[topic]) else shell_emit(shell, kernel, "No detailed help for " + topic)
+end
+
+func shell_command_ls(shell, kernel, args) do
+  path is shell.cwd
+  long_format is false
+  for arg in args do
+    if arg == "-l" then long_format is true else path is arg
+  end
+  result is fs_list(kernel.fs, path, shell.username, shell.cwd)
+  if not result.ok then
+    shell_error(shell, kernel, result.message)
+    return
+  end
+  if long_format then
+    for node in result.value do
+      kind is "-"
+      if node.kind == SURAOS_NODE_DIR then kind is "d"
+      if node.kind == SURAOS_NODE_DEVICE then kind is "c"
+      perms is node.permissions
+      shell_emit(shell, kernel, kind + perms + " " + osutil_pad_right(node.owner, 8, " ") + " " + osutil_pad_left(node.size, 7, " ") + " " + node.name)
+    end
+  else
+    names is []
+    for node in result.value do
+      suffix is ""
+      if node.kind == SURAOS_NODE_DIR then suffix is "/"
+      names.push(node.name + suffix)
+    end
+    shell_emit(shell, kernel, names.join("  "))
+  end
+end
+
+func shell_command_cd(shell, kernel, args) do
+  target is shell.environment.HOME
+  if args.len() > 0 then target is args[0]
+  normalized is osutil_normalize_path(target, shell.cwd)
+  node is fs_get(kernel.fs, normalized, "/")
+  if node == nil then
+    shell_error(shell, kernel, "directory not found: " + normalized)
+    return
+  end
+  if node.kind != SURAOS_NODE_DIR then
+    shell_error(shell, kernel, "not a directory: " + normalized)
+    return
+  end
+  if not fs_can(node, shell.username, "execute") then
+    shell_error(shell, kernel, "permission denied: " + normalized)
+    return
+  end
+  shell.cwd is normalized
+end
+
+func shell_command_tree(shell, kernel, args) do
+  path is shell.cwd
+  if args.len() > 0 then path is args[0]
+  result is fs_tree_lines(kernel.fs, path, shell.username, shell.cwd)
+  if not result.ok then
+    shell_error(shell, kernel, result.message)
+    return
+  end
+  for line in result.value do
+    shell_emit(shell, kernel, line)
+  end
+end
+
+func shell_command_cat(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "cat requires a path")
+    return
+  end
+  result is fs_read_file(kernel.fs, args[0], shell.username, shell.cwd)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, result.value)
+end
+
+func shell_command_write(shell, kernel, args, append) do
+  if args.len() < 2 then
+    shell_error(shell, kernel, "write requires a path and text")
+    return
+  end
+  path is args[0]
+  content is osutil_join_from(args, 1, " ")
+  result is nil
+  if append then result is fs_append_file(kernel.fs, path, content, shell.username, shell.cwd, kernel.clock.tick)
+else result is fs_write_file(kernel.fs, path, content, shell.username, shell.cwd, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "wrote " + result.value + " bytes")
+end
+
+func shell_command_touch(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "touch requires a path")
+    return
+  end
+  result is fs_touch(kernel.fs, osutil_normalize_path(args[0], shell.cwd), shell.username, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message)
+end
+
+func shell_command_mkdir(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "mkdir requires a path")
+    return
+  end
+  recursive is args.contains("-p")
+  path is args[args.len() - 1]
+  result is fs_mkdir(kernel.fs, osutil_normalize_path(path, shell.cwd), shell.username, recursive, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message)
+end
+
+func shell_command_rm(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "rm requires a path")
+    return
+  end
+  recursive is args.contains("-r") or args.contains("-rf")
+  path is args[args.len() - 1]
+  result is fs_remove(kernel.fs, path, shell.username, shell.cwd, recursive, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "removed " + result.value + " node(s)")
+end
+
+func shell_command_copy(shell, kernel, args, move) do
+  if args.len() != 2 then
+    shell_error(shell, kernel, "command requires source and destination")
+    return
+  end
+  result is nil
+  if move then result is fs_move(kernel.fs, args[0], args[1], shell.username, shell.cwd, kernel.clock.tick)
+else result is fs_copy(kernel.fs, args[0], args[1], shell.username, shell.cwd, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, result.value)
+end
+
+func shell_command_stat(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "stat requires a path")
+    return
+  end
+  result is fs_stat(kernel.fs, args[0], shell.username, shell.cwd)
+  if not result.ok then
+    shell_error(shell, kernel, result.message)
+    return
+  end
+  value is result.value
+  shell_emit(shell, kernel, "File: " + value.path)
+  shell_emit(shell, kernel, "Inode: " + value.inode + "  Kind: " + value.kind + "  Size: " + value.size)
+  shell_emit(shell, kernel, "Owner: " + value.owner + "  Group: " + value.group + "  Mode: " + value.permissions)
+  shell_emit(shell, kernel, "Created: " + value.created_tick + "  Modified: " + value.modified_tick)
+end
+
+func shell_command_chmod(shell, kernel, args) do
+  if args.len() != 2 then
+    shell_error(shell, kernel, "chmod requires MODE PATH")
+    return
+  end
+  mode is osutil_to_integer(args[0], -1)
+  result is fs_chmod(kernel.fs, args[1], mode, shell.username, shell.cwd, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message)
+end
+
+func shell_command_ps(shell, kernel, detailed) do
+  shell_emit(shell, kernel, " PID PPID USER     STATE       PRI TICKS NAME")
+  for process in proc_list(kernel, true) do
+    row is osutil_pad_left(process.pid, 4, " ") + " " + osutil_pad_left(process.parent_pid, 4, " ") + " " + osutil_pad_right(process.user, 8, " ") + " " + osutil_pad_right(process.state, 11, " ") + " " + osutil_pad_left(process.priority, 3, " ") + " " + osutil_pad_left(process.cpu_ticks, 5, " ") + " " + process.name
+    shell_emit(shell, kernel, row)
+    if detailed then
+      shell_emit(shell, kernel, "      cwd=" + process.cwd + " fds=" + process.open_files.keys().len() + " messages=" + process.messages.len() + " switches=" + process.context_switches)
+    end
+  end
+end
+
+func shell_signal_number(name) do
+  upper is name.upper()
+  if upper == "TERM" then return SURAOS_SIGNAL_TERM
+  if upper == "KILL" then return SURAOS_SIGNAL_KILL
+  if upper == "STOP" then return SURAOS_SIGNAL_STOP
+  if upper == "CONT" then return SURAOS_SIGNAL_CONT
+  return osutil_to_integer(name, -1)
+end
+
+func shell_command_kill(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "kill requires a pid")
+    return
+  end
+  pid is osutil_to_integer(args[0], -1)
+  signal is SURAOS_SIGNAL_TERM
+  if args.len() > 1 then signal is shell_signal_number(args[1])
+  if pid < 0 or signal < 0 then
+    shell_error(shell, kernel, "invalid pid or signal")
+    return
+  end
+  result is kernel_signal(kernel, shell.username, 0, pid, signal)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "signal queued")
+end
+
+func shell_command_nice(shell, kernel, args) do
+  if args.len() != 2 then
+    shell_error(shell, kernel, "nice requires PID PRIORITY")
+    return
+  end
+  result is proc_set_priority(kernel, osutil_to_integer(args[0], -1), osutil_to_integer(args[1], -1), shell.username)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "priority=" + result.value)
+end
+
+func shell_command_programs(shell, kernel) do
+  names is osutil_sort_strings(kernel.programs.keys())
+  for name in names do
+    program is kernel.programs[name]
+    shell_emit(shell, kernel, osutil_pad_right(name, 16, " ") + " instructions=" + program.instructions.len() + " entry=" + program.entry)
+  end
+end
+
+func shell_command_run(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "run requires a program name")
+    return
+  end
+  cycles is 1000
+  if args.len() > 1 then cycles is osutil_to_integer(args[1], cycles)
+  result is kernel_spawn_registered(kernel, args[0], shell.username, 0, 5)
+  if not result.ok then
+    shell_error(shell, kernel, result.message)
+    return
+  end
+  process is result.value
+  report is kernel_run(kernel, cycles)
+  shell_emit(shell, kernel, "process " + process.pid + " state=" + process.state + " exit=" + process.exit_code + " ticks=" + process.cpu_ticks)
+  if not report.ok then shell_error(shell, kernel, report.message)
+end
+
+func shell_command_assemble(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "assemble requires a virtual source path")
+    return
+  end
+  read_result is fs_read_file(kernel.fs, args[0], shell.username, shell.cwd)
+  if not read_result.ok then
+    shell_error(shell, kernel, read_result.message)
+    return
+  end
+  name is osutil_basename(args[0]).replace(".sasm", "")
+  if args.len() > 1 then name is args[1]
+  program is asm_assemble(read_result.value, name)
+  if not program.assembled then
+    shell_error(shell, kernel, asm_diagnostic_text(program))
+    return
+  end
+  kernel_register_program(kernel, name, program)
+  shell_emit(shell, kernel, "assembled " + program.instructions.len() + " instruction(s) as " + name)
+end
+
+func shell_command_disasm(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "disasm requires a program name")
+    return
+  end
+  program is kernel_program(kernel, args[0])
+  if program == nil then
+    shell_error(shell, kernel, "program not installed")
+    return
+  end
+  shell_emit(shell, kernel, asm_disassemble(program))
+end
+
+func shell_command_mem(shell, kernel) do
+  stats is mem_stats(kernel.memory)
+  shell_emit(shell, kernel, "memory " + stats.reserved + "/" + stats.size + " bytes (" + stats.utilization + "%)")
+  shell_emit(shell, kernel, "segments=" + stats.segment_count + " reads=" + stats.reads + " writes=" + stats.writes + " faults=" + stats.faults)
+  for row in mem_map(kernel.memory) do
+    shell_emit(shell, kernel, "0x" + osutil_hex(row.start, 8) + "-0x" + osutil_hex(row.finish, 8) + " " + row.permissions + " pid=" + row.pid + " " + row.kind)
+  end
+end
+
+func shell_command_disk(shell, kernel) do
+  usage is fs_usage(kernel.fs)
+  shell_emit(shell, kernel, usage.label + ": " + usage.used + "/" + usage.capacity + " bytes (" + usage.utilization + "%)")
+  shell_emit(shell, kernel, "nodes=" + usage.nodes + " reads=" + usage.reads + " writes=" + usage.writes + " dirty=" + usage.dirty)
+end
+
+func shell_command_devices(shell, kernel) do
+  stats is device_stats(kernel.devices)
+  shell_emit(shell, kernel, "console bytes=" + stats.console.bytes_written + " buffered=" + stats.console.buffered_chunks)
+  shell_emit(shell, kernel, "keyboard events=" + stats.keyboard.events + " queued=" + stats.keyboard.queued)
+  shell_emit(shell, kernel, "clock tick=" + stats.clock.tick + " interrupts=" + stats.clock.interrupts)
+  shell_emit(shell, kernel, "random generated=" + stats.random.generated)
+  shell_emit(shell, kernel, "net0 sent=" + stats.network.sent + " received=" + stats.network.received + " dropped=" + stats.network.dropped)
+end
+
+func shell_command_users(shell, kernel) do
+  names is osutil_sort_strings(kernel.security.users.keys())
+  for name in names do
+    info is security_user_info(kernel.security, name)
+    shell_emit(shell, kernel, info.username + " uid=" + info.uid + " group=" + info.primary_group + " home=" + info.home + " caps=" + info.capabilities.join(","))
+  end
+end
+
+func shell_command_log(shell, kernel, args) do
+  count is 20
+  if args.len() > 0 then count is osutil_to_integer(args[0], count)
+  for entry in diag_tail(kernel.log, count) do
+    shell_emit(shell, kernel, diag_format(entry))
+  end
+end
+
+func shell_command_history(shell, kernel) do
+  index is 0
+  while index < shell.history.len() do
+    shell_emit(shell, kernel, osutil_pad_left(index + 1, 4, " ") + "  " + shell.history[index])
+    index += 1
+  end
+end
+
+func shell_command_env(shell, kernel) do
+  names is osutil_sort_strings(shell.environment.keys())
+  for name in names do
+    shell_emit(shell, kernel, name + "=" + shell.environment[name])
+  end
+end
+
+func shell_command_export(shell, kernel, args) do
+  if args.len() < 2 then
+    shell_error(shell, kernel, "export requires NAME VALUE")
+    return
+  end
+  environment is shell.environment
+  environment[args[0]] is osutil_join_from(args, 1, " ")
+end
+
+func shell_command_random(shell, kernel, args) do
+  minimum is 0
+  maximum is 100
+  if args.len() > 0 then maximum is osutil_to_integer(args[0], maximum)
+  if args.len() > 1 then
+    minimum is osutil_to_integer(args[0], minimum)
+    maximum is osutil_to_integer(args[1], maximum)
+  end
+  shell_emit(shell, kernel, device_random_range(kernel.devices.random, minimum, maximum))
+end
+
+func shell_command_net_send(shell, kernel, args) do
+  if args.len() < 2 then
+    shell_error(shell, kernel, "net-send requires PORT PAYLOAD")
+    return
+  end
+  permission is security_require(kernel.security, shell.username, "device.network")
+  if not permission.ok and shell.username != "root" then
+    shell_error(shell, kernel, permission.message)
+    return
+  end
+  port is osutil_to_integer(args[0], 0)
+  payload is osutil_join_from(args, 1, " ")
+  result is device_network_send(kernel.devices.net0, 0, port, payload, kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "packet=" + result.value)
+end
+
+func shell_command_net_receive(shell, kernel, args) do
+  port is -1
+  if args.len() > 0 then port is osutil_to_integer(args[0], -1)
+  result is device_network_receive(kernel.devices.net0, port)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, result.value.payload)
+end
+
+func shell_command_services(shell, kernel) do
+  shell_emit(shell, kernel, service_table(kernel.services))
+end
+
+func shell_command_service(shell, kernel, args) do
+  if args.len() < 2 then
+    shell_error(shell, kernel, "service requires ACTION NAME")
+    return
+  end
+  action is args[0].lower()
+  name is args[1]
+  if action == "status" then
+    status is service_status(kernel.services, name)
+    if not status.ok then shell_error(shell, kernel, status.message) else shell_emit(shell, kernel, json.stringify(status.value))
+    return
+  end
+  if shell.username != "root" then
+    shell_error(shell, kernel, "service lifecycle changes require root")
+    return
+  end
+  result is nil
+  if action == "start" then
+    result is service_start(kernel.services, kernel, name, true)
+  elif action == "stop" then
+    result is service_stop(kernel.services, kernel, name, false)
+  elif action == "restart" then
+    result is service_restart(kernel.services, kernel, name)
+  elif action == "enable" then
+    result is service_enable(kernel.services, name, true, kernel.clock.tick)
+  elif action == "disable" then
+    result is service_enable(kernel.services, name, false, kernel.clock.tick)
+  else
+    shell_error(shell, kernel, "unknown service action: " + action)
+    return
+  end
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, action + " " + name + ": ok")
+end
+
+func shell_command_pkg(shell, kernel, args) do
+  action is "list"
+  if args.len() > 0 then action is args[0].lower()
+  if action == "list" or action == "search" then
+    query is ""
+    if args.len() > 1 then query is args[1]
+    shell_emit(shell, kernel, pkg_table(kernel.packages, query))
+    return
+  end
+  if action == "stats" then
+    shell_emit(shell, kernel, json.stringify(pkg_manager_stats(kernel.packages)))
+    return
+  end
+  if action == "verify" then
+    name is ""
+    if args.len() > 1 then name is args[1]
+    verified is pkg_verify(kernel.packages, kernel, name)
+    if not verified.ok then shell_error(shell, kernel, verified.message) else shell_emit(shell, kernel, json.stringify(verified))
+    return
+  end
+  if shell.username != "root" then
+    shell_error(shell, kernel, "package changes require root")
+    return
+  end
+  if args.len() < 2 then
+    shell_error(shell, kernel, "pkg " + action + " requires a package name")
+    return
+  end
+  result is nil
+  if action == "install" then
+    constraint is "*"
+    if args.len() > 2 then constraint is args[2]
+    result is pkg_install(kernel.packages, kernel, args[1], constraint)
+  elif action == "remove" then
+    result is pkg_remove(kernel.packages, kernel, args[1], false)
+  else
+    shell_error(shell, kernel, "unknown package action: " + action)
+    return
+  end
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, action + " transaction=" + result.value.id)
+end
+
+func shell_command_ip(shell, kernel, args) do
+  action is "address"
+  if args.len() > 0 then action is args[0].lower()
+  if action == "address" or action == "addr" then
+    for row in net_interface_list(kernel.network) do
+      state is "DOWN"
+      if row.up then state is "UP"
+      shell_emit(shell, kernel, row.name + " " + state + " " + row.address + "/" + row.prefix + " mtu " + row.mtu + " tx=" + row.tx_packets + " rx=" + row.rx_packets)
+    end
+  elif action == "route" then
+    shell_emit(shell, kernel, net_route_table(kernel.network))
+  elif action == "socket" then
+    shell_emit(shell, kernel, json.stringify(net_socket_list(kernel.network)))
+  elif action == "firewall" then
+    shell_emit(shell, kernel, json.stringify(kernel.network.firewall))
+  elif action == "stats" then
+    shell_emit(shell, kernel, json.stringify(net_stats(kernel.network)))
+  else
+    shell_error(shell, kernel, "ip expects address, route, socket, firewall or stats")
+  end
+end
+
+func shell_command_monitor(shell, kernel, args) do
+  action is "dashboard"
+  if args.len() > 0 then action is args[0].lower()
+  if action == "sample" then
+    result is monitor_sample(kernel.monitor, kernel)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "sampled tick " + result.value.sample.tick)
+  elif action == "dashboard" then
+    shell_emit(shell, kernel, monitor_dashboard(kernel.monitor, kernel))
+  elif action == "rules" then
+    shell_emit(shell, kernel, json.stringify(monitor_rule_list(kernel.monitor)))
+  elif action == "alerts" then
+    shell_emit(shell, kernel, json.stringify(monitor_active_alerts(kernel.monitor)))
+  elif action == "stats" then
+    shell_emit(shell, kernel, json.stringify(monitor_stats(kernel.monitor)))
+  else
+    shell_error(shell, kernel, "monitor expects dashboard, sample, rules, alerts or stats")
+  end
+end
+
+func shell_command_boot_report(shell, kernel) do
+  if kernel.bootloader == nil then
+    shell_error(shell, kernel, "bootloader report unavailable")
+    return
+  end
+  shell_emit(shell, kernel, bootloader_report_text(kernel.bootloader))
+end
+
+func shell_command_snapshot(shell, kernel, args) do
+  action is "list"
+  if args.len() > 0 then action is args[0].lower()
+  if action == "list" then
+    shell_emit(shell, kernel, snapshot_table(kernel.snapshots))
+    return
+  end
+  if action == "stats" then
+    shell_emit(shell, kernel, json.stringify(snapshot_manager_stats(kernel.snapshots)))
+    return
+  end
+  if shell.username != "root" then
+    shell_error(shell, kernel, "snapshot changes require root")
+    return
+  end
+  if action == "create" then
+    name is "manual"
+    if args.len() > 1 then name is args[1]
+    description is "created from SuraOS shell"
+    if args.len() > 2 then description is osutil_join_from(args, 2, " ")
+    result is snapshot_capture(kernel.snapshots, kernel, name, description)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "snapshot id=" + result.value.id)
+    return
+  end
+  if args.len() < 2 then
+    shell_error(shell, kernel, "snapshot " + action + " requires an id")
+    return
+  end
+  id is osutil_to_integer(args[1], -1)
+  if action == "delete" then
+    result is snapshot_delete(kernel.snapshots, id, false)
+  elif action == "protect" then
+    result is snapshot_protect(kernel.snapshots, id, true)
+  elif action == "unprotect" then
+    result is snapshot_protect(kernel.snapshots, id, false)
+  elif action == "restore-data" then
+    result is snapshot_restore_data(kernel.snapshots, kernel, id, shell.username)
+  else
+    shell_error(shell, kernel, "unknown snapshot action: " + action)
+    return
+  end
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, action + " snapshot " + id + ": ok")
+end
+
+func shell_execute(shell, kernel, line) do
+  shell.commands += 1
+  shell_success(shell)
+  shell_history_add(shell, line)
+  tokens is osutil_tokenize(line.trim())
+  if tokens.len() == 0 then return true
+  command is tokens[0].lower()
+  args is []
+  index is 1
+  while index < tokens.len() do
+    args.push(tokens[index])
+    index += 1
+  end
+
+  if command == "help" then
+    shell_command_help(shell, kernel, args)
+  elif command == "about" or command == "uname" then
+    shell_emit(shell, kernel, suraos_banner())
+  elif command == "uptime" then
+    shell_emit(shell, kernel, "up " + kernel.clock.tick + " ticks, load " + scheduler_load(kernel) + "%")
+  elif command == "health" then
+    shell_emit(shell, kernel, json.stringify(kernel_health(kernel)))
+  elif command == "whoami" then
+    shell_emit(shell, kernel, shell.username)
+  elif command == "id" then
+    shell_emit(shell, kernel, json.stringify(security_user_info(kernel.security, shell.username)))
+  elif command == "pwd" then
+    shell_emit(shell, kernel, shell.cwd)
+  elif command == "cd" then
+    shell_command_cd(shell, kernel, args)
+  elif command == "ls" then
+    shell_command_ls(shell, kernel, args)
+  elif command == "tree" then
+    shell_command_tree(shell, kernel, args)
+  elif command == "cat" then
+    shell_command_cat(shell, kernel, args)
+  elif command == "write" then
+    shell_command_write(shell, kernel, args, false)
+  elif command == "append" then
+    shell_command_write(shell, kernel, args, true)
+  elif command == "touch" then
+    shell_command_touch(shell, kernel, args)
+  elif command == "mkdir" then
+    shell_command_mkdir(shell, kernel, args)
+  elif command == "rm" then
+    shell_command_rm(shell, kernel, args)
+  elif command == "cp" then
+    shell_command_copy(shell, kernel, args, false)
+  elif command == "mv" then
+    shell_command_copy(shell, kernel, args, true)
+  elif command == "stat" then
+    shell_command_stat(shell, kernel, args)
+  elif command == "chmod" then
+    shell_command_chmod(shell, kernel, args)
+  elif command == "ps" then
+    shell_command_ps(shell, kernel, false)
+  elif command == "top" then
+    shell_command_ps(shell, kernel, true)
+  elif command == "kill" then
+    shell_command_kill(shell, kernel, args)
+  elif command == "nice" then
+    shell_command_nice(shell, kernel, args)
+  elif command == "programs" then
+    shell_command_programs(shell, kernel)
+  elif command == "run" then
+    shell_command_run(shell, kernel, args)
+  elif command == "assemble" then
+    shell_command_assemble(shell, kernel, args)
+  elif command == "disasm" then
+    shell_command_disasm(shell, kernel, args)
+  elif command == "mem" then
+    shell_command_mem(shell, kernel)
+  elif command == "disk" then
+    shell_command_disk(shell, kernel)
+  elif command == "devices" then
+    shell_command_devices(shell, kernel)
+  elif command == "users" then
+    shell_command_users(shell, kernel)
+  elif command == "log" then
+    shell_command_log(shell, kernel, args)
+  elif command == "history" then
+    shell_command_history(shell, kernel)
+  elif command == "env" then
+    shell_command_env(shell, kernel)
+  elif command == "export" then
+    shell_command_export(shell, kernel, args)
+  elif command == "echo" then
+    shell_emit(shell, kernel, osutil_join_from(args, 0, " "))
+  elif command == "random" then
+    shell_command_random(shell, kernel, args)
+  elif command == "net-send" then
+    shell_command_net_send(shell, kernel, args)
+  elif command == "net-recv" then
+    shell_command_net_receive(shell, kernel, args)
+  elif command == "services" then
+    shell_command_services(shell, kernel)
+  elif command == "service" then
+    shell_command_service(shell, kernel, args)
+  elif command == "pkg" then
+    shell_command_pkg(shell, kernel, args)
+  elif command == "ip" then
+    shell_command_ip(shell, kernel, args)
+  elif command == "monitor" then
+    shell_command_monitor(shell, kernel, args)
+  elif command == "boot-report" then
+    shell_command_boot_report(shell, kernel)
+  elif command == "snapshot" then
+    shell_command_snapshot(shell, kernel, args)
+  elif command == "clear" then
+    device_console_clear(kernel.devices.console)
+  elif command == "shutdown" then
+    result is kernel_shutdown(kernel, "requested by shell", shell.username)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell.running is false
+  elif command == "exit" then
+    shell.running is false
+  else
+    shell_error(shell, kernel, "command not found: " + command)
+  end
+  return shell.last_status == 0
+end
+
+func shell_run_batch(shell, kernel, commands) do
+  passed is 0
+  for command in commands do
+    if shell.host_echo then print(shell_prompt(shell, kernel) + command)
+    if shell_execute(shell, kernel, command) then passed += 1
+    if not shell.running then break
+  end
+  return {commands: commands.len(), passed: passed, failed: shell.failures, output: osutil_clone_array(shell.output)}
+end
+
+func shell_run_interactive(shell, kernel) do
+  shell_emit(shell, kernel, suraos_banner())
+  shell_emit(shell, kernel, "Interactive virtual shell. Type 'help'.")
+  while shell.running and not kernel.shutdown_requested do
+    line is input(shell_prompt(shell, kernel))
+    shell_execute(shell, kernel, line)
+  end
+  return shell.last_status
+end

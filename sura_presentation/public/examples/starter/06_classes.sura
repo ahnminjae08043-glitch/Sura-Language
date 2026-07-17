@@ -1,0 +1,14 @@
+class Counter do
+  func init(start: number) do
+    self.value is start
+  end
+
+  func next() -> number do
+    self.value += 1
+    return self.value
+  end
+end
+
+counter is new Counter(10)
+print(counter.next())
+print(counter.next())

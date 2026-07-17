@@ -1,0 +1,18 @@
+func prefix_a(value) do
+  return "A" + value
+end
+
+func prefix_b(value) do
+  return "B" + value
+end
+
+func dispatch(flag, value) do
+  handler is flag ? prefix_a : prefix_b
+  return handler(value)
+end
+
+left is dispatch(true, "x")
+right is dispatch(false, "x")
+assert_eq(left, "Ax")
+assert_eq(right, "Bx")
+print "{left} {right}"
