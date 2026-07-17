@@ -4,9 +4,12 @@ param(
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
+    [string]$PreemptiveSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/preemptive_timer_features.sura"),
     [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura"),
+    [string]$UserModeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_mode_features.sura"),
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
-    [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura")
+    [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
+    [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,14 +68,23 @@ try {
     if (-not (Test-Path -LiteralPath $SchedulerSource)) {
         throw "Sura freestanding scheduler source not found: $SchedulerSource"
     }
+    if (-not (Test-Path -LiteralPath $PreemptiveSource)) {
+        throw "Sura freestanding preemptive-timer source not found: $PreemptiveSource"
+    }
     if (-not (Test-Path -LiteralPath $SyscallSource)) {
         throw "Sura freestanding syscall source not found: $SyscallSource"
+    }
+    if (-not (Test-Path -LiteralPath $UserModeSource)) {
+        throw "Sura freestanding user-mode source not found: $UserModeSource"
     }
     if (-not (Test-Path -LiteralPath $PciSource)) {
         throw "Sura freestanding PCI source not found: $PciSource"
     }
     if (-not (Test-Path -LiteralPath $AcpiSource)) {
         throw "Sura freestanding ACPI source not found: $AcpiSource"
+    }
+    if (-not (Test-Path -LiteralPath $ApStartupSource)) {
+        throw "Sura freestanding AP-startup source not found: $ApStartupSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -292,6 +304,33 @@ try {
         throw "Freestanding scheduler feature image is missing the task bootstrap"
     }
 
+    $preemptiveEfi = Join-Path $temp "PREEMPTIVE_TIMER.EFI"
+    $preemptiveOutput = & $Engine --target uefi-x86_64 --out $preemptiveEfi $PreemptiveSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding preemptive-timer feature compile failed:`n$($preemptiveOutput -join "`n")"
+    }
+    $preemptiveBytes = [System.IO.File]::ReadAllBytes($preemptiveEfi)
+    if ($preemptiveBytes.Length -lt 52000 -or
+        $preemptiveBytes[0] -ne 0x4d -or $preemptiveBytes[1] -ne 0x5a) {
+        throw "Freestanding preemptive-timer feature image is invalid"
+    }
+    $preemptiveUtf16 = [System.Text.Encoding]::Unicode.GetString($preemptiveBytes)
+    if ($preemptiveUtf16 -notmatch "Sura preemptive timer feature test") {
+        throw "Freestanding preemptive-timer feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x48, 0x2d, 0x98, 0x00, 0x00, 0x00)),
+        ([byte[]](0xfa, 0x4c, 0x89, 0xd4, 0x41, 0x5f, 0x41, 0x5e)),
+        ([byte[]](0x48, 0xcf)),
+        ([byte[]](0xcd, 0x81)),
+        ([byte[]](0x0f, 0x30)),
+        ([byte[]](0x48, 0xb8, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))
+    )) {
+        if (-not (Test-ByteSequence $preemptiveBytes $requiredSequence)) {
+            throw "Freestanding preemptive-timer image is missing a required timer or frame-switch sequence"
+        }
+    }
+
     $syscallEfi = Join-Path $temp "SYSCALL.EFI"
     $syscallOutput = & $Engine --target uefi-x86_64 --out $syscallEfi $SyscallSource 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -314,6 +353,33 @@ try {
     }
     if (-not (Test-ByteSequence $syscallBytes ([byte[]](0x48, 0xcf)))) {
         throw "Freestanding syscall feature image is missing interrupt return"
+    }
+
+    $userModeEfi = Join-Path $temp "USER_MODE.EFI"
+    $userModeOutput = & $Engine --target uefi-x86_64 --out $userModeEfi $UserModeSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding user-mode feature compile failed:`n$($userModeOutput -join "`n")"
+    }
+    $userModeBytes = [System.IO.File]::ReadAllBytes($userModeEfi)
+    if ($userModeBytes.Length -lt 39000 -or
+        $userModeBytes[0] -ne 0x4d -or $userModeBytes[1] -ne 0x5a) {
+        throw "Freestanding user-mode feature image is invalid"
+    }
+    $userModeUtf16 = [System.Text.Encoding]::Unicode.GetString($userModeBytes)
+    if ($userModeUtf16 -notmatch "Sura ring-3 and fast syscall feature test") {
+        throw "Freestanding user-mode feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x0f, 0x05, 0x5e, 0x5f)),
+        ([byte[]](0x65, 0x48, 0x89, 0x24, 0x25, 0x08, 0x00, 0x00, 0x00)),
+        ([byte[]](0x65, 0x48, 0x8b, 0x24, 0x25, 0x00, 0x00, 0x00, 0x00)),
+        ([byte[]](0x48, 0x81, 0x65, 0x20, 0xd7, 0x0a, 0x00, 0x00)),
+        ([byte[]](0x48, 0x0f, 0x07)),
+        ([byte[]](0x68, 0x1b, 0x00, 0x00, 0x00, 0x41, 0x57, 0x68, 0x02, 0x02, 0x00, 0x00, 0x68, 0x23, 0x00, 0x00, 0x00, 0x41, 0x54, 0xfa, 0x0f, 0x01, 0xf8, 0x48, 0xcf))
+    )) {
+        if (-not (Test-ByteSequence $userModeBytes $requiredSequence)) {
+            throw "Freestanding user-mode feature image is missing a required ring-transition sequence"
+        }
     }
 
     $pciEfi = Join-Path $temp "PCI.EFI"
@@ -361,6 +427,32 @@ try {
     }
     if (-not (Test-ByteSequence $acpiBytes ([byte[]](0x48, 0xb8, 0x41, 0x50, 0x49, 0x43, 0x00, 0x00, 0x00, 0x00)))) {
         throw "Freestanding ACPI feature image is missing the MADT signature check"
+    }
+
+    $apStartupEfi = Join-Path $temp "AP_STARTUP.EFI"
+    $apStartupOutput = & $Engine --target uefi-x86_64 --out $apStartupEfi $ApStartupSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding AP-startup feature compile failed:`n$($apStartupOutput -join "`n")"
+    }
+    $apStartupBytes = [System.IO.File]::ReadAllBytes($apStartupEfi)
+    if ($apStartupBytes.Length -lt 35000 -or
+        $apStartupBytes[0] -ne 0x4d -or $apStartupBytes[1] -ne 0x5a) {
+        throw "Freestanding AP-startup feature image is invalid"
+    }
+    $apStartupUtf16 = [System.Text.Encoding]::Unicode.GetString($apStartupBytes)
+    if ($apStartupUtf16 -notmatch "Sura AP startup feature test") {
+        throw "Freestanding AP-startup feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0xfa, 0xfc, 0x8c, 0xc8, 0x8e, 0xd8, 0x8e, 0xc0, 0x8e, 0xd0)),
+        ([byte[]](0x0f, 0x22, 0xd8)),
+        ([byte[]](0x0f, 0x30)),
+        ([byte[]](0x66, 0xea, 0x50, 0x00, 0x00, 0x00, 0x08, 0x00)),
+        ([byte[]](0x4c, 0x87, 0x02))
+    )) {
+        if (-not (Test-ByteSequence $apStartupBytes $requiredSequence)) {
+            throw "Freestanding AP-startup feature image is missing a required trampoline sequence"
+        }
     }
 
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
@@ -515,6 +607,100 @@ end
         -Pattern "system-call vector must be 32\.\.255" `
         -Description "Reserved system-call vector"
 
+    $invalidFastMaskSource = Join-Path $temp "invalid_fast_syscall_mask.sura"
+    $invalidFastMaskText = @'
+func dispatch(frame: ptr) do
+  return
+end
+
+func bad_return(frame: ptr) do
+  return
+end
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  syscall.fast_configure(addr_of(dispatch), addr_of(bad_return), 8, 35, 0, 0, 8)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidFastMaskSource,
+        $invalidFastMaskText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidFastMaskSource `
+        -OutputPath (Join-Path $temp "INVALID_FAST_MASK.EFI") `
+        -Pattern "must include TF, IF, DF, IOPL, NT, and AC" `
+        -Description "Unsafe fast-syscall flags mask"
+
+    $invalidUserSelectorSource = Join-Path $temp "invalid_user_selector.sura"
+    $invalidUserSelectorText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  entered: bool is user.enter(4096, 4104, 0, 32, 27)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidUserSelectorSource,
+        $invalidUserSelectorText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidUserSelectorSource `
+        -OutputPath (Join-Path $temp "INVALID_USER_SELECTOR.EFI") `
+        -Pattern "user code selector must be a nonzero 16-bit selector with RPL 3" `
+        -Description "Ring-0 selector used for user entry"
+
+    $invalidPreemptSelectorSource = Join-Path $temp "invalid_preempt_selector.sura"
+    $invalidPreemptSelectorText = @'
+stack is static.zero(4096, 16)
+
+func task(argument: u64) -> u64 do
+  return argument
+end
+
+func task_exit(result: u64) do
+  return
+end
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  frame: ptr is preempt.init(ptr.add(stack, 4096), addr_of(task), 0, addr_of(task_exit), 11)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidPreemptSelectorSource,
+        $invalidPreemptSelectorText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidPreemptSelectorSource `
+        -OutputPath (Join-Path $temp "INVALID_PREEMPT_SELECTOR.EFI") `
+        -Pattern "preemptive task code selector must be a nonzero 16-bit selector with RPL 0" `
+        -Description "Ring-3 selector used for kernel preemption"
+
+    $invalidPreemptResumeSource = Join-Path $temp "invalid_preempt_resume.sura"
+    $invalidPreemptResumeText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  resumed: bool is preempt.resume(4096)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidPreemptResumeSource,
+        $invalidPreemptResumeText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidPreemptResumeSource `
+        -OutputPath (Join-Path $temp "INVALID_PREEMPT_RESUME.EFI") `
+        -Pattern "only available inside an interrupt or interrupt_error function" `
+        -Description "Preemptive frame resume outside an interrupt"
+
     $invalidReservedFunctionSource = Join-Path $temp "invalid_reserved_function.sura"
     $invalidReservedFunctionText = @'
 func __sura_context_switch() do
@@ -537,25 +723,6 @@ end
         -Pattern "are reserved" `
         -Description "Reserved freestanding helper name"
 
-    $invalidSyscallVectorSource = Join-Path $temp "invalid_syscall_vector.sura"
-    $invalidSyscallVectorText = @'
-func efi_main(image: u64, system: ptr) -> u64 do
-  result: u64 is syscall.invoke(31, 0)
-  return result
-end
-'@
-    [System.IO.File]::WriteAllText(
-        $invalidSyscallVectorSource,
-        $invalidSyscallVectorText,
-        (New-Object System.Text.UTF8Encoding($false))
-    )
-    Invoke-ExpectedCompileFailure `
-        -EnginePath $Engine `
-        -SourcePath $invalidSyscallVectorSource `
-        -OutputPath (Join-Path $temp "INVALID_SYSCALL_VECTOR.EFI") `
-        -Pattern "must be 32..255" `
-        -Description "Reserved CPU-exception syscall vector"
-
     $cycleASource = Join-Path $temp "cycle_a.sura"
     $cycleBSource = Join-Path $temp "cycle_b.sura"
     [System.IO.File]::WriteAllText(
@@ -575,7 +742,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

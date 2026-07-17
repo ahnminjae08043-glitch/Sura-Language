@@ -283,7 +283,10 @@ send an APIC end-of-interrupt.
 
 The current wrapper saves integer registers only. Kernel code must add an
 FPU/SIMD state policy before handlers use floating-point or vector operations.
-User-mode entry also still needs a `swapgs` policy and validated kernel stack.
+The generic interrupt wrapper does not execute `swapgs`; a kernel that exposes
+an IDT gate to ring 3 must supply its own privilege-transition entry policy.
+The dedicated fast-syscall helper described below has a separate checked
+`swapgs` and per-CPU stack contract.
 
 ## TSS, IST, and extended CPU state
 
@@ -333,7 +336,8 @@ Kernel code must check CPUID support, configure CR0/CR4 and XCR0 in the
 architecturally required order, obtain the required XSAVE area size from
 CPUID leaf `0xD`, and provide correctly aligned storage before using these
 instructions. `stac/clac` require SMAP support and `swapgs` is only a
-primitive; entry code must still enforce when it is safe to exchange GS bases.
+primitive outside the generated fast-syscall helper; other entry paths must
+still enforce when it is safe to exchange GS bases.
 
 ## Per-CPU storage and local APIC primitives
 
@@ -376,12 +380,51 @@ the compiler. A run-time address remains the caller's responsibility.
 xAPIC destinations are limited to the low 8-bit APIC ID, while x2APIC accepts
 a 32-bit destination.
 
-These helpers send commands but do not invent the required timing or state
-machine. Startup code must discover enabled processors from ACPI MADT, exclude
-the BSP, wait for `icr_busy()` to clear, send INIT, observe the architecture's
-delay requirements, send SIPI as required, and wait on an atomic per-AP ready
-flag. A real-mode-to-long-mode trampoline and AP entry contract are still
-required before `send_startup` can start Sura code.
+These helpers send commands but do not discover processors or calibrate a
+timer. Startup code must discover enabled processors from ACPI MADT and
+exclude the BSP.
+
+## Application-processor startup
+
+`stdlib/freestanding/ap_startup.sura` provides a checked 230-byte x86-64 AP
+trampoline and a bounded INIT/SIPI sequence. The trampoline starts in 16-bit
+real mode, enables PAE and `EFER.LME`, installs its small GDT, loads a
+caller-supplied PML4, enters long mode, switches to a 16-byte-aligned stack,
+publishes an atomic ready flag, and calls a normal one-argument Sura function.
+
+```sura
+import "../../stdlib/freestanding/ap_startup.sura"
+
+config: ptr[ApStartupConfig] is ap_config
+config.destination is mapped_low_page
+config.physical_address is 32768
+config.pml4_physical is kernel_pml4_physical
+config.stack_top is ap_stack_top
+config.entry is addr_of(secondary_processor_main)
+config.argument is ap_index
+config.ready_flag is ap_ready_flag
+
+started: bool is ap_start(config, apic_id, tsc_ticks_per_us, 100000, true)
+```
+
+The trampoline physical address must be a 4-KiB-aligned page from `0x1000`
+through `0xFF000`. `config.destination` must be a writable virtual alias of
+that same physical page. The caller-supplied PML4 must identity-map the
+trampoline and map the stack, entry function, ready flag, and data used by the
+secondary entry. `pml4_physical` must fit in 32 bits because the trampoline
+loads CR3 before long mode. `ap_start` waits for ICR idle, sends INIT, waits
+10 ms, sends SIPI, waits 200 µs, optionally sends a second SIPI, and polls the
+ready flag with caller-supplied TSC calibration and bounded timeouts.
+
+The library does not calibrate TSC, allocate the low page or per-AP state,
+choose processors, install a per-AP GDT/TSS/IDT, initialize FPU/SIMD state,
+join the AP to a scheduler, recover a failed AP, support CPU hotplug, or tear
+down temporary identity mappings. It targets modern integrated local APIC
+startup and does not implement the older discrete 82489DX INIT-deassert
+sequence. `examples/os/ap_startup_features.sura` is compile-only.
+`tools/sura_ap_startup_smoke.ps1` verifies the exact assembled 230-byte
+template inside the generated EFI image; actual AP execution still needs QEMU
+or hardware verification.
 
 ## x86-64 paging primitives
 
@@ -528,7 +571,61 @@ FPU/SIMD state, or program a hardware timer. A kernel using sleep must call
 `scheduler_tick` from its chosen timer policy, and queue operations must not
 race an interrupt or another processor.
 
-## Indirect calls and software-interrupt syscalls
+## Kernel preemption and local-APIC timers
+
+The freestanding backend can create and validate the 152-byte same-privilege
+interrupt frame used to start or resume a ring-0 task:
+
+- `preempt.frame_size()`
+- `preempt.init(stack_top, entry, argument, exit_handler, code_selector)`
+- `preempt.frame_valid(frame)`
+- `preempt.resume(frame)`
+- `interrupt.invoke(vector)`
+
+`preempt.init` creates the same integer-register, normalized-error,
+RIP/CS/RFLAGS layout produced by an `interrupt` function, with a bootstrap
+that calls `entry(argument)` and then `exit_handler(result)`. It validates
+canonical addresses, a 16-byte-aligned stack top, and a nonzero ring-0 code
+selector. A constant invalid selector is rejected during compilation; a
+run-time selector makes `preempt.init` return zero.
+
+`preempt.resume` is accepted only inside an `interrupt` or `interrupt_error`
+function. It validates the frame, disables maskable interrupts for the final
+switch, restores all integer registers, discards the normalized error code,
+and executes `iretq`. A valid resume does not return. The current validator
+accepts same-privilege ring-0 frames only; it deliberately rejects an
+interrupt frame captured from ring 3 because user-entry `swapgs`, address
+space, and process-state policy are not part of this scheduler.
+
+`stdlib/freestanding/preempt.sura` builds a single-CPU round-robin scheduler on
+these intrinsics. It supports task creation, timer-driven selection, voluntary
+yield through reserved vector 129, sleep, block, wake, join, exit, and reap.
+Slot zero represents the boot/idle task and cannot be slept or blocked, so
+there is always a ring-0 fallback. The timer handler acknowledges the local
+APIC before switching frames. The caller must install vector 129 and the
+chosen timer vector as ring-0 interrupt gates.
+
+`stdlib/freestanding/timer.sura` provides:
+
+- local-APIC one-shot and periodic initial-count programming
+- mask, unmask, stop, and current-count access
+- bounded PIT channel-2 calibration
+- conversion from a measured PIT interval to a requested timer frequency
+- CPUID-checked TSC-deadline programming and cancellation
+
+The calibration loop has a caller-supplied bound and restores port `0x61`.
+The kernel still owns vector allocation, IDT installation, timer-frequency
+policy, per-CPU programming, and interrupt-controller setup.
+
+`examples/os/preemptive_timer_features.sura` compiles the scheduler, PIT/APIC
+timer paths, checked frame resume, and voluntary software interrupt without
+executing them as a UEFI program. The generated machine-code paths are covered
+by `tools/sura_uefi_target_smoke.ps1`, but an actual preemptive switch has not
+yet been executed in QEMU or on hardware. This foundation does not save
+FPU/SIMD, CR3, FS/GS bases, debug registers, or process state; it has no
+priority policy, SMP queue locking, load balancing, or user-mode preemption.
+
+## Indirect calls, ring 3, and syscalls
 
 `call.indirect(function, argument...)` performs a Win64-compatible indirect
 call to a function address with at most five integer or pointer arguments.
@@ -537,8 +634,7 @@ The target must follow the same freestanding Sura calling convention.
 `syscall.invoke(vector, number, argument...)` emits `int vector`. The vector
 must be a compile-time integer from 32 through 255. The syscall number is
 placed in RAX and up to five arguments use RDI, RSI, RDX, R10, and R8. This is
-a software-interrupt ABI; it is not the x86-64 `SYSCALL/SYSRET` instruction
-pair.
+a software-interrupt compatibility ABI.
 
 `stdlib/freestanding/syscall.sura` provides a fixed-size handler table and the
 `software_syscall_dispatch` interrupt handler. The dispatcher returns its
@@ -548,6 +644,63 @@ validation, copy-in/copy-out, per-process permissions, synchronization,
 address-space selection, and fault recovery. The compile-only
 `examples/os/syscall_features.sura` emits both sides without entering user
 mode or starting an OS.
+
+The x86-64 fast path uses the same number and argument registers:
+
+```sura
+percpu.set_base(fast_syscall_cpu_state)
+percpu.set_kernel_base(user_gs_state)
+syscall.fast_configure(addr_of(fast_syscall_dispatch_active), addr_of(fast_syscall_bad_return), 8, 35, 292608, 0, 8)
+
+result: u64 is syscall.fast(7, argument, 2, 3, 4, 5)
+```
+
+`syscall.fast_configure(dispatch, bad_return, kernel_cs, user_cs, flags_mask,
+kernel_rsp_offset, user_rsp_offset)` may appear exactly once. It enables
+`EFER.SCE` and configures `IA32_STAR`, `IA32_LSTAR`, and `IA32_FMASK`.
+Selectors, the mask, and the two GS offsets are compile-time values. The
+compiler requires ring-0 kernel CS, ring-3 user CS, distinct aligned GS
+offsets, and an FMASK that clears TF, IF, DF, IOPL, NT, and AC on entry.
+The user SS used by `SYSRETQ` is `user_cs - 8`.
+
+The generated entry helper executes `swapgs`, saves user RSP through GS,
+loads the per-CPU kernel RSP, creates a `FastSyscallFrame`, and calls the
+configured dispatcher. Before `SYSRETQ`, it requires nonzero lower-half
+canonical user RIP and RSP, sanitizes RFLAGS, restores integer registers and
+the user stack, and executes `swapgs` again. An invalid return calls
+`bad_return(frame)`; that function must terminate or schedule away the current
+process and must not return. The library's default implementation disables
+interrupts and halts, so a real kernel should replace it.
+
+The saved fast frame is:
+
+| Offset | Field |
+| ---: | --- |
+| 0..112 | `r15, r14, r13, r12, r11, r10, r9, r8, rdi, rsi, rbp, rbx, rdx, rcx, rax` |
+| 120 | user `rsp` |
+
+Ring-3 entry is explicit:
+
+```sura
+if user.is_address(user_entry) and user.is_address(user_stack_top) then
+  entered: bool is user.enter(user_entry, user_stack_top, argument, 35, 27)
+end
+```
+
+`user.enter` requires nonzero lower-half canonical entry and stack addresses,
+a stack pointer congruent to 8 modulo 16 for the Sura function-entry ABI, and
+ring-3 CS/SS selectors. It places the argument in RCX, constructs an IRET
+frame with RFLAGS `0x202`, disables maskable interrupts for the final
+transition, executes `swapgs`, and enters with `IRETQ`. Success does not
+return; `IRETQ` restores the requested user IF state.
+
+These operations do not create user page tables or mark pages U/S, load an
+executable, validate syscall pointers, copy data across the privilege
+boundary, isolate kernel mappings, mitigate speculative `swapgs` paths, save
+FPU/SIMD state, or define process fault and exit policy. The kernel must keep
+kernel code/data supervisor-only and provide those policies.
+`examples/os/user_mode_features.sura` is a compile and machine-code feature
+test; ring-3 execution still needs QEMU or hardware verification.
 
 ## PCI configuration-space foundation
 
@@ -608,9 +761,10 @@ The caller supplies fixed processor, I/O APIC, and override buffers. Capacity
 overflow sets `AcpiMadtInfo.truncated`; malformed entry lengths fail instead
 of continuing past the table. Firmware configuration-table pages must remain
 mapped while parsing. This module does not parse every ACPI table, configure
-interrupt routing, allocate per-CPU state, create an AP trampoline, or start
-an application processor. `examples/os/acpi_features.sura` is a non-executing
-compile feature test.
+interrupt routing, allocate per-CPU state, or itself start an application
+processor. Pair its processor records with
+`stdlib/freestanding/ap_startup.sura`. `examples/os/acpi_features.sura` is a
+non-executing compile feature test.
 
 ## Current lowering boundary
 
@@ -623,13 +777,16 @@ relative imports are flattened into the same freestanding compilation unit.
 
 Still required for a complete self-hosted OS environment:
 
-- AP trampoline and complete AP startup
+- executed AP-startup coverage and complete per-AP descriptor, extended-state,
+  scheduler-join, failure-recovery, and temporary-mapping lifecycle
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
-- user/kernel entry validation and `swapgs` policy
 - synchronized/NUMA physical-memory policy, automatic intermediate page-table
   allocation/reclamation, virtual address-space policy, and remote TLB shootdown
-- preemptive/SMP scheduling, `SYSCALL/SYSRET` and user-entry policy,
-  PCIe ECAM/resource allocation, and device-specific drivers
+- SMP run queues, load balancing, user-mode preemption, and executed
+  timer/context-switch verification
+- per-process address spaces and executable loading, user-pointer copy-in/out,
+  process fault/exit policy, KPTI, and speculative-entry hardening
+- PCIe ECAM/resource allocation and device-specific drivers
 - FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend

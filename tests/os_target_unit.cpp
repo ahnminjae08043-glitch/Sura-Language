@@ -163,6 +163,24 @@ int main(int argc, char** argv) {
     task_exit->param_types.push_back(scalar_type("u64"));
     root->body.push_back(std::move(task_exit));
 
+    auto fast_handler_body = std::make_unique<SuraBlock>(1);
+    fast_handler_body->body.push_back(std::make_unique<ReturnStmt>(
+        std::make_unique<NumLit>(0, 1), 1));
+    auto fast_handler = std::make_unique<FuncDef>(
+        "fast_syscall_handler", std::vector<std::string>{"frame"},
+        std::move(fast_handler_body), 1);
+    fast_handler->param_types.push_back(scalar_type("ptr"));
+    root->body.push_back(std::move(fast_handler));
+
+    auto fast_bad_body = std::make_unique<SuraBlock>(1);
+    fast_bad_body->body.push_back(std::make_unique<ReturnStmt>(
+        std::make_unique<NumLit>(0, 1), 1));
+    auto fast_bad = std::make_unique<FuncDef>(
+        "fast_bad_return", std::vector<std::string>{"frame"},
+        std::move(fast_bad_body), 1);
+    fast_bad->param_types.push_back(scalar_type("ptr"));
+    root->body.push_back(std::move(fast_bad));
+
     auto irq_body = std::make_unique<SuraBlock>(1);
     {
         auto address = std::make_unique<CallExpr>("addr_of", 1);
@@ -172,6 +190,20 @@ int main(int argc, char** argv) {
         args.push_back(std::make_unique<NumLit>(1, 1));
         irq_body->body.push_back(std::make_unique<ExprStmt>(
             method_call("atomic", "fetch_add64", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("frame", 1));
+        irq_body->body.push_back(std::make_unique<AssignStmt>(
+            "preempt_frame_valid",
+            method_call("preempt", "frame_valid", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("frame", 1));
+        irq_body->body.push_back(std::make_unique<AssignStmt>(
+            "preempt_resumed",
+            method_call("preempt", "resume", std::move(args)), 1));
     }
     irq_body->body.push_back(
         std::make_unique<ReturnStmt>(nullptr, 1));
@@ -468,6 +500,8 @@ int main(int argc, char** argv) {
     add_module_statement("paging", "flush");
     entry_body->body.push_back(std::make_unique<AssignStmt>(
         "context_frame_size", method_call("context", "frame_size"), 1));
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "preempt_frame_size", method_call("preempt", "frame_size"), 1));
     {
         std::vector<ExprPtr> stack_args;
         stack_args.push_back(std::make_unique<Ident>("task_stack", 1));
@@ -486,6 +520,26 @@ int main(int argc, char** argv) {
         entry_body->body.push_back(std::make_unique<AssignStmt>(
             "initial_context_rsp",
             method_call("context", "init", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> stack_args;
+        stack_args.push_back(std::make_unique<Ident>("task_stack", 1));
+        stack_args.push_back(std::make_unique<NumLit>(4096, 1));
+
+        auto entry_address = std::make_unique<CallExpr>("addr_of", 1);
+        entry_address->args.push_back(std::make_unique<Ident>("task_entry", 1));
+        auto exit_address = std::make_unique<CallExpr>("addr_of", 1);
+        exit_address->args.push_back(std::make_unique<Ident>("task_exit", 1));
+
+        std::vector<ExprPtr> args;
+        args.push_back(method_call("ptr", "add", std::move(stack_args)));
+        args.push_back(std::move(entry_address));
+        args.push_back(std::make_unique<NumLit>(456, 1));
+        args.push_back(std::move(exit_address));
+        args.push_back(std::make_unique<NumLit>(8, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "initial_preempt_frame",
+            method_call("preempt", "init", std::move(args)), 1));
     }
     {
         auto saved_address = std::make_unique<CallExpr>("addr_of", 1);
@@ -518,6 +572,62 @@ int main(int argc, char** argv) {
         entry_body->body.push_back(std::make_unique<AssignStmt>(
             "syscall_result",
             method_call("syscall", "invoke", std::move(args)), 1));
+    }
+    {
+        auto dispatch = std::make_unique<CallExpr>("addr_of", 1);
+        dispatch->args.push_back(
+            std::make_unique<Ident>("fast_syscall_handler", 1));
+        auto bad_return = std::make_unique<CallExpr>("addr_of", 1);
+        bad_return->args.push_back(
+            std::make_unique<Ident>("fast_bad_return", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(dispatch));
+        args.push_back(std::move(bad_return));
+        args.push_back(std::make_unique<NumLit>(8, 1));
+        args.push_back(std::make_unique<NumLit>(35, 1));
+        args.push_back(std::make_unique<NumLit>(292608, 1));
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        args.push_back(std::make_unique<NumLit>(8, 1));
+        add_module_statement(
+            "syscall", "fast_configure", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(7, 1));
+        for (uint64_t value = 1; value <= 5; ++value) {
+            args.push_back(std::make_unique<NumLit>(
+                static_cast<double>(value), 1));
+        }
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "fast_syscall_result",
+            method_call("syscall", "fast", std::move(args)), 1));
+    }
+    {
+        auto task_address = std::make_unique<CallExpr>("addr_of", 1);
+        task_address->args.push_back(
+            std::make_unique<Ident>("task_entry", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(task_address));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "user_address_valid",
+            method_call("user", "is_address", std::move(args)), 1));
+    }
+    {
+        auto task_address = std::make_unique<CallExpr>("addr_of", 1);
+        task_address->args.push_back(
+            std::make_unique<Ident>("task_entry", 1));
+        std::vector<ExprPtr> stack_args;
+        stack_args.push_back(std::make_unique<Ident>("task_stack", 1));
+        stack_args.push_back(std::make_unique<NumLit>(4088, 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(task_address));
+        args.push_back(method_call("ptr", "add", std::move(stack_args)));
+        args.push_back(std::make_unique<NumLit>(123, 1));
+        args.push_back(std::make_unique<NumLit>(35, 1));
+        args.push_back(std::make_unique<NumLit>(27, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "user_entered",
+            method_call("user", "enter", std::move(args)), 1));
     }
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
@@ -590,6 +700,12 @@ int main(int argc, char** argv) {
                           {0x48, 0x83, 0xe0, 0xf0,
                            0x48, 0x83, 0xe8, 0x48})); // initial 72-byte frame
     assert(contains_bytes(result.image,
+                          {0x48, 0x83, 0xe0, 0xf0,
+                           0x48, 0x2d, 0x98, 0x00, 0x00, 0x00})); // preempt frame
+    assert(contains_bytes(result.image,
+                          {0xfa, 0x4c, 0x89, 0xd4,
+                           0x41, 0x5f, 0x41, 0x5e})); // checked frame resume
+    assert(contains_bytes(result.image,
                           {0x41, 0xff, 0xd3})); // indirect Win64 call
     assert(contains_bytes(result.image,
                           {0xcd, 0x80, 0x5e, 0x5f})); // int 0x80 and restore
@@ -597,6 +713,28 @@ int main(int argc, char** argv) {
                           {0x48, 0x8b, 0xbd})); // syscall argument 0 -> rdi
     assert(contains_bytes(result.image,
                           {0x48, 0x8b, 0xb5})); // syscall argument 1 -> rsi
+    assert(contains_bytes(result.image,
+                          {0x0f, 0x05, 0x5e, 0x5f})); // syscall and restore
+    assert(contains_bytes(result.image,
+                          {0xb9, 0x82, 0x00, 0x00, 0xc0,
+                           0x0f, 0x30})); // IA32_LSTAR
+    assert(contains_bytes(result.image,
+                          {0x65, 0x48, 0x89, 0x24, 0x25,
+                           0x08, 0x00, 0x00, 0x00})); // save user RSP
+    assert(contains_bytes(result.image,
+                          {0x65, 0x48, 0x8b, 0x24, 0x25,
+                           0x00, 0x00, 0x00, 0x00})); // load kernel RSP
+    assert(contains_bytes(result.image,
+                          {0x48, 0x0f, 0x07})); // sysretq
+    assert(contains_bytes(result.image,
+                          {0x68, 0x1b, 0x00, 0x00, 0x00,
+                           0x41, 0x57,
+                           0x68, 0x02, 0x02, 0x00, 0x00,
+                           0x68, 0x23, 0x00, 0x00, 0x00,
+                           0x41, 0x54,
+                           0xfa,
+                           0x0f, 0x01, 0xf8,
+                           0x48, 0xcf})); // ring-3 IRET frame
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');

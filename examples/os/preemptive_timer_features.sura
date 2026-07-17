@@ -1,0 +1,45 @@
+# Compile-only local-APIC timer and ring-0 preemptive scheduler feature test.
+
+import "../../stdlib/freestanding/timer.sura"
+import "../../stdlib/freestanding/preempt.sura"
+
+preempt_state is static.struct(PreemptScheduler)
+preempt_tasks is static.struct(PreemptTask, 3)
+preempt_stack_a is static.zero(16384, 16)
+preempt_stack_b is static.zero(16384, 16)
+preempt_idt is static.zero(4096, 16)
+
+func preempt_task(argument: u64) -> u64 do
+  value: u64 is argument
+  while value < 100 do
+    value += 1
+  end
+  return value
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura preemptive timer feature test")
+  uefi.newline()
+
+  # A real kernel installs these gates after building its GDT/TSS/IDT and
+  # leaving UEFI boot services. This branch only forces complete lowering.
+  if 0 == 1 then
+    state: ptr[PreemptScheduler] is preempt_state
+    initialized: bool is preempt_scheduler_init(state, preempt_tasks, 3, 8)
+    first: u64 is preempt_create(state, preempt_stack_a, 16384, addr_of(preempt_task), 10)
+    second: u64 is preempt_create(state, preempt_stack_b, 16384, addr_of(preempt_task), 20)
+    cpu.idt_set_gate(preempt_idt, 48, addr_of(preempt_timer_interrupt), 8, 0, 142)
+    cpu.idt_set_gate(preempt_idt, 129, addr_of(preempt_yield_interrupt), 8, 0, 142)
+    cpu.load_idt(preempt_idt, 4096)
+    sample: u64 is apic_timer_calibrate_pit(11932, 16, 10000000)
+    count: u64 is apic_timer_count_for_hz(sample, 11932, 100)
+    armed: bool is apic_timer_configure(48, count, 16, true)
+    deadline: bool is apic_tsc_deadline_after(48, 1000000)
+    yielded: bool is preempt_yield()
+    slept: bool is preempt_sleep(state, 5)
+    first_result: u64 is preempt_join(state, first)
+    second_result: u64 is preempt_join(state, second)
+    frame_bytes: u64 is preempt.frame_size()
+  end
+  return 0
+end

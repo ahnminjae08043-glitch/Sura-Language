@@ -1,0 +1,134 @@
+# Bounded x86 local-APIC timer and PIT calibration helpers.
+#
+# The caller owns interrupt-vector allocation, IDT installation, APIC EOI,
+# per-CPU programming, synchronization, and calibration policy.
+
+func apic_timer_divide_encoding(divisor: u64) do
+  if divisor == 1 then return 11
+  if divisor == 2 then return 0
+  if divisor == 4 then return 1
+  if divisor == 8 then return 2
+  if divisor == 16 then return 3
+  if divisor == 32 then return 8
+  if divisor == 64 then return 9
+  if divisor == 128 then return 10
+  return 255
+end
+
+func apic_timer_stop() do
+  if apic.mode() == 0 then return false
+  apic.write(800, 65536)
+  apic.write(896, 0)
+  return true
+end
+
+func apic_timer_mask() do
+  if apic.mode() == 0 then return false
+  value: u64 is apic.read(800)
+  apic.write(800, value | 65536)
+  return true
+end
+
+func apic_timer_unmask() do
+  if apic.mode() == 0 then return false
+  value: u64 is apic.read(800)
+  apic.write(800, value & 4294901759)
+  return true
+end
+
+func apic_timer_current() do
+  if apic.mode() == 0 then return 0
+  return apic.read(912)
+end
+
+func apic_timer_configure(vector: u64, initial_count: u64, divisor: u64, periodic: bool) do
+  if apic.mode() == 0 then return false
+  if vector < 32 or vector > 255 then return false
+  if initial_count == 0 or initial_count > 4294967295 then return false
+  divide: u64 is apic_timer_divide_encoding(divisor)
+  if divide == 255 then return false
+
+  apic.write(800, 65536 | vector)
+  apic.write(896, 0)
+  apic.write(992, divide)
+  lvt: u64 is vector
+  if periodic then lvt is lvt | 131072
+  apic.write(800, lvt)
+  apic.write(896, initial_count)
+  return true
+end
+
+func apic_tsc_deadline_supported() do
+  features: u64 is cpu.cpuid_ecx(1, 0)
+  return (features & 16777216) != 0
+end
+
+func apic_tsc_deadline_set(vector: u64, deadline_tsc: u64) do
+  if apic.mode() == 0 or not apic_tsc_deadline_supported() then return false
+  if vector < 32 or vector > 255 or deadline_tsc == 0 then return false
+  apic.write(800, vector | 262144)
+  cpu.write_msr(1760, deadline_tsc)
+  return true
+end
+
+func apic_tsc_deadline_after(vector: u64, delta_ticks: u64) do
+  if delta_ticks == 0 then return false
+  now: u64 is cpu.rdtsc()
+  deadline: u64 is now + delta_ticks
+  if deadline < now then return false
+  return apic_tsc_deadline_set(vector, deadline)
+end
+
+func apic_tsc_deadline_cancel() do
+  if not apic_tsc_deadline_supported() then return false
+  cpu.write_msr(1760, 0)
+  return apic_timer_stop()
+end
+
+# Measures local-APIC timer ticks during a caller-chosen PIT channel-2 count.
+# A typical 10 ms sample uses pit_count 11932. The loop is always bounded.
+func apic_timer_calibrate_pit(pit_count: u64, divisor: u64, spin_limit: u64) do
+  if apic.mode() == 0 then return 0
+  if pit_count == 0 or pit_count > 65535 or spin_limit == 0 then return 0
+  divide: u64 is apic_timer_divide_encoding(divisor)
+  if divide == 255 then return 0
+
+  port61: u64 is io.in8(97)
+  io.out8(97, port61 & 252)
+  io.out8(67, 176)
+  io.out8(66, pit_count & 255)
+  io.out8(66, (pit_count >> 8) & 255)
+
+  apic.write(800, 65568)
+  apic.write(992, divide)
+  apic.write(896, 4294967295)
+  io.out8(97, (port61 & 252) | 1)
+
+  attempt: u64 is 0
+  completed: bool is false
+  while attempt < spin_limit do
+    if (io.in8(97) & 32) != 0 then
+      completed is true
+      attempt is spin_limit
+    else
+      cpu.pause()
+      attempt += 1
+    end
+  end
+
+  current: u64 is apic.read(912)
+  apic.write(896, 0)
+  apic.write(800, 65536)
+  io.out8(97, port61)
+  if not completed then return 0
+  return 4294967295 - current
+end
+
+func apic_timer_count_for_hz(sample_ticks: u64, pit_count: u64, target_hz: u64) do
+  if sample_ticks == 0 or pit_count == 0 or target_hz == 0 then return 0
+  if pit_count > 65535 or target_hz > 1000000 then return 0
+  ticks_per_second: u64 is (sample_ticks * 1193182) / pit_count
+  count: u64 is ticks_per_second / target_hz
+  if count == 0 or count > 4294967295 then return 0
+  return count
+end

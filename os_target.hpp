@@ -261,6 +261,12 @@ class UefiX64Compiler {
     size_t call_argument_depth = 0;
     uint32_t frame_size = 0;
     bool context_helpers_used = false;
+    bool preempt_helpers_used = false;
+    bool fast_syscall_helper_used = false;
+    std::string fast_syscall_handler;
+    std::string fast_syscall_bad_return_handler;
+    uint32_t fast_syscall_kernel_rsp_offset = 0;
+    uint32_t fast_syscall_user_rsp_offset = 0;
     const FuncDef* current_function = nullptr;
     bool current_is_entry = false;
 
@@ -1368,6 +1374,134 @@ class UefiX64Compiler {
             return;
         }
 
+        if (name == "syscall_fast") {
+            if (args.empty() || args.size() > 6) {
+                fail(origin, "syscall.fast(number, argument...) expects a "
+                             "number and at most five arguments");
+            }
+            const size_t argument_base = save_call_args(args);
+            x.bytes({0x57, 0x56}); // preserve Win64 nonvolatile rdi/rsi
+            x.mov_rax_rbp(scratch_slots[argument_base]);
+
+            if (args.size() > 1) {
+                x.bytes({0x48, 0x8b, 0xbd});
+                x.d(static_cast<uint32_t>(scratch_slots[argument_base + 1]));
+            } else {
+                x.bytes({0x31, 0xff});
+            }
+            if (args.size() > 2) {
+                x.bytes({0x48, 0x8b, 0xb5});
+                x.d(static_cast<uint32_t>(scratch_slots[argument_base + 2]));
+            } else {
+                x.bytes({0x31, 0xf6});
+            }
+            if (args.size() > 3) {
+                x.mov_reg_rbp(2, scratch_slots[argument_base + 3]);
+            } else {
+                x.bytes({0x31, 0xd2});
+            }
+            if (args.size() > 4) {
+                x.mov_reg_rbp(10, scratch_slots[argument_base + 4]);
+            } else {
+                x.bytes({0x45, 0x31, 0xd2});
+            }
+            if (args.size() > 5) {
+                x.mov_reg_rbp(8, scratch_slots[argument_base + 5]);
+            } else {
+                x.bytes({0x45, 0x31, 0xc0});
+            }
+            x.bytes({0x0f, 0x05, 0x5e, 0x5f}); // syscall; restore rsi/rdi
+            return;
+        }
+
+        if (name == "user_is_address") {
+            if (args.size() != 1) {
+                fail(origin, "user.is_address(address) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x48, 0x89, 0xc2, // mov rdx,rax
+                     0x31, 0xc0,       // false by default
+                     0x48, 0x85, 0xd2});
+            const size_t finished = x.rel32({0x0f, 0x84});
+            x.bytes({0x48, 0xc1, 0xea, 0x2f,
+                     0x0f, 0x94, 0xc0,
+                     0x0f, 0xb6, 0xc0});
+            x.patch_rel32(finished, x.pos());
+            return;
+        }
+
+        if (name == "user_enter") {
+            if (args.size() != 5) {
+                fail(origin, "user.enter(entry, stack_pointer, argument, "
+                             "code_selector, stack_selector) expects five "
+                             "values");
+            }
+            const uint64_t code_selector =
+                require_constant_integer(args[3].get(), "user code selector");
+            const uint64_t stack_selector =
+                require_constant_integer(args[4].get(), "user stack selector");
+            if (code_selector > 0xffff || (code_selector & 3) != 3 ||
+                code_selector < 3) {
+                fail(args[3].get(), "user code selector must be a nonzero "
+                                    "16-bit selector with RPL 3");
+            }
+            if (stack_selector > 0xffff || (stack_selector & 3) != 3 ||
+                stack_selector < 3) {
+                fail(args[4].get(), "user stack selector must be a nonzero "
+                                    "16-bit selector with RPL 3");
+            }
+            const size_t argument_base = save_call_args(args);
+
+            // Preserve nonvolatile registers if validation fails and the
+            // intrinsic returns false. Successful entry never returns here.
+            x.bytes({0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57});
+            x.bytes({0x4c, 0x8b, 0xa5});
+            x.d(static_cast<uint32_t>(scratch_slots[argument_base]));
+            x.bytes({0x4c, 0x8b, 0xbd});
+            x.d(static_cast<uint32_t>(scratch_slots[argument_base + 1]));
+            x.bytes({0x4c, 0x8b, 0xad});
+            x.d(static_cast<uint32_t>(scratch_slots[argument_base + 2]));
+
+            std::vector<size_t> invalid;
+            const auto validate_low_user_address =
+                [&](std::initializer_list<uint8_t> move_to_rax) {
+                    x.bytes(move_to_rax);
+                    x.bytes({0x48, 0x85, 0xc0});
+                    invalid.push_back(x.rel32({0x0f, 0x84}));
+                    x.bytes({0x48, 0x89, 0xc2,
+                             0x48, 0xc1, 0xea, 0x2f,
+                             0x48, 0x85, 0xd2});
+                    invalid.push_back(x.rel32({0x0f, 0x85}));
+                };
+            validate_low_user_address({0x4c, 0x89, 0xe0}); // r12 entry
+            validate_low_user_address({0x4c, 0x89, 0xf8}); // r15 stack
+            x.bytes({0x4c, 0x89, 0xf8,
+                     0x48, 0x83, 0xe0, 0x0f,
+                     0x48, 0x83, 0xf8, 0x08});
+            invalid.push_back(x.rel32({0x0f, 0x85}));
+
+            x.bytes({0x4c, 0x89, 0xe9}); // rcx = user argument
+            x.b(0x68);
+            x.d(static_cast<uint32_t>(stack_selector));
+            x.bytes({0x41, 0x57}); // user RSP
+            x.b(0x68);
+            x.d(0x202);            // reserved bit + IF
+            x.b(0x68);
+            x.d(static_cast<uint32_t>(code_selector));
+            x.bytes({0x41, 0x54,             // user RIP
+                     0xfa,                   // close the maskable IRQ window
+                     0x0f, 0x01, 0xf8,       // swapgs
+                     0x48, 0xcf});            // iretq restores user IF
+
+            const size_t invalid_target = x.pos();
+            for (size_t patch : invalid) {
+                x.patch_rel32(patch, invalid_target);
+            }
+            x.bytes({0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c,
+                     0x31, 0xc0});
+            return;
+        }
+
         if (name.rfind("static_", 0) == 0) {
             fail(origin, raw_name +
                          "() may only initialize a top-level static declaration");
@@ -1899,6 +2033,153 @@ class UefiX64Compiler {
             x.mov_rax_imm(72);
             return;
         }
+        if (name == "preempt_frame_size") {
+            if (!args.empty()) {
+                fail(origin, "preempt.frame_size() takes no arguments");
+            }
+            x.mov_rax_imm(152);
+            return;
+        }
+        if (name == "preempt_init") {
+            if (args.size() != 5) {
+                fail(origin, "preempt.init(stack_top, entry, argument, "
+                             "exit_handler, code_selector) expects five values");
+            }
+            uint64_t constant_selector = 0;
+            if (constant_integer(args[4].get(), constant_selector) &&
+                (constant_selector == 0 || constant_selector > 0xffff ||
+                 (constant_selector & 3) != 0)) {
+                fail(args[4].get(), "preemptive task code selector must be a "
+                                    "nonzero 16-bit selector with RPL 0");
+            }
+            uint64_t constant_top = 0;
+            if (constant_integer(args[0].get(), constant_top) &&
+                (constant_top < 152 || (constant_top & 15))) {
+                fail(args[0].get(), "preempt.init() constant stack top must be "
+                                    "16-byte aligned and leave 152 frame bytes");
+            }
+
+            context_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            const size_t temporary = reserve_temporaries(1, origin);
+            std::vector<size_t> invalid;
+
+            const auto validate_canonical =
+                [&](size_t argument_index, const char* /*description*/) {
+                    x.mov_rax_rbp(scratch_slots[argument_base + argument_index]);
+                    x.bytes({0x48, 0x85, 0xc0});
+                    invalid.push_back(x.rel32({0x0f, 0x84}));
+                    x.bytes({0x48, 0x89, 0xc2,
+                             0x48, 0xc1, 0xea, 0x2f,
+                             0x48, 0x85, 0xd2});
+                    const size_t canonical = x.rel32({0x0f, 0x84});
+                    x.bytes({0x48, 0x81, 0xfa,
+                             0xff, 0xff, 0x01, 0x00});
+                    invalid.push_back(x.rel32({0x0f, 0x85}));
+                    x.patch_rel32(canonical, x.pos());
+                };
+
+            validate_canonical(0, "stack top");
+            x.bytes({0xa8, 0x0f});
+            invalid.push_back(x.rel32({0x0f, 0x85}));
+            x.bytes({0x48, 0x3d, 0x98, 0x00, 0x00, 0x00});
+            invalid.push_back(x.rel32({0x0f, 0x86}));
+            validate_canonical(1, "task entry");
+            validate_canonical(3, "task exit handler");
+            x.mov_rax_rbp(scratch_slots[argument_base + 4]);
+            x.bytes({0x48, 0x89, 0xc2,
+                     0x48, 0xc1, 0xea, 0x10,
+                     0x48, 0x85, 0xd2});
+            invalid.push_back(x.rel32({0x0f, 0x85}));
+            x.bytes({0xa8, 0x03});
+            invalid.push_back(x.rel32({0x0f, 0x85}));
+            x.bytes({0x48, 0x85, 0xc0});
+            invalid.push_back(x.rel32({0x0f, 0x84}));
+
+            x.mov_rax_rbp(scratch_slots[argument_base]);
+            x.bytes({0x48, 0x83, 0xe0, 0xf0,
+                     0x48, 0x2d, 0x98, 0x00, 0x00, 0x00});
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            x.bytes({0x48, 0x89, 0xc1, 0x31, 0xc0,
+                     0x48, 0x89, 0x01});
+            for (uint8_t offset :
+                 {uint8_t(32), uint8_t(40), uint8_t(48), uint8_t(56),
+                  uint8_t(64), uint8_t(72), uint8_t(80), uint8_t(88),
+                  uint8_t(96), uint8_t(104), uint8_t(112), uint8_t(120)}) {
+                x.bytes({0x48, 0x89, 0x41, offset});
+            }
+            x.mov_rax_rbp(scratch_slots[argument_base + 3]);
+            x.bytes({0x48, 0x89, 0x41, 0x08});
+            x.mov_rax_rbp(scratch_slots[argument_base + 2]);
+            x.bytes({0x48, 0x89, 0x41, 0x10});
+            x.mov_rax_rbp(scratch_slots[argument_base + 1]);
+            x.bytes({0x48, 0x89, 0x41, 0x18});
+
+            const size_t bootstrap = x.rel32({0x48, 0x8d, 0x05});
+            function_address_patches.push_back(
+                {bootstrap, "__sura_context_bootstrap", origin->line});
+            x.bytes({0x48, 0x89, 0x81, 0x80, 0x00, 0x00, 0x00});
+            x.mov_rax_rbp(scratch_slots[argument_base + 4]);
+            x.bytes({0x48, 0x89, 0x81, 0x88, 0x00, 0x00, 0x00});
+            x.mov_rax_imm(0x202);
+            x.bytes({0x48, 0x89, 0x81, 0x90, 0x00, 0x00, 0x00});
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            const size_t finished = x.rel32({0xe9});
+
+            const size_t invalid_target = x.pos();
+            for (size_t patch : invalid) {
+                x.patch_rel32(patch, invalid_target);
+            }
+            x.bytes({0x31, 0xc0});
+            x.patch_rel32(finished, x.pos());
+            release_temporaries(1);
+            return;
+        }
+        if (name == "preempt_frame_valid") {
+            if (args.size() != 1) {
+                fail(origin, "preempt.frame_valid(frame) expects one value");
+            }
+            preempt_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            load_call_args(1, argument_base);
+            const size_t patch = x.rel32({0xe8});
+            call_patches.push_back(
+                {patch, "__sura_preempt_frame_valid", origin->line});
+            return;
+        }
+        if (name == "preempt_resume") {
+            if (args.size() != 1) {
+                fail(origin, "preempt.resume(frame) expects one value");
+            }
+            if (!current_function ||
+                (current_function->abi != "interrupt" &&
+                 current_function->abi != "interrupt_error")) {
+                fail(origin, "preempt.resume() is only available inside an "
+                             "interrupt or interrupt_error function");
+            }
+            preempt_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            load_call_args(1, argument_base);
+            const size_t patch = x.rel32({0xe8});
+            call_patches.push_back(
+                {patch, "__sura_preempt_resume", origin->line});
+            return;
+        }
+        if (name == "interrupt_invoke") {
+            if (args.size() != 1) {
+                fail(origin, "interrupt.invoke(vector) expects one value");
+            }
+            const uint64_t vector =
+                require_constant_integer(args[0].get(),
+                                         "software interrupt vector");
+            if (vector < 32 || vector > 255) {
+                fail(args[0].get(),
+                     "software interrupt vector must be 32..255");
+            }
+            x.bytes({0xcd, static_cast<uint8_t>(vector)});
+            x.mov_rax_imm(1);
+            return;
+        }
         if (name == "context_init") {
             if (args.size() != 4) {
                 fail(origin, "context.init(stack_top, entry, argument, "
@@ -2146,6 +2427,121 @@ class UefiX64Compiler {
                      0xb9, 0x02, 0x00, 0x00, 0x00, 0x31, 0xd2,
                      0x45, 0x31, 0xc0, 0x45, 0x31, 0xc9, 0x41, 0xff, 0xd3,
                      0x0f, 0x0b});
+            return true;
+        }
+
+        if (name == "syscall_fast_configure") {
+            if (args.size() != 7) {
+                fail(expr, "syscall.fast_configure(dispatch, bad_return, "
+                           "kernel_cs, user_cs, flags_mask, kernel_rsp_offset, "
+                           "user_rsp_offset) expects seven arguments");
+            }
+            if (fast_syscall_helper_used) {
+                fail(expr, "syscall.fast_configure() may appear only once");
+            }
+            const auto require_direct_handler =
+                [&](const Expr* value, const std::string& description) {
+                    std::string address_call;
+                    const std::vector<ExprPtr>* address_args = nullptr;
+                    if (!flatten_call(value, address_call, address_args) ||
+                        canonical_intrinsic(address_call) != "addr_of" ||
+                        address_args->size() != 1 ||
+                        (*address_args)[0]->kind != NK::IDENT) {
+                        fail(value, description + " must be written as "
+                                    "addr_of(function)");
+                    }
+                    const std::string function_name =
+                        static_cast<const Ident*>((*address_args)[0].get())->name;
+                    auto function = functions.find(function_name);
+                    if (function == functions.end() ||
+                        function->second->abi != "sura" ||
+                        function->second->params.size() != 1 ||
+                        function->second->param_types.empty() ||
+                        annotated_type_name(
+                            function->second->param_types[0]).rfind("ptr", 0) != 0) {
+                        fail(value, description + " '" + function_name +
+                                    "' must be a normal one-pointer function");
+                    }
+                    return function_name;
+                };
+
+            const std::string dispatch =
+                require_direct_handler(args[0].get(), "fast syscall dispatcher");
+            const std::string bad_return =
+                require_direct_handler(args[1].get(), "bad-return handler");
+            const uint64_t kernel_cs =
+                require_constant_integer(args[2].get(), "kernel code selector");
+            const uint64_t user_cs =
+                require_constant_integer(args[3].get(), "user code selector");
+            const uint64_t flags_mask =
+                require_constant_integer(args[4].get(), "syscall flags mask");
+            const uint64_t kernel_rsp_offset =
+                require_constant_integer(args[5].get(), "kernel RSP offset");
+            const uint64_t user_rsp_offset =
+                require_constant_integer(args[6].get(), "user RSP offset");
+
+            if (kernel_cs == 0 || kernel_cs > 0xffff ||
+                (kernel_cs & 3) != 0) {
+                fail(args[2].get(), "kernel code selector must be a nonzero "
+                                    "16-bit selector with RPL 0");
+            }
+            if (user_cs < 19 || user_cs > 0xffff ||
+                (user_cs & 3) != 3) {
+                fail(args[3].get(), "user code selector must be a 16-bit "
+                                    "selector with RPL 3 and value at least 19");
+            }
+            constexpr uint64_t required_mask = 0x47700;
+            if (flags_mask > 0xffffffffULL ||
+                (flags_mask & required_mask) != required_mask) {
+                fail(args[4].get(), "syscall flags mask must include TF, IF, "
+                                    "DF, IOPL, NT, and AC (0x47700)");
+            }
+            if (kernel_rsp_offset > 0x7ffffff8ULL ||
+                user_rsp_offset > 0x7ffffff8ULL ||
+                (kernel_rsp_offset & 7) || (user_rsp_offset & 7) ||
+                kernel_rsp_offset == user_rsp_offset) {
+                fail(expr, "fast syscall RSP offsets must be distinct, "
+                           "8-byte-aligned nonnegative disp32 values");
+            }
+
+            fast_syscall_helper_used = true;
+            fast_syscall_handler = dispatch;
+            fast_syscall_bad_return_handler = bad_return;
+            fast_syscall_kernel_rsp_offset =
+                static_cast<uint32_t>(kernel_rsp_offset);
+            fast_syscall_user_rsp_offset =
+                static_cast<uint32_t>(user_rsp_offset);
+
+            // IA32_EFER.SCE
+            x.bytes({0xb9, 0x80, 0x00, 0x00, 0xc0,
+                     0x0f, 0x32,
+                     0x83, 0xc8, 0x01,
+                     0x0f, 0x30});
+
+            // IA32_STAR. SYSRET derives SS as user_cs-8 and CS as user_cs.
+            const uint64_t star =
+                ((user_cs - 16) << 48) | (kernel_cs << 32);
+            x.mov_rax_imm(star);
+            x.bytes({0x48, 0x89, 0xc2,
+                     0x48, 0xc1, 0xea, 0x20,
+                     0xb9, 0x81, 0x00, 0x00, 0xc0,
+                     0x0f, 0x30});
+
+            // IA32_LSTAR points at the compiler-generated stack-switch stub.
+            const size_t lstar_address = x.rel32({0x48, 0x8d, 0x05});
+            function_address_patches.push_back(
+                {lstar_address, "__sura_fast_syscall_entry", expr->line});
+            x.bytes({0x48, 0x89, 0xc2,
+                     0x48, 0xc1, 0xea, 0x20,
+                     0xb9, 0x82, 0x00, 0x00, 0xc0,
+                     0x0f, 0x30});
+
+            // IA32_FMASK clears unsafe user flags during kernel entry.
+            x.mov_rax_imm(flags_mask);
+            x.bytes({0x48, 0x89, 0xc2,
+                     0x48, 0xc1, 0xea, 0x20,
+                     0xb9, 0x84, 0x00, 0x00, 0xc0,
+                     0x0f, 0x30});
             return true;
         }
 
@@ -3059,6 +3455,154 @@ class UefiX64Compiler {
         });
     }
 
+    void emit_preempt_helpers() {
+        if (!preempt_helpers_used) return;
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_preempt_frame_valid"] = x.pos();
+        std::vector<size_t> invalid;
+        x.bytes({0x31, 0xc0,                   // false by default
+                 0x48, 0x85, 0xc9});          // frame != 0
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0xf6, 0xc1, 0x07});           // 8-byte aligned
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+
+        const auto validate_canonical_register =
+            [&](std::initializer_list<uint8_t> move_to_rdx) {
+                x.bytes(move_to_rdx);
+                x.bytes({0x48, 0xc1, 0xea, 0x2f,
+                         0x48, 0x85, 0xd2});
+                const size_t canonical = x.rel32({0x0f, 0x84});
+                x.bytes({0x48, 0x81, 0xfa,
+                         0xff, 0xff, 0x01, 0x00});
+                invalid.push_back(x.rel32({0x0f, 0x85}));
+                x.patch_rel32(canonical, x.pos());
+            };
+        validate_canonical_register({0x48, 0x89, 0xca}); // frame pointer
+
+        x.bytes({0x4c, 0x8b, 0x81, 0x80, 0x00, 0x00, 0x00,
+                 0x4d, 0x85, 0xc0});          // saved RIP != 0
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        validate_canonical_register({0x4c, 0x89, 0xc2});
+
+        // Kernel-only preemption: a non-null 16-bit CS with RPL 0.
+        x.bytes({0x48, 0x8b, 0x91, 0x88, 0x00, 0x00, 0x00,
+                 0x49, 0x89, 0xd0,
+                 0x49, 0xc1, 0xe8, 0x10,
+                 0x4d, 0x85, 0xc0});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0xf6, 0xc2, 0x03});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x81, 0xe2, 0xfc, 0xff, 0x00, 0x00});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+
+        // Architectural reserved RFLAGS bit 1 must be set.
+        x.bytes({0xf6, 0x81, 0x90, 0x00, 0x00, 0x00, 0x02});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0xb8, 0x01, 0x00, 0x00, 0x00});
+        const size_t valid_return = x.rel32({0xe9});
+        const size_t invalid_return = x.pos();
+        for (size_t patch : invalid) {
+            x.patch_rel32(patch, invalid_return);
+        }
+        x.bytes({0x31, 0xc0});
+        x.patch_rel32(valid_return, x.pos());
+        x.b(0xc3);
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_preempt_resume"] = x.pos();
+        x.bytes({0x49, 0x89, 0xca,             // r10 = frame
+                 0x48, 0x83, 0xec, 0x28});
+        const size_t validation_call = x.rel32({0xe8});
+        call_patches.push_back(
+            {validation_call, "__sura_preempt_frame_valid", 0});
+        x.bytes({0x48, 0x83, 0xc4, 0x28,
+                 0x85, 0xc0});
+        const size_t invalid_frame = x.rel32({0x0f, 0x84});
+        x.bytes({0xfa,                         // close maskable IRQ window
+                 0x4c, 0x89, 0xd4,             // rsp = saved frame
+                 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c,
+                 0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58,
+                 0x5f, 0x5e, 0x5d, 0x5b, 0x5a, 0x59, 0x58,
+                 0x48, 0x83, 0xc4, 0x08,       // normalized error code
+                 0x48, 0xcf});                 // iretq
+        x.patch_rel32(invalid_frame, x.pos());
+        x.bytes({0x31, 0xc0, 0xc3});
+    }
+
+    void emit_fast_syscall_helper() {
+        if (!fast_syscall_helper_used) return;
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_fast_syscall_entry"] = x.pos();
+
+        x.bytes({0x0f, 0x01, 0xf8,             // swapgs
+                 0x65, 0x48, 0x89, 0x24, 0x25});
+        x.d(fast_syscall_user_rsp_offset);      // gs:[user_rsp] = rsp
+        x.bytes({0x65, 0x48, 0x8b, 0x24, 0x25});
+        x.d(fast_syscall_kernel_rsp_offset);    // rsp = gs:[kernel_rsp]
+        x.bytes({0x65, 0xff, 0x34, 0x25});
+        x.d(fast_syscall_user_rsp_offset);      // saved frame user_rsp
+
+        // Same GP ordering as interrupt frames, followed by user_rsp:
+        // r15..r8, rdi, rsi, rbp, rbx, rdx, rcx, rax, user_rsp.
+        x.bytes({0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57,
+                 0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53,
+                 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+                 0xfc,
+                 0x48, 0x89, 0xe5,             // rbp = frame
+                 0x48, 0x83, 0xe4, 0xf0,
+                 0x48, 0x83, 0xec, 0x20,
+                 0x48, 0x89, 0xe9});            // rcx = frame
+        const size_t dispatch_call = x.rel32({0xe8});
+        call_patches.push_back(
+            {dispatch_call, fast_syscall_handler, 0});
+        x.bytes({0x48, 0x89, 0xec});             // rsp = frame
+
+        std::vector<size_t> bad_return;
+        x.bytes({0x48, 0x8b, 0x45, 0x68,       // saved user RIP
+                 0x48, 0x85, 0xc0});
+        bad_return.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0x48, 0x89, 0xc2,
+                 0x48, 0xc1, 0xea, 0x2f,
+                 0x48, 0x85, 0xd2});
+        bad_return.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x48, 0x8b, 0x45, 0x78,       // saved user RSP
+                 0x48, 0x85, 0xc0});
+        bad_return.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0x48, 0x89, 0xc2,
+                 0x48, 0xc1, 0xea, 0x2f,
+                 0x48, 0x85, 0xd2});
+        bad_return.push_back(x.rel32({0x0f, 0x85}));
+
+        // Return only a conservative user flag set. IF and arithmetic flags
+        // survive; IOPL, NT, RF, VM, AC, TF, and DF are cleared.
+        x.bytes({0x48, 0x81, 0x65, 0x20,
+                 0xd7, 0x0a, 0x00, 0x00,
+                 0x48, 0x83, 0x4d, 0x20, 0x02,
+                 0x48, 0x89, 0xec,
+                 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c,
+                 0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58,
+                 0x5f, 0x5e, 0x5d, 0x5b, 0x5a, 0x59, 0x58,
+                 0x65, 0x48, 0x8b, 0x24, 0x25});
+        x.d(fast_syscall_user_rsp_offset);
+        x.bytes({0x0f, 0x01, 0xf8,             // swapgs
+                 0x48, 0x0f, 0x07});            // sysretq
+
+        const size_t bad_return_target = x.pos();
+        for (size_t patch : bad_return) {
+            x.patch_rel32(patch, bad_return_target);
+        }
+        x.bytes({0x48, 0x89, 0xec,
+                 0x48, 0x83, 0xe4, 0xf0,
+                 0x48, 0x83, 0xec, 0x20,
+                 0x48, 0x89, 0xe9});
+        const size_t bad_handler_call = x.rel32({0xe8});
+        call_patches.push_back(
+            {bad_handler_call, fast_syscall_bad_return_handler, 0});
+        x.bytes({0xfa, 0xf4, 0xeb, 0xfd});
+    }
+
     void compile_function(const std::string& name, const FuncDef* function,
                           const SuraBlock* body, bool is_entry) {
         while (x.pos() & 15U) x.b(0x90);
@@ -3296,6 +3840,12 @@ public:
     SuraOsCompileResult compile(const SuraBlock* root) {
         if (!root) throw SuraOsCompileError("missing Sura AST for OS target");
         context_helpers_used = false;
+        preempt_helpers_used = false;
+        fast_syscall_helper_used = false;
+        fast_syscall_handler.clear();
+        fast_syscall_bad_return_handler.clear();
+        fast_syscall_kernel_rsp_offset = 0;
+        fast_syscall_user_rsp_offset = 0;
         functions.clear();
         struct_defs.clear();
         struct_layouts.clear();
@@ -3361,6 +3911,8 @@ public:
             }
         }
         emit_context_helpers();
+        emit_preempt_helpers();
+        emit_fast_syscall_helper();
 
         for (const CallPatch& patch : call_patches) {
             auto target = function_offsets.find(patch.function);

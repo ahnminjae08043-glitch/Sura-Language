@@ -1,0 +1,65 @@
+# Compile-only ring-3 entry and x86-64 SYSCALL/SYSRET feature example.
+#
+# A real kernel must map separate user code/stack pages with U/S permission,
+# keep kernel pages supervisor-only, and terminate malformed user contexts.
+
+import "../../stdlib/freestanding/syscall.sura"
+
+struct FastSyscallCpuState packed do
+  kernel_rsp: ptr
+  user_rsp: ptr
+end
+
+syscall_table is static.struct(SoftwareSyscallTable)
+syscall_handlers is static.zero(512, 16)
+syscall_cpu is static.struct(FastSyscallCpuState)
+kernel_stack is static.zero(16384, 16)
+user_stack is static.zero(16384, 16)
+tss_state is static.zero(104, 16)
+
+# null, kernel code, kernel data, user data, user code, two TSS slots.
+gdt_table is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+func add_syscall(first: u64, second: u64, third: u64, fourth: u64, fifth: u64) -> u64 do
+  return first + second + third + fourth + fifth
+end
+
+func user_program(argument: u64) do
+  result: u64 is syscall.fast(7, argument, 2, 3, 4, 5)
+  while true do
+    cpu.pause()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura ring-3 and fast syscall feature test")
+  uefi.newline()
+
+  # This block is emitted but not run as a UEFI application. The final kernel
+  # must first install user page-table permissions and a process-fault policy.
+  if 0 == 1 then
+    table: ptr[SoftwareSyscallTable] is syscall_table
+    initialized: bool is syscall_table_init(table, syscall_handlers, 64, u64("0xffffffffffffffff"))
+    installed: bool is syscall_table_set(table, 7, addr_of(add_syscall))
+
+    cpu.tss_set_rsp(tss_state, 0, ptr.add(kernel_stack, 16384))
+    cpu.tss_set_iomap(tss_state, 104)
+    cpu.gdt_set_tss(gdt_table, 5, tss_state, 103)
+    cpu.load_gdt(gdt_table, 56)
+    cpu.reload_segments(8, 16)
+    cpu.load_task_register(40)
+
+    cpu_state: ptr[FastSyscallCpuState] is syscall_cpu
+    cpu_state.kernel_rsp is ptr.add(kernel_stack, 16384)
+    cpu_state.user_rsp is 0
+    percpu.set_base(syscall_cpu)
+    percpu.set_kernel_base(0)
+
+    syscall.fast_configure(addr_of(fast_syscall_dispatch_active), addr_of(fast_syscall_bad_return), 8, 35, 292608, 0, 8)
+
+    valid_entry: bool is user.is_address(addr_of(user_program))
+    entered: bool is user.enter(addr_of(user_program), ptr.add(user_stack, 16376), 1, 35, 27)
+  end
+
+  return 0
+end

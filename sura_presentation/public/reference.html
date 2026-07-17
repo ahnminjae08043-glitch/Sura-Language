@@ -694,7 +694,7 @@ Usage:
   surapkg info &lt;name&gt; [--json] Show package metadata, benchmark evidence, and exported symbols
   surapkg restore [--json report.json]  Install manifest and transitive dependencies locally</code></pre></section>
 <section id='targets'><h2>JavaScript·WebAssembly 타깃</h2><div class='table-wrap'><table><thead><tr><th>타깃</th><th>2026-07-17 AST lowering 분류</th></tr></thead><tbody><tr><td>Native VM/JIT</td><td>register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline</td></tr><tr><td>JavaScript</td><td>43개 node 중 full 41, ignored 2, partial 0</td></tr><tr><td>WebAssembly</td><td>43개 node 중 full 27, partial 14, ignored 2</td></tr></tbody></table></div><p>AST JSON은 type annotation의 원래 표기를 source_name에 보존합니다. WASM에서 매개변수와 반환 타입을 모두 float 또는 double로 명시한 최상위 함수는 이 표기를 기준으로 기존 Sura Value ABI export와 함께 함수명__f64 동반 export를 생성합니다. 동반 export는 WebAssembly 호스트가 f64 매개변수와 f64 결과를 직접 사용하며, 원래 함수 이름의 export 계약은 바꾸지 않습니다.</p><p>JavaScript의 full 41·ignored 2는 43개 AST node의 lowering 분류입니다. JavaScript의 Python·FFI·plugin·async.cmd는 stub 또는 미지원 경로이며, autograd·media·nn·dataset·tokenizer 등 일부 module은 JavaScript runtime object 목록에 없습니다.</p><p>WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics 14개 node가 partial 상태입니다. 전체 audit status는 <code>INCOMPLETE</code>입니다.</p></section>
-<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. 현재 결과물은 OS가 아니라 앞으로 커널과 드라이버를 작성하기 위한 컴파일러 기능입니다. 이 기능은 현재 저장소의 개발 소스에 있으며 기존 공개 설치 파일에는 아직 포함되지 않았습니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
+<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. 현재 결과물은 OS가 아니라 앞으로 커널과 드라이버를 작성하기 위한 컴파일러 기능입니다. 이 기능은 현재 저장소의 개발 소스에 있으며 기존 공개 설치 파일에는 아직 포함되지 않았습니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
   vendor: u16
   command: u16
 end
@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.</p><p>GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, software-interrupt syscall dispatcher, legacy PCI configuration library, checked ACPI MADT discovery, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate도 구현되어 있습니다. 아직 없는 기능은 AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, preemptive/SMP scheduler, SYSCALL/SYSRET path, PCIe ECAM/resource allocation, device-specific drivers, persistent filesystem, ARM64 freestanding backend입니다. <code>examples/os/freestanding_features.sura</code>, <code>examples/os/memory_kernel.sura</code>, <code>examples/os/scheduler_features.sura</code>, <code>examples/os/syscall_features.sura</code>, <code>examples/os/pci_features.sura</code>, <code>examples/os/acpi_features.sura</code>, <code>examples/os/qemu_boot_gate.sura</code>는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 <code>Guide/OS_DEVELOPMENT.md</code>에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.</p><p>GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 16-bit real-mode에서 64-bit Sura entry로 이어지는 AP trampoline과 bounded startup helper, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, checked ring-0 interrupt-frame scheduler와 APIC/PIT/TSC-deadline timer helper, software-interrupt syscall dispatcher, checked ring-3 IRETQ entry와 SYSCALL/SYSRETQ helper, legacy PCI configuration library, checked ACPI MADT discovery, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate가 구현되어 있습니다. 아직 없는 기능은 executed AP-startup coverage와 complete per-AP initialization lifecycle, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, per-process address-space와 executable loader, safe user copy-in/out와 process fault/exit policy, SMP run queue와 load balancing, user-mode preemption, executed timer/context-switch verification, KPTI와 speculative-entry hardening, PCIe ECAM/resource allocation, device-specific drivers, persistent filesystem, ARM64 freestanding backend입니다. <code>examples/os/freestanding_features.sura</code>, <code>examples/os/memory_kernel.sura</code>, <code>examples/os/scheduler_features.sura</code>, <code>examples/os/preemptive_timer_features.sura</code>, <code>examples/os/syscall_features.sura</code>, <code>examples/os/user_mode_features.sura</code>, <code>examples/os/pci_features.sura</code>, <code>examples/os/acpi_features.sura</code>, <code>examples/os/ap_startup_features.sura</code>, <code>examples/os/qemu_boot_gate.sura</code>는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 <code>Guide/OS_DEVELOPMENT.md</code>에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -6374,6 +6374,38 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;constant destination width&quot;
       ]
     },
+    &quot;ap_startup&quot;: {
+      &quot;library&quot;: &quot;stdlib/freestanding/ap_startup.sura&quot;,
+      &quot;trampoline&quot;: [
+        &quot;230-byte template&quot;,
+        &quot;16-bit real mode&quot;,
+        &quot;PAE and EFER.LME&quot;,
+        &quot;caller PML4&quot;,
+        &quot;small GDT&quot;,
+        &quot;64-bit Sura entry&quot;,
+        &quot;atomic ready flag&quot;
+      ],
+      &quot;sequence&quot;: [
+        &quot;bounded ICR waits&quot;,
+        &quot;INIT&quot;,
+        &quot;10 ms TSC delay&quot;,
+        &quot;SIPI&quot;,
+        &quot;200 us TSC delay&quot;,
+        &quot;optional second SIPI&quot;,
+        &quot;bounded ready wait&quot;
+      ],
+      &quot;example&quot;: &quot;examples/os/ap_startup_features.sura&quot;,
+      &quot;verification&quot;: &quot;tools/sura_ap_startup_smoke.ps1 checks the exact assembled 230-byte template in the generated EFI image&quot;,
+      &quot;limitations&quot;: [
+        &quot;caller discovers APs and calibrates TSC&quot;,
+        &quot;caller supplies a writable virtual alias for the low page&quot;,
+        &quot;caller identity-maps the trampoline and maps all entry parameters&quot;,
+        &quot;PML4 physical address must fit in 32 bits&quot;,
+        &quot;no per-AP descriptor/extended-state/scheduler initialization&quot;,
+        &quot;no 82489DX INIT-deassert sequence&quot;,
+        &quot;compile-only verification; no executed AP-start proof&quot;
+      ]
+    },
     &quot;paging_primitives&quot;: {
       &quot;address&quot;: [
         &quot;PML4/PDPT/PD/PT index&quot;,
@@ -6485,6 +6517,44 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;caller supplies task storage and stacks&quot;
       ]
     },
+    &quot;preemptive_scheduler_and_timer&quot;: {
+      &quot;model&quot;: &quot;single-CPU ring-0 round-robin from checked interrupt frames&quot;,
+      &quot;frame&quot;: [
+        &quot;152-byte integer/error/RIP/CS/RFLAGS frame&quot;,
+        &quot;checked canonical addresses&quot;,
+        &quot;ring-0 CS&quot;,
+        &quot;CLI before IRETQ resume&quot;
+      ],
+      &quot;scheduler&quot;: [
+        &quot;create&quot;,
+        &quot;timer selection&quot;,
+        &quot;vector-129 voluntary yield&quot;,
+        &quot;sleep&quot;,
+        &quot;block&quot;,
+        &quot;wake&quot;,
+        &quot;join&quot;,
+        &quot;exit&quot;,
+        &quot;reap&quot;
+      ],
+      &quot;timer&quot;: [
+        &quot;local-APIC periodic/one-shot count&quot;,
+        &quot;bounded PIT channel-2 calibration&quot;,
+        &quot;TSC-deadline mode&quot;
+      ],
+      &quot;libraries&quot;: [
+        &quot;stdlib/freestanding/preempt.sura&quot;,
+        &quot;stdlib/freestanding/timer.sura&quot;
+      ],
+      &quot;example&quot;: &quot;examples/os/preemptive_timer_features.sura&quot;,
+      &quot;limitations&quot;: [
+        &quot;compile and machine-code verification only&quot;,
+        &quot;ring-0 tasks only&quot;,
+        &quot;no FPU/SIMD, CR3, FS/GS, debug, or process state&quot;,
+        &quot;no priorities&quot;,
+        &quot;no SMP locking or load balancing&quot;,
+        &quot;caller installs IDT and programs per-CPU timer&quot;
+      ]
+    },
     &quot;software_interrupt_syscalls&quot;: {
       &quot;invoke&quot;: &quot;syscall.invoke(vector, number, argument...)&quot;,
       &quot;argument_registers&quot;: [
@@ -6498,10 +6568,40 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;dispatcher&quot;: &quot;stdlib/freestanding/syscall.sura&quot;,
       &quot;example&quot;: &quot;examples/os/syscall_features.sura&quot;,
       &quot;limitations&quot;: [
-        &quot;INT path only&quot;,
-        &quot;no SYSCALL/SYSRET&quot;,
         &quot;no user-pointer validation&quot;,
         &quot;caller owns CPL/DPL, permissions, locking, and fault policy&quot;
+      ]
+    },
+    &quot;fast_syscalls_and_user_mode&quot;: {
+      &quot;invoke&quot;: &quot;syscall.fast(number, argument...)&quot;,
+      &quot;configure&quot;: &quot;syscall.fast_configure(dispatch, bad_return, kernel_cs, user_cs, flags_mask, kernel_rsp_offset, user_rsp_offset)&quot;,
+      &quot;entry&quot;: &quot;user.enter(entry, stack_pointer, argument, code_selector, stack_selector)&quot;,
+      &quot;address_check&quot;: &quot;user.is_address(address)&quot;,
+      &quot;argument_registers&quot;: [
+        &quot;RAX number&quot;,
+        &quot;RDI&quot;,
+        &quot;RSI&quot;,
+        &quot;RDX&quot;,
+        &quot;R10&quot;,
+        &quot;R8&quot;
+      ],
+      &quot;entry_contract&quot;: [
+        &quot;EFER.SCE and STAR/LSTAR/FMASK configuration&quot;,
+        &quot;SWAPGS&quot;,
+        &quot;GS-relative user-RSP save and kernel-RSP load&quot;,
+        &quot;15-register integer frame&quot;,
+        &quot;validated lower-half canonical SYSRET RIP/RSP&quot;,
+        &quot;sanitized user RFLAGS&quot;,
+        &quot;SYSRETQ&quot;
+      ],
+      &quot;example&quot;: &quot;examples/os/user_mode_features.sura&quot;,
+      &quot;limitations&quot;: [
+        &quot;no user address-space or executable loader&quot;,
+        &quot;no user-pointer copy-in/out&quot;,
+        &quot;no process exit/fault policy&quot;,
+        &quot;no KPTI or speculative SWAPGS hardening&quot;,
+        &quot;no FPU/SIMD save&quot;,
+        &quot;compile and machine-code verification only&quot;
       ]
     },
     &quot;pci_configuration_library&quot;: {
@@ -6562,7 +6662,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;caller-owned fixed buffers&quot;,
         &quot;firmware tables must stay mapped&quot;,
         &quot;no interrupt routing&quot;,
-        &quot;no AP trampoline/startup&quot;
+        &quot;does not itself allocate per-CPU state or start processors&quot;
       ]
     },
     &quot;boot_disk&quot;: {
@@ -6602,26 +6702,33 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;tests/os_target_unit.cpp&quot;,
       &quot;tests/freestanding_import_unit.cpp&quot;,
       &quot;tools/sura_uefi_target_smoke.ps1&quot;,
+      &quot;tools/sura_ap_startup_smoke.ps1&quot;,
       &quot;tools/sura_qemu_boot_gate.ps1 -CompileOnly&quot;,
       &quot;examples/os/freestanding_features.sura&quot;,
       &quot;examples/os/memory_kernel.sura&quot;,
       &quot;examples/os/scheduler_features.sura&quot;,
+      &quot;examples/os/preemptive_timer_features.sura&quot;,
       &quot;examples/os/syscall_features.sura&quot;,
+      &quot;examples/os/user_mode_features.sura&quot;,
       &quot;examples/os/pci_features.sura&quot;,
       &quot;examples/os/qemu_boot_gate.sura&quot;,
-      &quot;examples/os/acpi_features.sura&quot;
+      &quot;examples/os/acpi_features.sura&quot;,
+      &quot;examples/os/ap_startup_features.sura&quot;
     ],
     &quot;not_implemented&quot;: [
-      &quot;AP trampoline and complete AP startup&quot;,
+      &quot;executed AP-startup coverage and complete per-AP initialization lifecycle&quot;,
       &quot;automatic per-CPU TSS/IST allocation&quot;,
       &quot;FPU/SIMD context-switch policy&quot;,
-      &quot;user/kernel entry validation and swapgs policy&quot;,
+      &quot;per-process address spaces and executable loading&quot;,
+      &quot;user-pointer copy-in/out and process fault/exit policy&quot;,
+      &quot;KPTI and speculative-entry hardening&quot;,
       &quot;synchronized/NUMA physical-memory policy&quot;,
       &quot;automatic intermediate page-table allocation/reclamation&quot;,
       &quot;virtual address-space policy&quot;,
       &quot;remote TLB shootdown&quot;,
-      &quot;preemptive/SMP scheduler&quot;,
-      &quot;SYSCALL/SYSRET path&quot;,
+      &quot;SMP run queues and load balancing&quot;,
+      &quot;user-mode preemption&quot;,
+      &quot;executed timer/context-switch verification&quot;,
       &quot;PCIe ECAM and resource allocation&quot;,
       &quot;device-specific drivers&quot;,
       &quot;filesystem&quot;,
@@ -12606,6 +12713,38 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "constant destination width"
       ]
     },
+    "ap_startup": {
+      "library": "stdlib/freestanding/ap_startup.sura",
+      "trampoline": [
+        "230-byte template",
+        "16-bit real mode",
+        "PAE and EFER.LME",
+        "caller PML4",
+        "small GDT",
+        "64-bit Sura entry",
+        "atomic ready flag"
+      ],
+      "sequence": [
+        "bounded ICR waits",
+        "INIT",
+        "10 ms TSC delay",
+        "SIPI",
+        "200 us TSC delay",
+        "optional second SIPI",
+        "bounded ready wait"
+      ],
+      "example": "examples/os/ap_startup_features.sura",
+      "verification": "tools/sura_ap_startup_smoke.ps1 checks the exact assembled 230-byte template in the generated EFI image",
+      "limitations": [
+        "caller discovers APs and calibrates TSC",
+        "caller supplies a writable virtual alias for the low page",
+        "caller identity-maps the trampoline and maps all entry parameters",
+        "PML4 physical address must fit in 32 bits",
+        "no per-AP descriptor/extended-state/scheduler initialization",
+        "no 82489DX INIT-deassert sequence",
+        "compile-only verification; no executed AP-start proof"
+      ]
+    },
     "paging_primitives": {
       "address": [
         "PML4/PDPT/PD/PT index",
@@ -12717,6 +12856,44 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "caller supplies task storage and stacks"
       ]
     },
+    "preemptive_scheduler_and_timer": {
+      "model": "single-CPU ring-0 round-robin from checked interrupt frames",
+      "frame": [
+        "152-byte integer/error/RIP/CS/RFLAGS frame",
+        "checked canonical addresses",
+        "ring-0 CS",
+        "CLI before IRETQ resume"
+      ],
+      "scheduler": [
+        "create",
+        "timer selection",
+        "vector-129 voluntary yield",
+        "sleep",
+        "block",
+        "wake",
+        "join",
+        "exit",
+        "reap"
+      ],
+      "timer": [
+        "local-APIC periodic/one-shot count",
+        "bounded PIT channel-2 calibration",
+        "TSC-deadline mode"
+      ],
+      "libraries": [
+        "stdlib/freestanding/preempt.sura",
+        "stdlib/freestanding/timer.sura"
+      ],
+      "example": "examples/os/preemptive_timer_features.sura",
+      "limitations": [
+        "compile and machine-code verification only",
+        "ring-0 tasks only",
+        "no FPU/SIMD, CR3, FS/GS, debug, or process state",
+        "no priorities",
+        "no SMP locking or load balancing",
+        "caller installs IDT and programs per-CPU timer"
+      ]
+    },
     "software_interrupt_syscalls": {
       "invoke": "syscall.invoke(vector, number, argument...)",
       "argument_registers": [
@@ -12730,10 +12907,40 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "dispatcher": "stdlib/freestanding/syscall.sura",
       "example": "examples/os/syscall_features.sura",
       "limitations": [
-        "INT path only",
-        "no SYSCALL/SYSRET",
         "no user-pointer validation",
         "caller owns CPL/DPL, permissions, locking, and fault policy"
+      ]
+    },
+    "fast_syscalls_and_user_mode": {
+      "invoke": "syscall.fast(number, argument...)",
+      "configure": "syscall.fast_configure(dispatch, bad_return, kernel_cs, user_cs, flags_mask, kernel_rsp_offset, user_rsp_offset)",
+      "entry": "user.enter(entry, stack_pointer, argument, code_selector, stack_selector)",
+      "address_check": "user.is_address(address)",
+      "argument_registers": [
+        "RAX number",
+        "RDI",
+        "RSI",
+        "RDX",
+        "R10",
+        "R8"
+      ],
+      "entry_contract": [
+        "EFER.SCE and STAR/LSTAR/FMASK configuration",
+        "SWAPGS",
+        "GS-relative user-RSP save and kernel-RSP load",
+        "15-register integer frame",
+        "validated lower-half canonical SYSRET RIP/RSP",
+        "sanitized user RFLAGS",
+        "SYSRETQ"
+      ],
+      "example": "examples/os/user_mode_features.sura",
+      "limitations": [
+        "no user address-space or executable loader",
+        "no user-pointer copy-in/out",
+        "no process exit/fault policy",
+        "no KPTI or speculative SWAPGS hardening",
+        "no FPU/SIMD save",
+        "compile and machine-code verification only"
       ]
     },
     "pci_configuration_library": {
@@ -12794,7 +13001,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "caller-owned fixed buffers",
         "firmware tables must stay mapped",
         "no interrupt routing",
-        "no AP trampoline/startup"
+        "does not itself allocate per-CPU state or start processors"
       ]
     },
     "boot_disk": {
@@ -12834,26 +13041,33 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "tests/os_target_unit.cpp",
       "tests/freestanding_import_unit.cpp",
       "tools/sura_uefi_target_smoke.ps1",
+      "tools/sura_ap_startup_smoke.ps1",
       "tools/sura_qemu_boot_gate.ps1 -CompileOnly",
       "examples/os/freestanding_features.sura",
       "examples/os/memory_kernel.sura",
       "examples/os/scheduler_features.sura",
+      "examples/os/preemptive_timer_features.sura",
       "examples/os/syscall_features.sura",
+      "examples/os/user_mode_features.sura",
       "examples/os/pci_features.sura",
       "examples/os/qemu_boot_gate.sura",
-      "examples/os/acpi_features.sura"
+      "examples/os/acpi_features.sura",
+      "examples/os/ap_startup_features.sura"
     ],
     "not_implemented": [
-      "AP trampoline and complete AP startup",
+      "executed AP-startup coverage and complete per-AP initialization lifecycle",
       "automatic per-CPU TSS/IST allocation",
       "FPU/SIMD context-switch policy",
-      "user/kernel entry validation and swapgs policy",
+      "per-process address spaces and executable loading",
+      "user-pointer copy-in/out and process fault/exit policy",
+      "KPTI and speculative-entry hardening",
       "synchronized/NUMA physical-memory policy",
       "automatic intermediate page-table allocation/reclamation",
       "virtual address-space policy",
       "remote TLB shootdown",
-      "preemptive/SMP scheduler",
-      "SYSCALL/SYSRET path",
+      "SMP run queues and load balancing",
+      "user-mode preemption",
+      "executed timer/context-switch verification",
       "PCIe ECAM and resource allocation",
       "device-specific drivers",
       "filesystem",

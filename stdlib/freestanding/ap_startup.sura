@@ -1,0 +1,125 @@
+# x86-64 AP trampoline preparation and bounded INIT/SIPI startup helpers.
+#
+# The checked-in byte template starts in 16-bit real mode, enables PAE and
+# long mode, loads a small GDT, switches to a caller-supplied stack, publishes
+# a ready flag, and calls a normal one-argument Sura entry function.
+
+struct ApStartupConfig do
+  destination: ptr
+  physical_address: u64
+  pml4_physical: u64
+  stack_top: ptr
+  entry: ptr
+  argument: u64
+  ready_flag: ptr
+end
+
+# Split into two declarations because Sura array literals currently stay on
+# one physical source line. Together these are the exact 230 assembled bytes.
+ap_trampoline_template_low is static.bytes([250, 252, 140, 200, 142, 216, 142, 192, 142, 208, 188, 240, 15, 102, 15, 1, 22, 184, 0, 15, 32, 224, 102, 131, 200, 32, 15, 34, 224, 102, 161, 190, 0, 15, 34, 216, 102, 185, 128, 0, 0, 192, 15, 50, 102, 13, 0, 1, 0, 0, 15, 48, 15, 32, 192, 102, 13, 1, 0, 0, 128, 15, 34, 192, 102, 234, 80, 0, 0, 0, 8, 0, 144, 137, 246, 46, 141, 180, 0, 0, 102, 184, 16, 0, 142, 216, 142, 192, 142, 208, 142, 224, 142, 232, 72, 139, 37, 97, 0, 0, 0, 72, 131, 228, 240, 72, 139, 5, 94, 0, 0, 0, 72, 139, 13, 95, 0, 0, 0, 72, 139, 21, 96, 0, 0, 0, 73, 199], 16)
+ap_trampoline_template_high is static.bytes([192, 1, 0, 0, 0, 76, 135, 2, 72, 131, 236, 32, 255, 208, 72, 131, 196, 32, 250, 244, 235, 252, 102, 46, 15, 31, 132, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 23, 0, 160, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+func ap_trampoline_size() do
+  return 230
+end
+
+func ap_startup_config_valid(config: ptr[ApStartupConfig]) do
+  if config == 0 or config.destination == 0 then return false
+  if config.physical_address < 4096 or config.physical_address > 1044480 then return false
+  if not ptr.is_aligned(config.physical_address, 4096) then return false
+  if config.pml4_physical == 0 or config.pml4_physical > u64("0xffffffff") then return false
+  if not ptr.is_aligned(config.pml4_physical, 4096) then return false
+  if config.stack_top == 0 or not ptr.is_aligned(config.stack_top, 16) then return false
+  if config.entry == 0 or config.ready_flag == 0 then return false
+  if not ptr.is_aligned(config.ready_flag, 8) then return false
+  if not paging.is_canonical48(config.stack_top) then return false
+  if not paging.is_canonical48(config.entry) then return false
+  if not paging.is_canonical48(config.ready_flag) then return false
+  return true
+end
+
+func ap_trampoline_prepare(config: ptr[ApStartupConfig]) do
+  if not ap_startup_config_valid(config) then return false
+
+  index: usize is 0
+  while index < 128 do
+    mem.write8(ptr.add(config.destination, index), mem.read8(ptr.add(ap_trampoline_template_low, index)))
+    index += 1
+  end
+  index is 0
+  while index < 102 do
+    mem.write8(ptr.add(config.destination, index + 128), mem.read8(ptr.add(ap_trampoline_template_high, index)))
+    index += 1
+  end
+
+  # Absolute 32-bit fields used before long mode.
+  mem.write32(ptr.add(config.destination, 66), config.physical_address + 80)
+  mem.write32(ptr.add(config.destination, 186), config.physical_address + 160)
+  mem.write32(ptr.add(config.destination, 190), config.pml4_physical)
+
+  # RIP-relative 64-bit startup parameters.
+  mem.write64(ptr.add(config.destination, 198), config.stack_top)
+  mem.write64(ptr.add(config.destination, 206), config.entry)
+  mem.write64(ptr.add(config.destination, 214), config.argument)
+  mem.write64(ptr.add(config.destination, 222), config.ready_flag)
+  atomic.store64(config.ready_flag, 0)
+  atomic.fence()
+  return true
+end
+
+func ap_wait_icr_idle(spin_limit: u64) do
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    if not apic.icr_busy() then return true
+    cpu.pause()
+    attempt += 1
+  end
+  return false
+end
+
+func ap_delay_us(tsc_ticks_per_us: u64, microseconds: u64) do
+  if tsc_ticks_per_us == 0 or tsc_ticks_per_us > 100000000 then return false
+  if microseconds > 10000000 then return false
+  ticks: u64 is tsc_ticks_per_us * microseconds
+  start: u64 is cpu.rdtsc()
+  while cpu.rdtsc() - start < ticks do
+    cpu.pause()
+  end
+  return true
+end
+
+func ap_wait_ready(ready_flag: ptr, tsc_ticks_per_us: u64, timeout_us: u64) do
+  if ready_flag == 0 or not ptr.is_aligned(ready_flag, 8) then return false
+  if tsc_ticks_per_us == 0 or tsc_ticks_per_us > 100000000 then return false
+  if timeout_us == 0 or timeout_us > 10000000 then return false
+  timeout_ticks: u64 is tsc_ticks_per_us * timeout_us
+  start: u64 is cpu.rdtsc()
+  while cpu.rdtsc() - start < timeout_ticks do
+    if atomic.load64(ready_flag) != 0 then return true
+    cpu.pause()
+  end
+  return atomic.load64(ready_flag) != 0
+end
+
+func ap_start(config: ptr[ApStartupConfig], destination_apic_id: u64, tsc_ticks_per_us: u64, ready_timeout_us: u64, second_sipi: bool) do
+  if not ap_trampoline_prepare(config) then return false
+  if apic.mode() == 0 or destination_apic_id == apic.current_id() then return false
+  if tsc_ticks_per_us == 0 or tsc_ticks_per_us > 100000000 then return false
+  if ready_timeout_us == 0 or ready_timeout_us > 10000000 then return false
+
+  if not ap_wait_icr_idle(1000000) then return false
+  apic.send_init(destination_apic_id)
+  if not ap_wait_icr_idle(1000000) then return false
+  if not ap_delay_us(tsc_ticks_per_us, 10000) then return false
+
+  apic.send_startup(destination_apic_id, config.physical_address)
+  if not ap_wait_icr_idle(1000000) then return false
+  if not ap_delay_us(tsc_ticks_per_us, 200) then return false
+  if atomic.load64(config.ready_flag) != 0 then return true
+
+  if second_sipi then
+    apic.send_startup(destination_apic_id, config.physical_address)
+    if not ap_wait_icr_idle(1000000) then return false
+  end
+  return ap_wait_ready(config.ready_flag, tsc_ticks_per_us, ready_timeout_us)
+end

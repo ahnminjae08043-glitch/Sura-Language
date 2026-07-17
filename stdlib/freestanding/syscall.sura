@@ -27,6 +27,26 @@ struct SoftwareSyscallFrame packed do
   ss: u64
 end
 
+# Frame built by the compiler-generated SYSCALL entry stub.
+struct FastSyscallFrame packed do
+  r15: u64
+  r14: u64
+  r13: u64
+  r12: u64
+  r11: u64
+  r10: u64
+  r9: u64
+  r8: u64
+  rdi: u64
+  rsi: u64
+  rbp: u64
+  rbx: u64
+  rdx: u64
+  rcx: u64
+  rax: u64
+  user_rsp: u64
+end
+
 struct SoftwareSyscallTable do
   handlers: ptr
   capacity: u64
@@ -93,4 +113,44 @@ func software_syscall_dispatch(frame: ptr[SoftwareSyscallFrame]) interrupt do
   state: ptr[SoftwareSyscallTable] is software_syscall_active
   syscall_dispatch(state, frame)
   return
+end
+
+func fast_syscall_dispatch(state: ptr[SoftwareSyscallTable], frame: ptr[FastSyscallFrame]) do
+  if state == 0 or state.handlers == 0 or frame == 0 then return 0
+
+  number: u64 is frame.rax
+  if number >= state.capacity then
+    frame.rax is state.invalid_result
+    return state.invalid_result
+  end
+
+  handler: ptr is mem.read64(ptr.index(state.handlers, number, 8))
+  if handler == 0 then
+    frame.rax is state.invalid_result
+    return state.invalid_result
+  end
+
+  result: u64 is call.indirect(handler, frame.rdi, frame.rsi, frame.rdx, frame.r10, frame.r8)
+  frame.rax is result
+  return result
+end
+
+func fast_syscall_dispatch_active(frame: ptr[FastSyscallFrame]) do
+  global software_syscall_active
+  if software_syscall_active == 0 then
+    frame.rax is u64("0xffffffffffffffff")
+    return
+  end
+  state: ptr[SoftwareSyscallTable] is software_syscall_active
+  fast_syscall_dispatch(state, frame)
+  return
+end
+
+# A real kernel should replace this with a non-returning process-termination
+# path that releases or schedules away from the malformed user context.
+func fast_syscall_bad_return(frame: ptr[FastSyscallFrame]) do
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
 end

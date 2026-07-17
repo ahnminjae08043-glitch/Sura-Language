@@ -1,0 +1,37 @@
+# Compile-only x86-64 AP trampoline and INIT/SIPI startup feature example.
+#
+# It emits and patches the trampoline but never executes the startup path.
+
+import "../../stdlib/freestanding/ap_startup.sura"
+
+ap_trampoline_page is static.zero(4096, 4096)
+ap_pml4 is static.zero(4096, 4096)
+ap_stack is static.zero(16384, 16)
+ap_ready: u64 is 0
+ap_config is static.struct(ApStartupConfig)
+
+func secondary_processor_main(argument: u64) -> u64 do
+  return argument
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura AP startup feature test")
+  uefi.newline()
+
+  # A future kernel must allocate a real page at physical 0x8000, identity-map
+  # it and all parameters, calibrate TSC ticks/us, then choose an MADT AP ID.
+  if 0 == 1 then
+    config: ptr[ApStartupConfig] is ap_config
+    config.destination is ap_trampoline_page
+    config.physical_address is 32768
+    config.pml4_physical is ap_pml4
+    config.stack_top is ptr.add(ap_stack, 16384)
+    config.entry is addr_of(secondary_processor_main)
+    config.argument is 7
+    config.ready_flag is addr_of(ap_ready)
+    prepared: bool is ap_trampoline_prepare(config)
+    started: bool is ap_start(config, 1, 3000, 100000, true)
+  end
+
+  return 0
+end

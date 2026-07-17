@@ -1,0 +1,292 @@
+# Single-CPU, ring-0 interrupt-frame scheduler for freestanding x86-64.
+#
+# States: 0 unused, 1 runnable, 2 finished, 3 sleeping, 4 blocked.
+# The library reserves software-interrupt vector 129 for voluntary reschedule.
+
+struct PreemptTask do
+  id: u64
+  frame: ptr
+  stack_base: ptr
+  stack_size: usize
+  result: u64
+  state: u64
+  wake_tick: u64
+  switches: u64
+end
+
+struct PreemptScheduler do
+  tasks: ptr
+  capacity: u64
+  current: u64
+  task_count: u64
+  next_id: u64
+  ticks: u64
+  switches: u64
+  kernel_code_selector: u64
+end
+
+preempt_scheduler_active: ptr is 0
+
+func preempt_task_at(state: ptr[PreemptScheduler], index: u64) do
+  return ptr.index(state.tasks, index, sizeof(PreemptTask))
+end
+
+func preempt_clear_task(task: ptr[PreemptTask]) do
+  task.id is 0
+  task.frame is 0
+  task.stack_base is 0
+  task.stack_size is 0
+  task.result is 0
+  task.state is 0
+  task.wake_tick is 0
+  task.switches is 0
+end
+
+func preempt_scheduler_init(state: ptr[PreemptScheduler], tasks: ptr, capacity: u64, kernel_code_selector: u64) do
+  global preempt_scheduler_active
+  if state == 0 or tasks == 0 or capacity < 2 then return false
+  if kernel_code_selector == 0 or kernel_code_selector > 65535 then return false
+  if (kernel_code_selector & 3) != 0 then return false
+
+  index: u64 is 0
+  while index < capacity do
+    preempt_clear_task(ptr.index(tasks, index, sizeof(PreemptTask)))
+    index += 1
+  end
+
+  state.tasks is tasks
+  state.capacity is capacity
+  state.current is 0
+  state.task_count is 1
+  state.next_id is 2
+  state.ticks is 0
+  state.switches is 0
+  state.kernel_code_selector is kernel_code_selector
+
+  boot_task: ptr[PreemptTask] is preempt_task_at(state, 0)
+  boot_task.id is 1
+  boot_task.state is 1
+  preempt_scheduler_active is state
+  return true
+end
+
+func preempt_find_index(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return 0
+  if task_id == 0 then return state.capacity
+  index: u64 is 0
+  while index < state.capacity do
+    task: ptr[PreemptTask] is preempt_task_at(state, index)
+    if task.state != 0 and task.id == task_id then return index
+    index += 1
+  end
+  return state.capacity
+end
+
+func preempt_create(state: ptr[PreemptScheduler], stack_base: ptr, stack_size: usize, entry: ptr, argument: u64) do
+  if state == 0 or stack_base == 0 or entry == 0 then return 0
+  if stack_size < 4096 or not ptr.is_aligned(stack_base, 16) then return 0
+  if state.next_id == u64("0xffffffffffffffff") then return 0
+
+  index: u64 is 1
+  while index < state.capacity do
+    task: ptr[PreemptTask] is preempt_task_at(state, index)
+    if task.state == 0 then
+      frame: ptr is preempt.init(ptr.add(stack_base, stack_size), entry, argument, addr_of(preempt_task_exit), state.kernel_code_selector)
+      if frame == 0 then return 0
+      task.id is state.next_id
+      state.next_id is state.next_id + 1
+      task.frame is frame
+      task.stack_base is stack_base
+      task.stack_size is stack_size
+      task.result is 0
+      task.state is 1
+      task.wake_tick is 0
+      task.switches is 0
+      state.task_count is state.task_count + 1
+      return task.id
+    end
+    index += 1
+  end
+  return 0
+end
+
+func preempt_wake_due(state: ptr[PreemptScheduler]) do
+  index: u64 is 0
+  while index < state.capacity do
+    task: ptr[PreemptTask] is preempt_task_at(state, index)
+    if task.state == 3 and task.wake_tick <= state.ticks then
+      task.wake_tick is 0
+      task.state is 1
+    end
+    index += 1
+  end
+end
+
+func preempt_next_runnable(state: ptr[PreemptScheduler]) do
+  scanned: u64 is 0
+  index: u64 is state.current
+  while scanned < state.capacity do
+    index += 1
+    if index >= state.capacity then index is 0
+    task: ptr[PreemptTask] is preempt_task_at(state, index)
+    if task.state == 1 and task.frame != 0 then return index
+    scanned += 1
+  end
+  return state.capacity
+end
+
+func preempt_select(state: ptr[PreemptScheduler], interrupted_frame: ptr, timer_tick: bool) do
+  if state == 0 or state.tasks == 0 or state.current >= state.capacity then return 0
+  if not preempt.frame_valid(interrupted_frame) then return 0
+
+  current_task: ptr[PreemptTask] is preempt_task_at(state, state.current)
+  if current_task.state != 0 and current_task.state != 2 then
+    current_task.frame is interrupted_frame
+  end
+
+  if timer_tick then
+    if state.ticks != u64("0xffffffffffffffff") then state.ticks is state.ticks + 1
+    preempt_wake_due(state)
+  end
+
+  next_index: u64 is preempt_next_runnable(state)
+  if next_index >= state.capacity then return 0
+  if next_index == state.current then return 0
+
+  next_task: ptr[PreemptTask] is preempt_task_at(state, next_index)
+  if not preempt.frame_valid(next_task.frame) then
+    next_task.state is 4
+    return 0
+  end
+
+  state.current is next_index
+  state.switches is state.switches + 1
+  next_task.switches is next_task.switches + 1
+  return next_task.frame
+end
+
+func preempt_timer_interrupt(frame: ptr) interrupt do
+  global preempt_scheduler_active
+  if preempt_scheduler_active == 0 then
+    apic.eoi()
+    return
+  end
+  state: ptr[PreemptScheduler] is preempt_scheduler_active
+  next_frame: ptr is preempt_select(state, frame, true)
+  apic.eoi()
+  if next_frame != 0 then
+    resumed: bool is preempt.resume(next_frame)
+  end
+  return
+end
+
+func preempt_yield_interrupt(frame: ptr) interrupt do
+  global preempt_scheduler_active
+  if preempt_scheduler_active == 0 then return
+  state: ptr[PreemptScheduler] is preempt_scheduler_active
+  next_frame: ptr is preempt_select(state, frame, false)
+  if next_frame != 0 then
+    resumed: bool is preempt.resume(next_frame)
+  end
+  return
+end
+
+func preempt_yield() do
+  if preempt_scheduler_active == 0 then return false
+  invoked: bool is interrupt.invoke(129)
+  return invoked
+end
+
+func preempt_sleep(state: ptr[PreemptScheduler], ticks: u64) do
+  if state == 0 or state.current == 0 or state.current >= state.capacity then return false
+  if ticks == 0 then return preempt_yield()
+  if ticks > u64("0xffffffffffffffff") - state.ticks then return false
+  task: ptr[PreemptTask] is preempt_task_at(state, state.current)
+  task.wake_tick is state.ticks + ticks
+  task.state is 3
+  invoked: bool is interrupt.invoke(129)
+  if task.state == 3 then
+    task.state is 1
+    task.wake_tick is 0
+    return false
+  end
+  return invoked
+end
+
+func preempt_block_current(state: ptr[PreemptScheduler]) do
+  if state == 0 or state.current == 0 or state.current >= state.capacity then return false
+  task: ptr[PreemptTask] is preempt_task_at(state, state.current)
+  task.state is 4
+  invoked: bool is interrupt.invoke(129)
+  if task.state == 4 then
+    task.state is 1
+    return false
+  end
+  return invoked
+end
+
+func preempt_wake(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return false
+  index: u64 is preempt_find_index(state, task_id)
+  if index >= state.capacity then return false
+  task: ptr[PreemptTask] is preempt_task_at(state, index)
+  if task.state != 3 and task.state != 4 then return false
+  task.wake_tick is 0
+  task.state is 1
+  return true
+end
+
+func preempt_task_state(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return 0
+  index: u64 is preempt_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  task: ptr[PreemptTask] is preempt_task_at(state, index)
+  return task.state
+end
+
+func preempt_task_result(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return 0
+  index: u64 is preempt_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  task: ptr[PreemptTask] is preempt_task_at(state, index)
+  return task.result
+end
+
+func preempt_join(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return 0
+  index: u64 is preempt_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  while preempt_task_state(state, task_id) != 2 do
+    if not preempt_yield() then return 0
+  end
+  return preempt_task_result(state, task_id)
+end
+
+func preempt_reap(state: ptr[PreemptScheduler], task_id: u64) do
+  if state == 0 then return false
+  index: u64 is preempt_find_index(state, task_id)
+  if index == 0 or index >= state.capacity then return false
+  task: ptr[PreemptTask] is preempt_task_at(state, index)
+  if task.state != 2 then return false
+  preempt_clear_task(task)
+  return true
+end
+
+func preempt_task_exit(result: u64) do
+  global preempt_scheduler_active
+  if preempt_scheduler_active != 0 then
+    state: ptr[PreemptScheduler] is preempt_scheduler_active
+    if state.current < state.capacity then
+      task: ptr[PreemptTask] is preempt_task_at(state, state.current)
+      task.result is result
+      task.state is 2
+      if state.task_count > 0 then state.task_count is state.task_count - 1
+      invoked: bool is interrupt.invoke(129)
+    end
+  end
+
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
