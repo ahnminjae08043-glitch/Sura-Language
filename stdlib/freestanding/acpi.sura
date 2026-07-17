@@ -1,0 +1,261 @@
+# Checked ACPI RSDP/SDT/MADT discovery for the freestanding x86-64 target.
+#
+# The caller must keep the UEFI configuration-table memory mapped and provide
+# every output buffer. This module performs no allocation and starts no CPU.
+
+struct AcpiProcessor packed do
+  apic_id: u32
+  acpi_uid: u32
+  flags: u32
+  kind: u8
+  enabled: u8
+  online_capable: u8
+  reserved: u8
+end
+
+struct AcpiIoApic packed do
+  id: u32
+  address: u32
+  gsi_base: u32
+  reserved: u32
+end
+
+struct AcpiInterruptOverride packed do
+  bus: u8
+  source: u8
+  flags: u16
+  gsi: u32
+end
+
+struct AcpiMadtBuffers do
+  processors: ptr
+  processor_capacity: u64
+  io_apics: ptr
+  io_apic_capacity: u64
+  overrides: ptr
+  override_capacity: u64
+end
+
+struct AcpiMadtInfo do
+  rsdp_address: ptr
+  madt_address: ptr
+  local_apic_address: u64
+  madt_flags: u32
+  processor_count: u32
+  usable_processor_count: u32
+  io_apic_count: u32
+  override_count: u32
+  truncated: u32
+end
+
+func acpi_checksum_valid(address: ptr, length: usize, maximum: usize) do
+  if address == 0 or length == 0 or length > maximum then return false
+  total: u64 is 0
+  index: usize is 0
+  while index < length do
+    total is (total + mem.read8(ptr.add(address, index))) & 255
+    index += 1
+  end
+  return total == 0
+end
+
+func acpi_rsdp_valid(rsdp: ptr) do
+  if rsdp == 0 then return false
+  if mem.read64(rsdp) != u64("0x2052545020445352") then return false
+  if not acpi_checksum_valid(rsdp, 20, 20) then return false
+
+  revision: u64 is mem.read8(ptr.add(rsdp, 15))
+  if revision >= 2 then
+    length: u64 is mem.read32(ptr.add(rsdp, 20))
+    if length < 36 or length > 4096 then return false
+    if not acpi_checksum_valid(rsdp, length, 4096) then return false
+  end
+  return true
+end
+
+func acpi_is_v2_guid(entry: ptr) do
+  if mem.read32(entry) != u64("0x8868e871") then return false
+  if mem.read16(ptr.add(entry, 4)) != u64("0xe4f1") then return false
+  if mem.read16(ptr.add(entry, 6)) != u64("0x11d3") then return false
+  return mem.read64(ptr.add(entry, 8)) == u64("0x81883cc7800022bc")
+end
+
+func acpi_is_v1_guid(entry: ptr) do
+  if mem.read32(entry) != u64("0xeb9d2d30") then return false
+  if mem.read16(ptr.add(entry, 4)) != u64("0x2d88") then return false
+  if mem.read16(ptr.add(entry, 6)) != u64("0x11d3") then return false
+  return mem.read64(ptr.add(entry, 8)) == u64("0x4dc13f279000169a")
+end
+
+func acpi_find_rsdp(system_table: ptr) do
+  if system_table == 0 then return 0
+  count: u64 is mem.read64(ptr.add(system_table, 104))
+  tables: ptr is mem.read64(ptr.add(system_table, 112))
+  if tables == 0 or count == 0 then return 0
+  if count > 4096 then count is 4096
+
+  legacy: ptr is 0
+  index: u64 is 0
+  while index < count do
+    entry: ptr is ptr.index(tables, index, 24)
+    candidate: ptr is mem.read64(ptr.add(entry, 16))
+    if acpi_is_v2_guid(entry) and acpi_rsdp_valid(candidate) then
+      return candidate
+    end
+    if legacy == 0 and acpi_is_v1_guid(entry) and acpi_rsdp_valid(candidate) then
+      legacy is candidate
+    end
+    index += 1
+  end
+  return legacy
+end
+
+func acpi_sdt_valid(table: ptr, signature: u64) do
+  if table == 0 or mem.read32(table) != signature then return false
+  length: u64 is mem.read32(ptr.add(table, 4))
+  if length < 36 or length > 1048576 then return false
+  return acpi_checksum_valid(table, length, 1048576)
+end
+
+func acpi_find_table(rsdp: ptr, signature: u64) do
+  if not acpi_rsdp_valid(rsdp) then return 0
+
+  root: ptr is 0
+  entry_size: u64 is 0
+  revision: u64 is mem.read8(ptr.add(rsdp, 15))
+  if revision >= 2 then
+    xsdt: ptr is mem.read64(ptr.add(rsdp, 24))
+    if acpi_sdt_valid(xsdt, u64("0x54445358")) then
+      root is xsdt
+      entry_size is 8
+    end
+  end
+  if root == 0 then
+    rsdt: ptr is mem.read32(ptr.add(rsdp, 16))
+    if not acpi_sdt_valid(rsdt, u64("0x54445352")) then return 0
+    root is rsdt
+    entry_size is 4
+  end
+
+  length: u64 is mem.read32(ptr.add(root, 4))
+  count: u64 is (length - 36) / entry_size
+  if count > 4096 then count is 4096
+  index: u64 is 0
+  while index < count do
+    slot: ptr is ptr.add(root, 36 + index * entry_size)
+    candidate: ptr is 0
+    if entry_size == 8 then
+      candidate is mem.read64(slot)
+    else
+      candidate is mem.read32(slot)
+    end
+    if acpi_sdt_valid(candidate, signature) then return candidate
+    index += 1
+  end
+  return 0
+end
+
+func acpi_madt_reset(info: ptr[AcpiMadtInfo]) do
+  info.rsdp_address is 0
+  info.madt_address is 0
+  info.local_apic_address is 0
+  info.madt_flags is 0
+  info.processor_count is 0
+  info.usable_processor_count is 0
+  info.io_apic_count is 0
+  info.override_count is 0
+  info.truncated is 0
+end
+
+func acpi_store_processor(info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers], uid: u64, apic_id: u64, flags: u64, kind: u64) do
+  index: u64 is info.processor_count
+  if buffers.processors != 0 and index < buffers.processor_capacity then
+    processor: ptr[AcpiProcessor] is ptr.index(buffers.processors, index, sizeof(AcpiProcessor))
+    processor.apic_id is apic_id
+    processor.acpi_uid is uid
+    processor.flags is flags
+    processor.kind is kind
+    processor.enabled is flags & 1
+    processor.online_capable is (flags >> 1) & 1
+    processor.reserved is 0
+  else
+    info.truncated is info.truncated | 1
+  end
+  info.processor_count is info.processor_count + 1
+  if (flags & 3) != 0 then
+    info.usable_processor_count is info.usable_processor_count + 1
+  end
+end
+
+func acpi_store_io_apic(info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers], id: u64, address: u64, gsi_base: u64) do
+  index: u64 is info.io_apic_count
+  if buffers.io_apics != 0 and index < buffers.io_apic_capacity then
+    io_apic: ptr[AcpiIoApic] is ptr.index(buffers.io_apics, index, sizeof(AcpiIoApic))
+    io_apic.id is id
+    io_apic.address is address
+    io_apic.gsi_base is gsi_base
+    io_apic.reserved is 0
+  else
+    info.truncated is info.truncated | 2
+  end
+  info.io_apic_count is info.io_apic_count + 1
+end
+
+func acpi_store_override(info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers], bus: u64, source: u64, gsi: u64, flags: u64) do
+  index: u64 is info.override_count
+  if buffers.overrides != 0 and index < buffers.override_capacity then
+    override: ptr[AcpiInterruptOverride] is ptr.index(buffers.overrides, index, sizeof(AcpiInterruptOverride))
+    override.bus is bus
+    override.source is source
+    override.flags is flags
+    override.gsi is gsi
+  else
+    info.truncated is info.truncated | 4
+  end
+  info.override_count is info.override_count + 1
+end
+
+func acpi_parse_madt(madt: ptr, info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers]) do
+  if info == 0 or buffers == 0 then return false
+  acpi_madt_reset(info)
+  if not acpi_sdt_valid(madt, u64("0x43495041")) then return false
+
+  length: u64 is mem.read32(ptr.add(madt, 4))
+  if length < 44 then return false
+  info.madt_address is madt
+  info.local_apic_address is mem.read32(ptr.add(madt, 36))
+  info.madt_flags is mem.read32(ptr.add(madt, 40))
+
+  offset: u64 is 44
+  while offset < length do
+    if offset + 2 > length then return false
+    entry: ptr is ptr.add(madt, offset)
+    kind: u64 is mem.read8(entry)
+    entry_length: u64 is mem.read8(ptr.add(entry, 1))
+    if entry_length < 2 or offset + entry_length > length then return false
+
+    if kind == 0 and entry_length >= 8 then
+      acpi_store_processor(info, buffers, mem.read8(ptr.add(entry, 2)), mem.read8(ptr.add(entry, 3)), mem.read32(ptr.add(entry, 4)), 0)
+    elif kind == 1 and entry_length >= 12 then
+      acpi_store_io_apic(info, buffers, mem.read8(ptr.add(entry, 2)), mem.read32(ptr.add(entry, 4)), mem.read32(ptr.add(entry, 8)))
+    elif kind == 2 and entry_length >= 10 then
+      acpi_store_override(info, buffers, mem.read8(ptr.add(entry, 2)), mem.read8(ptr.add(entry, 3)), mem.read32(ptr.add(entry, 4)), mem.read16(ptr.add(entry, 8)))
+    elif kind == 5 and entry_length >= 12 then
+      info.local_apic_address is mem.read64(ptr.add(entry, 4))
+    elif kind == 9 and entry_length >= 16 then
+      acpi_store_processor(info, buffers, mem.read32(ptr.add(entry, 12)), mem.read32(ptr.add(entry, 4)), mem.read32(ptr.add(entry, 8)), 1)
+    end
+    offset is offset + entry_length
+  end
+  return offset == length
+end
+
+func acpi_discover_madt(system_table: ptr, info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers]) do
+  if info == 0 or buffers == 0 then return false
+  rsdp: ptr is acpi_find_rsdp(system_table)
+  if rsdp == 0 then return false
+  madt: ptr is acpi_find_table(rsdp, u64("0x43495041"))
+  if madt == 0 or not acpi_parse_madt(madt, info, buffers) then return false
+  info.rsdp_address is rsdp
+  return true
+end

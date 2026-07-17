@@ -591,6 +591,27 @@ writes `SURA_EXIT_BOOT_SERVICES_OK`, and exits a QEMU instance configured with
 `isa-debug-exit`. That debug-exit port is a VM test mechanism, not a portable
 hardware shutdown interface.
 
+## ACPI MADT discovery
+
+`stdlib/freestanding/acpi.sura` discovers the ACPI 2.0 or 1.0 RSDP from the
+UEFI configuration table, validates RSDP and SDT checksums and bounded
+lengths, prefers XSDT with RSDT fallback, and locates MADT (`APIC`). Its MADT
+parser records:
+
+- local APIC and x2APIC processor entries, flags, and ACPI UIDs
+- usable processor count from enabled/online-capable flags
+- I/O APIC identifiers, MMIO addresses, and GSI bases
+- interrupt source overrides
+- 64-bit local APIC address overrides
+
+The caller supplies fixed processor, I/O APIC, and override buffers. Capacity
+overflow sets `AcpiMadtInfo.truncated`; malformed entry lengths fail instead
+of continuing past the table. Firmware configuration-table pages must remain
+mapped while parsing. This module does not parse every ACPI table, configure
+interrupt routing, allocate per-CPU state, create an AP trampoline, or start
+an application processor. `examples/os/acpi_features.sura` is a non-executing
+compile feature test.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -602,7 +623,7 @@ relative imports are flattened into the same freestanding compilation unit.
 
 Still required for a complete self-hosted OS environment:
 
-- ACPI MADT processor discovery, AP trampoline, and complete AP startup
+- AP trampoline and complete AP startup
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
 - user/kernel entry validation and `swapgs` policy
 - synchronized/NUMA physical-memory policy, automatic intermediate page-table

@@ -1,0 +1,33 @@
+# Compile-only ACPI RSDP/XSDT/RSDT/MADT discovery feature example.
+#
+# It emits checked firmware-table discovery into caller-owned buffers, but
+# intentionally does not start application processors or install an OS.
+
+import "../../stdlib/freestanding/acpi.sura"
+
+acpi_info is static.struct(AcpiMadtInfo)
+acpi_buffers is static.struct(AcpiMadtBuffers)
+acpi_processors is static.struct(AcpiProcessor, 256)
+acpi_io_apics is static.struct(AcpiIoApic, 16)
+acpi_overrides is static.struct(AcpiInterruptOverride, 64)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura ACPI MADT feature test")
+  uefi.newline()
+
+  # Firmware pointers are only dereferenced after the future kernel chooses
+  # and validates its mapping/lifetime policy.
+  if 0 == 1 then
+    buffers: ptr[AcpiMadtBuffers] is acpi_buffers
+    buffers.processors is acpi_processors
+    buffers.processor_capacity is 256
+    buffers.io_apics is acpi_io_apics
+    buffers.io_apic_capacity is 16
+    buffers.overrides is acpi_overrides
+    buffers.override_capacity is 64
+    info: ptr[AcpiMadtInfo] is acpi_info
+    discovered: bool is acpi_discover_madt(uefi.system_table(), info, buffers)
+  end
+
+  return 0
+end

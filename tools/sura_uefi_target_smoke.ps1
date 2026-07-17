@@ -5,7 +5,8 @@ param(
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
     [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura"),
-    [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura")
+    [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
+    [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,6 +70,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $PciSource)) {
         throw "Sura freestanding PCI source not found: $PciSource"
+    }
+    if (-not (Test-Path -LiteralPath $AcpiSource)) {
+        throw "Sura freestanding ACPI source not found: $AcpiSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -338,6 +342,27 @@ try {
         throw "Freestanding PCI feature image is missing narrow configuration output"
     }
 
+    $acpiEfi = Join-Path $temp "ACPI.EFI"
+    $acpiOutput = & $Engine --target uefi-x86_64 --out $acpiEfi $AcpiSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding ACPI feature compile failed:`n$($acpiOutput -join "`n")"
+    }
+    $acpiBytes = [System.IO.File]::ReadAllBytes($acpiEfi)
+    if ($acpiBytes.Length -lt 16000 -or
+        $acpiBytes[0] -ne 0x4d -or $acpiBytes[1] -ne 0x5a) {
+        throw "Freestanding ACPI feature image is invalid"
+    }
+    $acpiUtf16 = [System.Text.Encoding]::Unicode.GetString($acpiBytes)
+    if ($acpiUtf16 -notmatch "Sura ACPI MADT feature test") {
+        throw "Freestanding ACPI feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $acpiBytes ([byte[]](0x48, 0xb8, 0x52, 0x53, 0x44, 0x20, 0x50, 0x54, 0x52, 0x20)))) {
+        throw "Freestanding ACPI feature image is missing the RSDP signature check"
+    }
+    if (-not (Test-ByteSequence $acpiBytes ([byte[]](0x48, 0xb8, 0x41, 0x50, 0x49, 0x43, 0x00, 0x00, 0x00, 0x00)))) {
+        throw "Freestanding ACPI feature image is missing the MADT signature check"
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -550,7 +575,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length), pci=$($pciBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {
