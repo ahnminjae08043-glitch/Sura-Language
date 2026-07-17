@@ -174,6 +174,8 @@ public:
             case 2: bytes({0x48, 0x8b, 0x95}); break;
             case 8: bytes({0x4c, 0x8b, 0x85}); break;
             case 9: bytes({0x4c, 0x8b, 0x8d}); break;
+            case 10: bytes({0x4c, 0x8b, 0x95}); break;
+            case 11: bytes({0x4c, 0x8b, 0x9d}); break;
             default: throw SuraOsCompileError("unsupported x64 parameter register");
         }
         d(static_cast<uint32_t>(disp));
@@ -186,6 +188,12 @@ struct DataPatch {
 };
 
 struct CallPatch {
+    size_t displacement_offset;
+    std::string function;
+    int line;
+};
+
+struct FunctionAddressPatch {
     size_t displacement_offset;
     std::string function;
     int line;
@@ -232,6 +240,7 @@ class UefiX64Compiler {
     std::vector<uint8_t> data = std::vector<uint8_t>(16, 0);
     std::vector<DataPatch> data_patches;
     std::vector<CallPatch> call_patches;
+    std::vector<FunctionAddressPatch> function_address_patches;
     std::unordered_map<std::string, size_t> function_offsets;
     std::unordered_map<std::string, const FuncDef*> functions;
     std::unordered_map<std::string, const ClassDef*> struct_defs;
@@ -668,7 +677,14 @@ class UefiX64Compiler {
             address_of_data_rax(global->second.data_offset);
             return;
         }
-        fail(ident, "unknown freestanding local or global '" +
+        if (functions.find(ident->name) != functions.end()) {
+            const size_t displacement =
+                x.rel32({0x48, 0x8d, 0x05}); // lea rax,[rip+handler]
+            function_address_patches.push_back(
+                {displacement, ident->name, ident->line});
+            return;
+        }
+        fail(ident, "unknown freestanding local, global, or function '" +
                     ident->name + "'");
     }
 
@@ -1682,6 +1698,11 @@ class UefiX64Compiler {
 
         auto user = functions.find(raw_name);
         if (user != functions.end()) {
+            if (user->second->abi != "sura") {
+                fail(origin, "interrupt handler '" + raw_name +
+                             "' cannot be called like a normal function; "
+                             "use addr_of(" + raw_name + ") for an IDT gate");
+            }
             if (args.size() != user->second->params.size()) {
                 fail(origin, "freestanding function '" + raw_name +
                              "' expects " +
@@ -1837,6 +1858,89 @@ class UefiX64Compiler {
         if (name == "io_out8") { port_write(8); return true; }
         if (name == "io_out16") { port_write(16); return true; }
         if (name == "io_out32") { port_write(32); return true; }
+
+        if (name == "cpu_idt_set_gate") {
+            if (args.size() != 6) {
+                fail(expr, "cpu.idt_set_gate(table, vector, handler, selector, "
+                           "ist, attributes) expects six values");
+            }
+            const uint64_t vector = require_constant_integer(
+                args[1].get(), "IDT vector");
+            const uint64_t selector = require_constant_integer(
+                args[3].get(), "IDT code selector");
+            const uint64_t ist = require_constant_integer(
+                args[4].get(), "IDT IST index");
+            const uint64_t attributes = require_constant_integer(
+                args[5].get(), "IDT attributes");
+            if (vector > 255) fail(args[1].get(), "IDT vector must be 0..255");
+            if (selector > 0xffff) {
+                fail(args[3].get(), "IDT code selector must fit 16 bits");
+            }
+            if (ist > 7) fail(args[4].get(), "IDT IST index must be 0..7");
+            if (attributes > 0xff) {
+                fail(args[5].get(), "IDT attributes must fit 8 bits");
+            }
+            std::string handler_call;
+            const std::vector<ExprPtr>* handler_args = nullptr;
+            if (!flatten_call(args[2].get(), handler_call, handler_args) ||
+                canonical_intrinsic(handler_call) != "addr_of" ||
+                handler_args->size() != 1 ||
+                (*handler_args)[0]->kind != NK::IDENT) {
+                fail(args[2].get(), "IDT handler must be written as "
+                                    "addr_of(interrupt_function)");
+            }
+            const std::string handler_name =
+                static_cast<const Ident*>((*handler_args)[0].get())->name;
+            auto handler = functions.find(handler_name);
+            if (handler == functions.end() ||
+                (handler->second->abi != "interrupt" &&
+                 handler->second->abi != "interrupt_error")) {
+                fail(args[2].get(), "IDT handler '" + handler_name +
+                                    "' must use interrupt or interrupt_error ABI");
+            }
+            const bool hardware_error_code =
+                vector == 8 || vector == 10 || vector == 11 ||
+                vector == 12 || vector == 13 || vector == 14 ||
+                vector == 17 || vector == 21 || vector == 29 ||
+                vector == 30;
+            const bool handler_expects_error =
+                handler->second->abi == "interrupt_error";
+            if (hardware_error_code != handler_expects_error) {
+                fail(args[2].get(), "IDT vector " + std::to_string(vector) +
+                                    (hardware_error_code
+                                         ? " pushes an error code and requires "
+                                           "interrupt_error ABI"
+                                         : " does not push an error code and "
+                                           "requires interrupt ABI"));
+            }
+
+            const size_t temporary = reserve_temporaries(2, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[2].get());
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            x.mov_reg_rbp(10, scratch_slots[temporary]); // r10 = IDT base
+            if (vector) {
+                x.bytes({0x49, 0x81, 0xc2}); // add r10, vector * 16
+                x.d(static_cast<uint32_t>(vector * 16));
+            }
+            x.mov_reg_rbp(11, scratch_slots[temporary + 1]); // r11 = handler
+            x.bytes({0x66, 0x45, 0x89, 0x1a}); // offset[15:0]
+            x.bytes({0x66, 0x41, 0xc7, 0x42, 0x02});
+            x.b(static_cast<uint8_t>(selector));
+            x.b(static_cast<uint8_t>(selector >> 8));
+            x.bytes({0x41, 0xc6, 0x42, 0x04,
+                     static_cast<uint8_t>(ist)});
+            x.bytes({0x41, 0xc6, 0x42, 0x05,
+                     static_cast<uint8_t>(attributes)});
+            x.bytes({0x4c, 0x89, 0xd8, 0x48, 0xc1, 0xe8, 0x10,
+                     0x66, 0x41, 0x89, 0x42, 0x06});
+            x.bytes({0x4c, 0x89, 0xd8, 0x48, 0xc1, 0xe8, 0x20,
+                     0x41, 0x89, 0x42, 0x08});
+            x.bytes({0x41, 0xc7, 0x42, 0x0c, 0x00, 0x00, 0x00, 0x00});
+            release_temporaries(2);
+            return true;
+        }
 
         if (name == "cpu_halt") {
             if (!args.empty()) fail(expr, "cpu.halt() takes no arguments");
@@ -2096,6 +2200,17 @@ class UefiX64Compiler {
         temporary_depth = 0;
         call_argument_depth = 0;
 
+        const bool is_interrupt =
+            function && (function->abi == "interrupt" ||
+                         function->abi == "interrupt_error");
+        if (function && function->abi != "sura" && !is_interrupt) {
+            fail(function, "unknown freestanding function ABI '" +
+                           function->abi + "'");
+        }
+        if (is_entry && is_interrupt) {
+            fail(function, "a UEFI entry function cannot use an interrupt ABI");
+        }
+
         scan_global_declarations(body);
         if (function) {
             if (function->params.size() > 6) {
@@ -2104,6 +2219,18 @@ class UefiX64Compiler {
             if (is_entry && function->params.size() > 2) {
                 fail(function, "a UEFI entry function accepts at most image_handle "
                                "and system_table");
+            }
+            if (is_interrupt) {
+                if (function->params.size() != 1) {
+                    fail(function, "an interrupt function requires exactly one "
+                                   "saved-frame pointer parameter");
+                }
+                if (function->param_types.empty() ||
+                    annotated_type_name(function->param_types[0]).rfind(
+                        "ptr", 0) != 0) {
+                    fail(function, "an interrupt function parameter must have "
+                                   "a ptr or ptr[StructName] annotation");
+                }
             }
             for (size_t i = 0; i < function->params.size(); ++i) {
                 const TypeAnnot* type =
@@ -2130,15 +2257,38 @@ class UefiX64Compiler {
         frame_size = align_up_u32(
             static_cast<uint32_t>(next_slot * 8 + 32 + 16), 16);
 
-        x.bytes({0x55, 0x48, 0x89, 0xe5, 0x48, 0x81, 0xec});
-        x.d(frame_size);
+        if (is_interrupt) {
+            // Normalize both hardware frame shapes. Exceptions in the
+            // `interrupt_error` set already have an error code at [rsp];
+            // ordinary interrupts receive a synthetic zero error code.
+            if (function->abi == "interrupt") x.bytes({0x6a, 0x00});
+
+            // Save all general-purpose registers in a documented order:
+            // r15..r8, rdi, rsi, rbp, rbx, rdx, rcx, rax at offsets 0..112.
+            x.bytes({0x50, 0x51, 0x52, 0x53, 0x55, 0x56, 0x57,
+                     0x41, 0x50, 0x41, 0x51, 0x41, 0x52, 0x41, 0x53,
+                     0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+                     0xfc}); // cld for the function-call ABI
+
+            // Keep the saved frame at rbp+8. Align RSP before any nested
+            // Win64-style Sura calls while retaining fixed RBP-relative locals.
+            x.bytes({0x55, 0x48, 0x89, 0xe5,
+                     0x48, 0x83, 0xe4, 0xf0,
+                     0x48, 0x81, 0xec});
+            x.d(frame_size);
+            x.bytes({0x48, 0x8d, 0x85, 0x08, 0x00, 0x00, 0x00});
+            x.mov_rbp_rax(slots.at(function->params[0]));
+        } else {
+            x.bytes({0x55, 0x48, 0x89, 0xe5, 0x48, 0x81, 0xec});
+            x.d(frame_size);
+        }
 
         if (is_entry) {
             rip_data_disp({0x48, 0x89, 0x0d}, image_handle_data_offset);
             rip_data_disp({0x48, 0x89, 0x15}, system_table_data_offset);
         }
 
-        if (function) {
+        if (function && !is_interrupt) {
             for (size_t i = 0; i < function->params.size(); ++i) {
                 const int32_t disp = slots.at(function->params[i]);
                 if (i == 0) x.mov_rbp_reg(disp, 1);
@@ -2154,10 +2304,23 @@ class UefiX64Compiler {
         }
 
         compile_block(body);
-        x.bytes({0x31, 0xc0}); // implicit EFI_SUCCESS / integer zero
+        if (!is_interrupt) {
+            x.bytes({0x31, 0xc0}); // implicit EFI_SUCCESS / integer zero
+        }
         const size_t epilogue = x.pos();
         for (size_t patch : return_patches) x.patch_rel32(patch, epilogue);
-        x.bytes({0xc9, 0xc3}); // leave; ret
+        if (is_interrupt) {
+            x.bytes({
+                0x48, 0x89, 0xec, 0x5d, // mov rsp,rbp; pop rbp
+                0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c,
+                0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58,
+                0x5f, 0x5e, 0x5d, 0x5b, 0x5a, 0x59, 0x58,
+                0x48, 0x83, 0xc4, 0x08, // discard real/synthetic error code
+                0x48, 0xcf              // iretq
+            });
+        } else {
+            x.bytes({0xc9, 0xc3}); // leave; ret
+        }
     }
 
     std::vector<uint8_t> build_pe(uint32_t entry_rva, uint32_t data_rva,
@@ -2323,6 +2486,16 @@ public:
             if (target == function_offsets.end()) {
                 throw SuraOsCompileError(
                     "unresolved freestanding function '" + patch.function + "'",
+                    patch.line);
+            }
+            x.patch_rel32(patch.displacement_offset, target->second);
+        }
+        for (const FunctionAddressPatch& patch : function_address_patches) {
+            auto target = function_offsets.find(patch.function);
+            if (target == function_offsets.end()) {
+                throw SuraOsCompileError(
+                    "unresolved freestanding function address '" +
+                        patch.function + "'",
                     patch.line);
             }
             x.patch_rel32(patch.displacement_offset, target->second);

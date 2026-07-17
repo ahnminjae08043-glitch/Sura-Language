@@ -373,6 +373,9 @@ struct ForeachStmt : Stmt {
 
 struct FuncDef : Stmt {
     std::string              name;
+    // "sura", "interrupt", or "interrupt_error". The latter two are
+    // meaningful only to a freestanding machine-code target.
+    std::string              abi = "sura";
     std::vector<std::string> params;
     std::vector<ExprPtr>     defaults;    
     std::vector<TypeAnnot>   param_types; 
@@ -737,7 +740,8 @@ static void dump_stmt(const Stmt* s, int depth = 0) {
         }
         case NK::FUNC_DEF: {
             auto* fd = static_cast<const FuncDef*>(s);
-            printf("%sFUNC %s(", ind.c_str(), fd->name.c_str());
+            printf("%sFUNC %s [abi=%s](", ind.c_str(), fd->name.c_str(),
+                   fd->abi.c_str());
             for (size_t i = 0; i < fd->params.size(); ++i) {
                 if (i) printf(", ");
                 printf("%s", fd->params[i].c_str());

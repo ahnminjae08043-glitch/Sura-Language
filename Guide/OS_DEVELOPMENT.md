@@ -177,6 +177,64 @@ will require an explicit portable memory-order model before an ARM64 target.
 These operations are privileged. They are only recognized by the
 freestanding target and are not added to normal hosted Sura execution.
 
+## Interrupt functions
+
+A top-level function can select one of two x86-64 interrupt ABIs after its
+return type:
+
+```sura
+func timer(frame: ptr[InterruptFrame]) interrupt do
+  atomic.fetch_add64(addr_of(timer_ticks), 1)
+  return
+end
+
+func page_fault(frame: ptr[InterruptFrame]) interrupt_error do
+  global last_fault_error
+  last_fault_error is frame.error_code
+  return
+end
+```
+
+`interrupt` is for vectors whose hardware frame has no error code.
+`interrupt_error` is for vectors 8, 10–14, 17, 21, 29, and 30. The compiler
+adds a synthetic zero for the first form, saves all general-purpose registers,
+clears the direction flag for calls, aligns the handler stack, restores the
+registers, discards the real or synthetic error code, and emits `iretq`.
+Interrupt functions require exactly one typed pointer parameter and cannot be
+called as normal functions.
+
+The saved frame begins at the pointer passed to the handler:
+
+| Offset | Field |
+| ---: | --- |
+| 0..56 | `r15, r14, r13, r12, r11, r10, r9, r8` |
+| 64..112 | `rdi, rsi, rbp, rbx, rdx, rcx, rax` |
+| 120 | normalized error code |
+| 128, 136, 144 | hardware `rip`, `cs`, `rflags` |
+| 152, 160 | hardware old `rsp`, `ss` only when privilege level changed |
+
+For a same-privilege interrupt, `frame + 152` is the interrupted stack
+address; offsets 152 and 160 are not hardware fields that may be read as
+stored values. A ring transition supplies actual old `rsp` and `ss` values.
+
+Install a gate with:
+
+```sura
+cpu.idt_set_gate(idt, 32, addr_of(timer), 8, 0, 142)
+cpu.idt_set_gate(idt, 14, addr_of(page_fault), 8, 0, 142)
+```
+
+The arguments are IDT base, vector, handler, code selector, IST index, and
+attributes. Vector, selector, IST, and attributes are compile-time integers.
+The compiler requires a direct `addr_of(interrupt_function)` and checks whether
+the selected vector requires an error-code ABI. This helper writes one 16-byte
+gate; it does not configure a TSS/IST stack, load IDTR, enable interrupts, or
+send an APIC end-of-interrupt.
+
+The current wrapper saves integer registers only. Kernel code must add an
+FPU/SIMD state policy before handlers use floating-point or vector operations.
+User-mode entry also still needs a `swapgs` policy and validated kernel stack.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -187,8 +245,8 @@ Strings are supported for firmware console output and static data.
 
 Still required for a complete self-hosted OS environment:
 
-- interrupt-function declarations and saved-register frames
 - multiprocessor discovery and application-processor startup
+- TSS/IST management, FPU/SIMD interrupt state, and user/kernel `swapgs` policy
 - page-table, allocator, scheduler, syscall, and driver libraries
 - FAT reader and boot-image builder
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+

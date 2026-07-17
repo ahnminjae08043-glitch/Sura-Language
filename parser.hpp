@@ -1202,6 +1202,13 @@ class Parser {
         TypeAnnot return_type;
         if (check(TT::ARROW)) { advance(); return_type = parse_type_annot(); }
 
+        std::string function_abi = "sura";
+        if (check(TT::IDENT) &&
+            (peek().value == "interrupt" ||
+             peek().value == "interrupt_error")) {
+            function_abi = advance().value;
+        }
+
         expect(TT::DO, "do");
         eat_newline();
         auto body = parse_block();
@@ -1209,6 +1216,7 @@ class Parser {
         eat_newline();
 
         auto fd = std::make_unique<FuncDef>(std::move(name), std::move(body), ln);
+        fd->abi          = std::move(function_abi);
         fd->params       = std::move(params);
         fd->defaults     = std::move(defaults);
         fd->param_types  = std::move(param_types);

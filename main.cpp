@@ -914,6 +914,8 @@ static void write_ast_stmt_json(std::ostream& out, const Stmt* stmt) {
             auto* fd = static_cast<const FuncDef*>(stmt);
             out << ",\"name\":";
             write_json_string(out, fd->name);
+            out << ",\"abi\":";
+            write_json_string(out, fd->abi);
             out << ",\"params\":";
             write_json_string_array(out, fd->params);
             out << ",\"param_types\":";

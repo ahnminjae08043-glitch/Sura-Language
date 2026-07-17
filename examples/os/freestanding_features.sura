@@ -10,9 +10,36 @@ struct PciConfigHeader packed do
   class_code: u8
 end
 
+struct InterruptFrame packed do
+  r15: u64
+  r14: u64
+  r13: u64
+  r12: u64
+  r11: u64
+  r10: u64
+  r9: u64
+  r8: u64
+  rdi: u64
+  rsi: u64
+  rbp: u64
+  rbx: u64
+  rdx: u64
+  rcx: u64
+  rax: u64
+  error_code: u64
+  rip: u64
+  cs: u64
+  rflags: u64
+  interrupted_rsp: u64
+  ss: u64
+end
+
 boot_counter: u64 is 0
+timer_ticks: u64 is 0
+last_fault_error: u64 is 0
 pci_header is static.struct(PciConfigHeader)
 page_buffer is static.zero(4096, 4096)
+idt_table is static.zero(4096, 16)
 interrupt_stub is static.bytes([250, 244, 235, 252], 16)
 driver_name is static.utf8("sura-device")
 
@@ -22,6 +49,17 @@ end
 
 func identity(value: u64) -> u64 do
   return value
+end
+
+func timer_interrupt(frame: ptr[InterruptFrame]) interrupt do
+  atomic.fetch_add64(addr_of(timer_ticks), 1)
+  return
+end
+
+func page_fault_interrupt(frame: ptr[InterruptFrame]) interrupt_error do
+  global last_fault_error
+  last_fault_error is frame.error_code
+  return
 end
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
@@ -38,6 +76,9 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   header_bytes: usize is sizeof(PciConfigHeader)
   command_offset: usize is offset_of(PciConfigHeader, command)
   second_header: ptr is ptr.index(pci_header, 1, header_bytes)
+
+  cpu.idt_set_gate(idt_table, 32, addr_of(timer_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(idt_table, 14, addr_of(page_fault_interrupt), 8, 0, 142)
 
   if vendor == 0 and old_count >= 0 and cpu_leaf >= 0 and nested == 3 and command_offset == 4 and second_header > 0 then
     atomic.fence()

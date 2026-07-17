@@ -40,6 +40,19 @@ static bool contains_bytes(const std::vector<uint8_t>& image,
                        needle.begin(), needle.end()) != image.end();
 }
 
+static size_t count_bytes(const std::vector<uint8_t>& image,
+                          std::initializer_list<uint8_t> needle) {
+    size_t count = 0;
+    auto cursor = image.begin();
+    while (cursor != image.end()) {
+        cursor = std::search(cursor, image.end(), needle.begin(), needle.end());
+        if (cursor == image.end()) break;
+        ++count;
+        ++cursor;
+    }
+    return count;
+}
+
 int main(int argc, char** argv) {
     auto root = std::make_unique<SuraBlock>(1);
 
@@ -72,6 +85,13 @@ int main(int argc, char** argv) {
         root->body.push_back(std::make_unique<AssignStmt>(
             "page_buffer", method_call("static", "zero", std::move(args)), 1));
     }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(4096, 1));
+        args.push_back(std::make_unique<NumLit>(16, 1));
+        root->body.push_back(std::make_unique<AssignStmt>(
+            "idt_table", method_call("static", "zero", std::move(args)), 1));
+    }
 
     auto helper_body = std::make_unique<SuraBlock>(1);
     {
@@ -98,6 +118,35 @@ int main(int argc, char** argv) {
     auto low = std::make_unique<FuncDef>(
         "low_level_probe", std::vector<std::string>{}, std::move(low_body), 1);
     root->body.push_back(std::move(low));
+
+    auto irq_body = std::make_unique<SuraBlock>(1);
+    {
+        auto address = std::make_unique<CallExpr>("addr_of", 1);
+        address->args.push_back(std::make_unique<Ident>("boot_counter", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(address));
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        irq_body->body.push_back(std::make_unique<ExprStmt>(
+            method_call("atomic", "fetch_add64", std::move(args)), 1));
+    }
+    irq_body->body.push_back(
+        std::make_unique<ReturnStmt>(nullptr, 1));
+    auto irq = std::make_unique<FuncDef>(
+        "timer_interrupt", std::vector<std::string>{"frame"},
+        std::move(irq_body), 1);
+    irq->abi = "interrupt";
+    irq->param_types.push_back(scalar_type("ptr"));
+    root->body.push_back(std::move(irq));
+
+    auto fault_body = std::make_unique<SuraBlock>(1);
+    fault_body->body.push_back(
+        std::make_unique<ReturnStmt>(nullptr, 1));
+    auto fault = std::make_unique<FuncDef>(
+        "page_fault_interrupt", std::vector<std::string>{"frame"},
+        std::move(fault_body), 1);
+    fault->abi = "interrupt_error";
+    fault->param_types.push_back(scalar_type("ptr"));
+    root->body.push_back(std::move(fault));
 
     auto entry_body = std::make_unique<SuraBlock>(1);
     entry_body->body.push_back(std::make_unique<GlobalDeclStmt>(
@@ -139,6 +188,20 @@ int main(int argc, char** argv) {
         entry_body->body.push_back(std::make_unique<AssignStmt>(
             "header_size", std::move(size), 1));
     }
+    {
+        auto handler = std::make_unique<CallExpr>("addr_of", 1);
+        handler->args.push_back(
+            std::make_unique<Ident>("timer_interrupt", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("idt_table", 1));
+        args.push_back(std::make_unique<NumLit>(32, 1));
+        args.push_back(std::move(handler));
+        args.push_back(std::make_unique<NumLit>(8, 1));
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        args.push_back(std::make_unique<NumLit>(142, 1));
+        entry_body->body.push_back(std::make_unique<ExprStmt>(
+            method_call("cpu", "idt_set_gate", std::move(args)), 1));
+    }
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -160,6 +223,11 @@ int main(int argc, char** argv) {
     assert(contains_bytes(result.image, {0x0f, 0xa2})); // cpuid
     assert(contains_bytes(result.image,
                           {0xf0, 0x48, 0x0f, 0xc1, 0x01})); // lock xadd
+    assert(count_bytes(result.image, {0x48, 0xcf}) >= 2); // iretq
+    assert(contains_bytes(result.image,
+                          {0x66, 0x45, 0x89, 0x1a})); // IDT offset low
+    assert(contains_bytes(result.image,
+                          {0x6a, 0x00, 0x50, 0x51, 0x52, 0x53})); // no-error wrapper
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');

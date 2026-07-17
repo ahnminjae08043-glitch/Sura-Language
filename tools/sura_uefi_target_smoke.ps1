@@ -91,9 +91,52 @@ try {
     if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0xae, 0xf0)))) {
         throw "Freestanding feature image is missing MFENCE"
     }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x48, 0xcf)))) {
+        throw "Freestanding feature image is missing IRETQ"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x66, 0x45, 0x89, 0x1a)))) {
+        throw "Freestanding feature image is missing IDT gate writes"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x6a, 0x00, 0x50, 0x51, 0x52, 0x53)))) {
+        throw "Freestanding feature image is missing the normalized no-error interrupt wrapper"
+    }
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
+    }
+
+    $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
+    $invalidText = @'
+idt is static.zero(4096, 16)
+
+func wrong_page_fault(frame: ptr) interrupt do
+  return
+end
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  cpu.idt_set_gate(idt, 14, addr_of(wrong_page_fault), 8, 0, 142)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidSource,
+        $invalidText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $invalidOutput = & $Engine --target uefi-x86_64 --out (Join-Path $temp "INVALID.EFI") $invalidSource 2>&1
+        $invalidExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($invalidExitCode -eq 0) {
+        throw "Mismatched interrupt error-code ABI was accepted"
+    }
+    if (($invalidOutput -join "`n") -notmatch "pushes an error code") {
+        throw "Mismatched interrupt ABI did not produce the expected diagnostic"
     }
 
     "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length) bytes)"
