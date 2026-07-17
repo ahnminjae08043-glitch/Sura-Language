@@ -1,0 +1,236 @@
+# PCI configuration-mechanism 1 helpers for the freestanding x86-64 target.
+# Access through ports 0xCF8/0xCFC is shared state. The kernel must serialize
+# every transaction across interrupts and processors.
+
+struct PciDevice packed do
+  bdf: u64
+  vendor_id: u16
+  device_id: u16
+  revision: u8
+  prog_if: u8
+  subclass: u8
+  class_code: u8
+  header_type: u8
+  interrupt_line: u8
+  interrupt_pin: u8
+end
+
+func pci_bdf(bus: u64, device: u64, function: u64) do
+  if bus > 255 or device > 31 or function > 7 then
+    return u64("0xffffffffffffffff")
+  end
+  return (bus << 16) | (device << 8) | function
+end
+
+func pci_bdf_valid(bdf: u64) do
+  if bdf == u64("0xffffffffffffffff") then return false
+  if (bdf & u64("0xffffffffff000000")) != 0 then return false
+  if ((bdf >> 8) & 255) > 31 or (bdf & 255) > 7 then return false
+  return true
+end
+
+func pci_bdf_bus(bdf: u64) do
+  return (bdf >> 16) & 255
+end
+
+func pci_bdf_device(bdf: u64) do
+  return (bdf >> 8) & 31
+end
+
+func pci_bdf_function(bdf: u64) do
+  return bdf & 7
+end
+
+func pci_config_address(bdf: u64, offset: u64) do
+  if not pci_bdf_valid(bdf) or offset > 255 then return 0
+  bus: u64 is pci_bdf_bus(bdf)
+  device: u64 is pci_bdf_device(bdf)
+  function: u64 is pci_bdf_function(bdf)
+  return u64("0x80000000") | (bus << 16) | (device << 11) | (function << 8) | (offset & 252)
+end
+
+func pci_read32(bdf: u64, offset: u64) do
+  if offset > 252 or (offset & 3) != 0 then return u64("0xffffffff")
+  address: u64 is pci_config_address(bdf, offset)
+  if address == 0 then return u64("0xffffffff")
+  io.out32(3320, address)
+  return io.in32(3324)
+end
+
+func pci_read16(bdf: u64, offset: u64) do
+  if offset > 254 or (offset & 1) != 0 then return 65535
+  value: u64 is pci_read32(bdf, offset & 252)
+  return (value >> ((offset & 2) << 3)) & 65535
+end
+
+func pci_read8(bdf: u64, offset: u64) do
+  if offset > 255 then return 255
+  value: u64 is pci_read32(bdf, offset & 252)
+  return (value >> ((offset & 3) << 3)) & 255
+end
+
+func pci_write32(bdf: u64, offset: u64, value: u64) do
+  if offset > 252 or (offset & 3) != 0 then return false
+  address: u64 is pci_config_address(bdf, offset)
+  if address == 0 then return false
+  io.out32(3320, address)
+  io.out32(3324, value)
+  return true
+end
+
+func pci_write16(bdf: u64, offset: u64, value: u64) do
+  if offset > 254 or (offset & 1) != 0 then return false
+  address: u64 is pci_config_address(bdf, offset)
+  if address == 0 then return false
+  io.out32(3320, address)
+  io.out16(3324 + (offset & 2), value)
+  return true
+end
+
+func pci_write8(bdf: u64, offset: u64, value: u64) do
+  if offset > 255 then return false
+  address: u64 is pci_config_address(bdf, offset)
+  if address == 0 then return false
+  io.out32(3320, address)
+  io.out8(3324 + (offset & 3), value)
+  return true
+end
+
+func pci_present(bdf: u64) do
+  return pci_read16(bdf, 0) != 65535
+end
+
+func pci_probe(bdf: u64, result: ptr[PciDevice]) do
+  if result == 0 or not pci_present(bdf) then return false
+
+  identity: u64 is pci_read32(bdf, 0)
+  class_info: u64 is pci_read32(bdf, 8)
+  result.bdf is bdf
+  result.vendor_id is identity & 65535
+  result.device_id is (identity >> 16) & 65535
+  result.revision is class_info & 255
+  result.prog_if is (class_info >> 8) & 255
+  result.subclass is (class_info >> 16) & 255
+  result.class_code is (class_info >> 24) & 255
+  result.header_type is pci_read8(bdf, 14)
+  result.interrupt_line is pci_read8(bdf, 60)
+  result.interrupt_pin is pci_read8(bdf, 61)
+  return true
+end
+
+func pci_find_vendor(vendor_id: u64, device_id: u64, result: ptr[PciDevice]) do
+  if result == 0 or vendor_id >= 65535 or device_id > 65535 then return false
+  bus: u64 is 0
+  while bus < 256 do
+    device: u64 is 0
+    while device < 32 do
+      first: u64 is pci_bdf(bus, device, 0)
+      if pci_present(first) then
+        function_count: u64 is 1
+        if (pci_read8(first, 14) & 128) != 0 then function_count is 8
+        function: u64 is 0
+        while function < function_count do
+          bdf: u64 is pci_bdf(bus, device, function)
+          vendor: u64 is pci_read16(bdf, 0)
+          found_device: u64 is pci_read16(bdf, 2)
+          if vendor == vendor_id and (device_id == 65535 or found_device == device_id) then
+            return pci_probe(bdf, result)
+          end
+          function += 1
+        end
+      end
+      device += 1
+    end
+    bus += 1
+  end
+  return false
+end
+
+func pci_find_class(class_code: u64, subclass: u64, prog_if: u64, match_prog_if: bool, result: ptr[PciDevice]) do
+  if result == 0 or class_code > 255 or subclass > 255 or prog_if > 255 then return false
+  bus: u64 is 0
+  while bus < 256 do
+    device: u64 is 0
+    while device < 32 do
+      first: u64 is pci_bdf(bus, device, 0)
+      if pci_present(first) then
+        function_count: u64 is 1
+        if (pci_read8(first, 14) & 128) != 0 then function_count is 8
+        function: u64 is 0
+        while function < function_count do
+          bdf: u64 is pci_bdf(bus, device, function)
+          if pci_present(bdf) then
+            class_info: u64 is pci_read32(bdf, 8)
+            found_prog_if: u64 is (class_info >> 8) & 255
+            found_subclass: u64 is (class_info >> 16) & 255
+            found_class: u64 is (class_info >> 24) & 255
+            if found_class == class_code and found_subclass == subclass and (not match_prog_if or found_prog_if == prog_if) then
+              return pci_probe(bdf, result)
+            end
+          end
+          function += 1
+        end
+      end
+      device += 1
+    end
+    bus += 1
+  end
+  return false
+end
+
+func pci_find_capability(bdf: u64, capability_id: u64) do
+  if capability_id > 255 or (pci_read16(bdf, 6) & 16) == 0 then return 0
+  header_type: u64 is pci_read8(bdf, 14) & 127
+  if header_type > 1 then return 0
+
+  capability: u64 is pci_read8(bdf, 52) & 252
+  visited: u64 is 0
+  while capability >= 64 and capability <= 252 and visited < 48 do
+    if pci_read8(bdf, capability) == capability_id then return capability
+    next_capability: u64 is pci_read8(bdf, capability + 1) & 252
+    if next_capability == capability then return 0
+    capability is next_capability
+    visited += 1
+  end
+  return 0
+end
+
+func pci_bar_value(bdf: u64, index: u64) do
+  header_type: u64 is pci_read8(bdf, 14) & 127
+  if header_type == 0 and index > 5 then return 0
+  if header_type == 1 and index > 1 then return 0
+  if header_type > 1 then return 0
+  return pci_read32(bdf, 16 + index * 4)
+end
+
+func pci_bar_is_io(value: u64) do
+  return (value & 1) != 0
+end
+
+func pci_bar_is_64(value: u64) do
+  return not pci_bar_is_io(value) and ((value >> 1) & 3) == 2
+end
+
+func pci_bar_address(bdf: u64, index: u64) do
+  if index > 5 then return 0
+  low: u64 is pci_bar_value(bdf, index)
+  if pci_bar_is_io(low) then return low & u64("0xfffffffc")
+  address: u64 is low & u64("0xfffffff0")
+  if pci_bar_is_64(low) then
+    if index == 5 then return 0
+    address is address | (pci_bar_value(bdf, index + 1) << 32)
+  end
+  return address
+end
+
+func pci_enable_command(bdf: u64, flags: u64) do
+  if flags > 65535 then return false
+  command: u64 is pci_read16(bdf, 4)
+  return pci_write16(bdf, 4, command | flags)
+end
+
+func pci_disable_command(bdf: u64, flags: u64) do
+  if flags > 65535 then return false
+  command: u64 is pci_read16(bdf, 4)
+  return pci_write16(bdf, 4, command & (~flags))
+end

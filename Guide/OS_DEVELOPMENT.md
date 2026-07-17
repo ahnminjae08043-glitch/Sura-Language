@@ -534,6 +534,29 @@ address-space selection, and fault recovery. The compile-only
 `examples/os/syscall_features.sura` emits both sides without entering user
 mode or starting an OS.
 
+## PCI configuration-space foundation
+
+`stdlib/freestanding/pci.sura` implements legacy PCI configuration mechanism
+1 through I/O ports `0xCF8` and `0xCFC`. It provides:
+
+- BDF construction and validation
+- 8-, 16-, and 32-bit configuration reads and writes
+- device probing and vendor/device or class matching
+- bounded capability-list traversal
+- BAR type and address decoding
+- PCI command-register enable and disable helpers
+
+The search functions account for the multifunction bit on function zero.
+`examples/os/pci_features.sura` emits each path in a non-executing feature
+block.
+
+The two configuration ports are global shared state, so a kernel must
+serialize each complete address/data transaction across interrupts and CPUs.
+This library does not parse ACPI MCFG, access PCIe ECAM, size BARs, configure
+MSI/MSI-X, allocate resources, or provide a device-specific driver. A kernel
+must also validate BARs and disable conflicting decode before changing device
+resources.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -550,7 +573,8 @@ Still required for a complete self-hosted OS environment:
 - user/kernel entry validation and `swapgs` policy
 - synchronized/NUMA physical-memory policy, automatic intermediate page-table
   allocation/reclamation, virtual address-space policy, and remote TLB shootdown
-- preemptive/SMP scheduling, `SYSCALL/SYSRET` and user-entry policy, and driver libraries
+- preemptive/SMP scheduling, `SYSCALL/SYSRET` and user-entry policy,
+  PCIe ECAM/resource allocation, and device-specific drivers
 - FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend

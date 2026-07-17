@@ -4,7 +4,8 @@ param(
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
-    [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura")
+    [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura"),
+    [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -65,6 +66,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $SyscallSource)) {
         throw "Sura freestanding syscall source not found: $SyscallSource"
+    }
+    if (-not (Test-Path -LiteralPath $PciSource)) {
+        throw "Sura freestanding PCI source not found: $PciSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -308,6 +312,32 @@ try {
         throw "Freestanding syscall feature image is missing interrupt return"
     }
 
+    $pciEfi = Join-Path $temp "PCI.EFI"
+    $pciOutput = & $Engine --target uefi-x86_64 --out $pciEfi $PciSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding PCI feature compile failed:`n$($pciOutput -join "`n")"
+    }
+    $pciBytes = [System.IO.File]::ReadAllBytes($pciEfi)
+    if ($pciBytes.Length -lt 12000 -or
+        $pciBytes[0] -ne 0x4d -or $pciBytes[1] -ne 0x5a) {
+        throw "Freestanding PCI feature image is invalid"
+    }
+    $pciUtf16 = [System.Text.Encoding]::Unicode.GetString($pciBytes)
+    if ($pciUtf16 -notmatch "Sura PCI configuration feature test") {
+        throw "Freestanding PCI feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $pciBytes ([byte[]](0x48, 0xb8, 0xf8, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00))) -or
+        -not (Test-ByteSequence $pciBytes ([byte[]](0x48, 0xb8, 0xfc, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)))) {
+        throw "Freestanding PCI feature image is missing legacy configuration ports"
+    }
+    if (-not (Test-ByteSequence $pciBytes ([byte[]](0x66, 0x89, 0xc2, 0x31, 0xc0, 0xed)))) {
+        throw "Freestanding PCI feature image is missing configuration input"
+    }
+    if (-not (Test-ByteSequence $pciBytes ([byte[]](0x66, 0xef))) -or
+        -not (Test-ByteSequence $pciBytes ([byte[]](0xee)))) {
+        throw "Freestanding PCI feature image is missing narrow configuration output"
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -520,7 +550,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length), pci=$($pciBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

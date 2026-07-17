@@ -1,0 +1,32 @@
+# Compile-only PCI configuration-space and discovery feature example.
+
+import "../../stdlib/freestanding/pci.sura"
+
+pci_result is static.struct(PciDevice)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura PCI configuration feature test")
+  uefi.newline()
+
+  # The legacy configuration ports are global shared state. Keep this path
+  # non-executing until a kernel provides interrupt/SMP serialization.
+  if 0 == 1 then
+    bdf: u64 is pci_bdf(0, 0, 0)
+    address: u64 is pci_config_address(bdf, 0)
+    present: bool is pci_present(bdf)
+    device: ptr[PciDevice] is pci_result
+    probed: bool is pci_probe(bdf, device)
+    found_vendor: bool is pci_find_vendor(4660, 65535, device)
+    found_class: bool is pci_find_class(1, 6, 1, true, device)
+    msi_capability: u64 is pci_find_capability(bdf, 5)
+    first_bar: u64 is pci_bar_value(bdf, 0)
+    first_bar_address: ptr is pci_bar_address(bdf, 0)
+    enabled: bool is pci_enable_command(bdf, 7)
+    disabled: bool is pci_disable_command(bdf, 4)
+    wrote8: bool is pci_write8(bdf, 60, 11)
+    wrote16: bool is pci_write16(bdf, 4, 7)
+    wrote32: bool is pci_write32(bdf, 16, first_bar)
+  end
+
+  return 0
+end
