@@ -715,9 +715,11 @@ const machineFacts = {
       source: "os/sura_os.sura",
       gate: "tools/sura_os_vm.ps1",
       output: ["build/os/SuraOS.efi", "build/os/SuraOS.img"],
-      executed_path: ["UEFI entry", "GOP framebuffer discovery", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "post-firmware framebuffer write", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "QEMU isa-debug-exit"],
+      executed_path: ["UEFI entry", "GOP framebuffer discovery", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "post-firmware framebuffer write", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
+      shell_commands: ["help", "status", "mem", "about", "shutdown"],
+      interactive_command: ".\\tools\\sura_os_vm.ps1 -Engine .\\SuraLanguage.exe -Interactive",
       execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; no host boot or firmware-variable changes",
-      limitations: ["minimal kernel integration, not a desktop OS", "does not execute every compile-verified freestanding subsystem", "no interactive keyboard shell, user program execution, persistent filesystem mutation, network, USB, audio, or GUI"],
+      limitations: ["minimal kernel integration, not a desktop OS", "COM1 terminal shell rather than a PS/2/USB keyboard or graphical console", "does not execute every compile-verified freestanding subsystem", "no user program execution, persistent filesystem mutation, network, USB, audio, or GUI"],
     },
     acpi_madt: {
       library: "stdlib/freestanding/acpi.sura",
@@ -1209,7 +1211,7 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
 ));
 
 sections.push(section("freestanding", "OS 개발용 freestanding 기능",
-  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer 기록, COM1 초기화, ExitBootServices, framebuffer write, physical-page allocate/write/read/free self-check를 실행하고 " + code("SURA_OS_KERNEL_READY") + "를 출력하는 최소 kernel integration입니다. 일반 사용자를 위한 완성 OS는 아닙니다.") +
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer 기록, COM1 초기화, ExitBootServices, framebuffer write, physical-page allocate/write/read/free self-check를 실행하고 COM1 shell에서 " + code("help/status/mem/about/shutdown") + " 명령을 처리하는 최소 kernel integration입니다. 일반 사용자를 위한 완성 OS는 아닙니다.") +
   pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
@@ -1235,7 +1237,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["ACPI MADT", "checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides"],
     ["AP 시작", "16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake"],
     ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
-    ["최소 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 framebuffer·memory self-check 뒤 kernel-ready marker 검증"],
+    ["최소 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 framebuffer·memory self-check와 COM1 shell의 status/mem/shutdown 검증"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +

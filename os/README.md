@@ -25,5 +25,15 @@ Build and run the VM test from the repository root:
 .\tools\sura_os_vm.ps1 -Engine .\build\SuraLanguage_user.exe
 ```
 
+Start an interactive serial shell:
+
+```powershell
+.\tools\sura_os_vm.ps1 -Engine .\build\SuraLanguage_user.exe -Interactive
+```
+
+The shell supports `help`, `status`, `mem`, `about`, and `shutdown`. Use
+`shutdown` to close QEMU normally. The non-interactive VM test sends `status`,
+`mem`, and `shutdown` through COM1 and checks their output.
+
 The script uses QEMU with TCG emulation and an EDK2 x86-64 firmware image. It
 does not modify firmware boot entries or boot the host computer.

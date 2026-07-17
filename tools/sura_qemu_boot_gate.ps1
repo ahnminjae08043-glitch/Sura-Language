@@ -7,6 +7,8 @@ param(
     [string]$ExpectedEfiText = "Sura QEMU boot gate",
     [string]$ExpectedMarker = "SURA_EXIT_BOOT_SERVICES_OK",
     [int]$ExpectedExitCode = 33,
+    [string[]]$SerialInputLines = @(),
+    [string[]]$AdditionalExpectedSerialMarkers = @(),
     [switch]$CompileOnly
 )
 
@@ -133,6 +135,7 @@ try {
     $process.StartInfo.FileName = $qemuPath
     $process.StartInfo.UseShellExecute = $false
     $process.StartInfo.CreateNoWindow = $true
+    $process.StartInfo.RedirectStandardInput = $SerialInputLines.Count -gt 0
     $process.StartInfo.RedirectStandardOutput = $true
     $process.StartInfo.RedirectStandardError = $true
     $qemuArguments = @(
@@ -163,6 +166,15 @@ try {
     if (-not $process.Start()) { throw "QEMU did not start" }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    if ($SerialInputLines.Count -gt 0) {
+        Start-Sleep -Milliseconds 5000
+        foreach ($line in $SerialInputLines) {
+            $process.StandardInput.WriteLine($line)
+            $process.StandardInput.Flush()
+            Start-Sleep -Milliseconds 100
+        }
+        $process.StandardInput.Close()
+    }
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $process.Kill()
         $process.WaitForExit()
@@ -175,6 +187,14 @@ try {
     if ($process.ExitCode -ne $ExpectedExitCode -or
         -not $serialOutput.Contains($ExpectedMarker)) {
         throw "QEMU boot failed (exit=$($process.ExitCode)):`n$serialOutput`n$diagnosticOutput"
+    }
+    foreach ($marker in $AdditionalExpectedSerialMarkers) {
+        if ([string]::IsNullOrWhiteSpace($marker)) {
+            throw "AdditionalExpectedSerialMarkers must not contain empty values"
+        }
+        if (-not $serialOutput.Contains($marker)) {
+            throw "QEMU boot output is missing marker '$marker':`n$serialOutput`n$diagnosticOutput"
+        }
     }
 
     "sura_qemu_boot_gate: PASS (exit=$($process.ExitCode), marker=$ExpectedMarker)"

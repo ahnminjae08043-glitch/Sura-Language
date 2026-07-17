@@ -57,11 +57,16 @@ The minimal OS integration has a separate build-and-run gate:
 
 # Generate build\os\SuraOS.efi and SuraOS.img without launching QEMU:
 .\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe -CompileOnly
+
+# Attach the current terminal to the post-ExitBootServices COM1 shell:
+.\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe -Interactive
 ```
 
 The executed form uses QEMU TCG rather than host hardware. Success requires
-process exit code 33 and the post-self-check `SURA_OS_KERNEL_READY` serial
-marker. The gate does not modify host firmware variables or boot entries.
+the post-self-check shell to answer `status` and `mem`, accept `shutdown`,
+emit `SURA_OS_SHUTDOWN`, and produce process exit code 33. Interactive mode
+supports `help`, `status`, `mem`, `about`, and `shutdown`. The gate does not
+modify host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.

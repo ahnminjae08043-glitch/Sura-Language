@@ -14,6 +14,24 @@ os_memory_map is static.zero(131072, 4096)
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
 os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
+os_shutdown_marker is static.utf8("SURA_OS_SHUTDOWN")
+
+os_shell_input is static.zero(128, 16)
+os_number_buffer is static.zero(32, 16)
+
+os_command_help is static.utf8("help")
+os_command_status is static.utf8("status")
+os_command_mem is static.utf8("mem")
+os_command_about is static.utf8("about")
+os_command_shutdown is static.utf8("shutdown")
+
+os_shell_banner is static.utf8("Sura OS shell ready")
+os_shell_prompt is static.utf8("sura> ")
+os_shell_help is static.utf8("commands: help status mem about shutdown")
+os_shell_status is static.utf8("kernel: ready")
+os_shell_memory_prefix is static.utf8("free physical pages: ")
+os_shell_about is static.utf8("Sura OS: freestanding x86-64 kernel running in QEMU")
+os_shell_unknown is static.utf8("unknown command; type help")
 
 os_map_size: usize is 131072
 os_map_key: u64 is 0
@@ -31,6 +49,100 @@ end
 func os_serial_line(text: ptr, length: usize) do
   if not serial_write_buffer(1016, text, length, 1000000) then return false
   return serial_write_byte(1016, 10, 1000000)
+end
+
+func os_serial_text(text: ptr) do
+  return serial_write_cstr(1016, text, 256, 1000000)
+end
+
+func os_serial_cstr_line(text: ptr) do
+  if not os_serial_text(text) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func os_serial_u64(value: u64) do
+  if value == 0 then return serial_write_byte(1016, 48, 1000000)
+
+  index: usize is 32
+  remaining: u64 is value
+  while remaining > 0 do
+    index -= 1
+    mem.write8(ptr.add(os_number_buffer, index), 48 + (remaining % 10))
+    remaining is remaining / 10
+  end
+  return serial_write_buffer(1016, ptr.add(os_number_buffer, index), 32 - index, 1000000)
+end
+
+func os_command_equals(buffer: ptr, length: usize, expected: ptr) do
+  index: usize is 0
+  while index < length do
+    if mem.read8(ptr.add(buffer, index)) != mem.read8(ptr.add(expected, index)) then
+      return false
+    end
+    index += 1
+  end
+  return mem.read8(ptr.add(expected, length)) == 0
+end
+
+func os_shell_execute(buffer: ptr, length: usize) do
+  if length == 0 then return true
+
+  if os_command_equals(buffer, length, os_command_help) then
+    return os_serial_cstr_line(os_shell_help)
+  end
+  if os_command_equals(buffer, length, os_command_status) then
+    return os_serial_cstr_line(os_shell_status)
+  end
+  if os_command_equals(buffer, length, os_command_mem) then
+    allocator: ptr[PhysicalAllocator] is os_allocator_state
+    if not os_serial_text(os_shell_memory_prefix) then return false
+    if not os_serial_u64(pmem_available_pages(allocator)) then return false
+    return serial_write_byte(1016, 10, 1000000)
+  end
+  if os_command_equals(buffer, length, os_command_about) then
+    return os_serial_cstr_line(os_shell_about)
+  end
+  if os_command_equals(buffer, length, os_command_shutdown) then
+    os_serial_cstr_line(os_shutdown_marker)
+    os_vm_exit(16)
+    return true
+  end
+
+  return os_serial_cstr_line(os_shell_unknown)
+end
+
+func os_shell_run() do
+  if not os_serial_cstr_line(os_shell_banner) then return false
+  if not os_serial_text(os_shell_prompt) then return false
+
+  length: usize is 0
+  while true do
+    value: u64 is serial_read_byte(1016, 100000)
+    if value == 65535 then
+      cpu.pause()
+    elif value == 13 then
+      cpu.pause()
+    elif value == 10 then
+      if not serial_write_byte(1016, 10, 1000000) then return false
+      if not os_shell_execute(os_shell_input, length) then return false
+      length is 0
+      if not os_serial_text(os_shell_prompt) then return false
+    elif value == 8 or value == 127 then
+      if length > 0 then
+        length -= 1
+        serial_write_byte(1016, 8, 1000000)
+        serial_write_byte(1016, 32, 1000000)
+        serial_write_byte(1016, 8, 1000000)
+      end
+    elif value >= 32 and value <= 126 then
+      if length < 127 then
+        mem.write8(ptr.add(os_shell_input, length), value)
+        length += 1
+        if not serial_write_byte(1016, value, 1000000) then return false
+      end
+    end
+  end
+  return true
 end
 
 func os_paint_header(framebuffer: ptr, width: u32, height: u32, stride: u32, pixel_format: u32) do
@@ -135,7 +247,9 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     return 6
   end
 
-  # QEMU isa-debug-exit maps value 16 to process exit code 33.
-  os_vm_exit(16)
+  if not os_shell_run() then
+    os_vm_exit(8)
+    return 8
+  end
   return 0
 end
