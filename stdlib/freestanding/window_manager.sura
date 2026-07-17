@@ -216,12 +216,12 @@ func window_manager_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) d
   window_manager_focus(manager, window.id)
   local_x: i64 is x - window.x
   local_y: i64 is y - window.y
-  if window.closable != 0 and local_y < 32 and local_x >= window.width - 32 then
+  if window.closable != 0 and local_y < 38 and local_x >= window.width - 38 then
     id: u64 is window.id
     window_manager_close(manager, id)
     return id
   end
-  if window.draggable != 0 and local_y < 32 then
+  if window.draggable != 0 and local_y < 38 then
     manager.dragging_id is window.id
     manager.drag_offset_x is local_x
     manager.drag_offset_y is local_y

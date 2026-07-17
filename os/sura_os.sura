@@ -7,6 +7,7 @@
 import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
 import "../stdlib/freestanding/text_terminal.sura"
+import "../stdlib/freestanding/window_manager.sura"
 import "../stdlib/freestanding/ps2.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
@@ -23,6 +24,8 @@ os_ps2_keyboard_state is static.struct(Ps2KeyboardState)
 os_ps2_mouse_state is static.struct(Ps2MouseState)
 os_terminal_state is static.struct(TextTerminal)
 os_terminal_cells is static.zero(2300, 16)
+os_window_manager_state is static.struct(WindowManager)
+os_window_storage is static.struct(DesktopWindow, 4)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
@@ -32,8 +35,12 @@ os_keyboard_marker is static.utf8("SURA_OS_KEYBOARD_OK")
 os_mouse_marker is static.utf8("SURA_OS_MOUSE_OK")
 os_shift_marker is static.utf8("SURA_OS_SHIFT_OK")
 os_mouse_click_marker is static.utf8("SURA_OS_MOUSE_CLICK_OK")
+os_window_focus_marker is static.utf8("SURA_OS_WINDOW_FOCUS_OK")
+os_window_drag_marker is static.utf8("SURA_OS_WINDOW_DRAG_OK")
+os_window_close_marker is static.utf8("SURA_OS_WINDOW_CLOSE_OK")
 os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
 os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
+os_window_ready_marker is static.utf8("SURA_OS_WINDOW_READY")
 os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
 os_shutdown_marker is static.utf8("SURA_OS_SHUTDOWN")
 
@@ -61,6 +68,11 @@ os_shell_unknown is static.utf8("unknown command; type help")
 os_text_brand is static.utf8("SURA OS")
 os_text_start is static.utf8("SURA")
 os_text_terminal is static.utf8("TERMINAL")
+os_text_system_info is static.utf8("SYSTEM INFORMATION")
+os_text_system_version is static.utf8("SURA OS 0.1")
+os_text_system_target is static.utf8("UEFI X86-64")
+os_text_system_memory is static.utf8("MEMORY READY")
+os_text_system_machine is static.utf8("QEMU VIRTUAL MACHINE")
 os_text_terminal_prompt is static.utf8("SURA> STATUS")
 os_text_terminal_ready is static.utf8("KERNEL READY")
 os_text_files is static.utf8("FILES")
@@ -88,6 +100,9 @@ os_keyboard_reported: u64 is 0
 os_mouse_reported: u64 is 0
 os_shift_reported: u64 is 0
 os_mouse_click_reported: u64 is 0
+os_window_focus_reported: u64 is 0
+os_window_drag_reported: u64 is 0
+os_window_close_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
 
 func os_vm_exit(code: u64) do
@@ -234,29 +249,164 @@ func os_present_with_pointer() do
   return true
 end
 
+func os_window_manager_start(surface: ptr[FramebufferSurface]) do
+  if surface == 0 or surface.width < 640 or surface.height < 400 then return false
+  manager: ptr[WindowManager] is os_window_manager_state
+  if not window_manager_init(manager, os_window_storage, 4, surface.width, surface.height, 52) then
+    return false
+  end
+
+  terminal_width: u64 is 640
+  if surface.width < 760 then terminal_width is surface.width - 80
+  terminal_height: u64 is 330
+  if surface.height < 520 then terminal_height is surface.height - 150
+  terminal_x: i64 is (surface.width - terminal_width) / 2
+  terminal_y: i64 is (surface.height - terminal_height - 52) / 2
+
+  about_width: u64 is 360
+  if surface.width < 720 then about_width is 300
+  about_height: u64 is 220
+  about_x: i64 is surface.width - about_width - 80
+  about_y: i64 is 96
+
+  if not window_manager_add(manager, 2, about_x, about_y, about_width, about_height) then
+    return false
+  end
+  if not window_manager_add(manager, 1, terminal_x, terminal_y, terminal_width, terminal_height) then
+    return false
+  end
+  return window_manager_focus(manager, 1)
+end
+
+func os_draw_window_frame(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow], title: ptr) do
+  if surface == 0 or window == 0 or window.visible == 0 or title == 0 then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  panel: u32 is fb_rgb(surface, 20, 27, 40)
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  titlebar: u32 is fb_rgb(surface, 16, 91, 132)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  white: u32 is fb_rgb(surface, 242, 247, 252)
+  muted: u32 is fb_rgb(surface, 155, 172, 190)
+  black: u32 is fb_rgb(surface, 3, 8, 15)
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  bar_color: u32 is panel_light
+  border_color: u32 is muted
+  if window.active != 0 then
+    bar_color is titlebar
+    border_color is orange
+  end
+
+  fb_fill_rect(surface, x + 8, y + 10, window.width, window.height, black)
+  fb_fill_rect(surface, x, y, window.width, window.height, panel)
+  fb_rect_outline(surface, x, y, window.width, window.height, border_color)
+  fb_fill_rect(surface, x, y, window.width, 38, bar_color)
+  font5x7_draw_text(surface, x + 16, y + 11, title, 32, white_large)
+  if window.closable != 0 then
+    fb_fill_rect(surface, x + window.width - 34, y + 8, 24, 22, orange)
+    fb_line(surface, x + window.width - 28, y + 14, x + window.width - 17, y + 24, white)
+    fb_line(surface, x + window.width - 17, y + 14, x + window.width - 28, y + 24, white)
+  end
+  return true
+end
+
+func os_draw_terminal_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_terminal) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  white: u32 is fb_rgb(surface, 242, 247, 252)
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  orange_large: ptr[BitmapFontStyle] is os_font_orange_large
+  green_large: ptr[BitmapFontStyle] is os_font_green_large
+  terminal: ptr[TextTerminal] is os_terminal_state
+  if terminal.cells != 0 then
+    text_terminal_draw(terminal, surface, x + 24, y + 54, white_large)
+    cursor_x: u64 is x + 24 + terminal.cursor_x * 12
+    cursor_y: u64 is y + 54 + terminal.cursor_y * 16
+    if cursor_x + 10 < x + window.width and cursor_y + 15 < y + window.height then
+      fb_fill_rect(surface, cursor_x, cursor_y + 14, 10, 2, white)
+    end
+  else
+    font5x7_draw_text(surface, x + 24, y + 72, os_text_terminal_prompt, 32, orange_large)
+    font5x7_draw_text(surface, x + 24, y + 108, os_text_terminal_ready, 32, green_large)
+    font5x7_draw_text(surface, x + 24, y + 144, os_shell_prompt, 16, white_large)
+  end
+  return true
+end
+
+func os_draw_about_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_system_info) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  orange_large: ptr[BitmapFontStyle] is os_font_orange_large
+  green_large: ptr[BitmapFontStyle] is os_font_green_large
+  font5x7_draw_text(surface, x + 22, y + 58, os_text_system_version, 32, orange_large)
+  font5x7_draw_text(surface, x + 22, y + 94, os_text_system_target, 32, white_large)
+  font5x7_draw_text(surface, x + 22, y + 128, os_text_system_memory, 32, green_large)
+  font5x7_draw_text(surface, x + 22, y + 168, os_text_system_machine, 32, white_small)
+  return true
+end
+
+func os_draw_managed_windows(surface: ptr[FramebufferSurface]) do
+  manager: ptr[WindowManager] is os_window_manager_state
+  if surface == 0 or manager.windows == 0 then return false
+  drawn: u64 is 0
+  last_z: u64 is 0
+  while drawn < manager.count do
+    selected: ptr[DesktopWindow] is 0
+    selected_z: u64 is 0
+    index: u64 is 0
+    while index < manager.capacity do
+      candidate: ptr[DesktopWindow] is window_manager_at(manager, index)
+      if candidate.visible != 0 and candidate.z_order > last_z and (selected == 0 or candidate.z_order < selected_z) then
+        selected is candidate
+        selected_z is candidate.z_order
+      end
+      index += 1
+    end
+    if selected == 0 then return false
+    if selected.id == 1 then
+      if not os_draw_terminal_window(surface, selected) then return false
+    end
+    if selected.id == 2 then
+      if not os_draw_about_window(surface, selected) then return false
+    end
+    last_z is selected_z
+    drawn += 1
+  end
+  return true
+end
+
 func os_redraw_terminal() do
   back: ptr[FramebufferSurface] is os_back_surface_state
   if back == 0 or back.pixels == 0 then return false
+  manager: ptr[WindowManager] is os_window_manager_state
+  window: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  if window == 0 or window.visible == 0 then return os_present_with_pointer()
+  x: u64 is window.x
+  y: u64 is window.y
   panel: u32 is fb_rgb(back, 20, 27, 40)
   white: u32 is fb_rgb(back, 242, 247, 252)
-  window_width: u64 is 640
-  if back.width < 760 then window_width is back.width - 80
-  window_height: u64 is 330
-  if back.height < 520 then window_height is back.height - 150
-  window_x: u64 is (back.width - window_width) / 2
-  window_y: u64 is (back.height - window_height - 52) / 2
   white_large: ptr[BitmapFontStyle] is os_font_white_large
   terminal: ptr[TextTerminal] is os_terminal_state
-
-  fb_fill_rect(back, window_x + 1, window_y + 39, window_width - 2, window_height - 40, panel)
+  fb_fill_rect(back, x + 1, y + 39, window.width - 2, window.height - 40, panel)
   if terminal.cells != 0 then
-    text_terminal_draw(terminal, back, window_x + 24, window_y + 54, white_large)
-    cursor_x: u64 is window_x + 24 + terminal.cursor_x * 12
-    cursor_y: u64 is window_y + 54 + terminal.cursor_y * 16
-    if cursor_x + 10 < window_x + window_width and cursor_y + 15 < window_y + window_height then
+    text_terminal_draw(terminal, back, x + 24, y + 54, white_large)
+    cursor_x: u64 is x + 24 + terminal.cursor_x * 12
+    cursor_y: u64 is y + 54 + terminal.cursor_y * 16
+    if cursor_x + 10 < x + window.width and cursor_y + 15 < y + window.height then
       fb_fill_rect(back, cursor_x, cursor_y + 14, 10, 2, white)
     end
   end
+  return os_present_with_pointer()
+end
+
+func os_redraw_desktop() do
+  back: ptr[FramebufferSurface] is os_back_surface_state
+  if back == 0 or back.pixels == 0 then return false
+  if not os_draw_desktop(back) then return false
   return os_present_with_pointer()
 end
 
@@ -309,25 +459,7 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   fb_draw_app_icon(surface, 34, 206, 48, orange, white)
   font5x7_draw_text(surface, 36, 260, os_text_about_icon, 16, white_small)
 
-  # Centered terminal window.
-  window_width: u64 is 640
-  if surface.width < 760 then window_width is surface.width - 80
-  window_height: u64 is 330
-  if surface.height < 520 then window_height is surface.height - 150
-  window_x: u64 is (surface.width - window_width) / 2
-  window_y: u64 is (surface.height - window_height - 52) / 2
-  fb_fill_rect(surface, window_x + 8, window_y + 10, window_width, window_height, black)
-  fb_fill_rect(surface, window_x, window_y, window_width, window_height, panel)
-  fb_rect_outline(surface, window_x, window_y, window_width, window_height, muted)
-  fb_fill_rect(surface, window_x, window_y, window_width, 38, titlebar)
-  font5x7_draw_text(surface, window_x + 16, window_y + 11, os_text_terminal, 32, white_large)
-  fb_fill_rect(surface, window_x + window_width - 34, window_y + 8, 24, 22, orange)
-  fb_line(surface, window_x + window_width - 28, window_y + 14, window_x + window_width - 17, window_y + 24, white)
-  fb_line(surface, window_x + window_width - 17, window_y + 14, window_x + window_width - 28, window_y + 24, white)
-  font5x7_draw_text(surface, window_x + 24, window_y + 72, os_text_terminal_prompt, 32, orange_large)
-  font5x7_draw_text(surface, window_x + 24, window_y + 108, os_text_terminal_ready, 32, green_large)
-  font5x7_draw_text(surface, window_x + 24, window_y + 144, os_shell_prompt, 16, white_large)
-  fb_fill_rect(surface, window_x + 24 + 72, window_y + 144, 10, 15, white)
+  if not os_draw_managed_windows(surface) then return false
 
   # Taskbar and start button.
   taskbar_y: u64 is surface.height - 52
@@ -338,6 +470,12 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   font5x7_draw_text(surface, 26, taskbar_y + 19, os_text_start, 16, white_large)
   fb_fill_rect(surface, 126, taskbar_y + 8, 158, 36, panel)
   font5x7_draw_text(surface, 140, taskbar_y + 19, os_text_terminal, 16, white_small)
+  manager: ptr[WindowManager] is os_window_manager_state
+  about: ptr[DesktopWindow] is window_manager_find(manager, 2)
+  if about != 0 and about.visible != 0 then
+    fb_fill_rect(surface, 296, taskbar_y + 8, 188, 36, panel)
+    font5x7_draw_text(surface, 308, taskbar_y + 19, os_text_about_icon, 16, white_small)
+  end
   font5x7_draw_text(surface, surface.width - 66, taskbar_y + 19, os_text_vm, 16, muted_small)
   return true
 end
@@ -354,14 +492,16 @@ func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, p
   os_graphics_status is 2
   if not fb_surface_init(back, os_backbuffer_address, width, height, stride, pixel_format) then return false
   os_graphics_status is 3
-  if not os_draw_desktop(back) then return false
+  if not os_window_manager_start(back) then return false
   os_graphics_status is 4
+  if not os_draw_desktop(back) then return false
+  os_graphics_status is 5
   background_sample: u32 is fb_get_pixel(back, 2, 2)
   taskbar_sample: u32 is fb_get_pixel(back, 2, height - 20)
   if background_sample == taskbar_sample then return false
-  os_graphics_status is 5
-  if fb_sample_hash(back) == 0 then return false
   os_graphics_status is 6
+  if fb_sample_hash(back) == 0 then return false
+  os_graphics_status is 7
   if not os_present_with_pointer() then return false
   os_graphics_status is 0
   return true
@@ -415,15 +555,19 @@ func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
     if not os_serial_line(os_shift_marker, 16) then return false
     os_shift_reported is 1
   end
-  if keyboard.ascii != 0 then return os_shell_accept(keyboard.ascii)
+  manager: ptr[WindowManager] is os_window_manager_state
+  if keyboard.ascii != 0 and manager.active_id == 1 then
+    return os_shell_accept(keyboard.ascii)
+  end
   return true
 end
 
 func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
-  global os_mouse_x, os_mouse_y, os_mouse_reported, os_mouse_click_reported
+  global os_mouse_x, os_mouse_y, os_mouse_reported, os_mouse_click_reported, os_window_focus_reported, os_window_drag_reported, os_window_close_reported
   if mouse == 0 then return false
   os_mouse_x is mouse.x
   os_mouse_y is mouse.y
+  manager: ptr[WindowManager] is os_window_manager_state
   first_mouse: u64 is 0
   first_click: u64 is 0
   if os_mouse_reported == 0 then
@@ -434,7 +578,36 @@ func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
     first_click is 1
     os_mouse_click_reported is 1
   end
-  if not os_present_with_pointer() then return false
+  if (mouse.pressed & 1) != 0 then
+    previous_active: u64 is manager.active_id
+    window_manager_pointer_press(manager, mouse.x, mouse.y)
+    if manager.active_id == 2 and manager.active_id != previous_active and os_window_focus_reported == 0 then
+      if not os_serial_cstr_line(os_window_focus_marker) then return false
+      os_window_focus_reported is 1
+    end
+    if manager.last_closed_id == 2 and os_window_close_reported == 0 then
+      if not os_serial_cstr_line(os_window_close_marker) then return false
+      os_window_close_reported is 1
+    end
+  end
+  if mouse.moved != 0 and manager.dragging_id != 0 then
+    dragged: ptr[DesktopWindow] is window_manager_find(manager, manager.dragging_id)
+    previous_x: i64 is 0
+    previous_y: i64 is 0
+    if dragged != 0 then
+      previous_x is dragged.x
+      previous_y is dragged.y
+    end
+    if not window_manager_pointer_move(manager, mouse.x, mouse.y, mouse.buttons & 1) then return false
+    if dragged != 0 and dragged.id == 2 and (dragged.x != previous_x or dragged.y != previous_y) and os_window_drag_reported == 0 then
+      if not os_serial_cstr_line(os_window_drag_marker) then return false
+      os_window_drag_reported is 1
+    end
+  end
+  if (mouse.released & 1) != 0 then
+    if not window_manager_pointer_release(manager) then return false
+  end
+  if not os_redraw_desktop() then return false
   if first_mouse != 0 then
     if not os_serial_line(os_mouse_marker, 16) then return false
   end
@@ -583,6 +756,10 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not os_serial_line(os_desktop_marker, 18) then
     os_vm_exit(11)
     return 11
+  end
+  if not os_serial_cstr_line(os_window_ready_marker) then
+    os_vm_exit(12)
+    return 12
   end
 
   if not os_memory_self_test() then

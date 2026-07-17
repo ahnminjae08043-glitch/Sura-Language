@@ -10,12 +10,15 @@ experimental freestanding x86-64 target.
 - initializes the COM1 serial port
 - obtains the UEFI memory map and calls `ExitBootServices`
 - renders pixels, lines, rectangles, icons, and 5x7 bitmap text
-- presents a double-buffered 1280x800-tested desktop with a terminal window,
-  desktop icons, and a taskbar
+- presents a double-buffered 1280x800-tested desktop with overlapping Terminal
+  and System Information windows, desktop icons, and a taskbar
 - polls the emulated i8042 controller for translated PS/2 keyboard scan codes
   and three-byte mouse packets
-- accepts commands in the graphical terminal and moves a software pointer
+- accepts commands in the active graphical terminal and moves a software
+  pointer
 - keeps a readable 46x14 terminal history with wrapping, scrolling, and `clear`
+- manages overlapping Terminal and System Information windows with focus,
+  z-order, title-bar dragging, close-button input, and desktop bounds
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -24,16 +27,17 @@ experimental freestanding x86-64 target.
 This is the first graphical desktop milestone, not a complete desktop
 operating system. The terminal accepts PS/2 keyboard input in QEMU and COM1
 remains available for diagnostics and automation. The mouse pointer moves, but
-windows cannot yet be dragged, resized, focused, or clicked. There is no
-application process, persistent desktop filesystem, network stack, or browser
-yet.
+the left button now focuses, raises, drags, and closes managed windows.
+Resize, minimize, maximize, reopen, and taskbar-button input are not available.
+There is no application process, persistent desktop filesystem, network stack,
+or browser yet.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
 building blocks. A fixed-capacity window-manager foundation also implements
 focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
-It is compile/image verified but is not connected to this boot image yet.
-Those subsystems are not all executed by this boot image.
+The boot image executes that window manager for its two current windows. The
+other listed subsystems are not all executed by this boot image.
 
 Build and run the VM test from the repository root:
 
@@ -61,11 +65,12 @@ Capture the actual QEMU framebuffer after the desktop marker:
 .\tools\sura_os_screenshot.ps1 -Engine .\build\SuraLanguage_user.exe
 ```
 
-The capture is written to `build\os\SuraOS-desktop.ppm`. The capture tool uses
-QEMU QMP, requires `SURA_OS_DESKTOP_OK` and `SURA_OS_PS2_READY`, types
-`status` through the emulated keyboard, moves the emulated mouse, checks the
-Shift/keyboard/move/click markers and the command result, and then shuts the
-VM down normally.
+The final capture is written to `build\os\SuraOS-desktop.ppm`, and the dragged
+overlapping-window state is written to `build\os\SuraOS-windows.ppm`. The
+capture tool uses QEMU QMP, requires the desktop, window-manager, and PS/2
+ready markers, types through the emulated keyboard, focuses and drags the
+System Information window, captures it, closes it, verifies the window and
+terminal markers, and then shuts the VM down normally.
 
 The shell supports `help`, `status`, `mem`, `about`, `clear`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,

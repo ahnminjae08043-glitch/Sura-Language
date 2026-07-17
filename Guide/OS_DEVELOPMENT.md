@@ -14,8 +14,11 @@ emitting `SURA_OS_KERNEL_READY`.
 It is not a complete general-purpose operating system. The rendered terminal
 receives translated PS/2 keyboard input in QEMU and COM1 remains available for
 diagnostics and automation. A polling PS/2 mouse moves a software pointer.
-Windows cannot yet be focused, dragged, resized, or clicked. There is no
-application process, persistent desktop filesystem, network stack, or browser.
+The terminal and System Information windows can be focused, raised, dragged
+within the desktop, and closed with the left mouse button. Window resize,
+minimize, maximize, reopen, and taskbar-button input are not implemented.
+There is no application process, persistent desktop filesystem, network stack,
+or browser.
 The files in `examples/os` remain compiler feature tests and do not form a
 complete user environment or device-driver stack. Test generated images in a
 virtual machine before considering physical hardware.
@@ -244,7 +247,7 @@ capturing the final memory map. After `ExitBootServices`, it renders the full
 desktop to that buffer and calls `fb_present` once. The QEMU gate observes
 `SURA_OS_DESKTOP_OK`; `tools/sura_os_screenshot.ps1` additionally captures the
 actual pixels through QMP. This proves the current QEMU render path, not
-hardware GPU acceleration or an interactive window system.
+hardware GPU acceleration or a complete application window system.
 
 `examples/os/framebuffer_features.sura` independently compiles the surface,
 pixel, rectangle, line, icon, font, hash, and presentation paths into an EFI
@@ -278,8 +281,8 @@ resulting framebuffer.
 
 This is polling input with no IRQ1/IRQ12 handler, event queue, key repeat
 policy, keyboard layout selection, Unicode text input, wheel/five-button mouse,
-USB HID, focus routing, or click dispatch. Those belong to later interrupt,
-window-manager, and USB stages.
+or USB HID. Pointer clicks are dispatched to the initial window manager, and
+printable PS/2 input is routed to the active terminal window.
 
 ## Graphical terminal
 
@@ -324,8 +327,15 @@ implemented by this module.
 selection, focus changes, z-order, drag offsets, screen-bound clamping, close,
 and activation of the next top window. `tools/sura_uefi_target_smoke.ps1`
 compiles that example and validates its generated EFI image and diagnostic.
-This is compile and image verification; the manager is not yet connected to
-the mouse and windows in the executed `os/sura_os.sura` desktop.
+The executed `os/sura_os.sura` desktop connects the manager to a terminal and
+System Information window. PS/2 left-button input changes focus and z-order,
+drags title bars, and closes a window. Keyboard input is routed only to the
+active terminal. `tools/sura_os_screenshot.ps1` drives those actions through
+QEMU, requires `SURA_OS_WINDOW_FOCUS_OK`, `SURA_OS_WINDOW_DRAG_OK`, and
+`SURA_OS_WINDOW_CLOSE_OK`, and captures the dragged overlapping windows before
+closing the information window. It also requires `SURA_OS_WINDOW_READY` and
+writes `build/os/SuraOS-windows.ppm` before close plus
+`build/os/SuraOS-desktop.ppm` afterward.
 
 ## Kernel intrinsics
 

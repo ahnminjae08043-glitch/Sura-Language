@@ -3,6 +3,7 @@ param(
     [string]$Qemu = "",
     [string]$Firmware = "",
     [string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-desktop.ppm"),
+    [string]$WindowOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-windows.ppm"),
     [int]$TimeoutSeconds = 30,
     [switch]$SkipInputVerification
 )
@@ -131,6 +132,37 @@ function Invoke-SuraOsQmp {
     }
 }
 
+function Send-SuraOsMouseMove {
+    param(
+        [System.IO.StreamReader]$Reader,
+        [System.IO.StreamWriter]$Writer,
+        [int]$DeltaX,
+        [int]$DeltaY
+    )
+    [void](Invoke-SuraOsQmp $Reader $Writer @{
+        execute = "human-monitor-command"
+        arguments = @{ "command-line" = "mouse_move $DeltaX $DeltaY" }
+    })
+    Start-Sleep -Milliseconds 120
+}
+
+function Send-SuraOsMouseButton {
+    param(
+        [System.IO.StreamReader]$Reader,
+        [System.IO.StreamWriter]$Writer,
+        [bool]$Down
+    )
+    [void](Invoke-SuraOsQmp $Reader $Writer @{
+        execute = "input-send-event"
+        arguments = @{
+            events = @(
+                @{ type = "btn"; data = @{ button = "left"; down = $Down } }
+            )
+        }
+    })
+    Start-Sleep -Milliseconds 160
+}
+
 $qemuProcess = $null
 $serialClient = $null
 $qmpClient = $null
@@ -139,6 +171,7 @@ $qmpReader = $null
 $qmpWriter = $null
 $temporaryDisk = $null
 $temporaryCapture = $null
+$temporaryWindowCapture = $null
 
 try {
     & (Join-Path $PSScriptRoot "sura_os_vm.ps1") `
@@ -153,6 +186,7 @@ try {
     $token = [guid]::NewGuid().ToString("N")
     $temporaryDisk = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.img"
     $temporaryCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.ppm"
+    $temporaryWindowCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_windows.ppm"
     Copy-Item -LiteralPath $disk -Destination $temporaryDisk -Force
 
     $serialPort = Get-SuraOsFreeTcpPort
@@ -253,28 +287,34 @@ try {
             })
             Start-Sleep -Milliseconds 80
         }
+
+        # The emulated pointer starts near the screen center. Move to the
+        # System Information title bar, focus and drag the window, then close
+        # it. Deltas stay inside the PS/2 packet range.
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 80 -90
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 80 -90
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 90 -93
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 80 70
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+        $qemuWindowCapturePath = $temporaryWindowCapture.Replace('\', '/')
         [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
-            execute = "human-monitor-command"
-            arguments = @{ "command-line" = "mouse_move 24 12" }
+            execute = "screendump"
+            arguments = @{ filename = $qemuWindowCapturePath }
         })
-        Start-Sleep -Milliseconds 120
-        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
-            execute = "input-send-event"
-            arguments = @{
-                events = @(
-                    @{ type = "btn"; data = @{ button = "left"; down = $true } }
-                )
-            }
-        })
-        Start-Sleep -Milliseconds 120
-        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
-            execute = "input-send-event"
-            arguments = @{
-                events = @(
-                    @{ type = "btn"; data = @{ button = "left"; down = $false } }
-                )
-            }
-        })
+        if (-not (Test-Path -LiteralPath $temporaryWindowCapture -PathType Leaf)) {
+            throw "QEMU did not create the managed-window screenshot"
+        }
+        $windowOutputDirectory = Split-Path -Parent $WindowOutput
+        if (-not [string]::IsNullOrWhiteSpace($windowOutputDirectory)) {
+            New-Item -ItemType Directory -Path $windowOutputDirectory -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $temporaryWindowCapture -Destination $WindowOutput -Force
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 98 0
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
 
         # Fill the graphical terminal through PS/2 so its scroll path
         # executes, then clear it and leave one visible status result.
@@ -284,7 +324,7 @@ try {
                     execute = "human-monitor-command"
                     arguments = @{ "command-line" = "sendkey $key" }
                 })
-                Start-Sleep -Milliseconds 25
+                Start-Sleep -Milliseconds 80
             }
         }
         foreach ($key in @("c", "l", "e", "a", "r", "ret", "s", "t", "a", "t", "u", "s", "ret")) {
@@ -292,15 +332,18 @@ try {
                 execute = "human-monitor-command"
                 arguments = @{ "command-line" = "sendkey $key" }
             })
-            Start-Sleep -Milliseconds 25
+            Start-Sleep -Milliseconds 80
         }
 
-        $inputDeadline = [DateTime]::UtcNow.AddSeconds(12)
+        $inputDeadline = [DateTime]::UtcNow.AddSeconds(20)
         while ([DateTime]::UtcNow -lt $inputDeadline -and
                (-not $serialText.ToString().Contains("SURA_OS_KEYBOARD_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_SHIFT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_MOUSE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_MOUSE_CLICK_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_WINDOW_FOCUS_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_WINDOW_DRAG_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_WINDOW_CLOSE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
                 -not $serialText.ToString().Contains("kernel: ready"))) {
@@ -319,6 +362,9 @@ try {
             "SURA_OS_SHIFT_OK",
             "SURA_OS_MOUSE_OK",
             "SURA_OS_MOUSE_CLICK_OK",
+            "SURA_OS_WINDOW_FOCUS_OK",
+            "SURA_OS_WINDOW_DRAG_OK",
+            "SURA_OS_WINDOW_CLOSE_OK",
             "SURA_OS_TERMINAL_SCROLL_OK",
             "SURA_OS_CLEAR_OK",
             "kernel: ready"
@@ -358,7 +404,12 @@ try {
     $capture = Get-Item -LiteralPath $Output
     $inputStatus = "verified"
     if ($SkipInputVerification) { $inputStatus = "skipped" }
-    "sura_os_screenshot: PASS ($($capture.FullName), $($capture.Length) bytes, input=$inputStatus)"
+    $windowCapture = Get-Item -LiteralPath $WindowOutput -ErrorAction SilentlyContinue
+    $windowStatus = "not captured"
+    if ($null -ne $windowCapture) {
+        $windowStatus = "$($windowCapture.FullName), $($windowCapture.Length) bytes"
+    }
+    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; input=$inputStatus)"
 }
 catch {
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {
@@ -386,7 +437,7 @@ finally {
         }
         $qemuProcess.Dispose()
     }
-    foreach ($temporaryPath in @($temporaryDisk, $temporaryCapture)) {
+    foreach ($temporaryPath in @($temporaryDisk, $temporaryCapture, $temporaryWindowCapture)) {
         if (-not [string]::IsNullOrWhiteSpace($temporaryPath) -and
             (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             $resolvedTemporaryPath = [System.IO.Path]::GetFullPath($temporaryPath)
