@@ -1,0 +1,79 @@
+# Polling 16550-compatible UART helpers for the freestanding x86-64 target.
+
+func serial_port_valid(port: u64) do
+  return port <= 65528
+end
+
+func serial_init(port: u64, divisor: u64) do
+  if not serial_port_valid(port) or divisor == 0 or divisor > 65535 then
+    return false
+  end
+
+  io.out8(port + 1, 0)
+  io.out8(port + 3, 128)
+  io.out8(port, divisor & 255)
+  io.out8(port + 1, (divisor >> 8) & 255)
+  io.out8(port + 3, 3)
+  io.out8(port + 2, 199)
+  io.out8(port + 4, 11)
+  return true
+end
+
+func serial_tx_ready(port: u64) do
+  if not serial_port_valid(port) then return false
+  return (io.in8(port + 5) & 32) != 0
+end
+
+func serial_rx_ready(port: u64) do
+  if not serial_port_valid(port) then return false
+  return (io.in8(port + 5) & 1) != 0
+end
+
+func serial_write_byte(port: u64, value: u64, spin_limit: u64) do
+  if not serial_port_valid(port) or value > 255 then return false
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    if serial_tx_ready(port) then
+      io.out8(port, value)
+      return true
+    end
+    cpu.pause()
+    attempt += 1
+  end
+  return false
+end
+
+func serial_read_byte(port: u64, spin_limit: u64) do
+  if not serial_port_valid(port) then return 65535
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    if serial_rx_ready(port) then return io.in8(port)
+    cpu.pause()
+    attempt += 1
+  end
+  return 65535
+end
+
+func serial_write_buffer(port: u64, buffer: ptr, length: usize, spin_limit: u64) do
+  if buffer == 0 then return false
+  index: usize is 0
+  while index < length do
+    if not serial_write_byte(port, mem.read8(ptr.add(buffer, index)), spin_limit) then
+      return false
+    end
+    index += 1
+  end
+  return true
+end
+
+func serial_write_cstr(port: u64, buffer: ptr, max_length: usize, spin_limit: u64) do
+  if buffer == 0 then return false
+  index: usize is 0
+  while index < max_length do
+    value: u64 is mem.read8(ptr.add(buffer, index))
+    if value == 0 then return true
+    if not serial_write_byte(port, value, spin_limit) then return false
+    index += 1
+  end
+  return false
+end

@@ -598,6 +598,13 @@ const machineFacts = {
       example: "examples/os/pci_features.sura",
       limitations: ["caller serializes shared config ports", "no ACPI MCFG or PCIe ECAM", "no BAR sizing/resource allocation", "no MSI/MSI-X setup", "no device-specific driver"],
     },
+    serial_and_vm_gate: {
+      serial: ["16550 initialization", "bounded polling", "byte read/write", "buffer output"],
+      gate: "tools/sura_qemu_boot_gate.ps1",
+      source: "examples/os/qemu_boot_gate.sura",
+      success_marker: "SURA_EXIT_BOOT_SERVICES_OK",
+      limitations: ["QEMU and OVMF required for executed boot", "compile-only mode is not execution proof", "no ACPI UART discovery", "no interrupt-driven serial I/O"],
+    },
     boot_disk: {
       cli: "sura --target uefi-x86_64 --out BOOTX64.EFI --disk-image sura-os.img source.sura",
       layout: ["protective MBR", "primary and backup GPT", "FAT32 EFI System Partition"],
@@ -612,8 +619,8 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/scheduler_features.sura", "examples/os/syscall_features.sura", "examples/os/pci_features.sura"],
-    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "synchronized/NUMA physical-memory policy", "automatic intermediate page-table allocation/reclamation", "virtual address-space policy", "remote TLB shootdown", "preemptive/SMP scheduler", "SYSCALL/SYSRET path", "PCIe ECAM and resource allocation", "device-specific drivers", "filesystem", "ARM64 freestanding backend"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_qemu_boot_gate.ps1 -CompileOnly", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/scheduler_features.sura", "examples/os/syscall_features.sura", "examples/os/pci_features.sura", "examples/os/qemu_boot_gate.sura"],
+    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "synchronized/NUMA physical-memory policy", "automatic intermediate page-table allocation/reclamation", "virtual address-space policy", "remote TLB shootdown", "preemptive/SMP scheduler", "SYSCALL/SYSRET path", "PCIe ECAM and resource allocation", "device-specific drivers", "filesystem", "ARM64 freestanding backend", "source-level freestanding debugger", "executed CI VM boot coverage"],
   },
   interop: {
     ffi_abi: "1.2.0",
@@ -1093,13 +1100,14 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["스케줄러 라이브러리", "single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap"],
     ["소프트웨어 인터럽트 syscall", "indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch"],
     ["PCI 기반 라이브러리", "legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags"],
+    ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
   paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.") +
-  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, software-interrupt syscall dispatcher, legacy PCI configuration library, GPT/FAT32 UEFI boot-disk builder도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, preemptive/SMP scheduler, SYSCALL/SYSRET path, PCIe ECAM/resource allocation, device-specific drivers, persistent filesystem, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + ", " + code("examples/os/memory_kernel.sura") + ", " + code("examples/os/scheduler_features.sura") + ", " + code("examples/os/syscall_features.sura") + ", " + code("examples/os/pci_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, software-interrupt syscall dispatcher, legacy PCI configuration library, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, preemptive/SMP scheduler, SYSCALL/SYSRET path, PCIe ECAM/resource allocation, device-specific drivers, persistent filesystem, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + ", " + code("examples/os/memory_kernel.sura") + ", " + code("examples/os/scheduler_features.sura") + ", " + code("examples/os/syscall_features.sura") + ", " + code("examples/os/pci_features.sura") + ", " + code("examples/os/qemu_boot_gate.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

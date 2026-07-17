@@ -1,0 +1,56 @@
+# Automated QEMU/OVMF boot marker for the freestanding x86-64 target.
+
+import "../../stdlib/freestanding/serial.sura"
+
+boot_memory_map is static.zero(65536, 4096)
+boot_marker is static.utf8("SURA_EXIT_BOOT_SERVICES_OK\r\n")
+
+boot_map_size: usize is 65536
+boot_map_key: u64 is 0
+boot_descriptor_size: usize is 0
+boot_descriptor_version: u32 is 0
+
+func qemu_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global boot_map_size, boot_map_key, boot_descriptor_size, boot_descriptor_version
+
+  uefi.write("Sura QEMU boot gate")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    qemu_exit(1)
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    boot_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(boot_map_size), boot_memory_map, addr_of(boot_map_key), addr_of(boot_descriptor_size), addr_of(boot_descriptor_version))
+    if map_status == 0 then
+      exit_status is uefi.exit_boot_services(boot_map_key)
+    end
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then
+    qemu_exit(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  if not serial_write_buffer(1016, boot_marker, 28, 1000000) then
+    qemu_exit(3)
+    return 3
+  end
+
+  # With QEMU isa-debug-exit, value 16 produces host exit code 33.
+  qemu_exit(16)
+  return 0
+end

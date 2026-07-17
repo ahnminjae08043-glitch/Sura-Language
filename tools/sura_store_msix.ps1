@@ -196,9 +196,11 @@ try {
         "stdlib/math.sura",
         "stdlib/freestanding/pci.sura",
         "stdlib/freestanding/scheduler.sura",
+        "stdlib/freestanding/serial.sura",
         "stdlib/freestanding/syscall.sura",
         "examples/starter/01_hello.sura",
         "examples/os/pci_features.sura",
+        "examples/os/qemu_boot_gate.sura",
         "examples/os/scheduler_features.sura",
         "examples/os/syscall_features.sura",
         "Assets/StoreLogo.png"

@@ -31,6 +31,21 @@ Unsigned development images normally require Secure Boot to be disabled.
 The image builder does not sign the EFI payload, install firmware variables,
 or create Secure Boot keys.
 
+An automated QEMU/OVMF gate is available:
+
+```powershell
+.\tools\sura_qemu_boot_gate.ps1 -Engine .\SuraLanguage.exe
+
+# Compile and inspect the gate image without launching QEMU:
+.\tools\sura_qemu_boot_gate.ps1 -Engine .\SuraLanguage.exe -CompileOnly
+```
+
+The full form requires `qemu-system-x86_64` and OVMF/EDK2 firmware, which can
+also be supplied with `-Qemu` and `-Firmware`. It boots the generated GPT/FAT32
+disk, waits for `SURA_EXIT_BOOT_SERVICES_OK` on COM1, and requires the expected
+`isa-debug-exit` status. A compile-only pass proves image construction and
+marker retention, not that firmware executed the image.
+
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
 UEFI passes the image handle and system-table pointer in the first two
@@ -557,6 +572,25 @@ MSI/MSI-X, allocate resources, or provide a device-specific driver. A kernel
 must also validate BARs and disable conflicting decode before changing device
 resources.
 
+## Serial diagnostics and VM boot marker
+
+`stdlib/freestanding/serial.sura` provides polling access to a
+16550-compatible UART:
+
+- initialization with a 16-bit baud divisor
+- bounded transmit-ready and receive-ready polling
+- byte reads and writes
+- fixed-length and bounded null-terminated buffer writes
+
+Every wait has a caller-supplied spin limit, so an absent UART does not force
+an infinite loop. The library does not discover UARTs through ACPI, configure
+interrupt-driven receive, or provide buffering and locking.
+
+`examples/os/qemu_boot_gate.sura` initializes COM1, leaves UEFI boot services,
+writes `SURA_EXIT_BOOT_SERVICES_OK`, and exits a QEMU instance configured with
+`isa-debug-exit`. That debug-exit port is a VM test mechanism, not a portable
+hardware shutdown interface.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -578,4 +612,4 @@ Still required for a complete self-hosted OS environment:
 - FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend
-- source-level freestanding debugger and emulator boot gate
+- source-level freestanding debugger and executed CI VM boot coverage
