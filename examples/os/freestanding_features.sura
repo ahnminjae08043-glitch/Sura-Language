@@ -1,6 +1,9 @@
 # This file exercises compiler features needed by future kernel and driver
 # code. It is a UEFI application test, not a complete operating system.
 
+import "support/freestanding_helpers.sura"
+import "support/freestanding_constants.sura"
+
 struct PciConfigHeader packed do
   vendor_id: u16
   device_id: u16
@@ -79,6 +82,7 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   old_count: u64 is atomic.fetch_add64(addr_of(boot_counter), 1)
   cpu_leaf: u32 is cpu.cpuid_eax(0)
   nested: u64 is add_pair(1, identity(2))
+  imported_value: u64 is os_feature_mix(1, 2)
   header_bytes: usize is sizeof(PciConfigHeader)
   command_offset: usize is offset_of(PciConfigHeader, command)
   second_header: ptr is ptr.index(pci_header, 1, header_bytes)
@@ -90,7 +94,7 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   cpu.tss_set_iomap(tss_state, 104)
   cpu.gdt_set_tss(gdt_table, 3, tss_state, 103)
 
-  if vendor == 0 and old_count >= 0 and cpu_leaf >= 0 and nested == 3 and command_offset == 4 and second_header > 0 then
+  if vendor == 0 and old_count >= 0 and cpu_leaf >= 0 and nested == 3 and imported_value == 7 and command_offset == 4 and second_header > 0 then
     atomic.fence()
   end
 
@@ -127,6 +131,27 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     apic.send_ipi(1, 64)
     apic.send_init(1)
     apic.send_startup(1, 32768)
+
+    virtual_address: u64 is u64("0xffff800012345678")
+    pml4_slot: u64 is paging.pml4_index(virtual_address)
+    pdpt_slot: u64 is paging.pdpt_index(virtual_address)
+    pd_slot: u64 is paging.pd_index(virtual_address)
+    pt_slot: u64 is paging.pt_index(virtual_address)
+    page_offset: u64 is paging.offset(virtual_address)
+    canonical: bool is paging.is_canonical48(virtual_address)
+    page_entry: u64 is paging.entry(page_buffer, 3)
+    mapped_address: ptr is paging.entry_address(page_entry)
+    entry_flags: u64 is paging.entry_flags(page_entry)
+    entry_present: bool is paging.present(page_entry)
+    large_page: bool is paging.large(page_entry)
+    paging.write(page_buffer, 1, page_entry)
+    stored_entry: u64 is paging.read(page_buffer, 1)
+    paging.map(page_buffer, 2, page_buffer, 3)
+    paging.clear(page_buffer, 2)
+    active_root: ptr is paging.root()
+    paging.activate(page_buffer)
+    paging.invalidate(virtual_address)
+    paging.flush()
   end
 
   return 0

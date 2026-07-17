@@ -1,7 +1,8 @@
 param(
     [string]$Engine = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuraLanguage.exe"),
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/hello_uefi.sura"),
-    [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura")
+    [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
+    [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,14 +55,22 @@ try {
     if (-not (Test-Path -LiteralPath $FeatureSource)) {
         throw "Sura freestanding feature source not found: $FeatureSource"
     }
+    if (-not (Test-Path -LiteralPath $MemorySource)) {
+        throw "Sura freestanding memory source not found: $MemorySource"
+    }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
+    $disk = Join-Path $temp "sura-os.img"
 
-    $output = & $Engine --target uefi-x86_64 --out $efi $Source 2>&1
+    $output = & $Engine --target uefi-x86_64 --out $efi --disk-image $disk $Source 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "UEFI compile failed:`n$($output -join "`n")"
     }
     if (-not (Test-Path -LiteralPath $efi)) { throw "UEFI compiler did not create BOOTX64.EFI" }
+    if (-not (Test-Path -LiteralPath $disk)) { throw "UEFI compiler did not create the disk image" }
+    if (($output -join "`n") -notmatch "\[UEFI DISK\]") {
+        throw "UEFI compiler did not report the disk image"
+    }
 
     $bytes = [System.IO.File]::ReadAllBytes($efi)
     if ($bytes.Length -lt 1024 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
@@ -96,6 +105,48 @@ try {
     $utf16 = [System.Text.Encoding]::Unicode.GetString($bytes)
     if ($utf16 -notmatch "Sura OS" -or $utf16 -notmatch "GOP framebuffer") {
         throw "UEFI output is missing expected UTF-16 firmware strings"
+    }
+
+    $diskBytes = [System.IO.File]::ReadAllBytes($disk)
+    if ($diskBytes.Length -lt 64MB -or
+        $diskBytes[510] -ne 0x55 -or $diskBytes[511] -ne 0xaa -or
+        $diskBytes[450] -ne 0xee) {
+        throw "UEFI disk image is missing its protective MBR"
+    }
+    if ([System.Text.Encoding]::ASCII.GetString($diskBytes, 512, 8) -ne "EFI PART") {
+        throw "UEFI disk image is missing its primary GPT header"
+    }
+    $partitionLba = [BitConverter]::ToUInt64($diskBytes, 2 * 512 + 32)
+    if ($partitionLba -ne 2048) {
+        throw "UEFI disk image has an unexpected ESP start"
+    }
+    $partitionOffset = [int64]$partitionLba * 512
+    if ([System.Text.Encoding]::ASCII.GetString($diskBytes, $partitionOffset + 82, 8) -ne "FAT32   " -or
+        $diskBytes[$partitionOffset + 510] -ne 0x55 -or
+        $diskBytes[$partitionOffset + 511] -ne 0xaa) {
+        throw "UEFI disk image is missing a valid FAT32 ESP boot sector"
+    }
+    $reservedSectors = [BitConverter]::ToUInt16($diskBytes, $partitionOffset + 14)
+    $fatCopies = $diskBytes[$partitionOffset + 16]
+    $fatSectors = [BitConverter]::ToUInt32($diskBytes, $partitionOffset + 36)
+    $dataLba = $partitionLba + $reservedSectors + [int64]$fatCopies * $fatSectors
+    $rootOffset = [int64]$dataLba * 512
+    $efiDirectoryOffset = ([int64]$dataLba + 1) * 512
+    $bootDirectoryOffset = ([int64]$dataLba + 2) * 512
+    $bootFileOffset = ([int64]$dataLba + 3) * 512
+    if ([System.Text.Encoding]::ASCII.GetString($diskBytes, $rootOffset, 11) -ne "EFI        " -or
+        [System.Text.Encoding]::ASCII.GetString($diskBytes, $efiDirectoryOffset + 64, 11) -ne "BOOT       " -or
+        [System.Text.Encoding]::ASCII.GetString($diskBytes, $bootDirectoryOffset + 64, 11) -ne "BOOTX64 EFI") {
+        throw "UEFI disk image does not contain EFI/BOOT/BOOTX64.EFI"
+    }
+    $embeddedSize = [BitConverter]::ToUInt32($diskBytes, $bootDirectoryOffset + 64 + 28)
+    if ($embeddedSize -ne $bytes.Length) {
+        throw "UEFI disk image recorded the wrong BOOTX64.EFI size"
+    }
+    for ($i = 0; $i -lt $bytes.Length; ++$i) {
+        if ($diskBytes[$bootFileOffset + $i] -ne $bytes[$i]) {
+            throw "UEFI disk image BOOTX64.EFI payload differs at byte $i"
+        }
     }
 
     $featureEfi = Join-Path $temp "FEATURES.EFI"
@@ -149,9 +200,50 @@ try {
     if (-not (Test-ByteSequence $featureBytes ([byte[]](0x41, 0x89, 0x82, 0x10, 0x03, 0x00, 0x00)))) {
         throw "Freestanding feature image is missing xAPIC ICR-high write"
     }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x48, 0xc1, 0xe8, 0x27, 0x25, 0xff, 0x01, 0x00, 0x00)))) {
+        throw "Freestanding feature image is missing PML4 index lowering"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x48, 0xba, 0x00, 0xf0, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x48, 0x21, 0xd0)))) {
+        throw "Freestanding feature image is missing page-entry address masking"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x48, 0x01, 0xd1, 0x48, 0x89, 0x01)))) {
+        throw "Freestanding feature image is missing page-table entry write"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0x01, 0x38)))) {
+        throw "Freestanding feature image is missing INVLPG"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8)))) {
+        throw "Freestanding feature image is missing CR3 TLB flush"
+    }
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
+    }
+
+    $memoryEfi = Join-Path $temp "MEMORY.EFI"
+    $memoryOutput = & $Engine --target uefi-x86_64 --out $memoryEfi $MemorySource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding memory-kernel compile failed:`n$($memoryOutput -join "`n")"
+    }
+    $memoryBytes = [System.IO.File]::ReadAllBytes($memoryEfi)
+    if ($memoryBytes.Length -lt 150000 -or
+        $memoryBytes[0] -ne 0x4d -or $memoryBytes[1] -ne 0x5a) {
+        throw "Freestanding memory-kernel image did not retain its allocator and page tables"
+    }
+    $memoryUtf16 = [System.Text.Encoding]::Unicode.GetString($memoryBytes)
+    if ($memoryUtf16 -notmatch "Sura memory kernel" -or
+        $memoryUtf16 -notmatch "ExitBootServices failed") {
+        throw "Freestanding memory-kernel image is missing lifecycle diagnostics"
+    }
+    if (-not (Test-ByteSequence $memoryBytes ([byte[]](0x0f, 0x01, 0x38)))) {
+        throw "Freestanding memory-kernel image is missing page-map INVLPG"
+    }
+    if (-not (Test-ByteSequence $memoryBytes ([byte[]](0xfa, 0x48, 0xb8, 0x01, 0x00, 0x00, 0x00))) -or
+        -not (Test-ByteSequence $memoryBytes ([byte[]](0xf4, 0xe9)))) {
+        throw "Freestanding memory-kernel image is missing its post-boot interrupt-disable/halt path"
+    }
+    if (-not (Test-ByteSequence $memoryBytes ([byte[]](0x48, 0xc1, 0xe8, 0x27, 0x25, 0xff, 0x01, 0x00, 0x00)))) {
+        throw "Freestanding memory-kernel image is missing imported page-table walking"
     }
 
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
@@ -220,7 +312,66 @@ end
         -Pattern "4 KiB aligned" `
         -Description "Misaligned constant SIPI trampoline address"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length) bytes)"
+    $invalidPagingIndexSource = Join-Path $temp "invalid_paging_index.sura"
+    $invalidPagingIndexText = @'
+page_table is static.zero(4096, 4096)
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  value: u64 is paging.read(page_table, 512)
+  return value
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidPagingIndexSource,
+        $invalidPagingIndexText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidPagingIndexSource `
+        -OutputPath (Join-Path $temp "INVALID_PAGING_INDEX.EFI") `
+        -Pattern "page-table index must be 0\.\.511" `
+        -Description "Out-of-range constant page-table index"
+
+    $invalidPagingAddressSource = Join-Path $temp "invalid_paging_address.sura"
+    $invalidPagingAddressText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  entry: u64 is paging.entry(123, 3)
+  return entry
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidPagingAddressSource,
+        $invalidPagingAddressText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidPagingAddressSource `
+        -OutputPath (Join-Path $temp "INVALID_PAGING_ADDRESS.EFI") `
+        -Pattern "physical address must be 4 KiB aligned" `
+        -Description "Unaligned constant page-table address"
+
+    $cycleASource = Join-Path $temp "cycle_a.sura"
+    $cycleBSource = Join-Path $temp "cycle_b.sura"
+    [System.IO.File]::WriteAllText(
+        $cycleASource,
+        "import `"cycle_b.sura`"`nfunc efi_main() -> u64 do`n  return 0`nend`n",
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    [System.IO.File]::WriteAllText(
+        $cycleBSource,
+        "import `"cycle_a.sura`"`n",
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $cycleASource `
+        -OutputPath (Join-Path $temp "INVALID_CYCLE.EFI") `
+        -Pattern "circular freestanding import" `
+        -Description "Circular freestanding import"
+
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

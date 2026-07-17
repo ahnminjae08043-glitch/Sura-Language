@@ -1,0 +1,7 @@
+# Nested relative import for the freestanding compiler feature test.
+
+import "freestanding_constants.sura"
+
+func os_feature_mix(left: u64, right: u64) -> u64 do
+  return (left ^ right) + os_feature_seed()
+end

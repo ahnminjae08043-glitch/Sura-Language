@@ -1,4 +1,5 @@
 #include "../os_target.hpp"
+#include "../uefi_disk.hpp"
 
 #include <cassert>
 #include <cstdint>
@@ -16,6 +17,11 @@ static uint32_t read_u32(const std::vector<uint8_t>& bytes, size_t offset) {
            (static_cast<uint32_t>(bytes.at(offset + 1)) << 8) |
            (static_cast<uint32_t>(bytes.at(offset + 2)) << 16) |
            (static_cast<uint32_t>(bytes.at(offset + 3)) << 24);
+}
+
+static uint64_t read_u64(const std::vector<uint8_t>& bytes, size_t offset) {
+    return static_cast<uint64_t>(read_u32(bytes, offset)) |
+           (static_cast<uint64_t>(read_u32(bytes, offset + 4)) << 32);
 }
 
 static ExprPtr method_call(const std::string& module, const std::string& method,
@@ -371,6 +377,72 @@ int main(int argc, char** argv) {
         args.push_back(std::make_unique<NumLit>(32768, 1));
         add_module_statement("apic", "send_startup", std::move(args));
     }
+    for (const std::string& method :
+         std::vector<std::string>{"pml4_index", "pdpt_index", "pd_index",
+                                  "pt_index", "offset", "is_canonical48"}) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(0x12345678, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "paging_" + method,
+            method_call("paging", method, std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(3, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "page_entry", method_call("paging", "entry", std::move(args)), 1));
+    }
+    for (const std::string& method :
+         std::vector<std::string>{"entry_address", "entry_flags",
+                                  "present", "large"}) {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_entry", 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "paging_" + method,
+            method_call("paging", method, std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        args.push_back(std::make_unique<Ident>("page_entry", 1));
+        add_module_statement("paging", "write", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "paging_read", method_call("paging", "read", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(2, 1));
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(3, 1));
+        add_module_statement("paging", "map", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        args.push_back(std::make_unique<NumLit>(2, 1));
+        add_module_statement("paging", "clear", std::move(args));
+    }
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "paging_root", method_call("paging", "root"), 1));
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("page_buffer", 1));
+        add_module_statement("paging", "activate", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(0x12345678, 1));
+        add_module_statement("paging", "invalidate", std::move(args));
+    }
+    add_module_statement("paging", "flush");
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -417,6 +489,17 @@ int main(int argc, char** argv) {
     assert(contains_bytes(result.image,
                           {0x48, 0xc1, 0xe8, 0x0c, 0x25, 0xff, 0x00,
                            0x00, 0x00, 0x0d, 0x00, 0x06, 0x00, 0x00})); // SIPI vector
+    assert(contains_bytes(result.image,
+                          {0x48, 0xc1, 0xe8, 0x27,
+                           0x25, 0xff, 0x01, 0x00, 0x00})); // PML4 index
+    assert(contains_bytes(result.image,
+                          {0x48, 0xba, 0x00, 0xf0, 0xff, 0xff, 0xff,
+                           0xff, 0x0f, 0x00, 0x48, 0x21, 0xd0})); // entry mask
+    assert(contains_bytes(result.image,
+                          {0x48, 0x01, 0xd1, 0x48, 0x89, 0x01})); // PTE write
+    assert(contains_bytes(result.image, {0x0f, 0x01, 0x38})); // invlpg
+    assert(contains_bytes(result.image,
+                          {0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8})); // CR3 flush
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');
@@ -426,6 +509,37 @@ int main(int argc, char** argv) {
     assert(read_u16(result.image, optional) == 0x20b);
     assert(read_u16(result.image, optional + 68) == 10);
     assert(read_u32(result.image, optional + 16) >= 0x1000);
+
+    SuraUefiDiskResult disk = sura_build_uefi_disk_image(result.image);
+    assert(disk.image.size() >= 64U * 1024U * 1024U);
+    assert(disk.image[510] == 0x55 && disk.image[511] == 0xaa);
+    assert(disk.image[446 + 4] == 0xee);
+    assert(std::memcmp(disk.image.data() + 512, "EFI PART", 8) == 0);
+    const uint64_t partition_lba = read_u64(disk.image, 2 * 512 + 32);
+    assert(partition_lba == 2048);
+    const size_t partition = static_cast<size_t>(partition_lba * 512);
+    assert(std::memcmp(disk.image.data() + partition + 82, "FAT32   ", 8) == 0);
+    assert(disk.image[partition + 510] == 0x55 &&
+           disk.image[partition + 511] == 0xaa);
+    const uint32_t reserved = read_u16(disk.image, partition + 14);
+    const uint32_t fats = disk.image[partition + 16];
+    const uint32_t fat_sectors = read_u32(disk.image, partition + 36);
+    const uint64_t data_lba =
+        partition_lba + reserved + static_cast<uint64_t>(fats) * fat_sectors;
+    const auto cluster_offset = [&](uint32_t cluster) {
+        return static_cast<size_t>((data_lba + cluster - 2) * 512);
+    };
+    assert(std::memcmp(disk.image.data() + cluster_offset(2),
+                       "EFI        ", 11) == 0);
+    assert(std::memcmp(disk.image.data() + cluster_offset(3) + 64,
+                       "BOOT       ", 11) == 0);
+    assert(std::memcmp(disk.image.data() + cluster_offset(4) + 64,
+                       "BOOTX64 EFI", 11) == 0);
+    assert(read_u32(disk.image, cluster_offset(4) + 64 + 28) ==
+           result.image.size());
+    assert(std::equal(result.image.begin(), result.image.end(),
+                      disk.image.begin() +
+                          static_cast<std::ptrdiff_t>(cluster_offset(5))));
 
     if (argc > 1) {
         std::ofstream out(argv[1], std::ios::binary | std::ios::trunc);

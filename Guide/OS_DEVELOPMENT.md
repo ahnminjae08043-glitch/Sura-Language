@@ -14,10 +14,22 @@ generated images in a virtual machine before using physical hardware.
 ```powershell
 .\SuraLanguage.exe --target uefi-x86_64 `
   --out BOOTX64.EFI examples\os\hello_uefi.sura
+
+.\SuraLanguage.exe --target uefi-x86_64 `
+  --out BOOTX64.EFI --disk-image sura-os.img `
+  examples\os\hello_uefi.sura
 ```
 
 Place the file at `EFI\BOOT\BOOTX64.EFI` on a FAT-formatted UEFI image.
+The second form also creates a deterministic disk image with a protective
+MBR, primary and backup GPT, a FAT32 EFI System Partition, and the generated
+payload at `EFI\BOOT\BOOTX64.EFI`. The standalone `.efi` is retained so it can
+also be copied to an existing ESP or inspected separately. `--out` and
+`--disk-image` must name different files.
+
 Unsigned development images normally require Secure Boot to be disabled.
+The image builder does not sign the EFI payload, install firmware variables,
+or create Secure Boot keys.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -28,9 +40,26 @@ parameters.
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   uefi.write("Hello from Sura")
   uefi.newline()
-  return 0
+  return u64(0)
 end
 ```
+
+## Freestanding source modules
+
+Freestanding programs can split compiler, kernel-library, and driver code
+across files with the existing import syntax:
+
+```sura
+import "memory/page_tables.sura"
+import "drivers/pci.sura"
+```
+
+Relative paths are resolved from the file that contains each import, so nested
+modules do not depend on the process working directory. The freestanding
+loader parses modules into one compilation unit, includes each normalized path
+once, and rejects circular imports and missing files before machine-code
+generation. Imported definitions currently share one global namespace;
+namespace isolation and per-module visibility are not implemented yet.
 
 ## Freestanding scalar types
 
@@ -339,21 +368,124 @@ delay requirements, send SIPI as required, and wait on an atomic per-AP ready
 flag. A real-mode-to-long-mode trampoline and AP entry contract are still
 required before `send_startup` can start Sura code.
 
+## x86-64 paging primitives
+
+The `paging` intrinsics build and inspect four-level, 4-KiB x86-64 page-table
+entries without depending on the hosted runtime:
+
+```sura
+virtual_address: u64 is u64("0xffff800000001000")
+pml4_slot: u64 is paging.pml4_index(virtual_address)
+pdpt_slot: u64 is paging.pdpt_index(virtual_address)
+pd_slot: u64 is paging.pd_index(virtual_address)
+pt_slot: u64 is paging.pt_index(virtual_address)
+
+entry: u64 is paging.entry(physical_page, 3) # present | writable
+paging.write(page_table, pt_slot, entry)
+paging.invalidate(virtual_address)
+```
+
+- `paging.pml4_index/pdpt_index/pd_index/pt_index(address)`
+- `paging.offset(address)`, `paging.is_canonical48(address)`
+- `paging.entry(physical_address, flags)`
+- `paging.entry_address(entry)`, `paging.entry_flags(entry)`
+- `paging.present(entry)`, `paging.large(entry)`
+- `paging.read(table, index)`, `paging.write(table, index, entry)`
+- `paging.map(table, index, physical_address, flags)`
+- `paging.clear(table, index)`
+- `paging.root()`, `paging.activate(root)`
+- `paging.invalidate(address)`, `paging.flush()`
+
+Constant page-table indexes outside 0..511 and constant unaligned physical
+addresses are rejected. A run-time index is masked to nine bits. Entry and
+root addresses are masked to a 52-bit, 4-KiB-aligned physical address;
+run-time callers must check alignment before calling if truncation should be
+an error. `paging.entry` preserves the low 12 flag bits and high flag/software
+bits 52..63, including NX. The kernel must enable EFER.NXE before using NX.
+
+`paging.activate`, `paging.invalidate`, and `paging.flush` are privileged.
+`paging.activate` deliberately accepts only a root address and clears PCID and
+CR3 no-flush bits. Kernels that implement PCID policy can use
+`cpu.write_cr3(value)` directly. These primitives do not allocate intermediate
+tables, walk an arbitrary address space, perform TLB shootdowns on other CPUs,
+or choose a kernel/user virtual-memory layout.
+
+## Freestanding memory libraries
+
+The source libraries under `stdlib/freestanding` build on the paging and
+memory intrinsics without adding a hosted runtime:
+
+```sura
+import "../../stdlib/freestanding/physical_memory.sura"
+import "../../stdlib/freestanding/virtual_memory.sura"
+```
+
+`physical_memory.sura` defines `PhysicalAllocator` and a bitmap allocator:
+
+- `pmem_reset(state, bitmap, bitmap_bytes, base, page_count)`
+- `pmem_init_from_uefi(state, bitmap, bitmap_bytes, map, map_size, descriptor_size)`
+- `pmem_reserve_range(state, start_address, page_count)`
+- `pmem_release_range(state, start_address, page_count)`
+- `pmem_alloc(state)`, `pmem_alloc_contiguous(state, count, alignment_pages)`
+- `pmem_free(state, address)`, `pmem_is_used(state, address)`
+- `pmem_available_pages(state)`
+
+A set bitmap bit means allocated or reserved. Initialization starts with every
+page reserved and releases only UEFI `EfiConventionalMemory` descriptors
+(type 7) covered by the caller-provided bitmap. Page zero is never released
+when the allocator base is zero, because address zero is the allocation
+failure result. The library clamps descriptors beyond bitmap coverage instead
+of pretending that untracked memory is safe.
+
+The bitmap allocator is not internally synchronized. SMP code must serialize
+mutations or give each CPU disjoint ownership. It also does not yet implement
+NUMA zones, DMA address classes, or a policy for reclaiming other UEFI memory
+types after their firmware lifetime has ended.
+
+The final memory map must be acquired after all boot-service allocations.
+Call `uefi.exit_boot_services(map_key)` immediately after that successful map.
+Do not allocate directly from conventional memory while firmware boot services
+still own it. If `ExitBootServices` rejects a stale key, acquire a fresh map
+and retry. After it succeeds, do not call firmware console or other boot
+services and do not return to the firmware entry caller.
+
+`virtual_memory.sura` provides conflict-checked four-level helpers:
+
+- `vmem_walk_pte(root, virtual_address)`
+- `vmem_translate(root, virtual_address)` with 4-KiB, 2-MiB, and 1-GiB leaves
+- `vmem_link_4k(root, virtual_address, pdpt, pd, pt, flags)`
+- `vmem_map_4k`, `vmem_unmap_4k`, `vmem_protect_4k`
+- `vmem_mapping_flags`, `vmem_is_mapped`
+
+`vmem_link_4k` requires caller-owned, 4-KiB-aligned, identity-accessible table
+pages and refuses to replace an existing table with a different one.
+`vmem_map_4k` refuses to overwrite a present leaf. Mapping changes invalidate
+the local CPU entry only; an SMP kernel must send a TLB-shootdown IPI and wait
+for acknowledgements before reclaiming a page visible to another CPU.
+
+`examples/os/memory_kernel.sura` shows the complete ordering: memory-map retry,
+`ExitBootServices`, allocator initialization, allocation, table linking,
+mapping, translation verification, unmapping, freeing, and a non-returning
+post-firmware halt path.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
 layouts, typed pointer fields, functions with up to six exact arguments,
 integer arithmetic and comparisons, `if`, `while`, `repeat`, `break`,
 `continue`, calls, and returns. Nested calls use independent argument storage.
-Strings are supported for firmware console output and static data.
+Strings are supported for firmware console output and static data. Nested
+relative imports are flattened into the same freestanding compilation unit.
 
 Still required for a complete self-hosted OS environment:
 
 - ACPI MADT processor discovery, AP trampoline, and complete AP startup
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
 - user/kernel entry validation and `swapgs` policy
-- page-table, allocator, scheduler, syscall, and driver libraries
-- FAT reader and boot-image builder
+- synchronized/NUMA physical-memory policy, automatic intermediate page-table
+  allocation/reclamation, virtual address-space policy, and remote TLB shootdown
+- scheduler, syscall, and driver libraries
+- FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend
 - source-level freestanding debugger and emulator boot gate

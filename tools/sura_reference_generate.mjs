@@ -538,6 +538,13 @@ const machineFacts = {
     output: "position-independent PE32+ EFI application",
     hosted_runtime_dependencies: [],
     entry_order: ["efi_main", "kernel_main", "main", "synthetic top-level entry"],
+    modules: {
+      syntax: "import \"relative/path.sura\"",
+      resolution: "relative to the importing file, recursively",
+      duplicate_policy: "one inclusion per normalized path",
+      errors: ["missing file", "circular import", "import parse failure"],
+      namespace: "one shared freestanding global namespace",
+    },
     scalar_types: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "ptr", "ptr[StructName]"],
     static_data: ["static.zero", "static.bytes", "static.u8", "static.u16", "static.u32", "static.u64", "static.utf8", "static.utf16", "static.struct"],
     layout: ["typed struct fields", "natural alignment", "struct Name packed", "sizeof", "alignof", "offset_of", "typed pointer field load/store"],
@@ -552,6 +559,25 @@ const machineFacts = {
       apic: ["runtime xAPIC/x2APIC selection", "APIC ID", "register read/write", "EOI", "ICR busy", "IPI", "INIT", "SIPI"],
       compile_time_checks: ["APIC register offset alignment/range", "constant SIPI address alignment/range", "constant destination width"],
     },
+    paging_primitives: {
+      address: ["PML4/PDPT/PD/PT index", "page offset", "48-bit canonical-address test"],
+      entries: ["construct", "address", "flags", "present", "large", "read", "write", "map", "clear"],
+      tlb: ["CR3 root", "activate root", "INVLPG", "local CR3 flush"],
+      compile_time_checks: ["constant page-table index range", "constant physical/root 4-KiB alignment"],
+    },
+    memory_libraries: {
+      physical: ["UEFI conventional-memory import", "bitmap reserve/release", "single-page allocation", "aligned contiguous allocation", "free-page accounting"],
+      virtual: ["conflict-checked table linking", "4-KiB map/unmap/protect", "4-KiB/2-MiB/1-GiB translation", "local invalidation"],
+      lifecycle: ["memory-map retry", "ExitBootServices before direct allocation", "no firmware calls or return after successful exit"],
+      example: "examples/os/memory_kernel.sura",
+      limitations: ["no internal SMP lock", "no NUMA/DMA zones", "caller provides intermediate tables", "no remote TLB shootdown"],
+    },
+    boot_disk: {
+      cli: "sura --target uefi-x86_64 --out BOOTX64.EFI --disk-image sura-os.img source.sura",
+      layout: ["protective MBR", "primary and backup GPT", "FAT32 EFI System Partition"],
+      payload: "EFI/BOOT/BOOTX64.EFI",
+      reproducible: true,
+    },
     atomics: ["load", "store", "exchange", "compare_exchange", "fetch_add", "fetch_sub", "fences"],
     interrupts: {
       declarations: ["func name(frame: ptr[Frame]) interrupt do", "func name(frame: ptr[Frame]) interrupt_error do"],
@@ -560,8 +586,8 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura"],
-    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "kernel libraries", "drivers", "filesystem", "boot-image builder", "ARM64 freestanding backend"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura"],
+    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "synchronized/NUMA physical-memory policy", "automatic intermediate page-table allocation/reclamation", "virtual address-space policy", "remote TLB shootdown", "scheduler", "syscall library", "drivers", "filesystem", "ARM64 freestanding backend"],
   },
   interop: {
     ffi_abi: "1.2.0",
@@ -1027,6 +1053,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
     ["정적 데이터", code("static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct")],
+    ["모듈", "importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사"],
     ["메모리 레이아웃", "typed struct field, natural 또는 packed layout, " + code("sizeof/alignof/offset_of")],
     ["포인터", code("ptr.add/index/field/align_up/align_down/is_aligned") + "와 width-correct field load/store"],
     ["저수준 CPU", "raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV"],
@@ -1034,12 +1061,15 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["인터럽트 ABI", code("interrupt/interrupt_error") + " 함수, general-purpose register frame, error-code normalization, checked IDT gate, " + code("iretq")],
     ["CPU별 상태", "TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS"],
     ["SMP primitive", "GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI"],
+    ["페이징 primitive", "4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush"],
+    ["메모리 라이브러리", "UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate"],
+    ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
   paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.") +
-  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, page table·allocator·scheduler·syscall 라이브러리, 장치 드라이버, filesystem, boot-image builder, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, GPT/FAT32 UEFI boot-disk builder도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, scheduler·syscall 라이브러리, 장치 드라이버, persistent filesystem, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "와 " + code("examples/os/memory_kernel.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

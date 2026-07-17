@@ -1,0 +1,96 @@
+# UEFI memory-map, physical allocator, and page-table library integration.
+# This builds as a bootable feature image; it is not a complete scheduler OS.
+
+import "../../stdlib/freestanding/physical_memory.sura"
+import "../../stdlib/freestanding/virtual_memory.sura"
+
+allocator_state is static.struct(PhysicalAllocator)
+allocator_bitmap is static.zero(65536, 4096)
+memory_map_buffer is static.zero(65536, 4096)
+pml4_table is static.zero(4096, 4096)
+pdpt_table is static.zero(4096, 4096)
+pd_table is static.zero(4096, 4096)
+pt_table is static.zero(4096, 4096)
+
+memory_map_size: usize is 65536
+memory_map_key: u64 is 0
+descriptor_size: usize is 0
+descriptor_version: u32 is 0
+memory_kernel_status: u64 is 0
+
+func memory_kernel_stop(status: u64) do
+  global memory_kernel_status
+  memory_kernel_status is status
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global memory_map_size, memory_map_key, descriptor_size, descriptor_version
+
+  uefi.write("Sura memory kernel")
+  uefi.newline()
+
+  status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    memory_map_size is 65536
+    status is uefi.get_memory_map(addr_of(memory_map_size), memory_map_buffer, addr_of(memory_map_key), addr_of(descriptor_size), addr_of(descriptor_version))
+    if status == 0 then
+      exit_status is uefi.exit_boot_services(memory_map_key)
+    end
+    attempt += 1
+  end
+  if status != 0 then
+    uefi.write("UEFI memory map failed.")
+    uefi.newline()
+    return status
+  end
+  if exit_status != 0 then
+    uefi.write("ExitBootServices failed.")
+    uefi.newline()
+    return exit_status
+  end
+
+  allocator: ptr[PhysicalAllocator] is allocator_state
+  initialized: bool is pmem_init_from_uefi(allocator, allocator_bitmap, 65536, memory_map_buffer, memory_map_size, descriptor_size)
+  if not initialized then
+    memory_kernel_stop(1)
+    return 1
+  end
+
+  physical_page: u64 is pmem_alloc(allocator)
+  if physical_page == 0 then
+    memory_kernel_stop(2)
+    return 2
+  end
+
+  virtual_address: u64 is u64("0xffff800000001000")
+  if not vmem_link_4k(pml4_table, virtual_address, pdpt_table, pd_table, pt_table, 3) then
+    memory_kernel_stop(3)
+    return 3
+  end
+
+  if not vmem_map_4k(pml4_table, virtual_address, physical_page, 3) then
+    memory_kernel_stop(4)
+    return 4
+  end
+
+  translated: u64 is vmem_translate(pml4_table, virtual_address)
+  if translated != physical_page then
+    memory_kernel_stop(5)
+    return 5
+  end
+
+  unmapped: u64 is vmem_unmap_4k(pml4_table, virtual_address)
+  if unmapped != physical_page or not pmem_free(allocator, physical_page) then
+    memory_kernel_stop(6)
+    return 6
+  end
+
+  memory_kernel_stop(0)
+  return 0
+end

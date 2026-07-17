@@ -1,0 +1,209 @@
+# Bitmap physical-page allocator for the freestanding x86-64 target.
+# A set bit means reserved/allocated; a clear bit means available.
+
+struct PhysicalAllocator do
+  base: u64
+  page_count: u64
+  bitmap: ptr
+  bitmap_bytes: usize
+  next_hint: u64
+  free_pages: u64
+end
+
+func pmem_bitmap_address(state: ptr[PhysicalAllocator], page_index: u64) do
+  return ptr.add(state.bitmap, page_index >> 3)
+end
+
+func pmem_bitmap_mask(page_index: u64) do
+  return 1 << (page_index & 7)
+end
+
+func pmem_is_used_index(state: ptr[PhysicalAllocator], page_index: u64) do
+  if page_index >= state.page_count then return true
+  byte_value: u8 is mem.read8(pmem_bitmap_address(state, page_index))
+  return (byte_value & pmem_bitmap_mask(page_index)) != 0
+end
+
+func pmem_mark_used_index(state: ptr[PhysicalAllocator], page_index: u64) do
+  if page_index >= state.page_count then return false
+  address: ptr is pmem_bitmap_address(state, page_index)
+  mask: u8 is pmem_bitmap_mask(page_index)
+  old_value: u8 is mem.read8(address)
+  if (old_value & mask) != 0 then return false
+  mem.write8(address, old_value | mask)
+  state.free_pages is state.free_pages - 1
+  return true
+end
+
+func pmem_mark_free_index(state: ptr[PhysicalAllocator], page_index: u64) do
+  if page_index >= state.page_count then return false
+  if state.base == 0 and page_index == 0 then return false
+  address: ptr is pmem_bitmap_address(state, page_index)
+  mask: u8 is pmem_bitmap_mask(page_index)
+  old_value: u8 is mem.read8(address)
+  if (old_value & mask) == 0 then return false
+  mem.write8(address, old_value & ~mask)
+  state.free_pages is state.free_pages + 1
+  if page_index < state.next_hint then state.next_hint is page_index
+  return true
+end
+
+func pmem_reset(state: ptr[PhysicalAllocator], bitmap: ptr, bitmap_bytes: usize, base: u64, page_count: u64) do
+  if bitmap == 0 or bitmap_bytes == 0 or page_count == 0 then return false
+  if (base & 4095) != 0 then return false
+  if page_count > bitmap_bytes * 8 then return false
+
+  byte_index: u64 is 0
+  while byte_index < bitmap_bytes do
+    mem.write8(ptr.add(bitmap, byte_index), 255)
+    byte_index += 1
+  end
+
+  state.base is base
+  state.page_count is page_count
+  state.bitmap is bitmap
+  state.bitmap_bytes is bitmap_bytes
+  state.next_hint is 0
+  state.free_pages is 0
+  return true
+end
+
+func pmem_is_managed(state: ptr[PhysicalAllocator], address: u64) do
+  if address < state.base then return false
+  relative: u64 is address - state.base
+  if (relative & 4095) != 0 then return false
+  return (relative >> 12) < state.page_count
+end
+
+func pmem_reserve_range(state: ptr[PhysicalAllocator], start_address: u64, count: u64) do
+  if count == 0 or start_address < state.base then return false
+  relative: u64 is start_address - state.base
+  if (relative & 4095) != 0 then return false
+  first: u64 is relative >> 12
+  if first >= state.page_count then return false
+  if count > state.page_count - first then return false
+
+  index: u64 is 0
+  while index < count do
+    pmem_mark_used_index(state, first + index)
+    index += 1
+  end
+  return true
+end
+
+func pmem_release_range(state: ptr[PhysicalAllocator], start_address: u64, count: u64) do
+  if count == 0 or start_address < state.base then return false
+  relative: u64 is start_address - state.base
+  if (relative & 4095) != 0 then return false
+  first: u64 is relative >> 12
+  if first >= state.page_count then return false
+  if count > state.page_count - first then return false
+
+  index: u64 is 0
+  while index < count do
+    pmem_mark_free_index(state, first + index)
+    index += 1
+  end
+  return true
+end
+
+func pmem_init_from_uefi(state: ptr[PhysicalAllocator], bitmap: ptr, bitmap_bytes: usize, memory_map: ptr, map_size: usize, descriptor_size: usize) do
+  if descriptor_size < 40 or memory_map == 0 then return false
+  if not pmem_reset(state, bitmap, bitmap_bytes, 0, bitmap_bytes * 8) then
+    return false
+  end
+
+  offset: usize is 0
+  while offset + 40 <= map_size do
+    descriptor: ptr is ptr.add(memory_map, offset)
+    memory_type: u32 is mem.read32(descriptor)
+    physical_start: u64 is mem.read64(ptr.add(descriptor, 8))
+    pages: u64 is mem.read64(ptr.add(descriptor, 24))
+
+    if memory_type == 7 and pages > 0 and (physical_start & 4095) == 0 then
+      first: u64 is physical_start >> 12
+      if first < state.page_count then
+        available: u64 is state.page_count - first
+        release_count: u64 is pages
+        if release_count > available then release_count is available
+        index: u64 is 0
+        while index < release_count do
+          pmem_mark_free_index(state, first + index)
+          index += 1
+        end
+      end
+    end
+    offset += descriptor_size
+  end
+
+  return state.free_pages > 0
+end
+
+func pmem_alloc(state: ptr[PhysicalAllocator]) do
+  if state.free_pages == 0 then return 0
+
+  index: u64 is state.next_hint
+  while index < state.page_count do
+    if not pmem_is_used_index(state, index) then
+      pmem_mark_used_index(state, index)
+      state.next_hint is index + 1
+      return state.base + (index << 12)
+    end
+    index += 1
+  end
+
+  index is 0
+  while index < state.next_hint and index < state.page_count do
+    if not pmem_is_used_index(state, index) then
+      pmem_mark_used_index(state, index)
+      state.next_hint is index + 1
+      return state.base + (index << 12)
+    end
+    index += 1
+  end
+  return 0
+end
+
+func pmem_alloc_contiguous(state: ptr[PhysicalAllocator], count: u64, alignment_pages: u64) do
+  if count == 0 or count > state.free_pages then return 0
+  if alignment_pages == 0 then alignment_pages is 1
+  if (alignment_pages & (alignment_pages - 1)) != 0 then return 0
+  if count > state.page_count then return 0
+
+  candidate: u64 is 0
+  while candidate <= state.page_count - count do
+    candidate is (candidate + alignment_pages - 1) & ~(alignment_pages - 1)
+    if candidate > state.page_count - count then return 0
+
+    run: u64 is 0
+    while run < count and not pmem_is_used_index(state, candidate + run) do
+      run += 1
+    end
+    if run == count then
+      mark: u64 is 0
+      while mark < count do
+        pmem_mark_used_index(state, candidate + mark)
+        mark += 1
+      end
+      state.next_hint is candidate + count
+      return state.base + (candidate << 12)
+    end
+    candidate += run + 1
+  end
+  return 0
+end
+
+func pmem_free(state: ptr[PhysicalAllocator], address: u64) do
+  if not pmem_is_managed(state, address) then return false
+  index: u64 is (address - state.base) >> 12
+  return pmem_mark_free_index(state, index)
+end
+
+func pmem_is_used(state: ptr[PhysicalAllocator], address: u64) do
+  if not pmem_is_managed(state, address) then return true
+  return pmem_is_used_index(state, (address - state.base) >> 12)
+end
+
+func pmem_available_pages(state: ptr[PhysicalAllocator]) do
+  return state.free_pages
+end

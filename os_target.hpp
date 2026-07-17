@@ -260,6 +260,7 @@ class UefiX64Compiler {
     size_t temporary_depth = 0;
     size_t call_argument_depth = 0;
     uint32_t frame_size = 0;
+    bool context_helpers_used = false;
     const FuncDef* current_function = nullptr;
     bool current_is_entry = false;
 
@@ -1704,6 +1705,170 @@ class UefiX64Compiler {
             return;
         }
 
+        if (name == "paging_pml4_index" ||
+            name == "paging_pdpt_index" ||
+            name == "paging_pd_index" ||
+            name == "paging_pt_index" ||
+            name == "paging_offset") {
+            if (args.size() != 1) {
+                fail(origin, raw_name + "(address) expects one value");
+            }
+            compile_expr(args[0].get());
+            unsigned shift = 0;
+            if (name == "paging_pml4_index") shift = 39;
+            else if (name == "paging_pdpt_index") shift = 30;
+            else if (name == "paging_pd_index") shift = 21;
+            else if (name == "paging_pt_index") shift = 12;
+            if (shift) {
+                x.bytes({0x48, 0xc1, 0xe8});
+                x.b(static_cast<uint8_t>(shift));
+                x.bytes({0x25, 0xff, 0x01, 0x00, 0x00});
+            } else {
+                x.bytes({0x25, 0xff, 0x0f, 0x00, 0x00});
+            }
+            return;
+        }
+        if (name == "paging_is_canonical48") {
+            if (args.size() != 1) {
+                fail(origin, "paging.is_canonical48(address) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x48, 0x89, 0xc1,
+                     0x48, 0xc1, 0xe0, 0x10,
+                     0x48, 0xc1, 0xf8, 0x10,
+                     0x48, 0x39, 0xc1,
+                     0x0f, 0x94, 0xc0,
+                     0x0f, 0xb6, 0xc0});
+            return;
+        }
+        if (name == "paging_entry" ||
+            name == "paging_entry_address" ||
+            name == "paging_entry_flags" ||
+            name == "paging_present" ||
+            name == "paging_large") {
+            const size_t expected = name == "paging_entry" ? 2 : 1;
+            if (args.size() != expected) {
+                fail(origin, raw_name +
+                             (expected == 2
+                                  ? "(physical_address, flags) expects two values"
+                                  : "(entry) expects one value"));
+            }
+            if (name == "paging_entry") {
+                uint64_t constant_address = 0;
+                if (constant_integer(args[0].get(), constant_address) &&
+                    (constant_address & 0xfffU)) {
+                    fail(args[0].get(), "paging.entry() physical address must "
+                                        "be 4 KiB aligned");
+                }
+                const size_t temporary = reserve_temporaries(1, origin);
+                compile_expr(args[0].get());
+                x.bytes({0x48, 0xba});
+                x.q(0x000ffffffffff000ULL);
+                x.bytes({0x48, 0x21, 0xd0});
+                x.mov_rbp_rax(scratch_slots[temporary]);
+                compile_expr(args[1].get());
+                x.bytes({0x48, 0xba});
+                x.q(0xfff0000000000fffULL);
+                x.bytes({0x48, 0x21, 0xd0});
+                x.mov_reg_rbp(1, scratch_slots[temporary]);
+                x.bytes({0x48, 0x09, 0xc8});
+                release_temporaries(1);
+                return;
+            }
+            compile_expr(args[0].get());
+            if (name == "paging_entry_address") {
+                x.bytes({0x48, 0xba});
+                x.q(0x000ffffffffff000ULL);
+                x.bytes({0x48, 0x21, 0xd0});
+            } else if (name == "paging_entry_flags") {
+                x.bytes({0x48, 0xba});
+                x.q(0xfff0000000000fffULL);
+                x.bytes({0x48, 0x21, 0xd0});
+            } else if (name == "paging_present") {
+                x.bytes({0x83, 0xe0, 0x01});
+            } else {
+                x.bytes({0x48, 0xc1, 0xe8, 0x07,
+                         0x83, 0xe0, 0x01});
+            }
+            return;
+        }
+        if (name == "paging_read") {
+            if (args.size() != 2) {
+                fail(origin, "paging.read(table, index) expects two values");
+            }
+            uint64_t constant_index = 0;
+            if (constant_integer(args[1].get(), constant_index) &&
+                constant_index > 511) {
+                fail(args[1].get(), "page-table index must be 0..511");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.bytes({0x25, 0xff, 0x01, 0x00, 0x00,
+                     0x48, 0xc1, 0xe0, 0x03});
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.bytes({0x48, 0x01, 0xc8, 0x48, 0x8b, 0x00});
+            release_temporaries(1);
+            return;
+        }
+        if (name == "paging_root") {
+            if (!args.empty()) fail(origin, "paging.root() takes no arguments");
+            x.bytes({0x0f, 0x20, 0xd8,
+                     0x48, 0xba});
+            x.q(0x000ffffffffff000ULL);
+            x.bytes({0x48, 0x21, 0xd0});
+            return;
+        }
+        if (name == "context_frame_size") {
+            if (!args.empty()) {
+                fail(origin, "context.frame_size() takes no arguments");
+            }
+            x.mov_rax_imm(72);
+            return;
+        }
+        if (name == "context_init") {
+            if (args.size() != 4) {
+                fail(origin, "context.init(stack_top, entry, argument, "
+                             "exit_handler) expects four values");
+            }
+            uint64_t constant_top = 0;
+            if (constant_integer(args[0].get(), constant_top) &&
+                constant_top < 72) {
+                fail(args[0].get(), "context.init() stack top must leave "
+                                    "at least 72 bytes for the initial frame");
+            }
+            context_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            const size_t temporary = reserve_temporaries(1, origin);
+
+            x.mov_rax_rbp(scratch_slots[argument_base]);
+            x.bytes({0x48, 0x83, 0xe0, 0xf0,
+                     0x48, 0x83, 0xe8, 0x48});
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            x.bytes({0x48, 0x89, 0xc1, 0x31, 0xc0,
+                     0x48, 0x89, 0x01,
+                     0x48, 0x89, 0x41, 0x20,
+                     0x48, 0x89, 0x41, 0x28,
+                     0x48, 0x89, 0x41, 0x30,
+                     0x48, 0x89, 0x41, 0x38});
+
+            x.mov_rax_rbp(scratch_slots[argument_base + 3]);
+            x.bytes({0x48, 0x89, 0x41, 0x08});
+            x.mov_rax_rbp(scratch_slots[argument_base + 2]);
+            x.bytes({0x48, 0x89, 0x41, 0x10});
+            x.mov_rax_rbp(scratch_slots[argument_base + 1]);
+            x.bytes({0x48, 0x89, 0x41, 0x18});
+            const size_t bootstrap =
+                x.rel32({0x48, 0x8d, 0x05});
+            function_address_patches.push_back(
+                {bootstrap, "__sura_context_bootstrap", origin->line});
+            x.bytes({0x48, 0x89, 0x41, 0x40});
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            release_temporaries(1);
+            return;
+        }
+
         if (name == "uefi_get_memory_map") {
             compile_uefi_service(origin, args, 96, 56, 5, 5);
             return;
@@ -2115,6 +2280,109 @@ class UefiX64Compiler {
             x.bytes({0x41, 0x89, 0x82, 0x00, 0x03, 0x00, 0x00});
             x.patch_rel32(finished, x.pos());
             release_temporaries(3);
+            return true;
+        }
+
+        if (name == "paging_write" ||
+            name == "paging_map" ||
+            name == "paging_clear") {
+            const size_t expected =
+                name == "paging_map" ? 4 :
+                (name == "paging_write" ? 3 : 2);
+            if (args.size() != expected) {
+                if (name == "paging_map") {
+                    fail(expr, "paging.map(table, index, physical_address, "
+                               "flags) expects four values");
+                }
+                fail(expr, raw_name +
+                           (expected == 3
+                                ? "(table, index, entry) expects three values"
+                                : "(table, index) expects two values"));
+            }
+            uint64_t constant_index = 0;
+            if (constant_integer(args[1].get(), constant_index) &&
+                constant_index > 511) {
+                fail(args[1].get(), "page-table index must be 0..511");
+            }
+            if (name == "paging_map") {
+                uint64_t constant_address = 0;
+                if (constant_integer(args[2].get(), constant_address) &&
+                    (constant_address & 0xfffU)) {
+                    fail(args[2].get(), "paging.map() physical address must "
+                                        "be 4 KiB aligned");
+                }
+            }
+
+            const size_t temporary = reserve_temporaries(3, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.bytes({0x25, 0xff, 0x01, 0x00, 0x00,
+                     0x48, 0xc1, 0xe0, 0x03});
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+
+            if (name == "paging_clear") {
+                x.bytes({0x31, 0xc0});
+            } else if (name == "paging_write") {
+                compile_expr(args[2].get());
+            } else {
+                compile_expr(args[2].get());
+                x.bytes({0x48, 0xba});
+                x.q(0x000ffffffffff000ULL);
+                x.bytes({0x48, 0x21, 0xd0});
+                x.mov_rbp_rax(scratch_slots[temporary + 2]);
+                compile_expr(args[3].get());
+                x.bytes({0x48, 0xba});
+                x.q(0xfff0000000000fffULL);
+                x.bytes({0x48, 0x21, 0xd0});
+                x.mov_reg_rbp(1, scratch_slots[temporary + 2]);
+                x.bytes({0x48, 0x09, 0xc8});
+            }
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.mov_reg_rbp(2, scratch_slots[temporary + 1]);
+            x.bytes({0x48, 0x01, 0xd1, 0x48, 0x89, 0x01});
+            release_temporaries(3);
+            return true;
+        }
+        if (name == "paging_activate") {
+            if (args.size() != 1) {
+                fail(expr, "paging.activate(root) expects one value");
+            }
+            uint64_t constant_address = 0;
+            if (constant_integer(args[0].get(), constant_address) &&
+                (constant_address & 0xfffU)) {
+                fail(args[0].get(), "paging.activate() root must be 4 KiB aligned");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x48, 0xba});
+            x.q(0x000ffffffffff000ULL);
+            x.bytes({0x48, 0x21, 0xd0, 0x0f, 0x22, 0xd8});
+            return true;
+        }
+        if (name == "paging_invalidate") {
+            if (args.size() != 1) {
+                fail(expr, "paging.invalidate(address) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x0f, 0x01, 0x38});
+            return true;
+        }
+        if (name == "paging_flush") {
+            if (!args.empty()) fail(expr, "paging.flush() takes no arguments");
+            x.bytes({0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8});
+            return true;
+        }
+        if (name == "context_switch") {
+            if (args.size() != 2) {
+                fail(expr, "context.switch(saved_rsp_address, next_rsp) "
+                           "expects two values");
+            }
+            context_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            load_call_args(2, argument_base);
+            const size_t patch = x.rel32({0xe8});
+            call_patches.push_back(
+                {patch, "__sura_context_switch", expr->line});
             return true;
         }
 

@@ -1,0 +1,128 @@
+# Four-level x86-64 page-table helpers for identity-accessible page tables.
+
+func vmem_next_table(entry: u64) do
+  if not paging.present(entry) or paging.large(entry) then return 0
+  return paging.entry_address(entry)
+end
+
+func vmem_walk_pte(root: ptr, virtual_address: u64) do
+  if root == 0 or not paging.is_canonical48(virtual_address) then return 0
+
+  pml4_entry: u64 is paging.read(root, paging.pml4_index(virtual_address))
+  pdpt: ptr is vmem_next_table(pml4_entry)
+  if pdpt == 0 then return 0
+
+  pdpt_entry: u64 is paging.read(pdpt, paging.pdpt_index(virtual_address))
+  pd: ptr is vmem_next_table(pdpt_entry)
+  if pd == 0 then return 0
+
+  pd_entry: u64 is paging.read(pd, paging.pd_index(virtual_address))
+  pt: ptr is vmem_next_table(pd_entry)
+  if pt == 0 then return 0
+
+  return ptr.add(pt, paging.pt_index(virtual_address) * 8)
+end
+
+func vmem_translate(root: ptr, virtual_address: u64) do
+  if root == 0 or not paging.is_canonical48(virtual_address) then return 0
+
+  pml4_entry: u64 is paging.read(root, paging.pml4_index(virtual_address))
+  pdpt: ptr is vmem_next_table(pml4_entry)
+  if pdpt == 0 then return 0
+
+  pdpt_entry: u64 is paging.read(pdpt, paging.pdpt_index(virtual_address))
+  if not paging.present(pdpt_entry) then return 0
+  if paging.large(pdpt_entry) then
+    return (pdpt_entry & u64("0x000fffffc0000000")) + (virtual_address & u64("0x3fffffff"))
+  end
+
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_entry: u64 is paging.read(pd, paging.pd_index(virtual_address))
+  if not paging.present(pd_entry) then return 0
+  if paging.large(pd_entry) then
+    return (pd_entry & u64("0x000fffffffe00000")) + (virtual_address & u64("0x1fffff"))
+  end
+
+  pt: ptr is paging.entry_address(pd_entry)
+  pt_entry: u64 is paging.read(pt, paging.pt_index(virtual_address))
+  if not paging.present(pt_entry) then return 0
+  return paging.entry_address(pt_entry) + paging.offset(virtual_address)
+end
+
+func vmem_table_slot_compatible(table: ptr, index: u64, next_table: ptr) do
+  entry: u64 is paging.read(table, index)
+  if not paging.present(entry) then return true
+  if paging.large(entry) then return false
+  return paging.entry_address(entry) == next_table
+end
+
+func vmem_link_table(table: ptr, index: u64, next_table: ptr, flags: u64) do
+  entry: u64 is paging.read(table, index)
+  if paging.present(entry) then
+    if paging.large(entry) then return false
+    return paging.entry_address(entry) == next_table
+  end
+  paging.map(table, index, next_table, flags)
+  return true
+end
+
+func vmem_link_4k(root: ptr, virtual_address: u64, pdpt: ptr, pd: ptr, pt: ptr, flags: u64) do
+  if root == 0 or pdpt == 0 or pd == 0 or pt == 0 then return false
+  if not paging.is_canonical48(virtual_address) then return false
+  if paging.offset(root) != 0 or paging.offset(pdpt) != 0 then return false
+  if paging.offset(pd) != 0 or paging.offset(pt) != 0 then return false
+
+  table_flags: u64 is (flags & 63) | 1
+  pml4_index: u64 is paging.pml4_index(virtual_address)
+  pdpt_index: u64 is paging.pdpt_index(virtual_address)
+  pd_index: u64 is paging.pd_index(virtual_address)
+  if not vmem_table_slot_compatible(root, pml4_index, pdpt) then return false
+  if not vmem_table_slot_compatible(pdpt, pdpt_index, pd) then return false
+  if not vmem_table_slot_compatible(pd, pd_index, pt) then return false
+  if not vmem_link_table(root, pml4_index, pdpt, table_flags) then return false
+  if not vmem_link_table(pdpt, pdpt_index, pd, table_flags) then return false
+  if not vmem_link_table(pd, pd_index, pt, table_flags) then return false
+  return true
+end
+
+func vmem_map_4k(root: ptr, virtual_address: u64, physical_address: u64, flags: u64) do
+  if paging.offset(physical_address) != 0 then return false
+  pte: ptr is vmem_walk_pte(root, virtual_address)
+  if pte == 0 then return false
+  if paging.present(mem.read64(pte)) then return false
+  mem.write64(pte, paging.entry(physical_address, flags | 1))
+  paging.invalidate(virtual_address)
+  return true
+end
+
+func vmem_unmap_4k(root: ptr, virtual_address: u64) do
+  pte: ptr is vmem_walk_pte(root, virtual_address)
+  if pte == 0 then return 0
+  old_entry: u64 is mem.read64(pte)
+  if not paging.present(old_entry) then return 0
+  mem.write64(pte, 0)
+  paging.invalidate(virtual_address)
+  return paging.entry_address(old_entry)
+end
+
+func vmem_protect_4k(root: ptr, virtual_address: u64, flags: u64) do
+  pte: ptr is vmem_walk_pte(root, virtual_address)
+  if pte == 0 then return false
+  old_entry: u64 is mem.read64(pte)
+  if not paging.present(old_entry) then return false
+  mem.write64(pte, paging.entry(paging.entry_address(old_entry), flags | 1))
+  paging.invalidate(virtual_address)
+  return true
+end
+
+func vmem_mapping_flags(root: ptr, virtual_address: u64) do
+  pte: ptr is vmem_walk_pte(root, virtual_address)
+  if pte == 0 then return 0
+  entry: u64 is mem.read64(pte)
+  if not paging.present(entry) then return 0
+  return paging.entry_flags(entry)
+end
+
+func vmem_is_mapped(root: ptr, virtual_address: u64) do
+  return vmem_translate(root, virtual_address) != 0
+end

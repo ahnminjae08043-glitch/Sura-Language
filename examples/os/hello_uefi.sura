@@ -1,6 +1,8 @@
 # This source is compiled without the Sura VM or hosted standard library.
 # Build:
 #   sura --target uefi-x86_64 --out BOOTX64.EFI examples/os/hello_uefi.sura
+# Boot disk:
+#   sura --target uefi-x86_64 --out BOOTX64.EFI --disk-image sura-os.img examples/os/hello_uefi.sura
 
 func show_banner() -> u64 do
   uefi.write("Sura OS")

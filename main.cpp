@@ -44,6 +44,7 @@ struct PreMain {
 #include "lexer.hpp"
 #include "ast.hpp"
 #include "parser.hpp"
+#include "freestanding_import.hpp"
 #include "value.hpp"
 #include "typechecker.hpp"
 #include "platform.hpp"
@@ -52,6 +53,7 @@ struct PreMain {
 #include "profiler.hpp"
 #include "sura_version.hpp"
 #include "os_target.hpp"
+#include "uefi_disk.hpp"
 
 // ================================================================
 //  Sura Language Runtime
@@ -1313,6 +1315,7 @@ int main(int argc, char* argv[]) {
     std::string gc_stats_json_path;
     std::string test_report_path;
     std::string output_path;
+    std::string disk_image_path;
     std::string release_key;
     std::string release_license;
     std::string release_key_file;
@@ -1418,6 +1421,13 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             output_path = raw_args[++i];
+        }
+        else if (arg == "--disk-image") {
+            if (i + 1 >= (int)raw_args.size()) {
+                std::cerr << "[Error] --disk-image requires an output path\n";
+                return 1;
+            }
+            disk_image_path = raw_args[++i];
         }
         else if (arg == "--target") {
             if (i + 1 >= (int)raw_args.size()) {
@@ -4606,6 +4616,8 @@ int main(int argc, char* argv[]) {
                       << "  sura --out <path>           Output path for --compile/--release\n"
                       << "  sura --target uefi-x86_64 --out BOOTX64.EFI <file.sura>\n"
                       << "                              Build a VM-free, bootable UEFI x86-64 image\n"
+                      << "  sura --target uefi-x86_64 --disk-image sura-os.img <file.sura>\n"
+                      << "                              Also build a GPT/FAT32 UEFI boot disk image\n"
                << "  sura --profile <file.sura>  Run with type profiling report\n"
                << "  sura --profile-json out.json <file.sura>  Write machine-readable profile report\n"
                << "  sura --gc-stats <file.sura>  Run a final GC and print pause/object statistics\n"
@@ -4645,6 +4657,11 @@ int main(int argc, char* argv[]) {
         std::cerr << "[Error] " << strict_operation
                   << " requires strict type safety; --legacy-types is only available "
                      "for source execution, checking, and tests.\n";
+        return 1;
+    }
+
+    if (!disk_image_path.empty() && freestanding_target.empty()) {
+        std::cerr << "[Error] --disk-image requires --target uefi-x86_64\n";
         return 1;
     }
 
@@ -5387,6 +5404,10 @@ int main(int argc, char* argv[]) {
         Parser parser;
         parser.set_legacy_command_syntax(!strict_syntax);
         auto ast = parser.parse_source(src);
+        if (!freestanding_target.empty()) {
+            ast = SuraFreestandingImport::expand(
+                std::move(ast), utf8_path(filename), !strict_syntax);
+        }
         auto parse_end = std::chrono::high_resolution_clock::now();
 
         // [TypeCheck] - NEW: integrated into pipeline
@@ -5429,6 +5450,10 @@ int main(int argc, char* argv[]) {
                 }
                 out_path += ".efi";
             }
+            if (!disk_image_path.empty() && disk_image_path == out_path) {
+                std::cerr << "[Error] --out and --disk-image must use different paths\n";
+                return 1;
+            }
             std::ofstream out(utf8_path(out_path),
                               std::ios::binary | std::ios::trunc);
             if (!out) {
@@ -5442,11 +5467,37 @@ int main(int argc, char* argv[]) {
                           << out_path << "\n";
                 return 1;
             }
+            SuraUefiDiskResult disk;
+            if (!disk_image_path.empty()) {
+                disk = sura_build_uefi_disk_image(result.image);
+                std::ofstream disk_out(
+                    utf8_path(disk_image_path),
+                    std::ios::binary | std::ios::trunc);
+                if (!disk_out) {
+                    std::cerr << "[Error] Cannot write UEFI disk image: "
+                              << disk_image_path << "\n";
+                    return 1;
+                }
+                disk_out.write(
+                    reinterpret_cast<const char*>(disk.image.data()),
+                    static_cast<std::streamsize>(disk.image.size()));
+                if (!disk_out) {
+                    std::cerr << "[Error] Failed while writing UEFI disk image: "
+                              << disk_image_path << "\n";
+                    return 1;
+                }
+            }
             std::cout << "[UEFI] " << out_path << "\n"
                       << "  target: " << result.target << "\n"
                       << "  entry: " << result.entry_function << "\n"
                       << "  machine code: " << result.machine_code_bytes << " bytes\n"
                       << "  image: " << result.image.size() << " bytes\n";
+            if (!disk_image_path.empty()) {
+                std::cout << "[UEFI DISK] " << disk_image_path << "\n"
+                          << "  layout: protective MBR + GPT + FAT32 ESP\n"
+                          << "  boot file: EFI/BOOT/BOOTX64.EFI\n"
+                          << "  disk image: " << disk.image.size() << " bytes\n";
+            }
             return 0;
         }
 

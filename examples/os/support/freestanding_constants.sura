@@ -1,0 +1,5 @@
+# Imported by the freestanding compiler feature test.
+
+func os_feature_seed() -> u64 do
+  return 4
+end

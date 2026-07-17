@@ -1,0 +1,5 @@
+import "cycle_a.sura"
+
+func cycle_b() -> u64 do
+  return 2
+end
