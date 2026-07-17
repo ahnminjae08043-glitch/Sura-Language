@@ -12,6 +12,14 @@ desktop_action_terminal_taskbar: u64 is 5
 desktop_action_system_taskbar: u64 is 6
 desktop_action_about_icon: u64 is 7
 desktop_action_files_icon: u64 is 8
+desktop_action_editor_icon: u64 is 9
+desktop_action_calculator_icon: u64 is 10
+desktop_action_files_taskbar: u64 is 11
+desktop_action_editor_taskbar: u64 is 12
+desktop_action_calculator_taskbar: u64 is 13
+desktop_action_files_menu: u64 is 14
+desktop_action_editor_menu: u64 is 15
+desktop_action_calculator_menu: u64 is 16
 
 struct DesktopShell do
   width: u64
@@ -30,7 +38,7 @@ func desktop_shell_init(state: ptr[DesktopShell], width: u64, height: u64, taskb
   state.height is height
   state.taskbar_height is taskbar_height
   state.menu_width is 260
-  state.menu_height is 190
+  state.menu_height is 330
   state.start_open is 0
   state.last_action is desktop_action_none
   return true
@@ -75,12 +83,27 @@ func desktop_shell_pointer_press(state: ptr[DesktopShell], x: i64, y: i64, termi
       state.last_action is desktop_action_terminal_menu
       return state.last_action
     end
-    if desktop_shell_contains(x, y, 20, menu_y + 102, 240, 38) then
+    if desktop_shell_contains(x, y, 20, menu_y + 96, 240, 38) then
       state.start_open is 0
       state.last_action is desktop_action_system_menu
       return state.last_action
     end
-    if desktop_shell_contains(x, y, 20, menu_y + 150, 240, 36) then
+    if desktop_shell_contains(x, y, 20, menu_y + 138, 240, 38) then
+      state.start_open is 0
+      state.last_action is desktop_action_files_menu
+      return state.last_action
+    end
+    if desktop_shell_contains(x, y, 20, menu_y + 180, 240, 38) then
+      state.start_open is 0
+      state.last_action is desktop_action_editor_menu
+      return state.last_action
+    end
+    if desktop_shell_contains(x, y, 20, menu_y + 222, 240, 38) then
+      state.start_open is 0
+      state.last_action is desktop_action_calculator_menu
+      return state.last_action
+    end
+    if desktop_shell_contains(x, y, 20, menu_y + 280, 240, 36) then
       state.start_open is 0
       state.last_action is desktop_action_shutdown
       return state.last_action
@@ -102,6 +125,26 @@ func desktop_shell_pointer_press(state: ptr[DesktopShell], x: i64, y: i64, termi
   end
   if desktop_shell_contains(x, y, 34, 114, 48, 48) then
     state.last_action is desktop_action_files_icon
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 34, 298, 48, 48) then
+    state.last_action is desktop_action_editor_icon
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 34, 390, 48, 48) then
+    state.last_action is desktop_action_calculator_icon
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 496, taskbar_y + 8, 100, 36) then
+    state.last_action is desktop_action_files_taskbar
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 608, taskbar_y + 8, 100, 36) then
+    state.last_action is desktop_action_editor_taskbar
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 720, taskbar_y + 8, 100, 36) then
+    state.last_action is desktop_action_calculator_taskbar
     return state.last_action
   end
   return desktop_action_none

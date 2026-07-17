@@ -362,6 +362,29 @@ The desktop shell is still kernel-owned fixed UI. It has no application
 process protocol, minimize state, resize handles, notifications, settings
 store, or user-configurable launcher entries.
 
+## Kernel-owned desktop applications
+
+`stdlib/freestanding/desktop_apps.sura` supplies allocation-free state models
+for the first built-in applications:
+
+- File Explorer selection over at most 32 caller-provided entries
+- Text Editor input in a caller-owned buffer, including Enter and Backspace
+- unsigned-integer Calculator input for `+`, `-`, `*`, `/`, `=`, and `C`,
+  with bounded values and division/overflow errors
+
+The executed OS registers File Explorer, Text Editor, and Calculator windows
+alongside Terminal and System Information. Their desktop icons, Start entries,
+and persistent taskbar buttons focus or reopen them. QEMU input types
+`SURA NOTES` into the editor and evaluates `50 - 8 = 42` in the calculator.
+The gate requires `SURA_OS_FILES_APP_OK`, `SURA_OS_EDITOR_INPUT_OK`, and
+`SURA_OS_CALCULATOR_RESULT_OK`, then captures `build/os/SuraOS-apps.ppm`.
+
+File Explorer currently reports that no virtual disk is mounted. This is an
+honest application shell, not filesystem integration: disk enumeration,
+directory contents, file open/save, and persistent editor storage belong to
+the next filesystem stage. The applications still run inside the kernel;
+separate Ring 3 application processes are not executed yet.
+
 ## Kernel intrinsics
 
 Raw memory:

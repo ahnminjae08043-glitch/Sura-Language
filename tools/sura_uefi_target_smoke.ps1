@@ -6,6 +6,7 @@ param(
     [string]$TextTerminalSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/text_terminal_features.sura"),
     [string]$WindowManagerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/window_manager_features.sura"),
     [string]$DesktopShellSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/desktop_shell_features.sura"),
+    [string]$DesktopAppsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/desktop_apps_features.sura"),
     [string]$RtcSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/rtc_features.sura"),
     [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
@@ -90,6 +91,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $DesktopShellSource)) {
         throw "Sura desktop shell feature source not found: $DesktopShellSource"
+    }
+    if (-not (Test-Path -LiteralPath $DesktopAppsSource)) {
+        throw "Sura desktop apps feature source not found: $DesktopAppsSource"
     }
     if (-not (Test-Path -LiteralPath $RtcSource)) {
         throw "Sura RTC feature source not found: $RtcSource"
@@ -380,6 +384,21 @@ try {
     $desktopShellUtf16 = [System.Text.Encoding]::Unicode.GetString($desktopShellBytes)
     if ($desktopShellUtf16 -notmatch "Sura desktop shell feature test") {
         throw "Freestanding desktop shell feature image is missing its diagnostic"
+    }
+
+    $desktopAppsEfi = Join-Path $temp "DESKTOP_APPS.EFI"
+    $desktopAppsOutput = & $Engine --target uefi-x86_64 --out $desktopAppsEfi $DesktopAppsSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding desktop apps feature compile failed:`n$($desktopAppsOutput -join "`n")"
+    }
+    $desktopAppsBytes = [System.IO.File]::ReadAllBytes($desktopAppsEfi)
+    if ($desktopAppsBytes.Length -lt 12000 -or
+        $desktopAppsBytes[0] -ne 0x4d -or $desktopAppsBytes[1] -ne 0x5a) {
+        throw "Freestanding desktop apps feature image is invalid"
+    }
+    $desktopAppsUtf16 = [System.Text.Encoding]::Unicode.GetString($desktopAppsBytes)
+    if ($desktopAppsUtf16 -notmatch "Sura desktop apps feature test") {
+        throw "Freestanding desktop apps feature image is missing its diagnostic"
     }
 
     $rtcEfi = Join-Path $temp "RTC.EFI"
@@ -1178,7 +1197,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), desktop_shell=$($desktopShellBytes.Length), rtc=$($rtcBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), desktop_shell=$($desktopShellBytes.Length), desktop_apps=$($desktopAppsBytes.Length), rtc=$($rtcBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

@@ -9,6 +9,7 @@ import "../stdlib/freestanding/physical_memory.sura"
 import "../stdlib/freestanding/text_terminal.sura"
 import "../stdlib/freestanding/window_manager.sura"
 import "../stdlib/freestanding/desktop_shell.sura"
+import "../stdlib/freestanding/desktop_apps.sura"
 import "../stdlib/freestanding/rtc.sura"
 import "../stdlib/freestanding/ps2.sura"
 
@@ -27,8 +28,13 @@ os_ps2_mouse_state is static.struct(Ps2MouseState)
 os_terminal_state is static.struct(TextTerminal)
 os_terminal_cells is static.zero(2300, 16)
 os_window_manager_state is static.struct(WindowManager)
-os_window_storage is static.struct(DesktopWindow, 4)
+os_window_storage is static.struct(DesktopWindow, 6)
 os_desktop_shell_state is static.struct(DesktopShell)
+os_file_explorer_state is static.struct(FileExplorerState)
+os_text_editor_state is static.struct(TextEditorState)
+os_text_editor_buffer is static.zero(512, 16)
+os_calculator_state is static.struct(CalculatorState)
+os_calculator_text is static.zero(16, 16)
 os_rtc_time_state is static.struct(RtcTime)
 os_clock_text is static.zero(8, 16)
 
@@ -47,6 +53,11 @@ os_start_menu_marker is static.utf8("SURA_OS_START_MENU_OK")
 os_window_reopen_marker is static.utf8("SURA_OS_WINDOW_REOPEN_OK")
 os_rtc_marker is static.utf8("SURA_OS_RTC_OK")
 os_desktop_shutdown_marker is static.utf8("SURA_OS_DESKTOP_SHUTDOWN_OK")
+os_files_app_marker is static.utf8("SURA_OS_FILES_APP_OK")
+os_editor_app_marker is static.utf8("SURA_OS_EDITOR_APP_OK")
+os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
+os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
+os_calculator_result_marker is static.utf8("SURA_OS_CALCULATOR_RESULT_OK")
 os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
 os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
 os_window_ready_marker is static.utf8("SURA_OS_WINDOW_READY")
@@ -90,13 +101,23 @@ os_text_terminal_prompt is static.utf8("SURA> STATUS")
 os_text_terminal_ready is static.utf8("KERNEL READY")
 os_text_files is static.utf8("FILES")
 os_text_about_icon is static.utf8("ABOUT")
+os_text_editor_icon is static.utf8("NOTES")
+os_text_calculator_icon is static.utf8("CALC")
+os_text_file_explorer is static.utf8("FILE EXPLORER")
+os_text_text_editor is static.utf8("TEXT EDITOR")
+os_text_calculator is static.utf8("CALCULATOR")
+os_text_root is static.utf8("ROOT /")
+os_text_no_disk is static.utf8("[NO MOUNTED DISK]")
+os_text_read_only is static.utf8("VIRTUAL DISK CONNECTION PENDING")
+os_text_editor_hint is static.utf8("TYPE TO EDIT - MEMORY BUFFER")
+os_text_calculator_hint is static.utf8("KEYS: 0-9 + - * / = C")
+os_text_calc_error is static.utf8("ERROR")
 os_text_vm is static.utf8("QEMU VM")
 os_text_help_result is static.utf8("HELP STATUS MEM ABOUT SHUTDOWN")
 os_text_mem_result is static.utf8("MEMORY COMMAND OK")
 os_text_about_result is static.utf8("FREESTANDING SURA X86-64")
 os_text_unknown_result is static.utf8("UNKNOWN COMMAND")
 os_text_input_unavailable is static.utf8("PS2 INPUT UNAVAILABLE")
-os_text_files_pending is static.utf8("file explorer: planned for the next desktop stage")
 
 os_map_size: usize is 131072
 os_map_key: u64 is 0
@@ -120,6 +141,11 @@ os_window_close_reported: u64 is 0
 os_start_menu_reported: u64 is 0
 os_window_reopen_reported: u64 is 0
 os_rtc_reported: u64 is 0
+os_files_app_reported: u64 is 0
+os_editor_app_reported: u64 is 0
+os_calculator_app_reported: u64 is 0
+os_editor_input_reported: u64 is 0
+os_calculator_result_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
 os_clock_second: u64 is 60
 
@@ -286,7 +312,7 @@ end
 func os_window_manager_start(surface: ptr[FramebufferSurface]) do
   if surface == 0 or surface.width < 640 or surface.height < 400 then return false
   manager: ptr[WindowManager] is os_window_manager_state
-  if not window_manager_init(manager, os_window_storage, 4, surface.width, surface.height, 52) then
+  if not window_manager_init(manager, os_window_storage, 6, surface.width, surface.height, 52) then
     return false
   end
 
@@ -309,6 +335,13 @@ func os_window_manager_start(surface: ptr[FramebufferSurface]) do
   if not window_manager_add(manager, 1, terminal_x, terminal_y, terminal_width, terminal_height) then
     return false
   end
+  if not window_manager_add(manager, 3, 100, 130, 520, 300) then return false
+  if not window_manager_add(manager, 4, 220, 170, 520, 300) then return false
+  if not window_manager_add(manager, 5, surface.width - 420, 220, 320, 300) then return false
+  if not window_manager_close(manager, 3) then return false
+  if not window_manager_close(manager, 4) then return false
+  if not window_manager_close(manager, 5) then return false
+  manager.last_closed_id is 0
   return window_manager_focus(manager, 1)
 end
 
@@ -383,6 +416,69 @@ func os_draw_about_window(surface: ptr[FramebufferSurface], window: ptr[DesktopW
   return true
 end
 
+func os_draw_file_explorer_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_file_explorer) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  titlebar: u32 is fb_rgb(surface, 16, 91, 132)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  font5x7_draw_text(surface, x + 20, y + 54, os_text_root, 16, white_small)
+  row: u64 is 0
+  while row < files.entry_count do
+    row_y: u64 is y + 78 + row * 34
+    row_color: u32 is panel_light
+    if files.selected == row then row_color is titlebar
+    fb_fill_rect(surface, x + 18, row_y, window.width - 36, 28, row_color)
+    if files.selected == row then fb_rect_outline(surface, x + 18, row_y, window.width - 36, 28, orange)
+    row += 1
+  end
+  font5x7_draw_text(surface, x + 30, y + 88, os_text_no_disk, 32, white_small)
+  font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_read_only, 48, muted_small)
+  return true
+end
+
+func os_draw_text_editor_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_text_editor) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  panel: u32 is fb_rgb(surface, 20, 27, 40)
+  white: u32 is fb_rgb(surface, 242, 247, 252)
+  muted: u32 is fb_rgb(surface, 155, 172, 190)
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  editor: ptr[TextEditorState] is os_text_editor_state
+  fb_rect_outline(surface, x + 16, y + 50, window.width - 32, window.height - 90, muted)
+  font5x7_draw_text(surface, x + 26, y + 62, editor.buffer, editor.capacity, white_small)
+  cursor_x: u64 is x + 26 + (editor.length % 72) * 6
+  cursor_y: u64 is y + 62 + (editor.length / 72) * 8
+  if cursor_x + 5 < x + window.width - 16 and cursor_y + 8 < y + window.height - 40 then
+    fb_fill_rect(surface, cursor_x, cursor_y + 7, 5, 1, white)
+  end
+  font5x7_draw_text(surface, x + 20, y + window.height - 26, os_text_editor_hint, 48, muted_small)
+  return true
+end
+
+func os_draw_calculator_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_calculator) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  calculator: ptr[CalculatorState] is os_calculator_state
+  if not calculator_format(calculator, os_calculator_text, 16) then return false
+  fb_fill_rect(surface, x + 18, y + 54, window.width - 36, 54, panel_light)
+  fb_rect_outline(surface, x + 18, y + 54, window.width - 36, 54, orange)
+  font5x7_draw_text(surface, x + 34, y + 72, os_calculator_text, 16, white_large)
+  font5x7_draw_text(surface, x + 22, y + 132, os_text_calculator_hint, 32, muted_small)
+  return true
+end
+
 func os_draw_managed_windows(surface: ptr[FramebufferSurface]) do
   manager: ptr[WindowManager] is os_window_manager_state
   if surface == 0 or manager.windows == 0 then return false
@@ -406,6 +502,15 @@ func os_draw_managed_windows(surface: ptr[FramebufferSurface]) do
     end
     if selected.id == 2 then
       if not os_draw_about_window(surface, selected) then return false
+    end
+    if selected.id == 3 then
+      if not os_draw_file_explorer_window(surface, selected) then return false
+    end
+    if selected.id == 4 then
+      if not os_draw_text_editor_window(surface, selected) then return false
+    end
+    if selected.id == 5 then
+      if not os_draw_calculator_window(surface, selected) then return false
     end
     last_z is selected_z
     drawn += 1
@@ -457,7 +562,7 @@ func os_activate_window(manager: ptr[WindowManager], id: u64) do
 end
 
 func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
-  global os_start_menu_reported, os_window_reopen_reported
+  global os_start_menu_reported, os_window_reopen_reported, os_files_app_reported, os_editor_app_reported, os_calculator_app_reported
   if manager == 0 then return false
   shell: ptr[DesktopShell] is os_desktop_shell_state
   terminal_window: ptr[DesktopWindow] is window_manager_find(manager, 1)
@@ -469,6 +574,19 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
   action: u64 is desktop_shell_pointer_press(shell, x, y, terminal_visible, system_visible)
 
   if action == desktop_action_none then
+    top: ptr[DesktopWindow] is window_manager_top_at(manager, x, y)
+    if top != 0 and top.id == 3 then
+      local_y: i64 is y - top.y
+      if local_y >= 78 and local_y < 214 then
+        row: u64 is (local_y - 78) / 34
+        files: ptr[FileExplorerState] is os_file_explorer_state
+        if row < files.entry_count then
+          file_explorer_select(files, row)
+          window_manager_focus(manager, 3)
+          return true
+        end
+      end
+    end
     window_manager_pointer_press(manager, x, y)
     return true
   end
@@ -498,11 +616,9 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
   if action == desktop_action_system_menu or action == desktop_action_system_taskbar or action == desktop_action_about_icon then
     target_id is 2
   end
-  if action == desktop_action_files_icon then
-    target_id is 1
-    if not os_terminal_cstr_line(os_text_files_pending, 64) then return false
-    if not os_terminal_prompt() then return false
-  end
+  if action == desktop_action_files_icon or action == desktop_action_files_taskbar or action == desktop_action_files_menu then target_id is 3
+  if action == desktop_action_editor_icon or action == desktop_action_editor_taskbar or action == desktop_action_editor_menu then target_id is 4
+  if action == desktop_action_calculator_icon or action == desktop_action_calculator_taskbar or action == desktop_action_calculator_menu then target_id is 5
   if target_id == 0 then return true
   reopened: u64 is os_activate_window(manager, target_id)
   if reopened == 0 then return false
@@ -510,13 +626,25 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
     if not os_serial_cstr_line(os_window_reopen_marker) then return false
     os_window_reopen_reported is 1
   end
+  if target_id == 3 and os_files_app_reported == 0 then
+    if not os_serial_cstr_line(os_files_app_marker) then return false
+    os_files_app_reported is 1
+  end
+  if target_id == 4 and os_editor_app_reported == 0 then
+    if not os_serial_cstr_line(os_editor_app_marker) then return false
+    os_editor_app_reported is 1
+  end
+  if target_id == 5 and os_calculator_app_reported == 0 then
+    if not os_serial_cstr_line(os_calculator_app_marker) then return false
+    os_calculator_app_reported is 1
+  end
   return true
 end
 
 func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
   shell: ptr[DesktopShell] is os_desktop_shell_state
   if surface == 0 or shell.start_open == 0 then return true
-  menu_y: u64 is surface.height - 242
+  menu_y: u64 is desktop_shell_menu_y(shell)
   panel: u32 is fb_rgb(surface, 20, 27, 40)
   panel_light: u32 is fb_rgb(surface, 31, 41, 58)
   titlebar: u32 is fb_rgb(surface, 16, 91, 132)
@@ -528,19 +656,25 @@ func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
   white_small: ptr[BitmapFontStyle] is os_font_white_small
   muted_small: ptr[BitmapFontStyle] is os_font_muted_small
 
-  fb_fill_rect(surface, 18, menu_y + 8, 260, 190, black)
-  fb_fill_rect(surface, 10, menu_y, 260, 190, panel)
-  fb_rect_outline(surface, 10, menu_y, 260, 190, orange)
+  fb_fill_rect(surface, 18, menu_y + 8, 260, 330, black)
+  fb_fill_rect(surface, 10, menu_y, 260, 330, panel)
+  fb_rect_outline(surface, 10, menu_y, 260, 330, orange)
   fb_fill_rect(surface, 10, menu_y, 260, 42, titlebar)
   font5x7_draw_text(surface, 24, menu_y + 13, os_text_brand, 32, white_large)
   font5x7_draw_text(surface, 176, menu_y + 16, os_text_applications, 32, muted_small)
   fb_fill_rect(surface, 20, menu_y + 54, 240, 38, panel_light)
   font5x7_draw_text(surface, 36, menu_y + 68, os_text_terminal, 32, white_small)
-  fb_fill_rect(surface, 20, menu_y + 102, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 116, os_text_system_short, 32, white_small)
-  fb_fill_rect(surface, 20, menu_y + 150, 240, 36, panel_light)
-  fb_rect_outline(surface, 20, menu_y + 150, 240, 36, orange)
-  font5x7_draw_text(surface, 36, menu_y + 163, os_text_shutdown, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 96, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 110, os_text_system_short, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 138, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 152, os_text_files, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 180, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 194, os_text_editor_icon, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 222, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 236, os_text_calculator_icon, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 280, 240, 36, panel_light)
+  fb_rect_outline(surface, 20, menu_y + 280, 240, 36, orange)
+  font5x7_draw_text(surface, 36, menu_y + 293, os_text_shutdown, 32, white_small)
   return true
 end
 
@@ -592,6 +726,12 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   font5x7_draw_text(surface, 36, 168, os_text_files, 16, white_small)
   fb_draw_app_icon(surface, 34, 206, 48, orange, white)
   font5x7_draw_text(surface, 36, 260, os_text_about_icon, 16, white_small)
+  if surface.height >= 520 then
+    fb_draw_app_icon(surface, 34, 298, 48, titlebar, white)
+    font5x7_draw_text(surface, 36, 352, os_text_editor_icon, 16, white_small)
+    fb_draw_app_icon(surface, 34, 390, 48, orange, white)
+    font5x7_draw_text(surface, 36, 444, os_text_calculator_icon, 16, white_small)
+  end
 
   if not os_draw_managed_windows(surface) then return false
 
@@ -618,6 +758,26 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   if about != 0 and about.active != 0 then
     fb_hline(surface, 296, taskbar_y + 43, 188, orange)
   end
+  if surface.width >= 900 then
+    fb_fill_rect(surface, 496, taskbar_y + 8, 100, 36, panel)
+    font5x7_draw_text(surface, 510, taskbar_y + 19, os_text_files, 16, white_small)
+    files_window: ptr[DesktopWindow] is window_manager_find(manager, 3)
+    if files_window != 0 and files_window.active != 0 then
+      fb_hline(surface, 496, taskbar_y + 43, 100, orange)
+    end
+    fb_fill_rect(surface, 608, taskbar_y + 8, 100, 36, panel)
+    font5x7_draw_text(surface, 619, taskbar_y + 19, os_text_editor_icon, 16, white_small)
+    editor_window: ptr[DesktopWindow] is window_manager_find(manager, 4)
+    if editor_window != 0 and editor_window.active != 0 then
+      fb_hline(surface, 608, taskbar_y + 43, 100, orange)
+    end
+    fb_fill_rect(surface, 720, taskbar_y + 8, 100, 36, panel)
+    font5x7_draw_text(surface, 736, taskbar_y + 19, os_text_calculator_icon, 16, white_small)
+    calculator_window: ptr[DesktopWindow] is window_manager_find(manager, 5)
+    if calculator_window != 0 and calculator_window.active != 0 then
+      fb_hline(surface, 720, taskbar_y + 43, 100, orange)
+    end
+  end
   time: ptr[RtcTime] is os_rtc_time_state
   clock_label: ptr is os_text_clock_unknown
   if time.valid != 0 then clock_label is os_clock_text
@@ -642,6 +802,12 @@ func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, p
   os_graphics_status is 4
   shell: ptr[DesktopShell] is os_desktop_shell_state
   if not desktop_shell_init(shell, width, height, 52) then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if not file_explorer_init(files, 1) then return false
+  editor: ptr[TextEditorState] is os_text_editor_state
+  if not text_editor_init(editor, os_text_editor_buffer, 512) then return false
+  calculator: ptr[CalculatorState] is os_calculator_state
+  if not calculator_reset(calculator) then return false
   os_clock_refresh()
   if not os_draw_desktop(back) then return false
   os_graphics_status is 5
@@ -694,7 +860,7 @@ func os_shell_accept(value: u64) do
 end
 
 func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
-  global os_keyboard_reported, os_shift_reported
+  global os_keyboard_reported, os_shift_reported, os_editor_input_reported, os_calculator_result_reported
   if keyboard == 0 or keyboard.pressed == 0 then return true
   if os_keyboard_reported == 0 then
     if not os_serial_line(os_keyboard_marker, 19) then return false
@@ -707,6 +873,26 @@ func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
   manager: ptr[WindowManager] is os_window_manager_state
   if keyboard.ascii != 0 and manager.active_id == 1 then
     return os_shell_accept(keyboard.ascii)
+  end
+  if keyboard.ascii != 0 and manager.active_id == 4 then
+    editor: ptr[TextEditorState] is os_text_editor_state
+    if not text_editor_input(editor, keyboard.ascii) then return false
+    if os_editor_input_reported == 0 then
+      if not os_serial_cstr_line(os_editor_input_marker) then return false
+      os_editor_input_reported is 1
+    end
+    return os_redraw_desktop()
+  end
+  if keyboard.ascii != 0 and manager.active_id == 5 then
+    calculator: ptr[CalculatorState] is os_calculator_state
+    if not calculator_input(calculator, keyboard.ascii) then
+      if calculator.error == 0 then return false
+    end
+    if calculator.has_result != 0 and calculator.error == 0 and calculator.result == 19 and os_calculator_result_reported == 0 then
+      if not os_serial_cstr_line(os_calculator_result_marker) then return false
+      os_calculator_result_reported is 1
+    end
+    return os_redraw_desktop()
   end
   return true
 end

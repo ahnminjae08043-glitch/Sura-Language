@@ -11,14 +11,25 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not desktop_shell_init(shell, 1280, 800, 52) then return 1
   if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 2
   if shell.start_open != 1 then return 3
-  if desktop_shell_pointer_press(shell, 160, 630, 1, 1) != desktop_action_terminal_menu then return 4
+  if desktop_shell_pointer_press(shell, 160, 490, 1, 1) != desktop_action_terminal_menu then return 4
   if shell.start_open != 0 then return 5
   if desktop_shell_pointer_press(shell, 200, 774, 1, 1) != desktop_action_terminal_taskbar then return 6
   if desktop_shell_pointer_press(shell, 360, 774, 1, 1) != desktop_action_system_taskbar then return 7
   if desktop_shell_pointer_press(shell, 60, 230, 1, 1) != desktop_action_about_icon then return 8
   if desktop_shell_pointer_press(shell, 60, 140, 1, 1) != desktop_action_files_icon then return 9
-  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 10
-  if desktop_shell_pointer_press(shell, 160, 725, 1, 1) != desktop_action_shutdown then return 11
-  if desktop_shell_pointer_press(shell, 200, 774, 0, 0) != desktop_action_terminal_taskbar then return 12
+  if desktop_shell_pointer_press(shell, 60, 322, 1, 1) != desktop_action_editor_icon then return 10
+  if desktop_shell_pointer_press(shell, 60, 414, 1, 1) != desktop_action_calculator_icon then return 11
+  if desktop_shell_pointer_press(shell, 540, 774, 1, 1) != desktop_action_files_taskbar then return 12
+  if desktop_shell_pointer_press(shell, 650, 774, 1, 1) != desktop_action_editor_taskbar then return 13
+  if desktop_shell_pointer_press(shell, 760, 774, 1, 1) != desktop_action_calculator_taskbar then return 14
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 15
+  if desktop_shell_pointer_press(shell, 160, 570, 1, 1) != desktop_action_files_menu then return 16
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 17
+  if desktop_shell_pointer_press(shell, 160, 610, 1, 1) != desktop_action_editor_menu then return 18
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 19
+  if desktop_shell_pointer_press(shell, 160, 650, 1, 1) != desktop_action_calculator_menu then return 20
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 21
+  if desktop_shell_pointer_press(shell, 160, 715, 1, 1) != desktop_action_shutdown then return 22
+  if desktop_shell_pointer_press(shell, 200, 774, 0, 0) != desktop_action_terminal_taskbar then return 23
   return 0
 end

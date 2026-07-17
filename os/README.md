@@ -21,6 +21,7 @@ experimental freestanding x86-64 target.
   z-order, title-bar dragging, close-button input, and desktop bounds
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
+- runs kernel-owned File Explorer, Text Editor, and Calculator windows
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -35,6 +36,11 @@ minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
 There is no application process, persistent desktop filesystem, network stack,
 or browser yet.
+
+File Explorer currently shows an explicit no-mounted-disk state. Text Editor
+uses a 512-byte in-memory buffer, and Calculator accepts keyboard digits,
+`+ - * / =`, Backspace, and `C`. QEMU verifies editor input and the result of
+`50 - 8 = 42`; these are kernel-owned applications, not Ring 3 processes.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
@@ -73,8 +79,9 @@ The final capture is written to `build\os\SuraOS-desktop.ppm`, the dragged
 overlapping-window state to `build\os\SuraOS-windows.ppm`, and the open Start
 menu to `build\os\SuraOS-start-menu.ppm`. The capture tool uses QEMU QMP,
 focuses, drags, closes, and reopens System Information from the taskbar, opens
-Start, activates Terminal, verifies the desktop/window/terminal markers, and
-then shuts the VM down normally.
+Start, opens and exercises the three built-in apps, writes
+`build\os\SuraOS-apps.ppm`, activates Terminal, verifies the
+desktop/window/app/terminal markers, and then shuts the VM down normally.
 
 The shell supports `help`, `status`, `mem`, `about`, `clear`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,

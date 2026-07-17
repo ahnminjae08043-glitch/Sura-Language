@@ -1,0 +1,191 @@
+# Fixed-capacity state for the initial kernel-owned desktop applications.
+#
+# UI rendering and process isolation remain caller-owned. These models avoid
+# allocation and provide bounded input for File Explorer, Text Editor, and
+# Calculator windows.
+
+struct FileExplorerState do
+  entry_count: u64
+  selected: u64
+end
+
+struct TextEditorState do
+  buffer: ptr
+  capacity: u64
+  length: u64
+  dirty: u64
+end
+
+struct CalculatorState do
+  left: u64
+  right: u64
+  operation: u64
+  entering_right: u64
+  result: u64
+  has_result: u64
+  error: u64
+end
+
+func file_explorer_init(state: ptr[FileExplorerState], entry_count: u64) do
+  if state == 0 or entry_count == 0 or entry_count > 32 then return false
+  state.entry_count is entry_count
+  state.selected is 0
+  return true
+end
+
+func file_explorer_select(state: ptr[FileExplorerState], index: u64) do
+  if state == 0 or index >= state.entry_count then return false
+  state.selected is index
+  return true
+end
+
+func text_editor_init(state: ptr[TextEditorState], buffer: ptr, capacity: u64) do
+  if state == 0 or buffer == 0 or capacity < 2 or capacity > 4096 then return false
+  state.buffer is buffer
+  state.capacity is capacity
+  state.length is 0
+  state.dirty is 0
+  mem.write8(buffer, 0)
+  return true
+end
+
+func text_editor_input(state: ptr[TextEditorState], value: u64) do
+  if state == 0 or state.buffer == 0 or value > 255 then return false
+  if value == 8 or value == 127 then
+    if state.length == 0 then return true
+    state.length -= 1
+    mem.write8(ptr.add(state.buffer, state.length), 0)
+    state.dirty is 1
+    return true
+  end
+  if value == 13 then return true
+  if value != 10 and (value < 32 or value > 126) then return true
+  if state.length + 1 >= state.capacity then return false
+  mem.write8(ptr.add(state.buffer, state.length), value)
+  state.length += 1
+  mem.write8(ptr.add(state.buffer, state.length), 0)
+  state.dirty is 1
+  return true
+end
+
+func calculator_reset(state: ptr[CalculatorState]) do
+  if state == 0 then return false
+  state.left is 0
+  state.right is 0
+  state.operation is 0
+  state.entering_right is 0
+  state.result is 0
+  state.has_result is 0
+  state.error is 0
+  return true
+end
+
+func calculator_append_digit(state: ptr[CalculatorState], digit: u64) do
+  if state == 0 or digit > 9 then return false
+  if state.error != 0 or state.has_result != 0 then calculator_reset(state)
+  if state.entering_right == 0 then
+    if state.left > 99999999 then return false
+    state.left is state.left * 10 + digit
+  else
+    if state.right > 99999999 then return false
+    state.right is state.right * 10 + digit
+  end
+  return true
+end
+
+func calculator_apply(state: ptr[CalculatorState]) do
+  if state == 0 or state.operation == 0 then return false
+  state.error is 0
+  if state.operation == 43 then
+    if state.left > 999999999 - state.right then state.error is 1
+    if state.error == 0 then state.result is state.left + state.right
+  end
+  if state.operation == 45 then
+    if state.right > state.left then state.error is 1
+    if state.error == 0 then state.result is state.left - state.right
+  end
+  if state.operation == 42 then
+    if state.right != 0 and state.left > 999999999 / state.right then state.error is 1
+    if state.error == 0 then state.result is state.left * state.right
+  end
+  if state.operation == 47 then
+    if state.right == 0 then state.error is 1
+    if state.error == 0 then state.result is state.left / state.right
+  end
+  state.has_result is 1
+  return state.error == 0
+end
+
+func calculator_input(state: ptr[CalculatorState], value: u64) do
+  if state == 0 then return false
+  if value == 99 or value == 67 then return calculator_reset(state)
+  if value >= 48 and value <= 57 then return calculator_append_digit(state, value - 48)
+  if value == 8 or value == 127 then
+    if state.has_result != 0 or state.error != 0 then return calculator_reset(state)
+    if state.entering_right != 0 then
+      state.right is state.right / 10
+    else
+      state.left is state.left / 10
+    end
+    return true
+  end
+  if value == 43 or value == 45 or value == 42 or value == 47 then
+    if state.has_result != 0 and state.error == 0 then state.left is state.result
+    state.right is 0
+    state.result is 0
+    state.has_result is 0
+    state.error is 0
+    state.operation is value
+    state.entering_right is 1
+    return true
+  end
+  if value == 10 or value == 13 or value == 61 then
+    if state.operation == 0 then return true
+    return calculator_apply(state)
+  end
+  return true
+end
+
+func calculator_display_value(state: ptr[CalculatorState]) do
+  if state == 0 then return 0
+  if state.has_result != 0 then return state.result
+  if state.entering_right != 0 then return state.right
+  return state.left
+end
+
+func calculator_format(state: ptr[CalculatorState], buffer: ptr, capacity: u64) do
+  if state == 0 or buffer == 0 or capacity < 2 then return false
+  if state.error != 0 then
+    if capacity < 6 then return false
+    mem.write8(ptr.add(buffer, 0), 69)
+    mem.write8(ptr.add(buffer, 1), 82)
+    mem.write8(ptr.add(buffer, 2), 82)
+    mem.write8(ptr.add(buffer, 3), 79)
+    mem.write8(ptr.add(buffer, 4), 82)
+    mem.write8(ptr.add(buffer, 5), 0)
+    return true
+  end
+  value: u64 is calculator_display_value(state)
+  index: u64 is capacity - 1
+  mem.write8(ptr.add(buffer, index), 0)
+  if value == 0 then
+    if index == 0 then return false
+    index -= 1
+    mem.write8(ptr.add(buffer, index), 48)
+  else
+    while value > 0 do
+      if index == 0 then return false
+      index -= 1
+      mem.write8(ptr.add(buffer, index), 48 + (value % 10))
+      value is value / 10
+    end
+  end
+  output: u64 is 0
+  while index < capacity do
+    byte: u64 is mem.read8(ptr.add(buffer, index))
+    mem.write8(ptr.add(buffer, output), byte)
+    output += 1
+    index += 1
+  end
+  return true
+end

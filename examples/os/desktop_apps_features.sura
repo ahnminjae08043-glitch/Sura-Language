@@ -1,0 +1,48 @@
+# File Explorer, Text Editor, and Calculator state coverage.
+
+import "../../stdlib/freestanding/desktop_apps.sura"
+
+file_state is static.struct(FileExplorerState)
+editor_state is static.struct(TextEditorState)
+editor_buffer is static.zero(64, 16)
+calculator_state is static.struct(CalculatorState)
+calculator_buffer is static.zero(16, 16)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura desktop apps feature test")
+  uefi.newline()
+
+  files: ptr[FileExplorerState] is file_state
+  if not file_explorer_init(files, 5) then return 1
+  if not file_explorer_select(files, 3) or files.selected != 3 then return 2
+
+  editor: ptr[TextEditorState] is editor_state
+  if not text_editor_init(editor, editor_buffer, 64) then return 3
+  text_editor_input(editor, 83)
+  text_editor_input(editor, 117)
+  text_editor_input(editor, 114)
+  text_editor_input(editor, 97)
+  text_editor_input(editor, 10)
+  text_editor_input(editor, 79)
+  text_editor_input(editor, 83)
+  text_editor_input(editor, 8)
+  if editor.length != 6 or editor.dirty == 0 then return 4
+  if mem.read8(ptr.add(editor_buffer, 5)) != 79 then return 5
+
+  calculator: ptr[CalculatorState] is calculator_state
+  calculator_reset(calculator)
+  calculator_input(calculator, 49)
+  calculator_input(calculator, 50)
+  calculator_input(calculator, 43)
+  calculator_input(calculator, 51)
+  calculator_input(calculator, 48)
+  if not calculator_input(calculator, 61) then return 6
+  if calculator_display_value(calculator) != 42 then return 7
+  if not calculator_format(calculator, calculator_buffer, 16) then return 8
+  if mem.read8(calculator_buffer) != 52 or mem.read8(ptr.add(calculator_buffer, 1)) != 50 then return 9
+  calculator_input(calculator, 47)
+  calculator_input(calculator, 48)
+  if calculator_input(calculator, 61) then return 10
+  if calculator.error == 0 then return 11
+  return 0
+end
