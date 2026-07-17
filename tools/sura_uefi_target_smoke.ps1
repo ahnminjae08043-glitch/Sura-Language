@@ -17,7 +17,8 @@ param(
     [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura"),
     [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura"),
     [string]$NvmeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/nvme_features.sura"),
-    [string]$PcieSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pcie_features.sura")
+    [string]$PcieSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pcie_features.sura"),
+    [string]$IoApicSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ioapic_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -117,6 +118,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $PcieSource)) {
         throw "Sura freestanding PCIe source not found: $PcieSource"
+    }
+    if (-not (Test-Path -LiteralPath $IoApicSource)) {
+        throw "Sura freestanding I/O APIC source not found: $IoApicSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -659,6 +663,24 @@ try {
         }
     }
 
+    $ioApicEfi = Join-Path $temp "IOAPIC.EFI"
+    $ioApicOutput = & $Engine --target uefi-x86_64 --out $ioApicEfi $IoApicSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding I/O APIC feature compile failed:`n$($ioApicOutput -join "`n")"
+    }
+    $ioApicBytes = [System.IO.File]::ReadAllBytes($ioApicEfi)
+    if ($ioApicBytes.Length -lt 21000 -or
+        $ioApicBytes[0] -ne 0x4d -or $ioApicBytes[1] -ne 0x5a) {
+        throw "Freestanding I/O APIC feature image is invalid"
+    }
+    $ioApicUtf16 = [System.Text.Encoding]::Unicode.GetString($ioApicBytes)
+    if ($ioApicUtf16 -notmatch "Sura I/O APIC feature test") {
+        throw "Freestanding I/O APIC feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $ioApicBytes ([byte[]](0x31, 0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02)))) {
+        throw "Freestanding I/O APIC feature image is missing its checked redirection entry"
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -946,7 +968,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

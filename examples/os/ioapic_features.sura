@@ -1,0 +1,57 @@
+# Executable ACPI ISA-override and I/O APIC redirection-entry self-check.
+# MMIO register programming is retained in a non-executing feature block.
+
+import "../../stdlib/freestanding/ioapic.sura"
+
+ioapic_info is static.struct(AcpiMadtInfo)
+ioapic_buffers is static.struct(AcpiMadtBuffers)
+ioapic_overrides is static.struct(AcpiInterruptOverride, 2)
+ioapic_controller is static.struct(IoApicController)
+ioapic_route is static.struct(IoApicRoute)
+ioapic_isa_route is static.struct(IoApicIsaRoute)
+ioapic_fake_mmio is static.zero(32, 16)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura I/O APIC feature test")
+  uefi.newline()
+
+  info: ptr[AcpiMadtInfo] is ioapic_info
+  buffers: ptr[AcpiMadtBuffers] is ioapic_buffers
+  override: ptr[AcpiInterruptOverride] is ioapic_overrides
+  isa: ptr[IoApicIsaRoute] is ioapic_isa_route
+  buffers.overrides is ioapic_overrides
+  buffers.override_capacity is 2
+  info.override_count is 1
+  info.truncated is 0
+  override.bus is 0
+  override.source is 0
+  override.flags is 15
+  override.gsi is 2
+  if not ioapic_resolve_isa(info, buffers, 0, isa) then return 1
+  if isa.gsi != 2 or isa.active_low != 1 or isa.level_triggered != 1 then return 2
+
+  route: ptr[IoApicRoute] is ioapic_route
+  route.gsi is isa.gsi
+  route.vector is 49
+  route.destination_apic_id is 2
+  route.active_low is isa.active_low
+  route.level_triggered is isa.level_triggered
+  route.masked is 0
+  entry: u64 is ioapic_build_entry(route)
+  if entry != u64("0x020000000000a031") then return 3
+
+  controller: ptr[IoApicController] is ioapic_controller
+  controller.mmio is 1
+  controller.gsi_base is 0
+  controller.redirection_count is 24
+  if ioapic_find_controller(ioapic_controller, 1, 2) != controller then return 4
+  if ioapic_find_controller(ioapic_controller, 1, 24) != 0 then return 5
+
+  if 0 == 1 then
+    initialized: bool is ioapic_init(controller, ioapic_fake_mmio, 0, 256)
+    programmed: bool is ioapic_program_route(controller, route)
+    masked: bool is ioapic_mask_gsi(controller, 2, 1)
+    current: u64 is ioapic_read_redirection(controller, 2)
+  end
+  return 0
+end

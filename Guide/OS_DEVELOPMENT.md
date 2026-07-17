@@ -908,6 +908,21 @@ processor. Pair its processor records with
 `stdlib/freestanding/ap_startup.sura`. `examples/os/acpi_features.sura` is a
 non-executing compile feature test.
 
+`stdlib/freestanding/ioapic.sura` turns the discovered I/O APIC and interrupt
+source override records into fixed physical-destination redirection entries.
+It validates I/O APIC identity and redirection count, resolves ISA IRQs with
+ACPI polarity/trigger semantics, rejects missing or duplicate override data,
+selects exactly one controller for a GSI, and programs a new route while it is
+masked before applying the requested final mask state. The caller must map
+MMIO uncached and serialize the shared IOREGSEL/IOWIN pair.
+
+The current route builder supports fixed delivery to an 8-bit physical APIC
+ID. It does not provide logical/lowest-priority delivery, x2APIC interrupt
+remapping, NMI routes, interrupt-remapping hardware, or automatic vector
+allocation. `examples/os/ioapic_features.sura` checks ISA override decoding
+and the exact 64-bit redirection entry; MMIO programming has not been executed
+in the current gate.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct

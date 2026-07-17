@@ -1,0 +1,207 @@
+# I/O APIC redirection and ACPI ISA-override helpers.
+#
+# The caller maps I/O APIC MMIO uncached and serializes the shared
+# IOREGSEL/IOWIN pair across processors and interrupt contexts.
+
+import "acpi.sura"
+
+struct IoApicController do
+  mmio: ptr
+  id: u64
+  version: u64
+  gsi_base: u64
+  redirection_count: u64
+end
+
+struct IoApicRoute do
+  gsi: u64
+  vector: u64
+  destination_apic_id: u64
+  active_low: u64
+  level_triggered: u64
+  masked: u64
+end
+
+struct IoApicIsaRoute do
+  source_irq: u64
+  gsi: u64
+  active_low: u64
+  level_triggered: u64
+  overridden: u64
+end
+
+func ioapic_clear(controller: ptr[IoApicController]) do
+  if controller == 0 then return false
+  controller.mmio is 0
+  controller.id is 0
+  controller.version is 0
+  controller.gsi_base is 0
+  controller.redirection_count is 0
+  return true
+end
+
+func ioapic_read_register(mmio: ptr, register_index: u64) do
+  if mmio == 0 or register_index > 255 then return u64("0xffffffff")
+  atomic.store_fence()
+  mem.write32(mmio, register_index)
+  atomic.fence()
+  value: u64 is mem.read32(ptr.add(mmio, 16))
+  atomic.load_fence()
+  return value
+end
+
+func ioapic_write_register(mmio: ptr, register_index: u64, value: u64) do
+  if mmio == 0 or register_index > 255 then return false
+  atomic.store_fence()
+  mem.write32(mmio, register_index)
+  atomic.fence()
+  mem.write32(ptr.add(mmio, 16), value)
+  atomic.store_fence()
+  return true
+end
+
+func ioapic_init(controller: ptr[IoApicController], mmio: ptr, gsi_base: u64, expected_id: u64) do
+  if controller == 0 or mmio == 0 or expected_id > 256 then return false
+  ioapic_clear(controller)
+  identity: u64 is ioapic_read_register(mmio, 0)
+  version: u64 is ioapic_read_register(mmio, 1)
+  if identity == u64("0xffffffff") or version == u64("0xffffffff") then return false
+  id: u64 is (identity >> 24) & 15
+  if expected_id < 256 and id != expected_id then return false
+  redirection_count: u64 is ((version >> 16) & 255) + 1
+  if redirection_count == 0 or redirection_count > 120 then return false
+  if gsi_base > u64("0xffffffffffffffff") - (redirection_count - 1) then return false
+  controller.mmio is mmio
+  controller.id is id
+  controller.version is version & 255
+  controller.gsi_base is gsi_base
+  controller.redirection_count is redirection_count
+  return true
+end
+
+func ioapic_from_madt(info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers], index: u64, mapped_mmio: ptr, controller: ptr[IoApicController]) do
+  if info == 0 or buffers == 0 or controller == 0 or mapped_mmio == 0 then return false
+  if (info.truncated & 2) != 0 or index >= info.io_apic_count then return false
+  if index >= buffers.io_apic_capacity or buffers.io_apics == 0 then return false
+  source: ptr[AcpiIoApic] is ptr.index(buffers.io_apics, index, sizeof(AcpiIoApic))
+  if source.id > 15 then return false
+  return ioapic_init(controller, mapped_mmio, source.gsi_base, source.id)
+end
+
+func ioapic_contains_gsi(controller: ptr[IoApicController], gsi: u64) do
+  if controller == 0 or controller.mmio == 0 or controller.redirection_count == 0 then return false
+  if gsi < controller.gsi_base then return false
+  return gsi - controller.gsi_base < controller.redirection_count
+end
+
+func ioapic_redirection_index(controller: ptr[IoApicController], gsi: u64) do
+  if not ioapic_contains_gsi(controller, gsi) then return u64("0xffffffffffffffff")
+  return gsi - controller.gsi_base
+end
+
+func ioapic_read_redirection(controller: ptr[IoApicController], gsi: u64) do
+  index: u64 is ioapic_redirection_index(controller, gsi)
+  if index == u64("0xffffffffffffffff") then return 0
+  low: u64 is ioapic_read_register(controller.mmio, 16 + index * 2)
+  high: u64 is ioapic_read_register(controller.mmio, 17 + index * 2)
+  return low | (high << 32)
+end
+
+func ioapic_route_valid(route: ptr[IoApicRoute]) do
+  if route == 0 or route.vector < 32 or route.vector > 254 then return false
+  if route.destination_apic_id > 255 then return false
+  if route.active_low > 1 or route.level_triggered > 1 or route.masked > 1 then return false
+  return true
+end
+
+func ioapic_build_entry(route: ptr[IoApicRoute]) do
+  if not ioapic_route_valid(route) then return 0
+  entry: u64 is route.vector
+  if route.active_low != 0 then
+    entry is entry | 8192
+  end
+  if route.level_triggered != 0 then
+    entry is entry | 32768
+  end
+  if route.masked != 0 then
+    entry is entry | 65536
+  end
+  return entry | (route.destination_apic_id << 56)
+end
+
+func ioapic_program_route(controller: ptr[IoApicController], route: ptr[IoApicRoute]) do
+  if controller == 0 or not ioapic_route_valid(route) then return false
+  index: u64 is ioapic_redirection_index(controller, route.gsi)
+  if index == u64("0xffffffffffffffff") then return false
+  entry: u64 is ioapic_build_entry(route)
+  low_register: u64 is 16 + index * 2
+  high_register: u64 is low_register + 1
+  if not ioapic_write_register(controller.mmio, low_register, (entry & u64("0xffffffff")) | 65536) then return false
+  if not ioapic_write_register(controller.mmio, high_register, entry >> 32) then return false
+  return ioapic_write_register(controller.mmio, low_register, entry & u64("0xffffffff"))
+end
+
+func ioapic_mask_gsi(controller: ptr[IoApicController], gsi: u64, masked: u64) do
+  if masked > 1 then return false
+  index: u64 is ioapic_redirection_index(controller, gsi)
+  if index == u64("0xffffffffffffffff") then return false
+  register_index: u64 is 16 + index * 2
+  low: u64 is ioapic_read_register(controller.mmio, register_index)
+  if low == u64("0xffffffff") then return false
+  if masked != 0 then
+    low is low | 65536
+  else
+    low is low & (~65536)
+  end
+  return ioapic_write_register(controller.mmio, register_index, low)
+end
+
+func ioapic_resolve_isa(info: ptr[AcpiMadtInfo], buffers: ptr[AcpiMadtBuffers], source_irq: u64, result: ptr[IoApicIsaRoute]) do
+  if info == 0 or buffers == 0 or result == 0 or source_irq > 15 then return false
+  result.source_irq is source_irq
+  result.gsi is source_irq
+  result.active_low is 0
+  result.level_triggered is 0
+  result.overridden is 0
+  if (info.truncated & 4) != 0 then return false
+  if info.override_count > buffers.override_capacity then return false
+  if info.override_count > 0 and buffers.overrides == 0 then return false
+
+  matched: u64 is 0
+  index: u64 is 0
+  while index < info.override_count do
+    override: ptr[AcpiInterruptOverride] is ptr.index(buffers.overrides, index, sizeof(AcpiInterruptOverride))
+    if override.bus == 0 and override.source == source_irq then
+      matched += 1
+      if matched > 1 then return false
+      polarity: u64 is override.flags & 3
+      trigger: u64 is (override.flags >> 2) & 3
+      if polarity == 2 or trigger == 2 then return false
+      result.gsi is override.gsi
+      if polarity == 3 then
+        result.active_low is 1
+      end
+      if trigger == 3 then
+        result.level_triggered is 1
+      end
+      result.overridden is 1
+    end
+    index += 1
+  end
+  return true
+end
+
+func ioapic_find_controller(controllers: ptr, controller_count: u64, gsi: u64) do
+  if controllers == 0 or controller_count == 0 or controller_count > 256 then return 0
+  found: ptr is 0
+  index: u64 is 0
+  while index < controller_count do
+    controller: ptr[IoApicController] is ptr.index(controllers, index, sizeof(IoApicController))
+    if ioapic_contains_gsi(controller, gsi) then
+      if found != 0 then return 0
+      found is controller
+    end
+    index += 1
+  end
+  return found
+end
