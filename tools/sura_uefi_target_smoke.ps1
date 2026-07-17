@@ -15,7 +15,8 @@ param(
     [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura"),
     [string]$GptSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/gpt_features.sura"),
     [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura"),
-    [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura")
+    [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura"),
+    [string]$NvmeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/nvme_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -109,6 +110,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $AhciSource)) {
         throw "Sura freestanding AHCI source not found: $AhciSource"
+    }
+    if (-not (Test-Path -LiteralPath $NvmeSource)) {
+        throw "Sura freestanding NVMe source not found: $NvmeSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -603,6 +607,30 @@ try {
         }
     }
 
+    $nvmeEfi = Join-Path $temp "NVME.EFI"
+    $nvmeOutput = & $Engine --target uefi-x86_64 --out $nvmeEfi $NvmeSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding NVMe feature compile failed:`n$($nvmeOutput -join "`n")"
+    }
+    $nvmeBytes = [System.IO.File]::ReadAllBytes($nvmeEfi)
+    if ($nvmeBytes.Length -lt 88000 -or
+        $nvmeBytes[0] -ne 0x4d -or $nvmeBytes[1] -ne 0x5a) {
+        throw "Freestanding NVMe feature image is invalid"
+    }
+    $nvmeUtf16 = [System.Text.Encoding]::Unicode.GetString($nvmeBytes)
+    if ($nvmeUtf16 -notmatch "Sura NVMe feature test") {
+        throw "Freestanding NVMe feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x00, 0x08, 0x50, 0x00)),
+        ([byte[]](0x00, 0x10, 0x50, 0x00)),
+        ([byte[]](0x01, 0x00, 0x46, 0x00))
+    )) {
+        if (-not (Test-ByteSequence $nvmeBytes $requiredSequence)) {
+            throw "Freestanding NVMe feature image is missing a required queue or PRP value"
+        }
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -890,7 +918,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

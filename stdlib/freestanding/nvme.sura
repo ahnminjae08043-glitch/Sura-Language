@@ -1,0 +1,544 @@
+# Polling NVMe NVM-command-set block-device foundation.
+#
+# Queue memory, identify data, and the registered data window are caller-owned,
+# physically contiguous, and stable. This implementation uses queue pair 1 and
+# PRP1/PRP2 only, so one transfer spans at most two controller memory pages.
+
+import "block.sura"
+import "pci.sura"
+
+struct NvmeController do
+  bar: ptr
+  capabilities: u64
+  version: u64
+  doorbell_stride: u64
+  page_size: u64
+  max_queue_entries: u64
+  timeout_spins: u64
+  namespace_count: u64
+  max_transfer_bytes: u64
+end
+
+struct NvmeQueue do
+  controller: ptr[NvmeController]
+  submission: ptr
+  submission_physical: u64
+  completion: ptr
+  completion_physical: u64
+  depth: u64
+  queue_id: u64
+  submission_tail: u64
+  completion_head: u64
+  completion_phase: u64
+  next_command_id: u64
+end
+
+struct NvmeDma do
+  admin_submission: ptr
+  admin_submission_physical: u64
+  admin_completion: ptr
+  admin_completion_physical: u64
+  admin_depth: u64
+  io_submission: ptr
+  io_submission_physical: u64
+  io_completion: ptr
+  io_completion_physical: u64
+  io_depth: u64
+  identify: ptr
+  identify_physical: u64
+  data_virtual: ptr
+  data_physical: u64
+  data_bytes: u64
+end
+
+struct NvmeDiskContext do
+  controller: ptr[NvmeController]
+  queue: ptr[NvmeQueue]
+  dma: ptr[NvmeDma]
+  namespace_id: u64
+  sector_count: u64
+  sector_size: u64
+  read_only: u64
+  last_error: u64
+end
+
+func nvme_mmio_read32(base: ptr, offset: u64) do
+  if base == 0 or (offset & 3) != 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func nvme_mmio_write32(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 3) != 0 then return false
+  atomic.store_fence()
+  mem.write32(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func nvme_mmio_read64(base: ptr, offset: u64) do
+  if base == 0 or (offset & 7) != 0 then return u64("0xffffffffffffffff")
+  low: u64 is nvme_mmio_read32(base, offset)
+  high: u64 is nvme_mmio_read32(base, offset + 4)
+  return low | (high << 32)
+end
+
+func nvme_mmio_write64(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 7) != 0 then return false
+  if not nvme_mmio_write32(base, offset, value & u64("0xffffffff")) then return false
+  return nvme_mmio_write32(base, offset + 4, value >> 32)
+end
+
+func nvme_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func nvme_physical_range_valid(address: u64, byte_count: u64) do
+  if address == 0 or byte_count == 0 then return false
+  return address <= u64("0xffffffffffffffff") - (byte_count - 1)
+end
+
+func nvme_controller_clear(controller: ptr[NvmeController]) do
+  if controller == 0 then return false
+  controller.bar is 0
+  controller.capabilities is 0
+  controller.version is 0
+  controller.doorbell_stride is 0
+  controller.page_size is 0
+  controller.max_queue_entries is 0
+  controller.timeout_spins is 0
+  controller.namespace_count is 0
+  controller.max_transfer_bytes is 0
+  return true
+end
+
+func nvme_queue_clear(queue: ptr[NvmeQueue]) do
+  if queue == 0 then return false
+  queue.controller is 0
+  queue.submission is 0
+  queue.submission_physical is 0
+  queue.completion is 0
+  queue.completion_physical is 0
+  queue.depth is 0
+  queue.queue_id is 0
+  queue.submission_tail is 0
+  queue.completion_head is 0
+  queue.completion_phase is 1
+  queue.next_command_id is 1
+  return true
+end
+
+func nvme_disk_clear(disk: ptr[NvmeDiskContext]) do
+  if disk == 0 then return false
+  disk.controller is 0
+  disk.queue is 0
+  disk.dma is 0
+  disk.namespace_id is 0
+  disk.sector_count is 0
+  disk.sector_size is 0
+  disk.read_only is 0
+  disk.last_error is 0
+  return true
+end
+
+func nvme_pci_find(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  return pci_find_class(1, 8, 2, true, device)
+end
+
+func nvme_pci_bar_physical(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return 0
+  raw: u64 is pci_bar_value(device.bdf, 0)
+  if raw == 0 or raw == u64("0xffffffff") or pci_bar_is_io(raw) then return 0
+  return pci_bar_address(device.bdf, 0)
+end
+
+func nvme_pci_enable(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return false
+  return pci_enable_command(device.bdf, 6)
+end
+
+func nvme_controller_attach(controller: ptr[NvmeController], bar: ptr, timeout_spins: u64) do
+  if controller == 0 or bar == 0 or timeout_spins == 0 then return false
+  nvme_controller_clear(controller)
+  capabilities: u64 is nvme_mmio_read64(bar, 0)
+  version: u64 is nvme_mmio_read32(bar, 8)
+  if capabilities == u64("0xffffffffffffffff") or version == u64("0xffffffff") then return false
+  if (capabilities & (1 << 37)) == 0 then return false
+  minimum_page_shift: u64 is (capabilities >> 48) & 15
+  maximum_page_shift: u64 is (capabilities >> 52) & 15
+  if minimum_page_shift != 0 or maximum_page_shift < minimum_page_shift then return false
+  stride_shift: u64 is (capabilities >> 32) & 15
+  if stride_shift > 7 then return false
+  max_entries: u64 is (capabilities & 65535) + 1
+  if max_entries < 2 then return false
+  controller.bar is bar
+  controller.capabilities is capabilities
+  controller.version is version
+  controller.doorbell_stride is 4 << stride_shift
+  controller.page_size is 4096
+  controller.max_queue_entries is max_entries
+  controller.timeout_spins is timeout_spins
+  controller.max_transfer_bytes is 8192
+  return true
+end
+
+func nvme_wait_ready(controller: ptr[NvmeController], expected: u64) do
+  if controller == 0 or controller.bar == 0 or controller.timeout_spins == 0 then return false
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    status: u64 is nvme_mmio_read32(controller.bar, 28)
+    if expected != 0 and (status & 2) != 0 then return false
+    if (status & 1) == expected then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func nvme_disable(controller: ptr[NvmeController]) do
+  if controller == 0 or controller.bar == 0 then return false
+  configuration: u64 is nvme_mmio_read32(controller.bar, 20)
+  if (configuration & 1) != 0 then
+    if not nvme_mmio_write32(controller.bar, 20, configuration & (~1)) then return false
+  end
+  return nvme_wait_ready(controller, 0)
+end
+
+func nvme_queue_memory_valid(controller: ptr[NvmeController], submission: ptr, submission_physical: u64, completion: ptr, completion_physical: u64, depth: u64) do
+  if controller == 0 or controller.page_size == 0 then return false
+  if submission == 0 or completion == 0 or depth < 2 then return false
+  if depth > controller.max_queue_entries or depth > 64 then return false
+  if not ptr.is_aligned(submission, controller.page_size) then return false
+  if not ptr.is_aligned(completion, controller.page_size) then return false
+  if (submission_physical & (controller.page_size - 1)) != 0 then return false
+  if (completion_physical & (controller.page_size - 1)) != 0 then return false
+  if depth > controller.page_size / 64 then return false
+  if depth > controller.page_size / 16 then return false
+  if not nvme_physical_range_valid(submission_physical, depth * 64) then return false
+  return nvme_physical_range_valid(completion_physical, depth * 16)
+end
+
+func nvme_queue_configure(queue: ptr[NvmeQueue], controller: ptr[NvmeController], submission: ptr, submission_physical: u64, completion: ptr, completion_physical: u64) do
+  if queue == 0 or controller == 0 then return false
+  depth: u64 is queue.depth
+  queue_id: u64 is queue.queue_id
+  if queue_id > 65535 then return false
+  if not nvme_queue_memory_valid(controller, submission, submission_physical, completion, completion_physical, depth) then return false
+  nvme_zero(submission, depth * 64)
+  nvme_zero(completion, depth * 16)
+  queue.controller is controller
+  queue.submission is submission
+  queue.submission_physical is submission_physical
+  queue.completion is completion
+  queue.completion_physical is completion_physical
+  queue.submission_tail is 0
+  queue.completion_head is 0
+  queue.completion_phase is 1
+  queue.next_command_id is 1
+  return true
+end
+
+func nvme_admin_start(controller: ptr[NvmeController], dma: ptr[NvmeDma], admin: ptr[NvmeQueue]) do
+  if controller == 0 or dma == 0 or admin == 0 then return false
+  if dma.admin_depth < 2 or dma.admin_depth > 64 then return false
+  nvme_queue_clear(admin)
+  admin.depth is dma.admin_depth
+  admin.queue_id is 0
+  if not nvme_queue_configure(admin, controller, dma.admin_submission, dma.admin_submission_physical, dma.admin_completion, dma.admin_completion_physical) then return false
+  if not nvme_disable(controller) then return false
+  nvme_mmio_write32(controller.bar, 12, u64("0xffffffff"))
+  queue_size: u64 is dma.admin_depth - 1
+  if not nvme_mmio_write32(controller.bar, 36, queue_size | (queue_size << 16)) then return false
+  if not nvme_mmio_write64(controller.bar, 40, dma.admin_submission_physical) then return false
+  if not nvme_mmio_write64(controller.bar, 48, dma.admin_completion_physical) then return false
+  if not nvme_mmio_write32(controller.bar, 20, u64("0x00460001")) then return false
+  return nvme_wait_ready(controller, 1)
+end
+
+func nvme_submission_entry(queue: ptr[NvmeQueue]) do
+  if queue == 0 or queue.submission == 0 or queue.depth == 0 then return 0
+  if queue.submission_tail >= queue.depth then return 0
+  return ptr.index(queue.submission, queue.submission_tail, 64)
+end
+
+func nvme_prepare_base(queue: ptr[NvmeQueue], opcode: u64, namespace_id: u64, prp1: u64, prp2: u64) do
+  if queue == 0 or queue.controller == 0 or opcode > 255 then return u64("0xffffffffffffffff")
+  entry: ptr is nvme_submission_entry(queue)
+  if entry == 0 then return u64("0xffffffffffffffff")
+  nvme_zero(entry, 64)
+  command_id: u64 is queue.next_command_id & 65535
+  queue.next_command_id is (command_id + 1) & 65535
+  if queue.next_command_id == 0 then
+    queue.next_command_id is 1
+  end
+  mem.write32(entry, opcode | (command_id << 16))
+  mem.write32(ptr.add(entry, 4), namespace_id)
+  mem.write64(ptr.add(entry, 24), prp1)
+  mem.write64(ptr.add(entry, 32), prp2)
+  return command_id
+end
+
+func nvme_ring_submission(queue: ptr[NvmeQueue]) do
+  if queue == 0 or queue.controller == 0 then return false
+  controller: ptr[NvmeController] is queue.controller
+  offset: u64 is 4096 + (queue.queue_id * 2) * controller.doorbell_stride
+  return nvme_mmio_write32(controller.bar, offset, queue.submission_tail)
+end
+
+func nvme_ring_completion(queue: ptr[NvmeQueue]) do
+  if queue == 0 or queue.controller == 0 then return false
+  controller: ptr[NvmeController] is queue.controller
+  offset: u64 is 4096 + (queue.queue_id * 2 + 1) * controller.doorbell_stride
+  return nvme_mmio_write32(controller.bar, offset, queue.completion_head)
+end
+
+func nvme_submit(queue: ptr[NvmeQueue], expected_command_id: u64, result: ptr) do
+  if result != 0 then
+    mem.write64(result, 0)
+  end
+  if queue == 0 or queue.controller == 0 or queue.depth < 2 then return false
+  if expected_command_id > 65535 then return false
+  queue.submission_tail += 1
+  if queue.submission_tail == queue.depth then
+    queue.submission_tail is 0
+  end
+  atomic.fence()
+  if not nvme_ring_submission(queue) then return false
+
+  controller: ptr[NvmeController] is queue.controller
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    completion: ptr is ptr.index(queue.completion, queue.completion_head, 16)
+    status: u64 is mem.read16(ptr.add(completion, 14))
+    atomic.load_fence()
+    if (status & 1) == queue.completion_phase then
+      command_id: u64 is mem.read16(ptr.add(completion, 12))
+      submission_id: u64 is mem.read16(ptr.add(completion, 10))
+      completion_result: u64 is mem.read32(completion)
+      status_code: u64 is (status >> 1) & 32767
+      queue.completion_head += 1
+      if queue.completion_head == queue.depth then
+        queue.completion_head is 0
+        queue.completion_phase is queue.completion_phase ^ 1
+      end
+      nvme_ring_completion(queue)
+      if result != 0 then
+        mem.write64(result, completion_result)
+      end
+      if command_id != expected_command_id or submission_id != queue.queue_id then return false
+      return status_code == 0
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func nvme_admin_identify(admin: ptr[NvmeQueue], namespace_id: u64, cns: u64, physical: u64) do
+  if admin == 0 or admin.queue_id != 0 or cns > 255 then return false
+  if (physical & 4095) != 0 then return false
+  command_id: u64 is nvme_prepare_base(admin, 6, namespace_id, physical, 0)
+  if command_id == u64("0xffffffffffffffff") then return false
+  entry: ptr is nvme_submission_entry(admin)
+  mem.write32(ptr.add(entry, 40), cns)
+  return nvme_submit(admin, command_id, 0)
+end
+
+func nvme_identify_controller(controller: ptr[NvmeController], admin: ptr[NvmeQueue], dma: ptr[NvmeDma]) do
+  if controller == 0 or admin == 0 or dma == 0 then return false
+  if dma.identify == 0 or not ptr.is_aligned(dma.identify, controller.page_size) then return false
+  if (dma.identify_physical & (controller.page_size - 1)) != 0 then return false
+  if not nvme_physical_range_valid(dma.identify_physical, 4096) then return false
+  nvme_zero(dma.identify, 4096)
+  if not nvme_admin_identify(admin, 0, 1, dma.identify_physical) then return false
+  controller.namespace_count is mem.read32(ptr.add(dma.identify, 516))
+  if controller.namespace_count == 0 then return false
+  mdts: u64 is mem.read8(ptr.add(dma.identify, 77))
+  maximum: u64 is controller.page_size * 2
+  if mdts != 0 and mdts < 52 then
+    mdts_bytes: u64 is controller.page_size << mdts
+    if mdts_bytes < maximum then
+      maximum is mdts_bytes
+    end
+  end
+  if maximum < 512 then return false
+  controller.max_transfer_bytes is maximum
+  return true
+end
+
+func nvme_io_queue_start(controller: ptr[NvmeController], dma: ptr[NvmeDma], admin: ptr[NvmeQueue], io: ptr[NvmeQueue]) do
+  if controller == 0 or dma == 0 or admin == 0 or io == 0 then return false
+  if dma.io_depth < 2 or dma.io_depth > 64 then return false
+  nvme_queue_clear(io)
+  io.depth is dma.io_depth
+  io.queue_id is 1
+  if not nvme_queue_configure(io, controller, dma.io_submission, dma.io_submission_physical, dma.io_completion, dma.io_completion_physical) then return false
+
+  command_id: u64 is nvme_prepare_base(admin, 5, 0, dma.io_completion_physical, 0)
+  if command_id == u64("0xffffffffffffffff") then return false
+  entry: ptr is nvme_submission_entry(admin)
+  mem.write32(ptr.add(entry, 40), 1 | ((dma.io_depth - 1) << 16))
+  mem.write32(ptr.add(entry, 44), 1)
+  if not nvme_submit(admin, command_id, 0) then return false
+
+  command_id is nvme_prepare_base(admin, 1, 0, dma.io_submission_physical, 0)
+  if command_id == u64("0xffffffffffffffff") then return false
+  entry is nvme_submission_entry(admin)
+  mem.write32(ptr.add(entry, 40), 1 | ((dma.io_depth - 1) << 16))
+  mem.write32(ptr.add(entry, 44), 1 | (1 << 16))
+  return nvme_submit(admin, command_id, 0)
+end
+
+func nvme_identify_namespace(disk: ptr[NvmeDiskContext], admin: ptr[NvmeQueue], dma: ptr[NvmeDma], namespace_id: u64) do
+  if disk == 0 or disk.controller == 0 or admin == 0 or dma == 0 then return false
+  controller: ptr[NvmeController] is disk.controller
+  if namespace_id == 0 then return false
+  if controller.namespace_count != 0 and namespace_id > controller.namespace_count then return false
+  nvme_zero(dma.identify, 4096)
+  if not nvme_admin_identify(admin, namespace_id, 0, dma.identify_physical) then return false
+  sector_count: u64 is mem.read64(dma.identify)
+  format_index: u64 is mem.read8(ptr.add(dma.identify, 26)) & 15
+  format_count: u64 is mem.read8(ptr.add(dma.identify, 25)) + 1
+  if sector_count == 0 or format_index >= format_count then return false
+  format: ptr is ptr.add(dma.identify, 128 + format_index * 4)
+  metadata_size: u64 is mem.read16(format)
+  lba_shift: u64 is mem.read8(ptr.add(format, 2))
+  if metadata_size != 0 or lba_shift < 9 or lba_shift > 16 then return false
+  sector_size: u64 is 1 << lba_shift
+  disk.namespace_id is namespace_id
+  disk.sector_count is sector_count
+  disk.sector_size is sector_size
+  return true
+end
+
+func nvme_dma_data_valid(disk: ptr[NvmeDiskContext]) do
+  if disk == 0 or disk.controller == 0 or disk.dma == 0 then return false
+  controller: ptr[NvmeController] is disk.controller
+  dma: ptr[NvmeDma] is disk.dma
+  if dma.data_virtual == 0 or dma.data_bytes < disk.sector_size then return false
+  if not ptr.is_aligned(dma.data_virtual, controller.page_size) then return false
+  if (dma.data_physical & (controller.page_size - 1)) != 0 then return false
+  return nvme_physical_range_valid(dma.data_physical, dma.data_bytes)
+end
+
+func nvme_translate_dma(disk: ptr[NvmeDiskContext], buffer: ptr, byte_count: u64) do
+  if not nvme_dma_data_valid(disk) or buffer == 0 or byte_count == 0 then return 0
+  dma: ptr[NvmeDma] is disk.dma
+  address: u64 is buffer
+  start: u64 is dma.data_virtual
+  if address < start or address - start > dma.data_bytes then return 0
+  offset: u64 is address - start
+  if byte_count > dma.data_bytes - offset then return 0
+  if dma.data_physical > u64("0xffffffffffffffff") - offset then return 0
+  physical: u64 is dma.data_physical + offset
+  if not nvme_physical_range_valid(physical, byte_count) then return 0
+  return physical
+end
+
+func nvme_prepare_io(disk: ptr[NvmeDiskContext], opcode: u64, lba: u64, count: u64, physical: u64, byte_count: u64) do
+  if disk == 0 or disk.controller == 0 or disk.queue == 0 then return u64("0xffffffffffffffff")
+  controller: ptr[NvmeController] is disk.controller
+  queue: ptr[NvmeQueue] is disk.queue
+  if opcode == 0 then
+    if count != 0 or byte_count != 0 then return u64("0xffffffffffffffff")
+    return nvme_prepare_base(queue, 0, disk.namespace_id, 0, 0)
+  end
+  if opcode != 1 and opcode != 2 then return u64("0xffffffffffffffff")
+  if count == 0 or count > 65536 or disk.sector_size == 0 then return u64("0xffffffffffffffff")
+  if lba >= disk.sector_count or count > disk.sector_count - lba then return u64("0xffffffffffffffff")
+  if count > u64("0xffffffffffffffff") / disk.sector_size then return u64("0xffffffffffffffff")
+  if byte_count != count * disk.sector_size then return u64("0xffffffffffffffff")
+  if byte_count > controller.max_transfer_bytes then return u64("0xffffffffffffffff")
+  if not nvme_physical_range_valid(physical, byte_count) then return u64("0xffffffffffffffff")
+  page_offset: u64 is physical & (controller.page_size - 1)
+  first_bytes: u64 is controller.page_size - page_offset
+  prp2: u64 is 0
+  if byte_count > first_bytes then
+    if byte_count - first_bytes > controller.page_size then return u64("0xffffffffffffffff")
+    prp2 is physical + first_bytes
+  end
+  command_id: u64 is nvme_prepare_base(queue, opcode, disk.namespace_id, physical, prp2)
+  if command_id == u64("0xffffffffffffffff") then return command_id
+  entry: ptr is nvme_submission_entry(queue)
+  mem.write32(ptr.add(entry, 40), lba & u64("0xffffffff"))
+  mem.write32(ptr.add(entry, 44), lba >> 32)
+  mem.write32(ptr.add(entry, 48), count - 1)
+  return command_id
+end
+
+func nvme_issue_io(disk: ptr[NvmeDiskContext], opcode: u64, lba: u64, count: u64, physical: u64, byte_count: u64) do
+  command_id: u64 is nvme_prepare_io(disk, opcode, lba, count, physical, byte_count)
+  if command_id == u64("0xffffffffffffffff") then return false
+  return nvme_submit(disk.queue, command_id, 0)
+end
+
+func nvme_read_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  disk: ptr[NvmeDiskContext] is context_address
+  if disk == 0 or disk.sector_size == 0 or count == 0 then return 1
+  if count > u64("0xffffffffffffffff") / disk.sector_size then return 1
+  byte_count: u64 is count * disk.sector_size
+  physical: u64 is nvme_translate_dma(disk, buffer, byte_count)
+  if physical == 0 then return 1
+  if nvme_issue_io(disk, 2, lba, count, physical, byte_count) then return 0
+  disk.last_error is 2
+  return 2
+end
+
+func nvme_write_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  disk: ptr[NvmeDiskContext] is context_address
+  if disk == 0 or disk.read_only != 0 then return 2
+  if disk.sector_size == 0 or count == 0 then return 1
+  if count > u64("0xffffffffffffffff") / disk.sector_size then return 1
+  byte_count: u64 is count * disk.sector_size
+  physical: u64 is nvme_translate_dma(disk, buffer, byte_count)
+  if physical == 0 then return 1
+  if nvme_issue_io(disk, 1, lba, count, physical, byte_count) then return 0
+  disk.last_error is 3
+  return 3
+end
+
+func nvme_flush_blocks(context_address: ptr) do
+  disk: ptr[NvmeDiskContext] is context_address
+  if disk == 0 then return 1
+  if nvme_issue_io(disk, 0, 0, 0, 0, 0) then return 0
+  disk.last_error is 4
+  return 2
+end
+
+func nvme_bind_block_device(device: ptr[BlockDevice], disk: ptr[NvmeDiskContext]) do
+  if device == 0 or disk == 0 or disk.queue == 0 then return false
+  if disk.namespace_id == 0 or disk.sector_count == 0 or disk.sector_size == 0 then return false
+  if not nvme_dma_data_valid(disk) then return false
+  if not block_device_init(device, disk, disk.sector_size, disk.sector_count, 4, disk.read_only) then return false
+  device.read_blocks is addr_of(nvme_read_blocks)
+  device.write_blocks is addr_of(nvme_write_blocks)
+  device.flush_blocks is addr_of(nvme_flush_blocks)
+  return true
+end
+
+func nvme_initialize_disk(controller: ptr[NvmeController], dma: ptr[NvmeDma], admin: ptr[NvmeQueue], io: ptr[NvmeQueue], disk: ptr[NvmeDiskContext], namespace_id: u64) do
+  if controller == 0 or dma == 0 or admin == 0 or io == 0 or disk == 0 then return false
+  nvme_disk_clear(disk)
+  if not nvme_admin_start(controller, dma, admin) then return false
+  if not nvme_identify_controller(controller, admin, dma) then return false
+  disk.controller is controller
+  disk.queue is io
+  disk.dma is dma
+  if not nvme_identify_namespace(disk, admin, dma, namespace_id) then
+    nvme_disk_clear(disk)
+    return false
+  end
+  if not nvme_io_queue_start(controller, dma, admin, io) then
+    nvme_disk_clear(disk)
+    return false
+  end
+  return true
+end

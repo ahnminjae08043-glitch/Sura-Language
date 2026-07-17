@@ -763,7 +763,7 @@ I/O, or recover a changed removable medium automatically. Rebinding refreshes
 the media snapshot. The caller owns every device, context, and buffer and must
 serialize requests.
 
-## Native AHCI SATA foundation
+## Native AHCI SATA and NVMe foundations
 
 `stdlib/freestanding/ahci.sura` provides a polling AHCI 1.x SATA path that can
 remain usable after `ExitBootServices`. It includes PCI class discovery,
@@ -783,10 +783,29 @@ crosses 4 GiB.
 This is a polling foundation, not a complete production storage stack. It
 does not implement interrupts, NCQ, multiple outstanding commands, ATAPI,
 port multipliers, hot-plug, TRIM, COMRESET/error recovery, power management,
-IOMMU mapping, or NVMe. `examples/os/ahci_features.sura` checks command-header,
+IOMMU mapping. `examples/os/ahci_features.sura` checks command-header,
 H2D FIS, and PRDT construction and retains discovery/initialization paths for
 compilation. The generated machine code is checked, but no AHCI command has
 yet been executed in QEMU or on hardware.
+
+`stdlib/freestanding/nvme.sura` supplies a separate polling NVMe
+NVM-command-set path. It discovers the PCI class and BAR, configures a
+caller-owned admin queue, identifies the controller and a selected namespace,
+creates I/O queue pair 1, builds read/write/flush commands, consumes
+phase-tagged completion entries, and exposes the namespace as a `BlockDevice`.
+The current PRP builder supports PRP1 plus one direct PRP2 page, so a request
+can cover at most two 4-KiB controller pages and may be smaller when it starts
+inside a page. Queue depth is limited to 64, queue memory must fit in one page,
+the controller must support a 4-KiB minimum memory page, and formatted LBAs
+with separate metadata are rejected.
+
+The NVMe path is also synchronous and polling. It does not implement MSI/MSI-X,
+multiple I/O queue pairs, concurrent commands, PRP lists, SGLs, namespace-list
+selection, controller shutdown, abort/reset recovery, asynchronous events,
+IOMMU mapping, or zoned namespaces. `examples/os/nvme_features.sura` checks SQ
+entry and cross-page PRP construction. The image gate compiles and inspects
+that path; it has not submitted a command to an emulated or physical NVMe
+controller.
 
 ## FAT32 and virtual filesystem foundation
 
@@ -894,8 +913,8 @@ Still required for a complete self-hosted OS environment:
   timer/context-switch verification
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
-- PCIe ECAM/resource allocation, NVMe, network, USB, graphics, audio, and
-  other device-specific drivers
+- PCIe ECAM/resource allocation, network, USB, graphics, audio, and other
+  device-specific drivers
 - partition creation/resizing, extended MBR chains, GPT repair, and a full
   persistent filesystem writer with allocation, creation, resizing, deletion,
   long names, recovery, and locking

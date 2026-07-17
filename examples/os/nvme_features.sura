@@ -1,0 +1,80 @@
+# Executable NVMe SQ entry and PRP1/PRP2 layout self-check.
+# PCI, controller, queue-creation, identify, and BlockDevice paths also compile.
+
+import "../../stdlib/freestanding/nvme.sura"
+
+nvme_controller is static.struct(NvmeController)
+nvme_pci_device is static.struct(PciDevice)
+nvme_admin_queue is static.struct(NvmeQueue)
+nvme_io_queue is static.struct(NvmeQueue)
+nvme_dma is static.struct(NvmeDma)
+nvme_disk is static.struct(NvmeDiskContext)
+nvme_block_device is static.struct(BlockDevice)
+nvme_admin_submission is static.zero(4096, 4096)
+nvme_admin_completion is static.zero(4096, 4096)
+nvme_io_submission is static.zero(4096, 4096)
+nvme_io_completion is static.zero(4096, 4096)
+nvme_identify_data is static.zero(4096, 4096)
+nvme_data is static.zero(8192, 4096)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura NVMe feature test")
+  uefi.newline()
+
+  controller: ptr[NvmeController] is nvme_controller
+  queue: ptr[NvmeQueue] is nvme_io_queue
+  dma: ptr[NvmeDma] is nvme_dma
+  disk: ptr[NvmeDiskContext] is nvme_disk
+  controller.page_size is 4096
+  controller.max_queue_entries is 64
+  controller.max_transfer_bytes is 8192
+  controller.timeout_spins is 1000000
+  queue.controller is controller
+  queue.submission is nvme_io_submission
+  queue.submission_physical is u64("0x00300000")
+  queue.completion is nvme_io_completion
+  queue.completion_physical is u64("0x00301000")
+  queue.depth is 4
+  queue.queue_id is 1
+  queue.submission_tail is 0
+  queue.completion_head is 0
+  queue.completion_phase is 1
+  queue.next_command_id is 1
+  dma.data_virtual is nvme_data
+  dma.data_physical is u64("0x00500000")
+  dma.data_bytes is 8192
+  disk.controller is controller
+  disk.queue is queue
+  disk.dma is dma
+  disk.namespace_id is 1
+  disk.sector_count is u64("0x0001000000000000")
+  disk.sector_size is 512
+
+  command_id: u64 is nvme_prepare_io(disk, 2, u64("0x123456789a"), 8, u64("0x00500800"), 4096)
+  if command_id != 1 then return 1
+  if mem.read32(nvme_io_submission) != 65538 then return 2
+  if mem.read32(ptr.add(nvme_io_submission, 4)) != 1 then return 3
+  if mem.read64(ptr.add(nvme_io_submission, 24)) != u64("0x00500800") then return 4
+  if mem.read64(ptr.add(nvme_io_submission, 32)) != u64("0x00501000") then return 5
+  if mem.read32(ptr.add(nvme_io_submission, 40)) != u64("0x3456789a") then return 6
+  if mem.read32(ptr.add(nvme_io_submission, 44)) != 18 then return 7
+  if mem.read32(ptr.add(nvme_io_submission, 48)) != 7 then return 8
+
+  command_id is nvme_prepare_io(disk, 1, 1, 1, u64("0x00500000"), 512)
+  if command_id != 2 or mem.read32(nvme_io_submission) != 131073 then return 9
+  command_id is nvme_prepare_io(disk, 0, 0, 0, 0, 0)
+  if command_id != 3 or mem.read32(nvme_io_submission) != 196608 then return 10
+
+  if 0 == 1 then
+    pci_device: ptr[PciDevice] is nvme_pci_device
+    admin: ptr[NvmeQueue] is nvme_admin_queue
+    block_device: ptr[BlockDevice] is nvme_block_device
+    found: bool is nvme_pci_find(pci_device)
+    bar: u64 is nvme_pci_bar_physical(pci_device)
+    enabled: bool is nvme_pci_enable(pci_device)
+    attached: bool is nvme_controller_attach(controller, bar, 1000000)
+    initialized: bool is nvme_initialize_disk(controller, dma, admin, queue, disk, 1)
+    bound: bool is nvme_bind_block_device(block_device, disk)
+  end
+  return 0
+end
