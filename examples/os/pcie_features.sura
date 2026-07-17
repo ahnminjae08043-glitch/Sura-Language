@@ -1,0 +1,62 @@
+# Executable ACPI MCFG parse and ECAM-address self-check.
+# MMIO reads, writes, enumeration, BAR, and capability paths also compile.
+
+import "../../stdlib/freestanding/pcie.sura"
+
+pcie_mcfg is static.zero(60, 16)
+pcie_regions is static.struct(PcieEcamRegion, 4)
+pcie_buffers is static.struct(PcieMcfgBuffers)
+pcie_info is static.struct(PcieMcfgInfo)
+pcie_device is static.struct(PcieDevice)
+pcie_query is static.struct(PcieClassQuery)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura PCIe ECAM feature test")
+  uefi.newline()
+
+  mem.write32(pcie_mcfg, u64("0x4746434d"))
+  mem.write32(ptr.add(pcie_mcfg, 4), 60)
+  mem.write8(ptr.add(pcie_mcfg, 8), 1)
+  entry: ptr is ptr.add(pcie_mcfg, 44)
+  mem.write64(entry, u64("0xe0000000"))
+  mem.write16(ptr.add(entry, 8), 0)
+  mem.write8(ptr.add(entry, 10), 0)
+  mem.write8(ptr.add(entry, 11), 0)
+
+  checksum: u64 is 0
+  index: u64 is 0
+  while index < 60 do
+    checksum += mem.read8(ptr.add(pcie_mcfg, index))
+    index += 1
+  end
+  mem.write8(ptr.add(pcie_mcfg, 9), (256 - (checksum & 255)) & 255)
+
+  buffers: ptr[PcieMcfgBuffers] is pcie_buffers
+  info: ptr[PcieMcfgInfo] is pcie_info
+  buffers.regions is pcie_regions
+  buffers.region_capacity is 4
+  if not pcie_parse_mcfg(pcie_mcfg, info, buffers) then return 1
+  if info.region_count != 1 or info.mcfg_address != pcie_mcfg then return 2
+  region: ptr[PcieEcamRegion] is pcie_find_region(info, buffers, 0, 0)
+  if region == 0 or region.base_address != u64("0xe0000000") then return 3
+  address: u64 is pcie_ecam_address(region, 0, 2, 3, u64("0xabc"), 4)
+  if address != u64("0xe0013abc") then return 4
+  if pcie_ecam_address(region, 0, 2, 3, 4095, 4) != 0 then return 5
+
+  if 0 == 1 then
+    device: ptr[PcieDevice] is pcie_device
+    query: ptr[PcieClassQuery] is pcie_query
+    query.class_code is 1
+    query.subclass is 8
+    query.prog_if is 2
+    query.match_prog_if is 1
+    found: bool is pcie_find_class(info, buffers, query, device)
+    probed: bool is pcie_probe(region, 0, 0, 0, device)
+    vendor: u64 is pcie_read16(region, 0, 0, 0, 0)
+    bar: u64 is pcie_bar_address(region, 0, 0, 0, 0)
+    capability: u64 is pcie_find_capability(region, 0, 0, 0, 5)
+    extended: u64 is pcie_find_extended_capability(region, 0, 0, 0, 1)
+    enabled: bool is pcie_enable_command(region, 0, 0, 0, 6)
+  end
+  return 0
+end

@@ -1,0 +1,309 @@
+# ACPI MCFG discovery and PCI Express ECAM access.
+#
+# The kernel maps every selected ECAM physical range as uncached MMIO and
+# serializes configuration writes against other processors and firmware.
+
+import "acpi.sura"
+
+struct PcieEcamRegion do
+  base_address: u64
+  segment: u64
+  start_bus: u64
+  end_bus: u64
+end
+
+struct PcieMcfgBuffers do
+  regions: ptr
+  region_capacity: u64
+end
+
+struct PcieMcfgInfo do
+  rsdp_address: ptr
+  mcfg_address: ptr
+  region_count: u64
+  truncated: u64
+end
+
+struct PcieDevice do
+  segment: u64
+  bus: u64
+  device: u64
+  function: u64
+  vendor_id: u64
+  device_id: u64
+  revision: u64
+  prog_if: u64
+  subclass: u64
+  class_code: u64
+  header_type: u64
+end
+
+struct PcieClassQuery do
+  class_code: u64
+  subclass: u64
+  prog_if: u64
+  match_prog_if: u64
+end
+
+func pcie_info_clear(info: ptr[PcieMcfgInfo]) do
+  if info == 0 then return false
+  info.rsdp_address is 0
+  info.mcfg_address is 0
+  info.region_count is 0
+  info.truncated is 0
+  return true
+end
+
+func pcie_region_at(buffers: ptr[PcieMcfgBuffers], index: u64) do
+  if buffers == 0 or buffers.regions == 0 or index >= buffers.region_capacity then return 0
+  return ptr.index(buffers.regions, index, sizeof(PcieEcamRegion))
+end
+
+func pcie_region_shape_valid(region: ptr[PcieEcamRegion]) do
+  if region == 0 or region.base_address == 0 then return false
+  if (region.base_address & u64("0xfffff")) != 0 then return false
+  if region.segment > 65535 or region.start_bus > region.end_bus or region.end_bus > 255 then return false
+  bus_count: u64 is region.end_bus - region.start_bus + 1
+  if bus_count > u64("0xffffffffffffffff") >> 20 then return false
+  byte_count: u64 is bus_count << 20
+  return region.base_address <= u64("0xffffffffffffffff") - (byte_count - 1)
+end
+
+func pcie_regions_overlap(left: ptr[PcieEcamRegion], right: ptr[PcieEcamRegion]) do
+  if not pcie_region_shape_valid(left) or not pcie_region_shape_valid(right) then return true
+  left_bytes: u64 is (left.end_bus - left.start_bus + 1) << 20
+  right_bytes: u64 is (right.end_bus - right.start_bus + 1) << 20
+  left_end: u64 is left.base_address + left_bytes - 1
+  right_end: u64 is right.base_address + right_bytes - 1
+  if not (left_end < right.base_address or right_end < left.base_address) then return true
+  if left.segment != right.segment then return false
+  return not (left.end_bus < right.start_bus or right.end_bus < left.start_bus)
+end
+
+func pcie_parse_mcfg(mcfg: ptr, info: ptr[PcieMcfgInfo], buffers: ptr[PcieMcfgBuffers]) do
+  if info == 0 or buffers == 0 then return false
+  pcie_info_clear(info)
+  if not acpi_sdt_valid(mcfg, u64("0x4746434d")) then return false
+  length: u64 is mem.read32(ptr.add(mcfg, 4))
+  if length < 60 or ((length - 44) % 16) != 0 then return false
+  if mem.read64(ptr.add(mcfg, 36)) != 0 then return false
+  count: u64 is (length - 44) / 16
+  if count == 0 or count > 4096 then return false
+  if buffers.regions == 0 or buffers.region_capacity < count then
+    info.truncated is 1
+    return false
+  end
+
+  index: u64 is 0
+  while index < count do
+    source: ptr is ptr.add(mcfg, 44 + index * 16)
+    if mem.read32(ptr.add(source, 12)) != 0 then return false
+    destination: ptr[PcieEcamRegion] is pcie_region_at(buffers, index)
+    destination.base_address is mem.read64(source)
+    destination.segment is mem.read16(ptr.add(source, 8))
+    destination.start_bus is mem.read8(ptr.add(source, 10))
+    destination.end_bus is mem.read8(ptr.add(source, 11))
+    if not pcie_region_shape_valid(destination) then return false
+    previous: u64 is 0
+    while previous < index do
+      other: ptr[PcieEcamRegion] is pcie_region_at(buffers, previous)
+      if pcie_regions_overlap(destination, other) then return false
+      previous += 1
+    end
+    index += 1
+  end
+  info.mcfg_address is mcfg
+  info.region_count is count
+  return true
+end
+
+func pcie_discover_mcfg(system_table: ptr, info: ptr[PcieMcfgInfo], buffers: ptr[PcieMcfgBuffers]) do
+  if info == 0 then return false
+  pcie_info_clear(info)
+  rsdp: ptr is acpi_find_rsdp(system_table)
+  if rsdp == 0 then return false
+  mcfg: ptr is acpi_find_table(rsdp, u64("0x4746434d"))
+  if mcfg == 0 or not pcie_parse_mcfg(mcfg, info, buffers) then return false
+  info.rsdp_address is rsdp
+  return true
+end
+
+func pcie_find_region(info: ptr[PcieMcfgInfo], buffers: ptr[PcieMcfgBuffers], segment: u64, bus: u64) do
+  if info == 0 or buffers == 0 or segment > 65535 or bus > 255 then return 0
+  index: u64 is 0
+  while index < info.region_count do
+    region: ptr[PcieEcamRegion] is pcie_region_at(buffers, index)
+    if region != 0 and region.segment == segment and bus >= region.start_bus and bus <= region.end_bus then return region
+    index += 1
+  end
+  return 0
+end
+
+func pcie_ecam_address(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64, width: u64) do
+  if not pcie_region_shape_valid(region) then return 0
+  if bus < region.start_bus or bus > region.end_bus then return 0
+  if device > 31 or function > 7 or offset > 4095 then return 0
+  if width != 1 and width != 2 and width != 4 then return 0
+  if (offset & (width - 1)) != 0 or width > 4096 - offset then return 0
+  bus_offset: u64 is (bus - region.start_bus) << 20
+  function_offset: u64 is (device << 15) | (function << 12) | offset
+  if region.base_address > u64("0xffffffffffffffff") - bus_offset then return 0
+  address: u64 is region.base_address + bus_offset
+  if address > u64("0xffffffffffffffff") - function_offset then return 0
+  return address + function_offset
+end
+
+func pcie_read8(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 1)
+  if address == 0 then return 255
+  value: u64 is mem.read8(address)
+  atomic.load_fence()
+  return value
+end
+
+func pcie_read16(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 2)
+  if address == 0 then return 65535
+  value: u64 is mem.read16(address)
+  atomic.load_fence()
+  return value
+end
+
+func pcie_read32(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 4)
+  if address == 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(address)
+  atomic.load_fence()
+  return value
+end
+
+func pcie_write8(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64, value: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 1)
+  if address == 0 then return false
+  atomic.store_fence()
+  mem.write8(address, value)
+  atomic.store_fence()
+  return true
+end
+
+func pcie_write16(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64, value: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 2)
+  if address == 0 then return false
+  atomic.store_fence()
+  mem.write16(address, value)
+  atomic.store_fence()
+  return true
+end
+
+func pcie_write32(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, offset: u64, value: u64) do
+  address: ptr is pcie_ecam_address(region, bus, device, function, offset, 4)
+  if address == 0 then return false
+  atomic.store_fence()
+  mem.write32(address, value)
+  atomic.store_fence()
+  return true
+end
+
+func pcie_probe(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, result: ptr[PcieDevice]) do
+  if result == 0 then return false
+  identity: u64 is pcie_read32(region, bus, device, function, 0)
+  if (identity & 65535) == 65535 then return false
+  class_info: u64 is pcie_read32(region, bus, device, function, 8)
+  result.segment is region.segment
+  result.bus is bus
+  result.device is device
+  result.function is function
+  result.vendor_id is identity & 65535
+  result.device_id is (identity >> 16) & 65535
+  result.revision is class_info & 255
+  result.prog_if is (class_info >> 8) & 255
+  result.subclass is (class_info >> 16) & 255
+  result.class_code is (class_info >> 24) & 255
+  result.header_type is pcie_read8(region, bus, device, function, 14)
+  return true
+end
+
+func pcie_find_class(info: ptr[PcieMcfgInfo], buffers: ptr[PcieMcfgBuffers], query: ptr[PcieClassQuery], result: ptr[PcieDevice]) do
+  if info == 0 or buffers == 0 or query == 0 or result == 0 then return false
+  if query.class_code > 255 or query.subclass > 255 or query.prog_if > 255 then return false
+  region_index: u64 is 0
+  while region_index < info.region_count do
+    region: ptr[PcieEcamRegion] is pcie_region_at(buffers, region_index)
+    bus: u64 is region.start_bus
+    while bus <= region.end_bus do
+      device: u64 is 0
+      while device < 32 do
+        if pcie_read16(region, bus, device, 0, 0) != 65535 then
+          function_count: u64 is 1
+          if (pcie_read8(region, bus, device, 0, 14) & 128) != 0 then
+            function_count is 8
+          end
+          function: u64 is 0
+          while function < function_count do
+            if pcie_probe(region, bus, device, function, result) then
+              if result.class_code == query.class_code and result.subclass == query.subclass then
+                if query.match_prog_if == 0 or result.prog_if == query.prog_if then return true
+              end
+            end
+            function += 1
+          end
+        end
+        device += 1
+      end
+      bus += 1
+    end
+    region_index += 1
+  end
+  return false
+end
+
+func pcie_find_capability(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, capability_id: u64) do
+  if capability_id > 255 or (pcie_read16(region, bus, device, function, 6) & 16) == 0 then return 0
+  pointer: u64 is pcie_read8(region, bus, device, function, 52) & 252
+  visited: u64 is 0
+  while pointer >= 64 and pointer <= 252 and visited < 48 do
+    if pcie_read8(region, bus, device, function, pointer) == capability_id then return pointer
+    next_pointer: u64 is pcie_read8(region, bus, device, function, pointer + 1) & 252
+    if next_pointer == pointer then return 0
+    pointer is next_pointer
+    visited += 1
+  end
+  return 0
+end
+
+func pcie_find_extended_capability(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, capability_id: u64) do
+  if capability_id == 0 or capability_id > 65535 then return 0
+  pointer: u64 is 256
+  visited: u64 is 0
+  while pointer >= 256 and pointer <= 4092 and visited < 960 do
+    header: u64 is pcie_read32(region, bus, device, function, pointer)
+    if header == 0 or header == u64("0xffffffff") then return 0
+    if (header & 65535) == capability_id then return pointer
+    next_pointer: u64 is (header >> 20) & 4095
+    if next_pointer == 0 then return 0
+    if next_pointer < 256 or next_pointer > 4092 or (next_pointer & 3) != 0 then return 0
+    if next_pointer == pointer then return 0
+    pointer is next_pointer
+    visited += 1
+  end
+  return 0
+end
+
+func pcie_bar_address(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, index: u64) do
+  if index > 5 then return 0
+  low: u64 is pcie_read32(region, bus, device, function, 16 + index * 4)
+  if low == 0 or low == u64("0xffffffff") then return 0
+  if (low & 1) != 0 then return low & u64("0xfffffffc")
+  address: u64 is low & u64("0xfffffff0")
+  if ((low >> 1) & 3) == 2 then
+    if index == 5 then return 0
+    address is address | (pcie_read32(region, bus, device, function, 20 + index * 4) << 32)
+  end
+  return address
+end
+
+func pcie_enable_command(region: ptr[PcieEcamRegion], bus: u64, device: u64, function: u64, flags: u64) do
+  if flags > 65535 then return false
+  command: u64 is pcie_read16(region, bus, device, function, 4)
+  return pcie_write16(region, bus, device, function, 4, command | flags)
+end

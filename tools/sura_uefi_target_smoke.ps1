@@ -16,7 +16,8 @@ param(
     [string]$GptSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/gpt_features.sura"),
     [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura"),
     [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura"),
-    [string]$NvmeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/nvme_features.sura")
+    [string]$NvmeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/nvme_features.sura"),
+    [string]$PcieSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pcie_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -113,6 +114,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $NvmeSource)) {
         throw "Sura freestanding NVMe source not found: $NvmeSource"
+    }
+    if (-not (Test-Path -LiteralPath $PcieSource)) {
+        throw "Sura freestanding PCIe source not found: $PcieSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -631,6 +635,30 @@ try {
         }
     }
 
+    $pcieEfi = Join-Path $temp "PCIE.EFI"
+    $pcieOutput = & $Engine --target uefi-x86_64 --out $pcieEfi $PcieSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding PCIe feature compile failed:`n$($pcieOutput -join "`n")"
+    }
+    $pcieBytes = [System.IO.File]::ReadAllBytes($pcieEfi)
+    if ($pcieBytes.Length -lt 29000 -or
+        $pcieBytes[0] -ne 0x4d -or $pcieBytes[1] -ne 0x5a) {
+        throw "Freestanding PCIe feature image is invalid"
+    }
+    $pcieUtf16 = [System.Text.Encoding]::Unicode.GetString($pcieBytes)
+    if ($pcieUtf16 -notmatch "Sura PCIe ECAM feature test") {
+        throw "Freestanding PCIe feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x4d, 0x43, 0x46, 0x47)),
+        ([byte[]](0x00, 0x00, 0x00, 0xe0)),
+        ([byte[]](0xbc, 0x3a, 0x01, 0xe0))
+    )) {
+        if (-not (Test-ByteSequence $pcieBytes $requiredSequence)) {
+            throw "Freestanding PCIe feature image is missing a required MCFG or ECAM value"
+        }
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -918,7 +946,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

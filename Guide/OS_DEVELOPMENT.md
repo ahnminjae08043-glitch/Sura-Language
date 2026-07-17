@@ -720,10 +720,25 @@ block.
 
 The two configuration ports are global shared state, so a kernel must
 serialize each complete address/data transaction across interrupts and CPUs.
-This library does not parse ACPI MCFG, access PCIe ECAM, size BARs, configure
-MSI/MSI-X, allocate resources, or provide a device-specific driver. A kernel
-must also validate BARs and disable conflicting decode before changing device
-resources.
+This legacy library does not itself size BARs, configure MSI/MSI-X, allocate
+resources, or provide a device-specific driver. A kernel must also validate
+BARs and disable conflicting decode before changing device resources.
+
+`stdlib/freestanding/pcie.sura` adds PCI Express ECAM access. It discovers and
+checksum-validates ACPI MCFG, requires enough caller-owned storage for every
+allocation record, rejects malformed, overlapping, or overflowing segment/bus
+ranges, and computes checked 4-KiB function addresses. It provides aligned
+8/16/32-bit access, segment-aware enumeration, standard and extended
+capability traversal, BAR decoding, and command-register enablement.
+
+The kernel must keep the firmware ACPI tables mapped while parsing and map
+each accepted ECAM physical range as uncached MMIO before configuration
+access. Writes still require kernel-level serialization and device-specific
+state control. This layer does not size or allocate BARs, configure bridges,
+MSI/MSI-X, SR-IOV, ACS/IOMMU policy, or hot-plug.
+`examples/os/pcie_features.sura` constructs and validates an MCFG record and
+checks an ECAM address. Actual configuration-space MMIO remains unexecuted in
+the current gate.
 
 ## Block-device foundation
 
@@ -913,8 +928,8 @@ Still required for a complete self-hosted OS environment:
   timer/context-switch verification
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
-- PCIe ECAM/resource allocation, network, USB, graphics, audio, and other
-  device-specific drivers
+- PCI/PCIe resource allocation, bridge configuration, MSI/MSI-X, network,
+  USB, graphics, audio, and other device-specific drivers
 - partition creation/resizing, extended MBR chains, GPT repair, and a full
   persistent filesystem writer with allocation, creation, resizing, deletion,
   long names, recovery, and locking
