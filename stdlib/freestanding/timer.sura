@@ -80,7 +80,7 @@ func apic_tsc_deadline_after(vector: u64, delta_ticks: u64) do
 end
 
 func apic_tsc_deadline_cancel() do
-  if not apic_tsc_deadline_supported() then return false
+  if apic.mode() == 0 or not apic_tsc_deadline_supported() then return false
   cpu.write_msr(1760, 0)
   return apic_timer_stop()
 end
