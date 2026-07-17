@@ -1,0 +1,141 @@
+# Minimal bootable Sura OS image for QEMU/OVMF.
+#
+# This program is compiled directly to a PE32+ EFI application. After
+# ExitBootServices succeeds, it uses only freestanding Sura code: COM1,
+# framebuffer memory, the physical-page allocator, port I/O, and CPU halt.
+
+import "../stdlib/freestanding/serial.sura"
+import "../stdlib/freestanding/physical_memory.sura"
+
+os_allocator_state is static.struct(PhysicalAllocator)
+os_allocator_bitmap is static.zero(65536, 4096)
+os_memory_map is static.zero(131072, 4096)
+
+os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
+os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
+os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
+
+os_map_size: usize is 131072
+os_map_key: u64 is 0
+os_descriptor_size: usize is 0
+os_descriptor_version: u32 is 0
+
+func os_vm_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func os_serial_line(text: ptr, length: usize) do
+  if not serial_write_buffer(1016, text, length, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func os_paint_header(framebuffer: ptr, width: u32, height: u32, stride: u32, pixel_format: u32) do
+  if framebuffer == 0 or width == 0 or height == 0 or stride < width then
+    return false
+  end
+  if pixel_format > 1 then return false
+
+  rows: u64 is height
+  if rows > 72 then rows is 72
+
+  color: u32 is 16744448
+  if pixel_format == 0 then color is 3178496
+
+  y: u64 is 0
+  while y < rows do
+    x: u64 is 0
+    while x < width do
+      offset: u64 is (y * stride + x) * 4
+      mem.write32(ptr.add(framebuffer, offset), color)
+      x += 1
+    end
+    y += 1
+  end
+  return true
+end
+
+func os_memory_self_test() do
+  allocator: ptr[PhysicalAllocator] is os_allocator_state
+  if not pmem_init_from_uefi(allocator, os_allocator_bitmap, 65536, os_memory_map, os_map_size, os_descriptor_size) then
+    return false
+  end
+
+  page: u64 is pmem_alloc(allocator)
+  if page == 0 then return false
+
+  signature: u64 is u64("0x535552414f534f4b")
+  mem.write64(page, signature)
+  if mem.read64(page) != signature then return false
+  return pmem_free(allocator, page)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version
+
+  uefi.clear()
+  uefi.set_color(15, 1)
+  uefi.write("Sura OS virtual machine")
+  uefi.newline()
+  uefi.write("Preparing the freestanding kernel...")
+  uefi.newline()
+
+  framebuffer: ptr is uefi.gop_framebuffer()
+  framebuffer_width: u32 is uefi.gop_width()
+  framebuffer_height: u32 is uefi.gop_height()
+  framebuffer_stride: u32 is uefi.gop_stride()
+  framebuffer_format: u32 is uefi.gop_pixel_format()
+
+  if not serial_init(1016, 1) then
+    os_vm_exit(1)
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 4 and exit_status != 0 do
+    os_map_size is 131072
+    map_status is uefi.get_memory_map(addr_of(os_map_size), os_memory_map, addr_of(os_map_key), addr_of(os_descriptor_size), addr_of(os_descriptor_version))
+    if map_status == 0 then
+      exit_status is uefi.exit_boot_services(os_map_key)
+    end
+    attempt += 1
+  end
+
+  if map_status != 0 or exit_status != 0 then
+    os_vm_exit(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  if not os_serial_line(os_boot_marker, 15) then
+    os_vm_exit(3)
+    return 3
+  end
+
+  if not os_paint_header(framebuffer, framebuffer_width, framebuffer_height, framebuffer_stride, framebuffer_format) then
+    os_vm_exit(7)
+    return 7
+  end
+
+  if not os_memory_self_test() then
+    os_vm_exit(4)
+    return 4
+  end
+  if not os_serial_line(os_memory_marker, 17) then
+    os_vm_exit(5)
+    return 5
+  end
+  if not os_serial_line(os_ready_marker, 20) then
+    os_vm_exit(6)
+    return 6
+  end
+
+  # QEMU isa-debug-exit maps value 16 to process exit code 33.
+  os_vm_exit(16)
+  return 0
+end

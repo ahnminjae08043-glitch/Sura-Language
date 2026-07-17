@@ -50,11 +50,15 @@ $logo = Resolve-ExistingFile (Join-Path $root "assets/sura-logo.png") "Sura logo
 $manifestTemplate = Resolve-ExistingFile (Join-Path $root "deploy/store-msix/Package.appxmanifest") "Store manifest template"
 $stdlib = Join-Path $root "stdlib"
 $examples = Join-Path $root "examples"
+$os = Join-Path $root "os"
 if (-not (Test-Path -LiteralPath $stdlib -PathType Container)) {
     throw "Sura standard library was not found: $stdlib"
 }
 if (-not (Test-Path -LiteralPath $examples -PathType Container)) {
     throw "Sura example gallery was not found: $examples"
+}
+if (-not (Test-Path -LiteralPath $os -PathType Container)) {
+    throw "Sura OS integration source was not found: $os"
 }
 
 $winapp = Get-Command winapp -ErrorAction SilentlyContinue
@@ -87,6 +91,7 @@ Copy-Item -LiteralPath $engine -Destination (Join-Path $layout "SuraLanguage.exe
 Copy-Item -LiteralPath $surapkg -Destination (Join-Path $layout "surapkg.exe") -Force
 Copy-Item -LiteralPath $stdlib -Destination (Join-Path $layout "stdlib") -Recurse -Force
 Copy-Item -LiteralPath $examples -Destination (Join-Path $layout "examples") -Recurse -Force
+Copy-Item -LiteralPath $os -Destination (Join-Path $layout "os") -Recurse -Force
 
 $manifest = Assert-ChildPath $buildBase (Join-Path $buildBase "Package.appxmanifest")
 if (Test-Path -LiteralPath $manifest) {
@@ -212,6 +217,7 @@ try {
         "stdlib/freestanding/serial.sura",
         "stdlib/freestanding/syscall.sura",
         "stdlib/freestanding/timer.sura",
+        "stdlib/freestanding/user_process.sura",
         "stdlib/freestanding/vfs.sura",
         "examples/starter/01_hello.sura",
         "examples/os/acpi_features.sura",
@@ -231,7 +237,10 @@ try {
         "examples/os/scheduler_features.sura",
         "examples/os/syscall_features.sura",
         "examples/os/user_mode_features.sura",
+        "examples/os/user_process_features.sura",
         "examples/os/vfs_features.sura",
+        "os/README.md",
+        "os/sura_os.sura",
         "Assets/StoreLogo.png"
     )) {
         if ($entryNames -notcontains $requiredEntry) {

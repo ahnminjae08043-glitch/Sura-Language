@@ -1,0 +1,528 @@
+# Single-CPU x86-64 ring-3 process lifecycle and interrupt scheduler.
+#
+# This library requires the standard Sura GDT selectors (kernel code 8, user
+# data 27, user code 35), a higher-half supervisor mapping shared by every
+# ProcessAddressSpace, one supervisor-only kernel stack per process, and a
+# caller-serialized physical allocator. It prepares process switching but does
+# not install an IDT, timer, system-call policy, or device drivers.
+
+import "preempt.sura"
+import "process_memory.sura"
+
+struct UserInterruptFrame do
+  r15: u64
+  r14: u64
+  r13: u64
+  r12: u64
+  r11: u64
+  r10: u64
+  r9: u64
+  r8: u64
+  rdi: u64
+  rsi: u64
+  rbp: u64
+  rbx: u64
+  rdx: u64
+  rcx: u64
+  rax: u64
+  error: u64
+  rip: u64
+  cs: u64
+  rflags: u64
+  rsp: u64
+  ss: u64
+end
+
+# Process states: 0 unused, 1 runnable/running, 2 exited, 3 faulted.
+struct UserProcess do
+  id: u64
+  address_space: ptr[ProcessAddressSpace]
+  frame: ptr
+  kernel_stack_base: ptr
+  kernel_stack_size: u64
+  kernel_stack_top: ptr
+  user_gs_base: ptr
+  exit_code: u64
+  state: u64
+  fault_address: u64
+  fault_error: u64
+  switches: u64
+end
+
+struct UserProcessCreate do
+  address_space: ptr[ProcessAddressSpace]
+  kernel_stack_base: ptr
+  kernel_stack_size: u64
+  entry: u64
+  user_stack_pointer: u64
+  argument: u64
+  user_gs_base: ptr
+end
+
+struct UserProcessSchedulerConfig do
+  processes: ptr
+  capacity: u64
+  tss: ptr
+  kernel_root: ptr
+  kernel_gs_base: ptr
+  idle_stack_base: ptr
+  idle_stack_size: u64
+end
+
+# resume_kind: 0 none, 1 ring 3 process, 2 ring 0 idle context.
+struct UserProcessScheduler do
+  processes: ptr
+  capacity: u64
+  current: u64
+  process_count: u64
+  runnable_count: u64
+  next_id: u64
+  ticks: u64
+  switches: u64
+  tss: ptr
+  kernel_root: ptr
+  kernel_gs_base: ptr
+  idle_stack_base: ptr
+  idle_stack_size: u64
+  idle_stack_top: ptr
+  idle_frame: ptr
+  resume_kind: u64
+  resume_index: u64
+  kernel_faulted: u64
+  kernel_fault_address: u64
+  kernel_fault_error: u64
+  initialized: u64
+end
+
+user_process_scheduler_active: ptr[UserProcessScheduler] is 0
+
+func user_process_at(state: ptr[UserProcessScheduler], index: u64) do
+  if state == 0 or state.processes == 0 or index >= state.capacity then return 0
+  return ptr.index(state.processes, index, sizeof(UserProcess))
+end
+
+func user_process_clear(process: ptr[UserProcess]) do
+  if process == 0 then return false
+  process.id is 0
+  process.address_space is 0
+  process.frame is 0
+  process.kernel_stack_base is 0
+  process.kernel_stack_size is 0
+  process.kernel_stack_top is 0
+  process.user_gs_base is 0
+  process.exit_code is 0
+  process.state is 0
+  process.fault_address is 0
+  process.fault_error is 0
+  process.switches is 0
+  return true
+end
+
+func user_process_find_index(state: ptr[UserProcessScheduler], process_id: u64) do
+  if state == 0 or process_id == 0 then return 0
+  index: u64 is 0
+  while index < state.capacity do
+    process: ptr[UserProcess] is user_process_at(state, index)
+    if process.state != 0 and process.id == process_id then return index
+    index += 1
+  end
+  return state.capacity
+end
+
+func user_process_frame_from_user(frame: ptr) do
+  if frame == 0 then return false
+  saved: ptr[UserInterruptFrame] is frame
+  if (saved.cs & 3) != 3 then return false
+  return user.frame_valid(frame)
+end
+
+func user_process_frame_from_kernel(frame: ptr) do
+  if frame == 0 then return false
+  saved: ptr[UserInterruptFrame] is frame
+  if (saved.cs & 3) != 0 then return false
+  return preempt.frame_valid(frame)
+end
+
+func user_process_idle(argument: u64) do
+  cpu.enable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func user_process_idle_exit(result: u64) do
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func user_process_scheduler_init(state: ptr[UserProcessScheduler], config: ptr[UserProcessSchedulerConfig]) do
+  global user_process_scheduler_active
+  if state == 0 or config == 0 then return false
+  if state.initialized != 0 or user_process_scheduler_active != 0 then return false
+  if config.processes == 0 or config.capacity == 0 or config.tss == 0 then return false
+  if config.kernel_root == 0 or (config.kernel_root & 4095) != 0 then return false
+  if paging.root() != config.kernel_root then return false
+  if config.idle_stack_base == 0 or config.idle_stack_size < 4096 then return false
+  if not ptr.is_aligned(config.idle_stack_base, 16) then return false
+  if config.idle_stack_size > u64("0xffffffffffffffff") - config.idle_stack_base then return false
+  if config.kernel_gs_base != 0 and not paging.is_canonical48(config.kernel_gs_base) then return false
+
+  index: u64 is 0
+  while index < config.capacity do
+    user_process_clear(ptr.index(config.processes, index, sizeof(UserProcess)))
+    index += 1
+  end
+
+  idle_top: ptr is ptr.add(config.idle_stack_base, config.idle_stack_size)
+  idle_frame: ptr is preempt.init(idle_top, addr_of(user_process_idle), 0, addr_of(user_process_idle_exit), 8)
+  if idle_frame == 0 or not preempt.frame_valid(idle_frame) then return false
+
+  state.processes is config.processes
+  state.capacity is config.capacity
+  state.current is config.capacity
+  state.process_count is 0
+  state.runnable_count is 0
+  state.next_id is 1
+  state.ticks is 0
+  state.switches is 0
+  state.tss is config.tss
+  state.kernel_root is config.kernel_root
+  state.kernel_gs_base is config.kernel_gs_base
+  state.idle_stack_base is config.idle_stack_base
+  state.idle_stack_size is config.idle_stack_size
+  state.idle_stack_top is idle_top
+  state.idle_frame is idle_frame
+  state.resume_kind is 0
+  state.resume_index is config.capacity
+  state.kernel_faulted is 0
+  state.kernel_fault_address is 0
+  state.kernel_fault_error is 0
+  state.initialized is 1
+
+  cpu.tss_set_rsp(state.tss, 0, state.idle_stack_top)
+  percpu.set_base(state.kernel_gs_base)
+  percpu.set_kernel_base(0)
+  user_process_scheduler_active is state
+  return true
+end
+
+func user_process_create(state: ptr[UserProcessScheduler], config: ptr[UserProcessCreate]) do
+  if state == 0 or config == 0 or state.initialized == 0 then return 0
+  if state.next_id == u64("0xffffffffffffffff") then return 0
+  if state.process_count >= state.capacity then return 0
+  space: ptr[ProcessAddressSpace] is config.address_space
+  if space == 0 or space.initialized == 0 then return 0
+  if space.root == 0 or space.root == state.kernel_root then return 0
+  if config.kernel_stack_base == 0 or config.kernel_stack_size < 4096 then return 0
+  if not ptr.is_aligned(config.kernel_stack_base, 16) then return 0
+  if config.kernel_stack_size > u64("0xffffffffffffffff") - config.kernel_stack_base then return 0
+  if not user.is_address(config.entry) or not user.is_address(config.user_stack_pointer) then return 0
+  if (config.user_stack_pointer & 15) != 8 then return 0
+  if config.user_gs_base != 0 and not paging.is_canonical48(config.user_gs_base) then return 0
+
+  entry_mapping: ptr[ProcessMapping] is process_find_mapping(space, config.entry & ~4095)
+  if not process_mapping_access_valid(space, entry_mapping, false) then return 0
+  if (entry_mapping.flags & process_nx_flag()) != 0 then return 0
+  if not process_user_access_valid(space, config.user_stack_pointer, 8, true) then return 0
+
+  slot: u64 is state.capacity
+  index: u64 is 0
+  while index < state.capacity and slot == state.capacity do
+    process: ptr[UserProcess] is user_process_at(state, index)
+    if process.state == 0 then slot is index
+    index += 1
+  end
+  if slot >= state.capacity then return 0
+
+  kernel_stack_top: ptr is ptr.add(config.kernel_stack_base, config.kernel_stack_size)
+  frame: ptr is user.frame_init(kernel_stack_top, config.entry, config.user_stack_pointer, config.argument, 35, 27)
+  if frame == 0 or not user.frame_valid(frame) then return 0
+
+  process: ptr[UserProcess] is user_process_at(state, slot)
+  process.id is state.next_id
+  state.next_id is state.next_id + 1
+  process.address_space is space
+  process.frame is frame
+  process.kernel_stack_base is config.kernel_stack_base
+  process.kernel_stack_size is config.kernel_stack_size
+  process.kernel_stack_top is kernel_stack_top
+  process.user_gs_base is config.user_gs_base
+  process.exit_code is 0
+  process.state is 1
+  process.fault_address is 0
+  process.fault_error is 0
+  process.switches is 0
+  state.process_count is state.process_count + 1
+  state.runnable_count is state.runnable_count + 1
+  return process.id
+end
+
+func user_process_candidate_valid(state: ptr[UserProcessScheduler], index: u64) do
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process == 0 or process.state != 1 then return false
+  space: ptr[ProcessAddressSpace] is process.address_space
+  if space == 0 or space.initialized == 0 then return false
+  if space.root == 0 or process.kernel_stack_top == 0 then return false
+  return user.frame_valid(process.frame)
+end
+
+func user_process_next_runnable(state: ptr[UserProcessScheduler]) do
+  if state == 0 or state.capacity == 0 then return 0
+  index: u64 is 0
+  if state.current < state.capacity then
+    index is state.current + 1
+    if index >= state.capacity then index is 0
+  end
+  scanned: u64 is 0
+  while scanned < state.capacity do
+    if user_process_candidate_valid(state, index) then return index
+    index += 1
+    if index >= state.capacity then index is 0
+    scanned += 1
+  end
+  return state.capacity
+end
+
+# Called with interrupts disabled by a compiler-generated interrupt wrapper.
+# `discard_current` is true only after the current process was exited/faulted.
+func user_process_select(state: ptr[UserProcessScheduler], interrupted_frame: ptr, timer_tick: bool, discard_current: bool) do
+  if state == 0 or state.initialized == 0 then return false
+  state.resume_kind is 0
+  state.resume_index is state.capacity
+
+  from_user: bool is user_process_frame_from_user(interrupted_frame)
+  from_kernel: bool is false
+  if not from_user then from_kernel is user_process_frame_from_kernel(interrupted_frame)
+  if not from_user and not from_kernel then return false
+
+  if timer_tick and state.ticks != u64("0xffffffffffffffff") then
+    state.ticks is state.ticks + 1
+  end
+
+  if from_user then
+    if state.current >= state.capacity then return false
+    current: ptr[UserProcess] is user_process_at(state, state.current)
+    if discard_current then
+      if current.state == 1 then
+        return false
+      end
+    else
+      if current.state != 1 then
+        return false
+      end
+      current.frame is interrupted_frame
+    end
+  else
+    if state.current >= state.capacity then
+      state.idle_frame is interrupted_frame
+    else
+      current: ptr[UserProcess] is user_process_at(state, state.current)
+      if current.state == 1 and not discard_current then
+        # Do not preempt a process while it is executing trusted kernel code.
+        return false
+      end
+    end
+  end
+
+  next_index: u64 is user_process_next_runnable(state)
+  if next_index < state.capacity then
+    if from_user and not discard_current and next_index == state.current then return false
+    state.resume_kind is 1
+    state.resume_index is next_index
+    return true
+  end
+
+  if from_user and not discard_current then return false
+  if state.current >= state.capacity and from_kernel then return false
+  if not preempt.frame_valid(state.idle_frame) then return false
+  state.resume_kind is 2
+  state.resume_index is state.capacity
+  return true
+end
+
+# Activates the target selected by user_process_select. The returned frame must
+# be consumed immediately by user.resume or preempt.resume in the same handler.
+func user_process_activate_selected(state: ptr[UserProcessScheduler]) do
+  if state == 0 or state.initialized == 0 then return 0
+  if state.resume_kind == 1 then
+    if state.resume_index >= state.capacity then return 0
+    process: ptr[UserProcess] is user_process_at(state, state.resume_index)
+    if not user_process_candidate_valid(state, state.resume_index) then return 0
+    if not process_space_activate(process.address_space) then return 0
+    cpu.tss_set_rsp(state.tss, 0, process.kernel_stack_top)
+    percpu.set_kernel_base(process.user_gs_base)
+    state.current is state.resume_index
+    state.switches is state.switches + 1
+    process.switches is process.switches + 1
+    return process.frame
+  end
+
+  if state.resume_kind == 2 then
+    if not preempt.frame_valid(state.idle_frame) then return 0
+    paging.activate(state.kernel_root)
+    if paging.root() != state.kernel_root then return 0
+    cpu.tss_set_rsp(state.tss, 0, state.idle_stack_top)
+    percpu.set_kernel_base(0)
+    state.current is state.capacity
+    state.switches is state.switches + 1
+    return state.idle_frame
+  end
+  return 0
+end
+
+func user_process_fatal() do
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func user_process_timer_interrupt(frame: ptr) interrupt do
+  global user_process_scheduler_active
+  if user_process_scheduler_active == 0 then
+    apic.eoi()
+    return
+  end
+  state: ptr[UserProcessScheduler] is user_process_scheduler_active
+  selected: bool is user_process_select(state, frame, true, false)
+  apic.eoi()
+  if not selected then return
+
+  kind: u64 is state.resume_kind
+  target: ptr is user_process_activate_selected(state)
+  if target == 0 then user_process_fatal()
+  if kind == 1 then
+    resumed: bool is user.resume(target)
+  else
+    resumed: bool is preempt.resume(target)
+  end
+  user_process_fatal()
+end
+
+# Install this handler on a DPL-3 interrupt gate if user code may voluntarily
+# yield with interrupt.invoke(130).
+func user_process_yield_interrupt(frame: ptr) interrupt do
+  global user_process_scheduler_active
+  if user_process_scheduler_active == 0 then return
+  state: ptr[UserProcessScheduler] is user_process_scheduler_active
+  discard: bool is false
+  if state.current < state.capacity then
+    current: ptr[UserProcess] is user_process_at(state, state.current)
+    discard is current.state != 1
+  end
+  selected: bool is user_process_select(state, frame, false, discard)
+  if not selected then
+    if discard then user_process_fatal()
+    return
+  end
+
+  kind: u64 is state.resume_kind
+  target: ptr is user_process_activate_selected(state)
+  if target == 0 then user_process_fatal()
+  if kind == 1 then
+    resumed: bool is user.resume(target)
+  else
+    resumed: bool is preempt.resume(target)
+  end
+  user_process_fatal()
+end
+
+func user_process_page_fault_interrupt(frame: ptr) interrupt_error do
+  global user_process_scheduler_active
+  if user_process_scheduler_active == 0 or frame == 0 then user_process_fatal()
+  state: ptr[UserProcessScheduler] is user_process_scheduler_active
+  saved: ptr[UserInterruptFrame] is frame
+  fault_address: u64 is cpu.read_cr2()
+  if not user_process_frame_from_user(frame) or state.current >= state.capacity then
+    state.kernel_faulted is 1
+    state.kernel_fault_address is fault_address
+    state.kernel_fault_error is saved.error
+    user_process_fatal()
+  end
+
+  current: ptr[UserProcess] is user_process_at(state, state.current)
+  if current.state != 1 then user_process_fatal()
+  current.state is 3
+  current.fault_address is fault_address
+  current.fault_error is saved.error
+  if state.runnable_count > 0 then state.runnable_count is state.runnable_count - 1
+
+  selected: bool is user_process_select(state, frame, false, true)
+  if not selected then user_process_fatal()
+  kind: u64 is state.resume_kind
+  target: ptr is user_process_activate_selected(state)
+  if target == 0 then user_process_fatal()
+  if kind == 1 then
+    resumed: bool is user.resume(target)
+  else
+    resumed: bool is preempt.resume(target)
+  end
+  user_process_fatal()
+end
+
+func user_process_yield() do
+  if user_process_scheduler_active == 0 then return false
+  return interrupt.invoke(130)
+end
+
+# This is a non-returning process-exit path for an interrupt or fast-system-call
+# dispatcher. The nested ring-0 interrupt abandons the exiting kernel frame.
+func user_process_exit_current(exit_code: u64) do
+  global user_process_scheduler_active
+  if user_process_scheduler_active == 0 then return false
+  state: ptr[UserProcessScheduler] is user_process_scheduler_active
+  if state.current >= state.capacity then return false
+  current: ptr[UserProcess] is user_process_at(state, state.current)
+  if current.state != 1 then return false
+  current.exit_code is exit_code
+  current.state is 2
+  if state.runnable_count > 0 then state.runnable_count is state.runnable_count - 1
+  invoked: bool is interrupt.invoke(130)
+  user_process_fatal()
+  return invoked
+end
+
+func user_process_state(state: ptr[UserProcessScheduler], process_id: u64) do
+  index: u64 is user_process_find_index(state, process_id)
+  if state == 0 or index >= state.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(state, index)
+  return process.state
+end
+
+func user_process_exit_code(state: ptr[UserProcessScheduler], process_id: u64) do
+  index: u64 is user_process_find_index(state, process_id)
+  if state == 0 or index >= state.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(state, index)
+  return process.exit_code
+end
+
+func user_process_fault_address(state: ptr[UserProcessScheduler], process_id: u64) do
+  index: u64 is user_process_find_index(state, process_id)
+  if state == 0 or index >= state.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(state, index)
+  return process.fault_address
+end
+
+func user_process_fault_error(state: ptr[UserProcessScheduler], process_id: u64) do
+  index: u64 is user_process_find_index(state, process_id)
+  if state == 0 or index >= state.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(state, index)
+  return process.fault_error
+end
+
+# Reaping destroys the process address space but never frees caller-owned
+# ProcessAddressSpace, kernel-stack, mapping-buffer, or metadata objects.
+func user_process_reap(state: ptr[UserProcessScheduler], process_id: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  index: u64 is user_process_find_index(state, process_id)
+  if index >= state.capacity or index == state.current then return false
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process.state != 2 and process.state != 3 then return false
+  if process.address_space == 0 then return false
+  if not process_space_destroy(process.address_space) then return false
+  user_process_clear(process)
+  if state.process_count > 0 then state.process_count is state.process_count - 1
+  return true
+end

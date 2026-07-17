@@ -4,6 +4,9 @@ param(
     [string]$Qemu = "",
     [string]$Firmware = "",
     [int]$TimeoutSeconds = 30,
+    [string]$ExpectedEfiText = "Sura QEMU boot gate",
+    [string]$ExpectedMarker = "SURA_EXIT_BOOT_SERVICES_OK",
+    [int]$ExpectedExitCode = 33,
     [switch]$CompileOnly
 )
 
@@ -85,6 +88,10 @@ try {
     if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 300) {
         throw "TimeoutSeconds must be 1..300"
     }
+    if ([string]::IsNullOrWhiteSpace($ExpectedEfiText) -or
+        [string]::IsNullOrWhiteSpace($ExpectedMarker)) {
+        throw "ExpectedEfiText and ExpectedMarker must not be empty"
+    }
     if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
         throw "Sura engine was not found: $Engine"
     }
@@ -109,8 +116,8 @@ try {
     $efiAscii = [System.Text.Encoding]::ASCII.GetString($efiBytes)
     if ($efiBytes.Length -lt 70000 -or
         $efiBytes[0] -ne 0x4d -or $efiBytes[1] -ne 0x5a -or
-        $efiUtf16 -notmatch "Sura QEMU boot gate" -or
-        $efiAscii -notmatch "SURA_EXIT_BOOT_SERVICES_OK") {
+        -not $efiUtf16.Contains($ExpectedEfiText) -or
+        -not $efiAscii.Contains($ExpectedMarker)) {
         throw "QEMU boot EFI image is missing its required boot markers"
     }
 
@@ -135,7 +142,6 @@ try {
         "-monitor", "none",
         "-serial", "stdio",
         "-no-reboot",
-        "-no-shutdown",
         "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
         "-drive", "file=$disk,format=raw,if=ide",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
@@ -160,16 +166,18 @@ try {
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         $process.Kill()
         $process.WaitForExit()
-        throw "QEMU boot timed out after $TimeoutSeconds seconds"
+        $timedOutSerialOutput = $stdoutTask.GetAwaiter().GetResult()
+        $timedOutDiagnosticOutput = $stderrTask.GetAwaiter().GetResult()
+        throw "QEMU boot timed out after $TimeoutSeconds seconds:`n$timedOutSerialOutput`n$timedOutDiagnosticOutput"
     }
     $serialOutput = $stdoutTask.GetAwaiter().GetResult()
     $diagnosticOutput = $stderrTask.GetAwaiter().GetResult()
-    if ($process.ExitCode -ne 33 -or
-        $serialOutput -notmatch "SURA_EXIT_BOOT_SERVICES_OK") {
+    if ($process.ExitCode -ne $ExpectedExitCode -or
+        -not $serialOutput.Contains($ExpectedMarker)) {
         throw "QEMU boot failed (exit=$($process.ExitCode)):`n$serialOutput`n$diagnosticOutput"
     }
 
-    "sura_qemu_boot_gate: PASS (exit=$($process.ExitCode), marker=SURA_EXIT_BOOT_SERVICES_OK)"
+    "sura_qemu_boot_gate: PASS (exit=$($process.ExitCode), marker=$ExpectedMarker)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

@@ -4,10 +4,14 @@ Sura has an experimental freestanding `uefi-x86_64` target. It emits a
 PE32+ EFI application directly from `.sura` source. The output does not embed
 the Sura VM, garbage collector, Windows API, C runtime, assembler, or linker.
 
-This is an early systems subset, not a complete general-purpose OS SDK or an
-operating system. The files in `examples/os` are compiler feature tests. They
-do not form a complete kernel, filesystem, or device-driver stack. Test
-generated images in a virtual machine before using physical hardware.
+`os/sura_os.sura` is a minimal QEMU/OVMF kernel integration image. It records
+the GOP framebuffer, initializes COM1, obtains the UEFI memory map, exits Boot
+Services, draws to framebuffer memory, and executes a physical-page
+allocate/write/read/free self-check before emitting `SURA_OS_KERNEL_READY`.
+It is not a complete general-purpose operating system. The files in
+`examples/os` remain compiler feature tests and do not form a complete
+filesystem, user environment, or device-driver stack. Test generated images
+in a virtual machine before considering physical hardware.
 
 ## Build
 
@@ -45,6 +49,19 @@ also be supplied with `-Qemu` and `-Firmware`. It boots the generated GPT/FAT32
 disk, waits for `SURA_EXIT_BOOT_SERVICES_OK` on COM1, and requires the expected
 `isa-debug-exit` status. A compile-only pass proves image construction and
 marker retention, not that firmware executed the image.
+
+The minimal OS integration has a separate build-and-run gate:
+
+```powershell
+.\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe
+
+# Generate build\os\SuraOS.efi and SuraOS.img without launching QEMU:
+.\tools\sura_os_vm.ps1 -Engine .\SuraLanguage.exe -CompileOnly
+```
+
+The executed form uses QEMU TCG rather than host hardware. Success requires
+process exit code 33 and the post-self-check `SURA_OS_KERNEL_READY` serial
+marker. The gate does not modify host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -247,9 +264,13 @@ end
 
 `interrupt` is for vectors whose hardware frame has no error code.
 `interrupt_error` is for vectors 8, 10-14, 17, 21, 29, and 30. The compiler
-adds a synthetic zero for the first form, saves all general-purpose registers,
-clears the direction flag for calls, aligns the handler stack, restores the
-registers, discards the real or synthetic error code, and emits `iretq`.
+disables maskable interrupts, checks the saved CS privilege level without
+clobbering a general-purpose register, conditionally executes `swapgs` for a
+ring-3 entry, and serializes that decision with `lfence`. It then adds a
+synthetic zero for the first form, saves all general-purpose registers, clears
+the direction flag for calls, and aligns the handler stack. The return path
+restores the registers, discards the real or synthetic error code, conditionally
+returns to the user GS base, and emits `iretq`.
 Interrupt functions require exactly one typed pointer parameter and cannot be
 called as normal functions.
 
@@ -283,10 +304,13 @@ send an APIC end-of-interrupt.
 
 The current wrapper saves integer registers only. Kernel code must add an
 FPU/SIMD state policy before handlers use floating-point or vector operations.
-The generic interrupt wrapper does not execute `swapgs`; a kernel that exposes
-an IDT gate to ring 3 must supply its own privilege-transition entry policy.
-The dedicated fast-syscall helper described below has a separate checked
-`swapgs` and per-CPU stack contract.
+The saved-CS `swapgs` path covers ordinary ring-3 interrupt and exception
+entry. It is not a paranoid NMI/MCE entry path: a non-maskable event can arrive
+after a user-to-kernel transition but before the outer wrapper exchanges GS,
+while its own saved CS reports ring 0. Do not expose those vectors through the
+generic wrapper until the kernel adds a separate NMI-safe entry contract. The
+dedicated fast-syscall helper described below has its own checked `swapgs` and
+per-CPU stack contract.
 
 ## TSS, IST, and extended CPU state
 
@@ -335,9 +359,9 @@ cpu.xrstor(xsave_area, enabled_xcr0_bits)
 Kernel code must check CPUID support, configure CR0/CR4 and XCR0 in the
 architecturally required order, obtain the required XSAVE area size from
 CPUID leaf `0xD`, and provide correctly aligned storage before using these
-instructions. `stac/clac` require SMAP support and `swapgs` is only a
-primitive outside the generated fast-syscall helper; other entry paths must
-still enforce when it is safe to exchange GS bases.
+instructions. `stac/clac` require SMAP support. Direct `cpu.swapgs()` remains a
+raw primitive; code outside compiler-generated interrupt and fast-syscall
+entry must still enforce when it is safe to exchange GS bases.
 
 ## Per-CPU storage and local APIC primitives
 
@@ -601,8 +625,10 @@ recorded.
 
 This subset does not implement `ET_DYN`, ASLR, relocations, an ELF
 interpreter, dynamic linking, TLS, demand paging, copy-on-write, shared memory,
-memory-mapped files, PCID, KPTI, remote TLB shootdown, process fault/exit
-policy, signals, or user-mode preemption.
+memory-mapped files, PCID, KPTI, or remote TLB shootdown. The separate
+`user_process.sura` layer described below adds a bounded single-CPU
+fault/exit/preemption policy; it does not change the ELF loader's format
+limits.
 
 ## Cooperative context primitives
 
@@ -772,15 +798,55 @@ frame with RFLAGS `0x202`, disables maskable interrupts for the final
 transition, executes `swapgs`, and enters with `IRETQ`. Success does not
 return; `IRETQ` restores the requested user IF state.
 
-These operations do not automatically select a process address space, validate
-syscall pointers, copy data across the privilege boundary, mitigate
-speculative `swapgs` paths, save FPU/SIMD state, or define process fault and
-exit policy. `process_memory.sura` provides address-space and checked-copy
-building blocks, but each syscall handler must select and apply them according
-to the current process. The kernel must keep kernel code/data supervisor-only
-and provide the remaining policies.
-`examples/os/user_mode_features.sura` is a compile and machine-code feature
-test; ring-3 execution still needs QEMU or hardware verification.
+Saved ring-3 contexts use a separate 168-byte frame:
+
+- `user.frame_size()` returns 168
+- `user.frame_init(kernel_stack_top, entry, user_rsp, argument, 35, 27)`
+- `user.frame_valid(frame)`
+- `user.resume(frame)`
+
+The first 152 bytes match the normalized interrupt layout. Offsets 152 and 160
+hold the required user RSP and SS. `user.frame_init` aligns the kernel-stack
+top, reserves and clears the frame, places the argument in saved RCX, and
+creates an initial RIP/CS/RFLAGS/RSP/SS state with RFLAGS `0x202`. It requires
+lower-half entry and user-stack addresses and a user stack congruent to 8
+modulo 16. CS and SS are compile-time, nonzero 16-bit selectors with RPL 3.
+
+`user.frame_valid` checks the frame pointer, lower-half RIP and RSP, ring-3
+selectors, required RFLAGS bit 1, and rejects nonzero IOPL, NT, VM, or upper
+RFLAGS bits. It assumes the frame points to trusted mapped kernel memory.
+`user.resume` is accepted only inside an `interrupt` or `interrupt_error`
+function. A valid resume disables maskable interrupts, restores the saved
+integer state, executes `swapgs` and `lfence`, and returns with `iretq`; it does
+not return to the handler.
+
+`stdlib/freestanding/user_process.sura` combines these frames with
+`ProcessAddressSpace` in a fixed-capacity, single-CPU lifecycle:
+
+- checked process creation from an already loaded address space
+- round-robin timer selection and DPL-3 voluntary yield on vector 130
+- CR3 activation, per-process TSS RSP0, and user GS-base switching
+- non-returning process exit
+- ring-3 page-fault termination with saved CR2 and hardware error code
+- exit/fault status lookup and address-space destruction during reap
+- a ring-0 idle frame when no process is runnable
+
+The scheduler requires the standard Sura GDT layout (kernel code 8, user data
+27, user code 35). Its metadata, TSS, code, current and target kernel stacks,
+and all code used during a switch must live in supervisor-only higher-half
+mappings shared by every process PML4. The kernel must install the timer gate,
+the vector-130 DPL-3 gate, and the vector-14 error-code gate. Scheduling is
+suppressed while a runnable process is executing trusted ring-0 code; exit can
+schedule away through a nested ring-0 vector-130 interrupt.
+
+This layer does not validate individual syscall arguments, save FPU/SIMD or
+debug state, block and later resume a fast-syscall frame, provide signals,
+priorities, SMP locking, PCID, KPTI, remote TLB shootdown, or the NMI-safe
+entry path noted above. `process_copy_to_user` and `process_copy_from_user`
+remain the required checked data-transfer primitives. Both
+`examples/os/user_mode_features.sura` and
+`examples/os/user_process_features.sura` are compile and machine-code feature
+tests; no ring-3 process switch has yet been executed in QEMU or on hardware.
 
 ## PCI configuration-space foundation
 
@@ -1009,6 +1075,9 @@ The backend currently lowers fixed-width locals and globals, concrete struct
 layouts, typed pointer fields, functions with up to six exact arguments,
 integer arithmetic and comparisons, `if`, `while`, `repeat`, `break`,
 `continue`, calls, and returns. Nested calls use independent argument storage.
+`and` and `or` short-circuit and return the selected operand, matching hosted
+Sura; pointer guards therefore do not evaluate a guarded field access after
+the left side has already decided the result.
 Strings are supported for firmware console output and static data. Nested
 relative imports are flattened into the same freestanding compilation unit.
 
@@ -1019,10 +1088,10 @@ Still required for a complete self-hosted OS environment:
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
 - synchronized/NUMA physical-memory policy, a complete virtual address-space
   policy, shared mappings, PCID, and remote TLB shootdown
-- SMP run queues, load balancing, user-mode preemption, and executed
-  timer/context-switch verification
+- SMP run queues, load balancing, process priorities/blocking, FPU/SIMD
+  process state, and executed ring-3 timer/context-switch verification
 - dynamic/PIE ELF loading, relocations, TLS, demand paging, copy-on-write,
-  process fault/exit policy, KPTI, and speculative-entry hardening
+  signals, KPTI, NMI-safe entry, and broader speculative-entry hardening
 - PCI/PCIe resource allocation, bridge configuration, MSI/MSI-X, network,
   USB, graphics, audio, and other device-specific drivers
 - partition creation/resizing, extended MBR chains, GPT repair, and a full

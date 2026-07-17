@@ -1,0 +1,79 @@
+# Compile-only ring-3 process lifecycle example.
+#
+# It demonstrates fixed-capacity process metadata, a checked address space,
+# an initial user IRET frame, CR3/TSS/GS switching, timer/yield scheduling,
+# process exit, page-fault termination, and reaping. The block is deliberately
+# not executed as a UEFI application: a real kernel must first establish the
+# shared higher-half kernel mapping and install the documented GDT/IDT.
+
+import "../../stdlib/freestanding/user_process.sura"
+
+processes is static.struct(UserProcess, 4)
+scheduler is static.struct(UserProcessScheduler)
+scheduler_config is static.struct(UserProcessSchedulerConfig)
+process_config is static.struct(UserProcessCreate)
+process_space is static.struct(ProcessAddressSpace)
+space_buffers is static.struct(ProcessSpaceBuffers)
+physical_allocator is static.struct(PhysicalAllocator)
+physical_arena is static.zero(131072, 4096)
+physical_bitmap is static.zero(16, 16)
+owned_pages is static.u64([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8)
+process_mappings is static.struct(ProcessMapping, 16)
+process_stack is static.struct(ProcessStack)
+kernel_stack is static.zero(16384, 16)
+idle_stack is static.zero(16384, 16)
+tss_state is static.zero(104, 16)
+idt is static.zero(4096, 16)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura checked user-process feature test")
+  uefi.newline()
+
+  # Compile the complete lifecycle without trying to enter ring 3 under UEFI.
+  if 0 == 1 then
+    allocator: ptr[PhysicalAllocator] is physical_allocator
+    allocator_ready: bool is pmem_reset(allocator, physical_bitmap, 16, physical_arena, 32)
+    range_added: bool is pmem_release_range(allocator, physical_arena, 32)
+
+    buffers: ptr[ProcessSpaceBuffers] is space_buffers
+    buffers.owned_pages is owned_pages
+    buffers.owned_capacity is 16
+    buffers.mappings is process_mappings
+    buffers.mapping_capacity is 16
+
+    space: ptr[ProcessAddressSpace] is process_space
+    space_ready: bool is process_space_init(space, allocator, paging.root(), buffers)
+    code_ready: bool is process_space_map_page(space, 4194304, false, true)
+    stack_ready: bool is process_space_map_stack(space, 8388608, 2, 1, process_stack)
+
+    config: ptr[UserProcessSchedulerConfig] is scheduler_config
+    config.processes is processes
+    config.capacity is 4
+    config.tss is tss_state
+    config.kernel_root is paging.root()
+    config.kernel_gs_base is 0
+    config.idle_stack_base is idle_stack
+    config.idle_stack_size is 16384
+
+    state: ptr[UserProcessScheduler] is scheduler
+    scheduler_ready: bool is user_process_scheduler_init(state, config)
+
+    creation: ptr[UserProcessCreate] is process_config
+    creation.address_space is space
+    creation.kernel_stack_base is kernel_stack
+    creation.kernel_stack_size is 16384
+    creation.entry is 4194304
+    creation.user_stack_pointer is process_stack.initial_rsp
+    creation.argument is 7
+    creation.user_gs_base is 0
+    process_id: u64 is user_process_create(state, creation)
+
+    # Vector 32 is an example local-APIC timer. Vector 130 is the DPL-3 yield
+    # gate. Vector 14 uses the hardware-error-code ABI.
+    cpu.idt_set_gate(idt, 32, addr_of(user_process_timer_interrupt), 8, 0, 142)
+    cpu.idt_set_gate(idt, 130, addr_of(user_process_yield_interrupt), 8, 0, 238)
+    cpu.idt_set_gate(idt, 14, addr_of(user_process_page_fault_interrupt), 8, 0, 142)
+  end
+
+  return 0
+end

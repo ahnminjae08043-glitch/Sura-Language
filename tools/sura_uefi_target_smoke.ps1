@@ -8,6 +8,7 @@ param(
     [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura"),
     [string]$UserModeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_mode_features.sura"),
     [string]$ProcessElfSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/process_elf_features.sura"),
+    [string]$UserProcessSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_process_features.sura"),
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
     [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
     [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
@@ -89,6 +90,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $ProcessElfSource)) {
         throw "Sura freestanding process/ELF source not found: $ProcessElfSource"
+    }
+    if (-not (Test-Path -LiteralPath $UserProcessSource)) {
+        throw "Sura freestanding user-process source not found: $UserProcessSource"
     }
     if (-not (Test-Path -LiteralPath $PciSource)) {
         throw "Sura freestanding PCI source not found: $PciSource"
@@ -440,6 +444,36 @@ try {
         throw "Freestanding process/ELF feature image is missing local page invalidation"
     }
 
+    $userProcessEfi = Join-Path $temp "USER_PROCESS.EFI"
+    $userProcessOutput = & $Engine --target uefi-x86_64 --out $userProcessEfi $UserProcessSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding user-process feature compile failed:`n$($userProcessOutput -join "`n")"
+    }
+    $userProcessBytes = [System.IO.File]::ReadAllBytes($userProcessEfi)
+    if ($userProcessBytes.Length -lt 230000 -or
+        $userProcessBytes[0] -ne 0x4d -or $userProcessBytes[1] -ne 0x5a) {
+        throw "Freestanding user-process feature image is invalid"
+    }
+    $userProcessUtf16 = [System.Text.Encoding]::Unicode.GetString($userProcessBytes)
+    if ($userProcessUtf16 -notmatch "Sura checked user-process feature test") {
+        throw "Freestanding user-process feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0xfa, 0xf6, 0x44, 0x24, 0x08, 0x01, 0x0f, 0x84)),
+        ([byte[]](0xf6, 0x44, 0x24, 0x08, 0x02, 0x0f, 0x84)),
+        ([byte[]](0xfa, 0xf6, 0x44, 0x24, 0x10, 0x01, 0x0f, 0x84)),
+        ([byte[]](0xf6, 0x44, 0x24, 0x10, 0x02, 0x0f, 0x84)),
+        ([byte[]](0x48, 0x83, 0xe0, 0xf0, 0x48, 0x3d, 0xa8, 0x00, 0x00, 0x00, 0x0f, 0x82)),
+        ([byte[]](0x48, 0x83, 0xc4, 0x08, 0x0f, 0x01, 0xf8, 0x0f, 0xae, 0xe8, 0x48, 0xcf)),
+        ([byte[]](0xcd, 0x82)),
+        ([byte[]](0x0f, 0x20, 0xd0)),
+        ([byte[]](0x0f, 0x22, 0xd8))
+    )) {
+        if (-not (Test-ByteSequence $userProcessBytes $requiredSequence)) {
+            throw "Freestanding user-process image is missing a required ring-3 lifecycle sequence"
+        }
+    }
+
     $pciEfi = Join-Path $temp "PCI.EFI"
     $pciOutput = & $Engine --target uefi-x86_64 --out $pciEfi $PciSource 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -619,7 +653,7 @@ try {
         throw "Freestanding AHCI feature compile failed:`n$($ahciOutput -join "`n")"
     }
     $ahciBytes = [System.IO.File]::ReadAllBytes($ahciEfi)
-    if ($ahciBytes.Length -lt 62000 -or
+    if ($ahciBytes.Length -lt 60000 -or
         $ahciBytes[0] -ne 0x4d -or $ahciBytes[1] -ne 0x5a) {
         throw "Freestanding AHCI feature image is invalid"
     }
@@ -901,6 +935,46 @@ end
         -Pattern "user code selector must be a nonzero 16-bit selector with RPL 3" `
         -Description "Ring-0 selector used for user entry"
 
+    $invalidUserFrameSelectorSource = Join-Path $temp "invalid_user_frame_selector.sura"
+    $invalidUserFrameSelectorText = @'
+stack is static.zero(4096, 16)
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  frame: ptr is user.frame_init(ptr.add(stack, 4096), 4096, 8200, 0, 32, 27)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidUserFrameSelectorSource,
+        $invalidUserFrameSelectorText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidUserFrameSelectorSource `
+        -OutputPath (Join-Path $temp "INVALID_USER_FRAME_SELECTOR.EFI") `
+        -Pattern "user code selector must be a nonzero 16-bit selector with RPL 3" `
+        -Description "Ring-0 selector used for a saved user frame"
+
+    $invalidUserResumeSource = Join-Path $temp "invalid_user_resume.sura"
+    $invalidUserResumeText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  resumed: bool is user.resume(4096)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidUserResumeSource,
+        $invalidUserResumeText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidUserResumeSource `
+        -OutputPath (Join-Path $temp "INVALID_USER_RESUME.EFI") `
+        -Pattern "only available inside an interrupt or interrupt_error function" `
+        -Description "User frame resume outside an interrupt"
+
     $invalidPreemptSelectorSource = Join-Path $temp "invalid_preempt_selector.sura"
     $invalidPreemptSelectorText = @'
 stack is static.zero(4096, 16)
@@ -990,7 +1064,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

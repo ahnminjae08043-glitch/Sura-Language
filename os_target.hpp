@@ -262,6 +262,7 @@ class UefiX64Compiler {
     uint32_t frame_size = 0;
     bool context_helpers_used = false;
     bool preempt_helpers_used = false;
+    bool user_frame_helpers_used = false;
     bool fast_syscall_helper_used = false;
     std::string fast_syscall_handler;
     std::string fast_syscall_bad_return_handler;
@@ -1169,6 +1170,26 @@ class UefiX64Compiler {
             }
             case NK::BIN_OP: {
                 auto* binary = static_cast<const BinOp*>(expr);
+                // Match hosted Sura semantics: logical operators short-circuit
+                // and return the selected operand instead of a normalized bool.
+                // This is also required for checked pointer guards such as
+                // `state == 0 or state.field == 0`.
+                if (binary->op == "and") {
+                    compile_expr(binary->left.get());
+                    x.bytes({0x48, 0x85, 0xc0});
+                    const size_t finished = x.rel32({0x0f, 0x84});
+                    compile_expr(binary->right.get());
+                    x.patch_rel32(finished, x.pos());
+                    return;
+                }
+                if (binary->op == "or") {
+                    compile_expr(binary->left.get());
+                    x.bytes({0x48, 0x85, 0xc0});
+                    const size_t finished = x.rel32({0x0f, 0x85});
+                    compile_expr(binary->right.get());
+                    x.patch_rel32(finished, x.pos());
+                    return;
+                }
                 compile_expr(binary->left.get());
                 // Keep a spill slot plus alignment padding so a function call
                 // inside the right operand still sees the Win64-required
@@ -1180,8 +1201,8 @@ class UefiX64Compiler {
                 if (op == "+") x.bytes({0x48, 0x01, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "-") x.bytes({0x48, 0x29, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "*") x.bytes({0x48, 0x0f, 0xaf, 0xc8, 0x48, 0x89, 0xc8});
-                else if (op == "&" || op == "and") x.bytes({0x48, 0x21, 0xc1, 0x48, 0x89, 0xc8});
-                else if (op == "|" || op == "or") x.bytes({0x48, 0x09, 0xc1, 0x48, 0x89, 0xc8});
+                else if (op == "&") x.bytes({0x48, 0x21, 0xc1, 0x48, 0x89, 0xc8});
+                else if (op == "|") x.bytes({0x48, 0x09, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "^") x.bytes({0x48, 0x31, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "/" || op == "%") {
                     x.bytes({0x49, 0x89, 0xc2, 0x48, 0x89, 0xc8, 0x48, 0x99,
@@ -1427,6 +1448,150 @@ class UefiX64Compiler {
                      0x0f, 0x94, 0xc0,
                      0x0f, 0xb6, 0xc0});
             x.patch_rel32(finished, x.pos());
+            return;
+        }
+
+        if (name == "user_frame_size") {
+            if (!args.empty()) {
+                fail(origin, "user.frame_size() expects no values");
+            }
+            x.mov_rax_imm(168);
+            return;
+        }
+
+        if (name == "user_frame_init") {
+            if (args.size() != 6) {
+                fail(origin, "user.frame_init(kernel_stack_top, entry, "
+                             "user_stack_pointer, argument, code_selector, "
+                             "stack_selector) expects six values");
+            }
+            const uint64_t code_selector =
+                require_constant_integer(args[4].get(), "user code selector");
+            const uint64_t stack_selector =
+                require_constant_integer(args[5].get(), "user stack selector");
+            if (code_selector > 0xffff || (code_selector & 3) != 3 ||
+                code_selector < 3) {
+                fail(args[4].get(), "user code selector must be a nonzero "
+                                    "16-bit selector with RPL 3");
+            }
+            if (stack_selector > 0xffff || (stack_selector & 3) != 3 ||
+                stack_selector < 3) {
+                fail(args[5].get(), "user stack selector must be a nonzero "
+                                    "16-bit selector with RPL 3");
+            }
+            uint64_t constant_top = 0;
+            if (constant_integer(args[0].get(), constant_top) &&
+                constant_top < 168) {
+                fail(args[0].get(), "user frame kernel stack must provide at "
+                                    "least 168 bytes");
+            }
+
+            const size_t argument_base = save_call_args(args);
+            std::vector<size_t> invalid;
+            const auto validate_canonical_rax = [&]() {
+                x.bytes({0x48, 0x89, 0xc2,
+                         0x48, 0xc1, 0xea, 0x2f,
+                         0x48, 0x85, 0xd2});
+                const size_t canonical = x.rel32({0x0f, 0x84});
+                x.bytes({0x48, 0x81, 0xfa,
+                         0xff, 0xff, 0x01, 0x00});
+                invalid.push_back(x.rel32({0x0f, 0x85}));
+                x.patch_rel32(canonical, x.pos());
+            };
+            const auto validate_low_user_address = [&](size_t slot) {
+                    x.mov_rax_rbp(scratch_slots[slot]);
+                    x.bytes({0x48, 0x85, 0xc0});
+                    invalid.push_back(x.rel32({0x0f, 0x84}));
+                    x.bytes({0x48, 0x89, 0xc2,
+                             0x48, 0xc1, 0xea, 0x2f,
+                             0x48, 0x85, 0xd2});
+                    invalid.push_back(x.rel32({0x0f, 0x85}));
+            };
+
+            x.mov_rax_rbp(scratch_slots[argument_base]);
+            x.bytes({0x48, 0x85, 0xc0});
+            invalid.push_back(x.rel32({0x0f, 0x84}));
+            validate_canonical_rax();
+            x.bytes({0x48, 0x83, 0xe0, 0xf0,
+                     0x48, 0x3d, 0xa8, 0x00, 0x00, 0x00});
+            invalid.push_back(x.rel32({0x0f, 0x82}));
+            x.bytes({0x48, 0x2d, 0xa8, 0x00, 0x00, 0x00});
+            validate_canonical_rax();
+            x.bytes({0x49, 0x89, 0xc2}); // r10 = normalized frame
+
+            validate_low_user_address(argument_base + 1);
+            validate_low_user_address(argument_base + 2);
+            x.mov_rax_rbp(scratch_slots[argument_base + 2]);
+            x.bytes({0x48, 0x83, 0xe0, 0x0f,
+                     0x48, 0x83, 0xf8, 0x08});
+            invalid.push_back(x.rel32({0x0f, 0x85}));
+
+            // Clear all 21 qwords before installing the initial user state.
+            x.bytes({0x31, 0xc0});
+            for (uint32_t offset = 0; offset < 168; offset += 8) {
+                if (offset == 0) {
+                    x.bytes({0x49, 0x89, 0x02});
+                } else if (offset <= 0x7f) {
+                    x.bytes({0x49, 0x89, 0x42,
+                             static_cast<uint8_t>(offset)});
+                } else {
+                    x.bytes({0x49, 0x89, 0x82});
+                    x.d(offset);
+                }
+            }
+            x.mov_rax_rbp(scratch_slots[argument_base + 3]);
+            x.bytes({0x49, 0x89, 0x42, 0x68}); // RCX = argument
+            x.mov_rax_rbp(scratch_slots[argument_base + 1]);
+            x.bytes({0x49, 0x89, 0x82, 0x80, 0x00, 0x00, 0x00});
+            x.mov_rax_imm(code_selector);
+            x.bytes({0x49, 0x89, 0x82, 0x88, 0x00, 0x00, 0x00});
+            x.mov_rax_imm(0x202);
+            x.bytes({0x49, 0x89, 0x82, 0x90, 0x00, 0x00, 0x00});
+            x.mov_rax_rbp(scratch_slots[argument_base + 2]);
+            x.bytes({0x49, 0x89, 0x82, 0x98, 0x00, 0x00, 0x00});
+            x.mov_rax_imm(stack_selector);
+            x.bytes({0x49, 0x89, 0x82, 0xa0, 0x00, 0x00, 0x00});
+            x.bytes({0x4c, 0x89, 0xd0}); // return frame
+            const size_t finished = x.rel32({0xe9});
+
+            const size_t invalid_target = x.pos();
+            for (size_t patch : invalid) {
+                x.patch_rel32(patch, invalid_target);
+            }
+            x.bytes({0x31, 0xc0});
+            x.patch_rel32(finished, x.pos());
+            return;
+        }
+
+        if (name == "user_frame_valid") {
+            if (args.size() != 1) {
+                fail(origin, "user.frame_valid(frame) expects one value");
+            }
+            user_frame_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            load_call_args(1, argument_base);
+            const size_t patch = x.rel32({0xe8});
+            call_patches.push_back(
+                {patch, "__sura_user_frame_valid", origin->line});
+            return;
+        }
+
+        if (name == "user_resume") {
+            if (args.size() != 1) {
+                fail(origin, "user.resume(frame) expects one value");
+            }
+            if (!current_function ||
+                (current_function->abi != "interrupt" &&
+                 current_function->abi != "interrupt_error")) {
+                fail(origin, "user.resume() is only available inside an "
+                             "interrupt or interrupt_error function");
+            }
+            user_frame_helpers_used = true;
+            const size_t argument_base = save_call_args(args);
+            load_call_args(1, argument_base);
+            const size_t patch = x.rel32({0xe8});
+            call_patches.push_back(
+                {patch, "__sura_user_resume", origin->line});
             return;
         }
 
@@ -3530,6 +3695,117 @@ class UefiX64Compiler {
         x.bytes({0x31, 0xc0, 0xc3});
     }
 
+    void emit_user_frame_helpers() {
+        if (!user_frame_helpers_used) return;
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_user_frame_valid"] = x.pos();
+        std::vector<size_t> invalid;
+        x.bytes({0x31, 0xc0,                   // false by default
+                 0x48, 0x85, 0xc9});          // frame != 0
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0xf6, 0xc1, 0x07});           // 8-byte aligned
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+
+        const auto validate_canonical_register =
+            [&](std::initializer_list<uint8_t> move_to_rdx) {
+                x.bytes(move_to_rdx);
+                x.bytes({0x48, 0xc1, 0xea, 0x2f,
+                         0x48, 0x85, 0xd2});
+                const size_t canonical = x.rel32({0x0f, 0x84});
+                x.bytes({0x48, 0x81, 0xfa,
+                         0xff, 0xff, 0x01, 0x00});
+                invalid.push_back(x.rel32({0x0f, 0x85}));
+                x.patch_rel32(canonical, x.pos());
+            };
+        validate_canonical_register({0x48, 0x89, 0xca}); // frame pointer
+
+        // User RIP must be a nonzero lower-half canonical address.
+        x.bytes({0x4c, 0x8b, 0x81, 0x80, 0x00, 0x00, 0x00,
+                 0x4d, 0x85, 0xc0});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0x4c, 0x89, 0xc2,
+                 0x48, 0xc1, 0xea, 0x2f,
+                 0x48, 0x85, 0xd2});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+
+        // User CS must be a non-null 16-bit selector with RPL 3.
+        x.bytes({0x48, 0x8b, 0x91, 0x88, 0x00, 0x00, 0x00,
+                 0x49, 0x89, 0xd0,
+                 0x49, 0xc1, 0xe8, 0x10,
+                 0x4d, 0x85, 0xc0});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x89, 0xd0,
+                 0x83, 0xe0, 0x03,
+                 0x83, 0xf8, 0x03});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x81, 0xe2, 0xfc, 0xff, 0x00, 0x00});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+
+        // Reserved bit 1 is required. Reject user IOPL, NT, and VM.
+        x.bytes({0xf6, 0x81, 0x90, 0x00, 0x00, 0x00, 0x02});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0xf7, 0x81, 0x90, 0x00, 0x00, 0x00,
+                 0x00, 0x70, 0x02, 0x00});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x83, 0xb9, 0x94, 0x00, 0x00, 0x00, 0x00});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+
+        // User RSP must be a nonzero lower-half canonical address.
+        x.bytes({0x4c, 0x8b, 0x81, 0x98, 0x00, 0x00, 0x00,
+                 0x4d, 0x85, 0xc0});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+        x.bytes({0x4c, 0x89, 0xc2,
+                 0x48, 0xc1, 0xea, 0x2f,
+                 0x48, 0x85, 0xd2});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+
+        // User SS follows the same selector constraints as CS.
+        x.bytes({0x48, 0x8b, 0x91, 0xa0, 0x00, 0x00, 0x00,
+                 0x49, 0x89, 0xd0,
+                 0x49, 0xc1, 0xe8, 0x10,
+                 0x4d, 0x85, 0xc0});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x89, 0xd0,
+                 0x83, 0xe0, 0x03,
+                 0x83, 0xf8, 0x03});
+        invalid.push_back(x.rel32({0x0f, 0x85}));
+        x.bytes({0x81, 0xe2, 0xfc, 0xff, 0x00, 0x00});
+        invalid.push_back(x.rel32({0x0f, 0x84}));
+
+        x.bytes({0xb8, 0x01, 0x00, 0x00, 0x00});
+        const size_t valid_return = x.rel32({0xe9});
+        const size_t invalid_return = x.pos();
+        for (size_t patch : invalid) {
+            x.patch_rel32(patch, invalid_return);
+        }
+        x.bytes({0x31, 0xc0});
+        x.patch_rel32(valid_return, x.pos());
+        x.b(0xc3);
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_user_resume"] = x.pos();
+        x.bytes({0x49, 0x89, 0xca,             // r10 = frame
+                 0x48, 0x83, 0xec, 0x28});
+        const size_t validation_call = x.rel32({0xe8});
+        call_patches.push_back(
+            {validation_call, "__sura_user_frame_valid", 0});
+        x.bytes({0x48, 0x83, 0xc4, 0x28,
+                 0x85, 0xc0});
+        const size_t invalid_frame = x.rel32({0x0f, 0x84});
+        x.bytes({0xfa,                         // close maskable IRQ window
+                 0x4c, 0x89, 0xd4,             // rsp = saved frame
+                 0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c,
+                 0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58,
+                 0x5f, 0x5e, 0x5d, 0x5b, 0x5a, 0x59, 0x58,
+                 0x48, 0x83, 0xc4, 0x08,       // normalized error code
+                 0x0f, 0x01, 0xf8,             // kernel GS -> user GS
+                 0x0f, 0xae, 0xe8,             // lfence
+                 0x48, 0xcf});                 // iretq
+        x.patch_rel32(invalid_frame, x.pos());
+        x.bytes({0x31, 0xc0, 0xc3});
+    }
+
     void emit_fast_syscall_helper() {
         if (!fast_syscall_helper_used) return;
 
@@ -3677,6 +3953,21 @@ class UefiX64Compiler {
             static_cast<uint32_t>(next_slot * 8 + 32 + 16), 16);
 
         if (is_interrupt) {
+            // Close the maskable interrupt window and switch from the user GS
+            // base only when the hardware frame says the interrupted context
+            // was ring 3. This test does not clobber a saved GP register.
+            x.b(0xfa);
+            const uint8_t cs_offset =
+                function->abi == "interrupt" ? uint8_t{0x08} : uint8_t{0x10};
+            x.bytes({0xf6, 0x44, 0x24, cs_offset, 0x01});
+            const size_t kernel_gs_ready_low = x.rel32({0x0f, 0x84});
+            x.bytes({0xf6, 0x44, 0x24, cs_offset, 0x02});
+            const size_t kernel_gs_ready_high = x.rel32({0x0f, 0x84});
+            x.bytes({0x0f, 0x01, 0xf8});       // user GS -> kernel GS
+            x.patch_rel32(kernel_gs_ready_low, x.pos());
+            x.patch_rel32(kernel_gs_ready_high, x.pos());
+            x.bytes({0x0f, 0xae, 0xe8});       // serialize SWAPGS decision
+
             // Normalize both hardware frame shapes. Exceptions in the
             // `interrupt_error` set already have an error code at [rsp];
             // ordinary interrupts receive a synthetic zero error code.
@@ -3735,8 +4026,17 @@ class UefiX64Compiler {
                 0x41, 0x5b, 0x41, 0x5a, 0x41, 0x59, 0x41, 0x58,
                 0x5f, 0x5e, 0x5d, 0x5b, 0x5a, 0x59, 0x58,
                 0x48, 0x83, 0xc4, 0x08, // discard real/synthetic error code
-                0x48, 0xcf              // iretq
+                0xfa,                   // no IRQ between test and IRETQ
+                0xf6, 0x44, 0x24, 0x08, 0x01
             });
+            const size_t kernel_return_low = x.rel32({0x0f, 0x84});
+            x.bytes({0xf6, 0x44, 0x24, 0x08, 0x02});
+            const size_t kernel_return_high = x.rel32({0x0f, 0x84});
+            x.bytes({0x0f, 0x01, 0xf8});       // kernel GS -> user GS
+            x.patch_rel32(kernel_return_low, x.pos());
+            x.patch_rel32(kernel_return_high, x.pos());
+            x.bytes({0x0f, 0xae, 0xe8,         // serialize SWAPGS decision
+                     0x48, 0xcf});              // iretq
         } else {
             x.bytes({0xc9, 0xc3}); // leave; ret
         }
@@ -3841,6 +4141,7 @@ public:
         if (!root) throw SuraOsCompileError("missing Sura AST for OS target");
         context_helpers_used = false;
         preempt_helpers_used = false;
+        user_frame_helpers_used = false;
         fast_syscall_helper_used = false;
         fast_syscall_handler.clear();
         fast_syscall_bad_return_handler.clear();
@@ -3912,6 +4213,7 @@ public:
         }
         emit_context_helpers();
         emit_preempt_helpers();
+        emit_user_frame_helpers();
         emit_fast_syscall_helper();
 
         for (const CallPatch& patch : call_patches) {

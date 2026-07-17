@@ -533,7 +533,7 @@ const machineFacts = {
     },
   },
   freestanding: {
-    status: "experimental compiler target; not a complete operating system",
+    status: "experimental compiler target with a minimal executed QEMU kernel integration; not a complete operating system",
     target: "uefi-x86_64",
     output: "position-independent PE32+ EFI application",
     hosted_runtime_dependencies: [],
@@ -546,6 +546,7 @@ const machineFacts = {
       namespace: "one shared freestanding global namespace",
     },
     scalar_types: ["i8", "u8", "i16", "u16", "i32", "u32", "i64", "u64", "isize", "usize", "ptr", "ptr[StructName]"],
+    control_flow: ["integer arithmetic and comparisons", "if/while/repeat", "break/continue", "and/or short-circuit with selected-operand result"],
     static_data: ["static.zero", "static.bytes", "static.u8", "static.u16", "static.u32", "static.u64", "static.utf8", "static.utf16", "static.struct"],
     layout: ["typed struct fields", "natural alignment", "struct Name packed", "sizeof", "alignof", "offset_of", "typed pointer field load/store"],
     low_level: ["raw memory 8/16/32/64", "port I/O 8/16/32", "control registers", "MSR", "GDT", "IDT", "INVLPG", "CPUID", "RDTSC/RDTSCP", "XGETBV/XSETBV"],
@@ -613,11 +614,12 @@ const machineFacts = {
       invoke: "syscall.fast(number, argument...)",
       configure: "syscall.fast_configure(dispatch, bad_return, kernel_cs, user_cs, flags_mask, kernel_rsp_offset, user_rsp_offset)",
       entry: "user.enter(entry, stack_pointer, argument, code_selector, stack_selector)",
+      saved_frame: ["user.frame_size()", "user.frame_init(kernel_stack_top, entry, user_rsp, argument, code_selector, stack_selector)", "user.frame_valid(frame)", "user.resume(frame)"],
       address_check: "user.is_address(address)",
       argument_registers: ["RAX number", "RDI", "RSI", "RDX", "R10", "R8"],
-      entry_contract: ["EFER.SCE and STAR/LSTAR/FMASK configuration", "SWAPGS", "GS-relative user-RSP save and kernel-RSP load", "15-register integer frame", "validated lower-half canonical SYSRET RIP/RSP", "sanitized user RFLAGS", "SYSRETQ"],
+      entry_contract: ["EFER.SCE and STAR/LSTAR/FMASK configuration", "conditional saved-CS SWAPGS and LFENCE in compiler interrupt wrappers", "GS-relative user-RSP save and kernel-RSP load", "15-register integer fast frame", "168-byte user IRET frame", "validated lower-half canonical RIP/RSP", "ring-3 CS/SS and sanitized user RFLAGS", "SYSRETQ/IRETQ"],
       example: "examples/os/user_mode_features.sura",
-      limitations: ["entry primitive does not automatically select an address space or validate syscall pointers", "no process exit/fault policy", "no KPTI or speculative SWAPGS hardening", "no FPU/SIMD save", "compile and machine-code verification only"],
+      limitations: ["entry primitive does not automatically select an address space or validate syscall pointers", "generic interrupt wrapper is not an NMI/MCE paranoid-entry implementation", "no KPTI or comprehensive speculative-entry hardening", "no FPU/SIMD save", "compile and machine-code verification only"],
     },
     process_address_space_and_elf64: {
       address_space: ["new lower-half user PML4", "supervisor-only shared upper-half kernel entries", "automatic 4-KiB intermediate-table allocation", "empty-table reclamation", "fixed-capacity ownership and mapping records", "guarded writable NX stacks"],
@@ -628,7 +630,16 @@ const machineFacts = {
       elf_load: ["zeroed pages", "file-byte copy", "p_memsz tail zero-fill", "final per-segment W^X permissions", "mapping rollback on failure"],
       libraries: ["stdlib/freestanding/process_memory.sura", "stdlib/freestanding/elf64.sura"],
       example: "examples/os/process_elf_features.sura",
-      limitations: ["no ET_DYN, ASLR, relocation, interpreter, dynamic linking, or TLS", "no demand paging, copy-on-write, shared memory, or memory-mapped files", "no process fault/exit or signal policy", "no PCID, KPTI, or remote TLB shootdown", "caller serializes mappings and provides identity-accessible physical pages", "compile and image verification only; self-check not executed in the current gate"],
+      limitations: ["no ET_DYN, ASLR, relocation, interpreter, dynamic linking, or TLS", "no demand paging, copy-on-write, shared memory, or memory-mapped files", "no signal policy", "no PCID, KPTI, or remote TLB shootdown", "caller serializes mappings and provides identity-accessible physical pages", "compile and image verification only; self-check not executed in the current gate"],
+    },
+    user_process_lifecycle: {
+      model: "fixed-capacity single-CPU ring-3 round-robin with a ring-0 idle frame",
+      frame: ["168-byte normalized GP/error/RIP/CS/RFLAGS/RSP/SS layout", "checked lower-half RIP/RSP", "RPL-3 CS/SS", "IOPL/NT/VM rejection", "CLI, SWAPGS, LFENCE, IRETQ resume"],
+      switching: ["per-process CR3", "per-process TSS RSP0", "per-process user GS base", "timer preemption", "DPL-3 vector-130 voluntary yield"],
+      lifecycle: ["checked creation from ProcessAddressSpace", "non-returning exit", "ring-3 page-fault termination with CR2/error capture", "state/result/fault lookup", "address-space destruction on reap"],
+      library: "stdlib/freestanding/user_process.sura",
+      example: "examples/os/user_process_features.sura",
+      limitations: ["standard GDT selectors 8/27/35", "shared supervisor-only higher-half kernel code/data/TSS/stacks required", "no preemption while a runnable process executes trusted ring-0 code", "no fast-syscall blocking/resume conversion", "no FPU/SIMD or debug-state save", "no signals, priorities, SMP queues, PCID, KPTI, remote TLB shootdown, or NMI-safe entry", "compile and machine-code verification only; no executed ring-3 switch"],
     },
     pci_configuration_library: {
       mechanism: "legacy PCI configuration mechanism 1 through 0xCF8/0xCFC",
@@ -700,6 +711,14 @@ const machineFacts = {
       success_marker: "SURA_EXIT_BOOT_SERVICES_OK",
       limitations: ["QEMU and OVMF required for executed boot", "compile-only mode is not execution proof", "no ACPI UART discovery", "no interrupt-driven serial I/O"],
     },
+    minimal_os_integration: {
+      source: "os/sura_os.sura",
+      gate: "tools/sura_os_vm.ps1",
+      output: ["build/os/SuraOS.efi", "build/os/SuraOS.img"],
+      executed_path: ["UEFI entry", "GOP framebuffer discovery", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "post-firmware framebuffer write", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "QEMU isa-debug-exit"],
+      execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; no host boot or firmware-variable changes",
+      limitations: ["minimal kernel integration, not a desktop OS", "does not execute every compile-verified freestanding subsystem", "no interactive keyboard shell, user program execution, persistent filesystem mutation, network, USB, audio, or GUI"],
+    },
     acpi_madt: {
       library: "stdlib/freestanding/acpi.sura",
       example: "examples/os/acpi_features.sura",
@@ -728,8 +747,8 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1 -CompileOnly", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
-    not_implemented: ["executed AP-startup coverage and complete per-AP initialization lifecycle", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "ET_DYN/PIE, relocation, interpreter, dynamic-linking, and TLS executable loading", "demand paging, copy-on-write, shared memory, and memory-mapped files", "process fault/exit and signal policy", "KPTI and speculative-entry hardening", "synchronized/NUMA physical-memory policy", "complete virtual address-space policy", "PCID and remote TLB shootdown", "SMP run queues and load balancing", "user-mode preemption", "executed timer/context-switch verification", "PCI/PCIe resource allocation, bridge setup, and MSI/MSI-X", "network, USB, graphics, audio, and other device-specific drivers", "extended MBR chains, GPT repair, and partition create/resize/delete", "filesystem allocation, create, resize, delete, long-name, recovery, and locking support", "ARM64 freestanding backend", "source-level freestanding debugger", "executed CI VM boot coverage"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1", "tools/sura_os_vm.ps1", "os/sura_os.sura", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/user_process_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
+    not_implemented: ["executed AP-startup coverage and complete per-AP initialization lifecycle", "automatic per-CPU TSS/IST allocation", "FPU/SIMD process context-switch policy", "ET_DYN/PIE, relocation, interpreter, dynamic-linking, and TLS executable loading", "demand paging, copy-on-write, shared memory, and memory-mapped files", "signals and fast-syscall blocking/resume conversion", "KPTI, NMI-safe entry, and comprehensive speculative-entry hardening", "synchronized/NUMA physical-memory policy", "complete virtual address-space policy", "PCID and remote TLB shootdown", "SMP run queues and load balancing", "executed ring-3 timer/context-switch verification", "PCI/PCIe resource allocation, bridge setup, and MSI/MSI-X", "network, USB, graphics, audio, and other device-specific drivers", "extended MBR chains, GPT repair, and partition create/resize/delete", "filesystem allocation, create, resize, delete, long-name, recovery, and locking support", "ARM64 freestanding backend", "source-level freestanding debugger", "executed CI VM boot coverage"],
   },
   interop: {
     ffi_abi: "1.2.0",
@@ -1190,7 +1209,7 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
 ));
 
 sections.push(section("freestanding", "OS 개발용 freestanding 기능",
-  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. 현재 결과물은 OS가 아니라 앞으로 커널과 드라이버를 작성하기 위한 컴파일러 기능입니다. 이 기능은 현재 저장소의 개발 소스에 있으며 기존 공개 설치 파일에는 아직 포함되지 않았습니다.") +
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer 기록, COM1 초기화, ExitBootServices, framebuffer write, physical-page allocate/write/read/free self-check를 실행하고 " + code("SURA_OS_KERNEL_READY") + "를 출력하는 최소 kernel integration입니다. 일반 사용자를 위한 완성 OS는 아닙니다.") +
   pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
@@ -1200,7 +1219,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["포인터", code("ptr.add/index/field/align_up/align_down/is_aligned") + "와 width-correct field load/store"],
     ["저수준 CPU", "raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV"],
     ["원자 연산", "8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence"],
-    ["인터럽트 ABI", code("interrupt/interrupt_error") + " 함수, general-purpose register frame, error-code normalization, checked IDT gate, " + code("iretq")],
+    ["인터럽트 ABI", code("interrupt/interrupt_error") + " 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, " + code("iretq")],
     ["CPU별 상태", "TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS"],
     ["SMP primitive", "GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI"],
     ["페이징 primitive", "4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush"],
@@ -1209,19 +1228,21 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["스케줄러 라이브러리", "single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap"],
     ["선점형 스케줄러·타이머", "checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline"],
     ["소프트웨어 인터럽트 syscall", "indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch"],
-    ["Ring 3·빠른 syscall", "checked IRETQ user entry, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS"],
+    ["Ring 3·빠른 syscall", "checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS"],
+    ["사용자 프로세스", "fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap"],
     ["PCI 기반 라이브러리", "legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags"],
     ["블록 장치 기반", "checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot"],
     ["ACPI MADT", "checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides"],
     ["AP 시작", "16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake"],
     ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
+    ["최소 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 framebuffer·memory self-check 뒤 kernel-ready marker 검증"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
-  paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.") +
-  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 16-bit real-mode에서 64-bit Sura entry로 이어지는 AP trampoline과 bounded startup helper, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 자동 intermediate-table 할당·빈 table 회수와 W^X를 적용하는 process address-space, 전체 범위를 먼저 확인하는 user copy, guarded user stack, 검증된 static x86-64 ELF64 ET_EXEC loader, 72-byte cooperative context frame, single-CPU cooperative scheduler, checked ring-0 interrupt-frame scheduler와 APIC/PIT/TSC-deadline timer helper, software-interrupt syscall dispatcher, checked ring-3 IRETQ entry와 SYSCALL/SYSRETQ helper, legacy PCI와 ACPI MCFG 기반 PCIe ECAM configuration libraries, checked block-device ABI와 RAM disk 및 boot-stage UEFI Block I/O adapter, polling AHCI SATA와 NVMe DMA foundations, CRC-checked primary/backup GPT와 primary-MBR discovery, 제한된 FAT32 reader/same-size overwrite writer, fixed-capacity VFS dispatch, checked ACPI MADT discovery와 I/O APIC fixed-route programming, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate가 구현되어 있습니다. 아직 없는 기능은 executed AP-startup coverage와 complete per-AP initialization lifecycle, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, ET_DYN/PIE·relocation·interpreter·dynamic linking·TLS loader, demand paging·copy-on-write·shared memory·memory-mapped file, process fault/exit와 signal policy, SMP run queue와 load balancing, user-mode preemption, executed timer/context-switch verification, PCID·remote TLB shootdown·KPTI와 speculative-entry hardening, PCI/PCIe resource allocation/bridge setup/MSI, network/USB/graphics/audio와 다른 device-specific drivers, extended MBR/GPT repair/partition creation-resizing, filesystem allocation/create/resize/delete/long-name/recovery/locking, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + ", " + code("examples/os/memory_kernel.sura") + ", " + code("examples/os/process_elf_features.sura") + ", " + code("examples/os/scheduler_features.sura") + ", " + code("examples/os/preemptive_timer_features.sura") + ", " + code("examples/os/syscall_features.sura") + ", " + code("examples/os/user_mode_features.sura") + ", " + code("examples/os/pci_features.sura") + ", " + code("examples/os/pcie_features.sura") + ", " + code("examples/os/block_features.sura") + ", " + code("examples/os/ahci_features.sura") + ", " + code("examples/os/nvme_features.sura") + ", " + code("examples/os/gpt_features.sura") + ", " + code("examples/os/partition_features.sura") + ", " + code("examples/os/fat32_features.sura") + ", " + code("examples/os/vfs_features.sura") + ", " + code("examples/os/acpi_features.sura") + ", " + code("examples/os/ioapic_features.sura") + ", " + code("examples/os/ap_startup_features.sura") + ", " + code("examples/os/qemu_boot_gate.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+  paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.") +
+  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 16-bit real-mode에서 64-bit Sura entry로 이어지는 AP trampoline과 bounded startup helper, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 자동 intermediate-table 할당·빈 table 회수와 W^X를 적용하는 process address-space, 전체 범위를 먼저 확인하는 user copy, guarded user stack, 검증된 static x86-64 ELF64 ET_EXEC loader, 72-byte cooperative context frame, single-CPU cooperative scheduler, checked ring-0 interrupt-frame scheduler와 APIC/PIT/TSC-deadline timer helper, software-interrupt syscall dispatcher, checked ring-3 IRETQ entry와 168-byte user frame, SYSCALL/SYSRETQ helper, per-process CR3·TSS RSP0·user GS를 전환하고 timer/yield·exit·page-fault termination·reap을 처리하는 fixed-capacity single-CPU user-process scheduler, legacy PCI와 ACPI MCFG 기반 PCIe ECAM configuration libraries, checked block-device ABI와 RAM disk 및 boot-stage UEFI Block I/O adapter, polling AHCI SATA와 NVMe DMA foundations, CRC-checked primary/backup GPT와 primary-MBR discovery, 제한된 FAT32 reader/same-size overwrite writer, fixed-capacity VFS dispatch, checked ACPI MADT discovery와 I/O APIC fixed-route programming, 16550 serial diagnostics, GPT/FAT32 UEFI boot-disk builder와 QEMU/OVMF gate가 구현되어 있습니다. 아직 없는 기능은 executed AP-startup coverage와 complete per-AP initialization lifecycle, automatic per-CPU TSS/IST 관리, FPU/SIMD process context-switch 정책, ET_DYN/PIE·relocation·interpreter·dynamic linking·TLS loader, demand paging·copy-on-write·shared memory·memory-mapped file, signal과 fast-syscall blocking/resume 정책, SMP run queue와 load balancing, executed ring-3 timer/context-switch verification, PCID·remote TLB shootdown·KPTI·NMI-safe entry와 broader speculative-entry hardening, PCI/PCIe resource allocation/bridge setup/MSI, network/USB/graphics/audio와 다른 device-specific drivers, extended MBR/GPT repair/partition creation-resizing, filesystem allocation/create/resize/delete/long-name/recovery/locking, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + ", " + code("examples/os/memory_kernel.sura") + ", " + code("examples/os/process_elf_features.sura") + ", " + code("examples/os/user_process_features.sura") + ", " + code("examples/os/scheduler_features.sura") + ", " + code("examples/os/preemptive_timer_features.sura") + ", " + code("examples/os/syscall_features.sura") + ", " + code("examples/os/user_mode_features.sura") + ", " + code("examples/os/pci_features.sura") + ", " + code("examples/os/pcie_features.sura") + ", " + code("examples/os/block_features.sura") + ", " + code("examples/os/ahci_features.sura") + ", " + code("examples/os/nvme_features.sura") + ", " + code("examples/os/gpt_features.sura") + ", " + code("examples/os/partition_features.sura") + ", " + code("examples/os/fat32_features.sura") + ", " + code("examples/os/vfs_features.sura") + ", " + code("examples/os/acpi_features.sura") + ", " + code("examples/os/ioapic_features.sura") + ", " + code("examples/os/ap_startup_features.sura") + ", " + code("examples/os/qemu_boot_gate.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

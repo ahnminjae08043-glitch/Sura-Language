@@ -205,6 +205,20 @@ int main(int argc, char** argv) {
             "preempt_resumed",
             method_call("preempt", "resume", std::move(args)), 1));
     }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("frame", 1));
+        irq_body->body.push_back(std::make_unique<AssignStmt>(
+            "user_frame_valid",
+            method_call("user", "frame_valid", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("frame", 1));
+        irq_body->body.push_back(std::make_unique<AssignStmt>(
+            "user_resumed",
+            method_call("user", "resume", std::move(args)), 1));
+    }
     irq_body->body.push_back(
         std::make_unique<ReturnStmt>(nullptr, 1));
     auto irq = std::make_unique<FuncDef>(
@@ -227,6 +241,18 @@ int main(int argc, char** argv) {
     auto entry_body = std::make_unique<SuraBlock>(1);
     entry_body->body.push_back(std::make_unique<GlobalDeclStmt>(
         std::vector<std::string>{"boot_counter"}, 1));
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "short_circuit_and",
+        std::make_unique<BinOp>(
+            "and", std::make_unique<NumLit>(0, 1),
+            std::make_unique<NumLit>(static_cast<double>(0x11223344), 1), 1),
+        1));
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "short_circuit_or",
+        std::make_unique<BinOp>(
+            "or", std::make_unique<NumLit>(7, 1),
+            std::make_unique<NumLit>(static_cast<double>(0x55667788), 1), 1),
+        1));
     entry_body->body.push_back(std::make_unique<InPlaceStmt>(
         "boot_counter", "+", std::make_unique<NumLit>(1, 1), 1));
     auto header = std::make_unique<AssignStmt>(
@@ -612,6 +638,29 @@ int main(int argc, char** argv) {
             "user_address_valid",
             method_call("user", "is_address", std::move(args)), 1));
     }
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "user_frame_bytes", method_call("user", "frame_size"), 1));
+    {
+        std::vector<ExprPtr> kernel_stack_args;
+        kernel_stack_args.push_back(std::make_unique<Ident>("kernel_stack", 1));
+        kernel_stack_args.push_back(std::make_unique<NumLit>(4096, 1));
+        auto task_address = std::make_unique<CallExpr>("addr_of", 1);
+        task_address->args.push_back(
+            std::make_unique<Ident>("task_entry", 1));
+        std::vector<ExprPtr> user_stack_args;
+        user_stack_args.push_back(std::make_unique<Ident>("task_stack", 1));
+        user_stack_args.push_back(std::make_unique<NumLit>(4088, 1));
+        std::vector<ExprPtr> args;
+        args.push_back(method_call("ptr", "add", std::move(kernel_stack_args)));
+        args.push_back(std::move(task_address));
+        args.push_back(method_call("ptr", "add", std::move(user_stack_args)));
+        args.push_back(std::make_unique<NumLit>(456, 1));
+        args.push_back(std::make_unique<NumLit>(35, 1));
+        args.push_back(std::make_unique<NumLit>(27, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "initial_user_frame",
+            method_call("user", "frame_init", std::move(args)), 1));
+    }
     {
         auto task_address = std::make_unique<CallExpr>("addr_of", 1);
         task_address->args.push_back(
@@ -647,10 +696,31 @@ int main(int argc, char** argv) {
     assert(result.data_bytes >= 8192);
     assert(result.image.size() >= 10240);
     assert(result.image[0] == 'M' && result.image[1] == 'Z');
+    assert(contains_bytes(result.image,
+                          {0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                           0x00, 0x00, 0x48, 0x85, 0xc0, 0x0f, 0x84,
+                           0x0a, 0x00, 0x00, 0x00, 0x48, 0xb8,
+                           0x44, 0x33, 0x22, 0x11})); // short-circuit and
+    assert(contains_bytes(result.image,
+                          {0x48, 0xb8, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00,
+                           0x00, 0x00, 0x48, 0x85, 0xc0, 0x0f, 0x85,
+                           0x0a, 0x00, 0x00, 0x00, 0x48, 0xb8,
+                           0x88, 0x77, 0x66, 0x55})); // short-circuit or
     assert(contains_bytes(result.image, {0x0f, 0xa2})); // cpuid
     assert(contains_bytes(result.image,
                           {0xf0, 0x48, 0x0f, 0xc1, 0x01})); // lock xadd
-    assert(count_bytes(result.image, {0x48, 0xcf}) >= 2); // iretq
+    assert(count_bytes(result.image, {0x48, 0xcf}) >= 3); // iretq
+    assert(contains_bytes(result.image,
+                          {0xfa, 0xf6, 0x44, 0x24, 0x08, 0x01,
+                           0x0f, 0x84})); // conditional SWAPGS, no-error entry
+    assert(contains_bytes(result.image,
+                          {0xfa, 0xf6, 0x44, 0x24, 0x10, 0x01,
+                           0x0f, 0x84})); // conditional SWAPGS, error entry
+    assert(contains_bytes(result.image,
+                          {0xf6, 0x44, 0x24, 0x08, 0x02,
+                           0x0f, 0x84})); // require both RPL bits
+    assert(count_bytes(result.image,
+                       {0x0f, 0xae, 0xe8}) >= 3); // serialized SWAPGS paths
     assert(contains_bytes(result.image,
                           {0x66, 0x45, 0x89, 0x1a})); // IDT offset low
     assert(contains_bytes(result.image,
@@ -703,8 +773,22 @@ int main(int argc, char** argv) {
                           {0x48, 0x83, 0xe0, 0xf0,
                            0x48, 0x2d, 0x98, 0x00, 0x00, 0x00})); // preempt frame
     assert(contains_bytes(result.image,
+                          {0x48, 0x83, 0xe0, 0xf0,
+                           0x48, 0x3d, 0xa8, 0x00, 0x00, 0x00,
+                           0x0f, 0x82})); // checked 168-byte user frame
+    assert(contains_bytes(result.image,
+                          {0x49, 0x89, 0x82, 0x98, 0x00, 0x00, 0x00})); // user RSP
+    assert(contains_bytes(result.image,
+                          {0xf7, 0x81, 0x90, 0x00, 0x00, 0x00,
+                           0x00, 0x70, 0x02, 0x00})); // reject IOPL/NT/VM
+    assert(contains_bytes(result.image,
                           {0xfa, 0x4c, 0x89, 0xd4,
                            0x41, 0x5f, 0x41, 0x5e})); // checked frame resume
+    assert(contains_bytes(result.image,
+                          {0x48, 0x83, 0xc4, 0x08,
+                           0x0f, 0x01, 0xf8,
+                           0x0f, 0xae, 0xe8,
+                           0x48, 0xcf})); // checked ring-3 resume
     assert(contains_bytes(result.image,
                           {0x41, 0xff, 0xd3})); // indirect Win64 call
     assert(contains_bytes(result.image,
