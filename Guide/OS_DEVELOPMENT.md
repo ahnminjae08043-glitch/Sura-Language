@@ -291,6 +291,54 @@ CPUID leaf `0xD`, and provide correctly aligned storage before using these
 instructions. `stac/clac` require SMAP support and `swapgs` is only a
 primitive; entry code must still enforce when it is safe to exchange GS bases.
 
+## Per-CPU storage and local APIC primitives
+
+GS-relative fixed-width access is available for CPU-local state:
+
+```sura
+percpu.set_base(cpu_state)
+percpu.set_kernel_base(cpu_state)
+percpu.write64(0, cpu_index)
+index: u64 is percpu.read64(0)
+field_address: ptr is percpu.address(0)
+```
+
+- `percpu.base()`, `percpu.kernel_base()`
+- `percpu.set_base(address)`, `percpu.set_kernel_base(address)`
+- `percpu.address(byte_offset)`
+- `percpu.read8/16/32/64(byte_offset)`
+- `percpu.write8/16/32/64(byte_offset, value)`
+
+The base helpers access `IA32_GS_BASE` and `IA32_KERNEL_GS_BASE`. GS-relative
+reads and writes do not perform bounds checks; the kernel owns each allocation
+and must keep it alive while that CPU can access it. These are primitives for
+a later per-CPU allocator, not an allocator themselves.
+
+The `apic` intrinsics select xAPIC MMIO or x2APIC MSRs from
+`IA32_APIC_BASE` at run time:
+
+- `apic.mode()` returns 0 for disabled, 1 for xAPIC, or 2 for x2APIC
+- `apic.base()`, `apic.current_id()`
+- `apic.read(offset)`, `apic.write(offset, value)`
+- `apic.icr_busy()`, `apic.eoi()`
+- `apic.send_ipi(destination, command)`
+- `apic.send_init(destination)`
+- `apic.send_startup(destination, trampoline_physical_address)`
+
+APIC register offsets are compile-time integers from `0x20` through `0x3F0`
+and must be 16-byte aligned. `send_startup` derives the SIPI vector from a
+4-KiB-aligned physical address below 1 MiB; constant addresses are checked by
+the compiler. A run-time address remains the caller's responsibility.
+xAPIC destinations are limited to the low 8-bit APIC ID, while x2APIC accepts
+a 32-bit destination.
+
+These helpers send commands but do not invent the required timing or state
+machine. Startup code must discover enabled processors from ACPI MADT, exclude
+the BSP, wait for `icr_busy()` to clear, send INIT, observe the architecture's
+delay requirements, send SIPI as required, and wait on an atomic per-AP ready
+flag. A real-mode-to-long-mode trampoline and AP entry contract are still
+required before `send_startup` can start Sura code.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -301,7 +349,7 @@ Strings are supported for firmware console output and static data.
 
 Still required for a complete self-hosted OS environment:
 
-- multiprocessor discovery and application-processor startup
+- ACPI MADT processor discovery, AP trampoline, and complete AP startup
 - automatic per-CPU TSS/IST allocation and FPU/SIMD context-switch policy
 - user/kernel entry validation and `swapgs` policy
 - page-table, allocator, scheduler, syscall, and driver libraries

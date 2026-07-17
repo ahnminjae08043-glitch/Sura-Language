@@ -45,6 +45,7 @@ tss_state is static.zero(104, 16)
 kernel_stack is static.zero(4096, 16)
 fault_stack is static.zero(4096, 16)
 fpu_state is static.zero(4096, 64)
+percpu_state is static.zero(256, 64)
 interrupt_stub is static.bytes([250, 244, 235, 252], 16)
 driver_name is static.utf8("sura-device")
 
@@ -111,6 +112,21 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     cpu.clac()
     cpu.swapgs()
     cpu.wbinvd()
+
+    percpu.set_base(percpu_state)
+    percpu.set_kernel_base(percpu_state)
+    percpu.write64(0, apic.current_id())
+    current_cpu: u64 is percpu.read64(0)
+    current_cpu_address: ptr is percpu.address(0)
+    apic_mode: u64 is apic.mode()
+    apic_base: ptr is apic.base()
+    apic_id_register: u64 is apic.read(32)
+    icr_pending: bool is apic.icr_busy()
+    apic.write(240, 511)
+    apic.eoi()
+    apic.send_ipi(1, 64)
+    apic.send_init(1)
+    apic.send_startup(1, 32768)
   end
 
   return 0

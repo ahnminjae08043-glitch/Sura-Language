@@ -106,6 +106,7 @@ int main(int argc, char** argv) {
     add_static_zero("tss_state", 104, 16);
     add_static_zero("kernel_stack", 4096, 16);
     add_static_zero("fpu_state", 4096, 64);
+    add_static_zero("percpu_state", 256, 64);
 
     auto helper_body = std::make_unique<SuraBlock>(1);
     {
@@ -306,6 +307,70 @@ int main(int argc, char** argv) {
     add_cpu_statement("clac");
     add_cpu_statement("swapgs");
     add_cpu_statement("wbinvd");
+    const auto add_module_statement =
+        [&](const std::string& module, const std::string& method,
+            std::vector<ExprPtr> args = {}) {
+            entry_body->body.push_back(std::make_unique<ExprStmt>(
+                method_call(module, method, std::move(args)), 1));
+        };
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("percpu_state", 1));
+        add_module_statement("percpu", "set_base", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<Ident>("percpu_state", 1));
+        add_module_statement("percpu", "set_kernel_base", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        args.push_back(method_call("apic", "current_id"));
+        add_module_statement("percpu", "write64", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(0, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "percpu_value", method_call("percpu", "read64", std::move(args)), 1));
+    }
+    for (const std::string& method :
+         std::vector<std::string>{"mode", "base", "current_id", "icr_busy"}) {
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "apic_" + method, method_call("apic", method), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(32, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "apic_id_register",
+            method_call("apic", "read", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(240, 1));
+        args.push_back(std::make_unique<NumLit>(511, 1));
+        add_module_statement("apic", "write", std::move(args));
+    }
+    add_module_statement("apic", "eoi");
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        args.push_back(std::make_unique<NumLit>(64, 1));
+        add_module_statement("apic", "send_ipi", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        add_module_statement("apic", "send_init", std::move(args));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(1, 1));
+        args.push_back(std::make_unique<NumLit>(32768, 1));
+        add_module_statement("apic", "send_startup", std::move(args));
+    }
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -343,6 +408,15 @@ int main(int argc, char** argv) {
     assert(contains_bytes(result.image, {0x48, 0x0f, 0xae, 0x00})); // fxsave64
     assert(contains_bytes(result.image, {0x49, 0x0f, 0xae, 0x23})); // xsave64
     assert(contains_bytes(result.image, {0x0f, 0x01, 0xd1})); // xsetbv
+    assert(contains_bytes(result.image, {0x65, 0x48, 0x8b, 0x00})); // GS read
+    assert(contains_bytes(result.image, {0x65, 0x48, 0x89, 0x01})); // GS write
+    assert(contains_bytes(result.image,
+                          {0xb9, 0x30, 0x08, 0x00, 0x00, 0x0f, 0x30})); // x2 ICR
+    assert(contains_bytes(result.image,
+                          {0x41, 0x89, 0x82, 0x10, 0x03, 0x00, 0x00})); // xAPIC ICR high
+    assert(contains_bytes(result.image,
+                          {0x48, 0xc1, 0xe8, 0x0c, 0x25, 0xff, 0x00,
+                           0x00, 0x00, 0x0d, 0x00, 0x06, 0x00, 0x00})); // SIPI vector
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');

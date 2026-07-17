@@ -1596,6 +1596,114 @@ class UefiX64Compiler {
             return;
         }
 
+        if (name == "percpu_base" ||
+            name == "percpu_kernel_base") {
+            if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
+            x.b(0xb9);
+            x.d(name == "percpu_base" ? 0xc0000101U : 0xc0000102U);
+            x.bytes({0x0f, 0x32, 0x48, 0xc1, 0xe2, 0x20,
+                     0x48, 0x09, 0xd0});
+            return;
+        }
+        if (name == "percpu_address") {
+            if (args.size() != 1) {
+                fail(origin, "percpu.address(offset) expects one value");
+            }
+            const size_t temporary = reserve_temporaries(1, origin);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            x.b(0xb9);
+            x.d(0xc0000101U);
+            x.bytes({0x0f, 0x32, 0x48, 0xc1, 0xe2, 0x20,
+                     0x48, 0x09, 0xd0});
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            x.bytes({0x48, 0x01, 0xc8});
+            release_temporaries(1);
+            return;
+        }
+        const auto percpu_read = [&](unsigned width) {
+            if (args.size() != 1) {
+                fail(origin, "percpu read expects one byte offset");
+            }
+            compile_expr(args[0].get());
+            if (width == 8) x.bytes({0x65, 0x0f, 0xb6, 0x00});
+            else if (width == 16) x.bytes({0x65, 0x0f, 0xb7, 0x00});
+            else if (width == 32) x.bytes({0x65, 0x8b, 0x00});
+            else x.bytes({0x65, 0x48, 0x8b, 0x00});
+        };
+        if (name == "percpu_read8") { percpu_read(8); return; }
+        if (name == "percpu_read16") { percpu_read(16); return; }
+        if (name == "percpu_read32") { percpu_read(32); return; }
+        if (name == "percpu_read64") { percpu_read(64); return; }
+
+        if (name == "apic_mode") {
+            if (!args.empty()) fail(origin, "apic.mode() takes no arguments");
+            x.bytes({0xb9, 0x1b, 0x00, 0x00, 0x00, 0x0f, 0x32,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0,
+                     0x48, 0xc1, 0xe8, 0x0a, 0x48, 0x83, 0xe0, 0x03,
+                     0x48, 0x85, 0xc0});
+            const size_t disabled = x.rel32({0x0f, 0x84});
+            x.bytes({0x48, 0xff, 0xc8}); // enabled: 2 -> xAPIC 1, 3 -> x2APIC 2
+            x.patch_rel32(disabled, x.pos());
+            return;
+        }
+        if (name == "apic_base") {
+            if (!args.empty()) fail(origin, "apic.base() takes no arguments");
+            x.bytes({0xb9, 0x1b, 0x00, 0x00, 0x00, 0x0f, 0x32,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0,
+                     0x48, 0x25, 0x00, 0xf0, 0xff, 0xff});
+            return;
+        }
+        if (name == "apic_read" || name == "apic_current_id" ||
+            name == "apic_icr_busy") {
+            uint64_t offset = 0;
+            if (name == "apic_read") {
+                if (args.size() != 1) {
+                    fail(origin, "apic.read(register_offset) expects one value");
+                }
+                offset = require_constant_integer(
+                    args[0].get(), "APIC register offset");
+            } else {
+                if (!args.empty()) fail(origin, raw_name + "() takes no arguments");
+                offset = name == "apic_current_id" ? 0x20 : 0x300;
+            }
+            if (offset < 0x20 || offset > 0x3f0 || (offset & 0x0f)) {
+                fail(origin, "APIC register offset must be 0x20..0x3f0 "
+                             "and 16-byte aligned");
+            }
+
+            const size_t temporary = reserve_temporaries(1, origin);
+            x.bytes({0xb9, 0x1b, 0x00, 0x00, 0x00, 0x0f, 0x32,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            x.bytes({0x48, 0xa9, 0x00, 0x04, 0x00, 0x00});
+            const size_t use_xapic = x.rel32({0x0f, 0x84});
+
+            x.b(0xb9);
+            x.d(static_cast<uint32_t>(0x800 + offset / 16));
+            x.bytes({0x0f, 0x32, 0x48, 0xc1, 0xe2, 0x20,
+                     0x48, 0x09, 0xd0});
+            if (name == "apic_icr_busy") {
+                x.bytes({0x48, 0xc1, 0xe8, 0x0c, 0x48, 0x83, 0xe0, 0x01});
+            }
+            const size_t finished = x.rel32({0xe9});
+
+            x.patch_rel32(use_xapic, x.pos());
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x48, 0x25, 0x00, 0xf0, 0xff, 0xff,
+                     0x48, 0x05});
+            x.d(static_cast<uint32_t>(offset));
+            x.bytes({0x8b, 0x00});
+            if (name == "apic_current_id") {
+                x.bytes({0xc1, 0xe8, 0x18});
+            } else if (name == "apic_icr_busy") {
+                x.bytes({0xc1, 0xe8, 0x0c, 0x83, 0xe0, 0x01});
+            }
+            x.patch_rel32(finished, x.pos());
+            release_temporaries(1);
+            return;
+        }
+
         if (name == "uefi_get_memory_map") {
             compile_uefi_service(origin, args, 96, 56, 5, 5);
             return;
@@ -1866,6 +1974,149 @@ class UefiX64Compiler {
         if (name == "io_out8") { port_write(8); return true; }
         if (name == "io_out16") { port_write(16); return true; }
         if (name == "io_out32") { port_write(32); return true; }
+
+        if (name == "percpu_set_base" ||
+            name == "percpu_set_kernel_base") {
+            if (args.size() != 1) {
+                fail(expr, raw_name + "(address) expects one value");
+            }
+            compile_expr(args[0].get());
+            x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
+            x.b(0xb9);
+            x.d(name == "percpu_set_base" ? 0xc0000101U : 0xc0000102U);
+            x.bytes({0x0f, 0x30});
+            return true;
+        }
+        const auto percpu_write = [&](unsigned width) {
+            if (args.size() != 2) {
+                fail(expr, "percpu write expects byte offset and value");
+            }
+            const size_t temporary = reserve_temporaries(1, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            compile_expr(args[1].get());
+            x.mov_reg_rbp(1, scratch_slots[temporary]);
+            if (width == 8) x.bytes({0x65, 0x88, 0x01});
+            else if (width == 16) x.bytes({0x65, 0x66, 0x89, 0x01});
+            else if (width == 32) x.bytes({0x65, 0x89, 0x01});
+            else x.bytes({0x65, 0x48, 0x89, 0x01});
+            release_temporaries(1);
+        };
+        if (name == "percpu_write8") { percpu_write(8); return true; }
+        if (name == "percpu_write16") { percpu_write(16); return true; }
+        if (name == "percpu_write32") { percpu_write(32); return true; }
+        if (name == "percpu_write64") { percpu_write(64); return true; }
+
+        if (name == "apic_write" || name == "apic_eoi") {
+            uint64_t offset = 0xb0;
+            const Expr* value = nullptr;
+            if (name == "apic_write") {
+                if (args.size() != 2) {
+                    fail(expr, "apic.write(register_offset, value) expects "
+                               "two values");
+                }
+                offset = require_constant_integer(
+                    args[0].get(), "APIC register offset");
+                value = args[1].get();
+            } else if (!args.empty()) {
+                fail(expr, "apic.eoi() takes no arguments");
+            }
+            if (offset < 0x20 || offset > 0x3f0 || (offset & 0x0f)) {
+                fail(expr, "APIC register offset must be 0x20..0x3f0 "
+                           "and 16-byte aligned");
+            }
+
+            const size_t temporary = reserve_temporaries(2, expr);
+            if (value) compile_expr(value);
+            else x.bytes({0x31, 0xc0});
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            x.bytes({0xb9, 0x1b, 0x00, 0x00, 0x00, 0x0f, 0x32,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            x.bytes({0x48, 0xa9, 0x00, 0x04, 0x00, 0x00});
+            const size_t use_xapic = x.rel32({0x0f, 0x84});
+
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x48, 0x89, 0xc2, 0x48, 0xc1, 0xea, 0x20});
+            x.b(0xb9);
+            x.d(static_cast<uint32_t>(0x800 + offset / 16));
+            x.bytes({0x0f, 0x30});
+            const size_t finished = x.rel32({0xe9});
+
+            x.patch_rel32(use_xapic, x.pos());
+            x.mov_reg_rbp(10, scratch_slots[temporary + 1]);
+            x.bytes({0x49, 0x81, 0xe2, 0x00, 0xf0, 0xff, 0xff});
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x41, 0x89, 0x82});
+            x.d(static_cast<uint32_t>(offset));
+            x.patch_rel32(finished, x.pos());
+            release_temporaries(2);
+            return true;
+        }
+
+        if (name == "apic_send_ipi" || name == "apic_send_init" ||
+            name == "apic_send_startup") {
+            const size_t expected_args =
+                name == "apic_send_init" ? 1 : 2;
+            if (args.size() != expected_args) {
+                fail(expr, raw_name +
+                           (expected_args == 1
+                                ? "(destination) expects one value"
+                                : "(destination, value) expects two values"));
+            }
+            uint64_t destination_constant = 0;
+            if (constant_integer(args[0].get(), destination_constant) &&
+                destination_constant > 0xffffffffULL) {
+                fail(args[0].get(), "APIC destination must fit 32 bits");
+            }
+            if (name == "apic_send_startup") {
+                uint64_t address = 0;
+                if (constant_integer(args[1].get(), address) &&
+                    ((address & 0xfff) || address < 0x1000 ||
+                     address > 0xff000)) {
+                    fail(args[1].get(), "SIPI trampoline address must be "
+                                        "4 KiB aligned in 0x1000..0xff000");
+                }
+            }
+
+            const size_t temporary = reserve_temporaries(3, expr);
+            compile_expr(args[0].get());
+            x.mov_rbp_rax(scratch_slots[temporary]);
+            if (name == "apic_send_ipi") {
+                compile_expr(args[1].get());
+            } else if (name == "apic_send_init") {
+                x.mov_rax_imm(0xc500);
+            } else {
+                compile_expr(args[1].get());
+                x.bytes({0x48, 0xc1, 0xe8, 0x0c,
+                         0x25, 0xff, 0x00, 0x00, 0x00,
+                         0x0d, 0x00, 0x06, 0x00, 0x00});
+            }
+            x.mov_rbp_rax(scratch_slots[temporary + 1]);
+            x.bytes({0xb9, 0x1b, 0x00, 0x00, 0x00, 0x0f, 0x32,
+                     0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            x.mov_rbp_rax(scratch_slots[temporary + 2]);
+            x.bytes({0x48, 0xa9, 0x00, 0x04, 0x00, 0x00});
+            const size_t use_xapic = x.rel32({0x0f, 0x84});
+
+            x.mov_rax_rbp(scratch_slots[temporary + 1]);
+            x.mov_reg_rbp(2, scratch_slots[temporary]);
+            x.bytes({0xb9, 0x30, 0x08, 0x00, 0x00, 0x0f, 0x30});
+            const size_t finished = x.rel32({0xe9});
+
+            x.patch_rel32(use_xapic, x.pos());
+            x.mov_reg_rbp(10, scratch_slots[temporary + 2]);
+            x.bytes({0x49, 0x81, 0xe2, 0x00, 0xf0, 0xff, 0xff});
+            x.mov_rax_rbp(scratch_slots[temporary]);
+            x.bytes({0x25, 0xff, 0x00, 0x00, 0x00,
+                     0xc1, 0xe0, 0x18,
+                     0x41, 0x89, 0x82, 0x10, 0x03, 0x00, 0x00});
+            x.mov_rax_rbp(scratch_slots[temporary + 1]);
+            x.bytes({0x41, 0x89, 0x82, 0x00, 0x03, 0x00, 0x00});
+            x.patch_rel32(finished, x.pos());
+            release_temporaries(3);
+            return true;
+        }
 
         if (name == "cpu_gdt_set_tss") {
             if (args.size() != 4) {

@@ -140,6 +140,15 @@ try {
     if (-not (Test-ByteSequence $featureBytes ([byte[]](0x49, 0x0f, 0xae, 0x23)))) {
         throw "Freestanding feature image is missing XSAVE64"
     }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x65, 0x48, 0x8b, 0x00)))) {
+        throw "Freestanding feature image is missing GS-relative per-CPU read"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0xb9, 0x30, 0x08, 0x00, 0x00, 0x0f, 0x30)))) {
+        throw "Freestanding feature image is missing x2APIC ICR write"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x41, 0x89, 0x82, 0x10, 0x03, 0x00, 0x00)))) {
+        throw "Freestanding feature image is missing xAPIC ICR-high write"
+    }
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
@@ -191,6 +200,25 @@ end
         -OutputPath (Join-Path $temp "INVALID_TSS.EFI") `
         -Pattern "exceeds static GDT" `
         -Description "Out-of-bounds static TSS descriptor"
+
+    $invalidSipiSource = Join-Path $temp "invalid_sipi_address.sura"
+    $invalidSipiText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  apic.send_startup(1, 12345)
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidSipiSource,
+        $invalidSipiText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidSipiSource `
+        -OutputPath (Join-Path $temp "INVALID_SIPI.EFI") `
+        -Pattern "4 KiB aligned" `
+        -Description "Misaligned constant SIPI trampoline address"
 
     "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length) bytes)"
 }
