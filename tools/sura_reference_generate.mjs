@@ -718,7 +718,7 @@ const machineFacts = {
       executed_path: ["UEFI entry", "GOP framebuffer discovery", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "post-firmware framebuffer write", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
       shell_commands: ["help", "status", "mem", "about", "shutdown"],
       interactive_command: ".\\tools\\sura_os_vm.ps1 -Engine .\\SuraLanguage.exe -Interactive",
-      execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; no host boot or firmware-variable changes",
+      execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes",
       limitations: ["minimal kernel integration, not a desktop OS", "COM1 terminal shell rather than a PS/2/USB keyboard or graphical console", "does not execute every compile-verified freestanding subsystem", "no user program execution, persistent filesystem mutation, network, USB, audio, or GUI"],
     },
     acpi_madt: {

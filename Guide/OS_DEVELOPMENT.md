@@ -65,8 +65,10 @@ The minimal OS integration has a separate build-and-run gate:
 The executed form uses QEMU TCG rather than host hardware. Success requires
 the post-self-check shell to answer `status` and `mem`, accept `shutdown`,
 emit `SURA_OS_SHUTDOWN`, and produce process exit code 33. Interactive mode
-supports `help`, `status`, `mem`, `about`, and `shutdown`. The gate does not
-modify host firmware variables or boot entries.
+supports `help`, `status`, `mem`, `about`, and `shutdown`. It uses an ephemeral
+`127.0.0.1` TCP bridge for COM1 so PowerShell retains normal line editing; the
+listener is not bound to an external interface. The gate does not modify host
+firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.

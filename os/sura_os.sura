@@ -60,6 +60,16 @@ func os_serial_cstr_line(text: ptr) do
   return serial_write_byte(1016, 10, 1000000)
 end
 
+func os_serial_drain() do
+  attempt: u64 is 0
+  while attempt < 1000000 do
+    if (io.in8(1021) & 64) != 0 then return true
+    cpu.pause()
+    attempt += 1
+  end
+  return false
+end
+
 func os_serial_u64(value: u64) do
   if value == 0 then return serial_write_byte(1016, 48, 1000000)
 
@@ -104,6 +114,7 @@ func os_shell_execute(buffer: ptr, length: usize) do
   end
   if os_command_equals(buffer, length, os_command_shutdown) then
     os_serial_cstr_line(os_shutdown_marker)
+    os_serial_drain()
     os_vm_exit(16)
     return true
   end
@@ -130,15 +141,11 @@ func os_shell_run() do
     elif value == 8 or value == 127 then
       if length > 0 then
         length -= 1
-        serial_write_byte(1016, 8, 1000000)
-        serial_write_byte(1016, 32, 1000000)
-        serial_write_byte(1016, 8, 1000000)
       end
     elif value >= 32 and value <= 126 then
       if length < 127 then
         mem.write8(ptr.add(os_shell_input, length), value)
         length += 1
-        if not serial_write_byte(1016, value, 1000000) then return false
       end
     end
   end
@@ -189,7 +196,7 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version
 
   uefi.clear()
-  uefi.set_color(15, 1)
+  uefi.set_color(15, 0)
   uefi.write("Sura OS virtual machine")
   uefi.newline()
   uefi.write("Preparing the freestanding kernel...")

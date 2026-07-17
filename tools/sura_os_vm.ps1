@@ -51,6 +51,113 @@ function Resolve-OsFirmware {
     throw "OVMF/EDK2 x86-64 firmware was not found. Pass -Firmware <path>."
 }
 
+function ConvertTo-OsNativeArgument {
+    param([string]$Value)
+    if ($Value.IndexOf([char]0) -ge 0) {
+        throw "QEMU argument contains a null character"
+    }
+    if ($Value -notmatch '[\s"]') { return $Value }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $slashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append(('\' * ($slashes * 2 + 1)))
+            [void]$builder.Append('"')
+            $slashes = 0
+            continue
+        }
+        if ($slashes -gt 0) {
+            [void]$builder.Append(('\' * $slashes))
+            $slashes = 0
+        }
+        [void]$builder.Append($character)
+    }
+    if ($slashes -gt 0) {
+        [void]$builder.Append(('\' * ($slashes * 2)))
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Get-OsFreeTcpPort {
+    $listener = New-Object System.Net.Sockets.TcpListener(
+        [System.Net.IPAddress]::Loopback,
+        0
+    )
+    try {
+        $listener.Start()
+        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    }
+    finally {
+        $listener.Stop()
+    }
+}
+
+function Read-OsSerialAvailable {
+    param(
+        [System.Net.Sockets.NetworkStream]$Stream,
+        [int]$WaitMilliseconds = 300
+    )
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($WaitMilliseconds)
+    $buffer = New-Object byte[] 4096
+    $builder = New-Object System.Text.StringBuilder
+    do {
+        try {
+            while ($Stream.DataAvailable) {
+                $read = $Stream.Read($buffer, 0, $buffer.Length)
+                if ($read -le 0) { break }
+                [void]$builder.Append([System.Text.Encoding]::ASCII.GetString($buffer, 0, $read))
+            }
+        }
+        catch {
+            break
+        }
+        if ([DateTime]::UtcNow -lt $deadline) {
+            Start-Sleep -Milliseconds 20
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $text = $builder.ToString()
+    if ($text.Length -gt 0) {
+        $ansiPattern = ([string][char]27) + '\[[0-?]*[ -/]*[@-~]'
+        $clean = [regex]::Replace($text, $ansiPattern, "")
+        Write-Host -NoNewline $clean
+        return $clean
+    }
+    return ""
+}
+
+function Read-OsSerialTail {
+    param([System.Net.Sockets.NetworkStream]$Stream)
+    $buffer = New-Object byte[] 4096
+    $builder = New-Object System.Text.StringBuilder
+    $Stream.ReadTimeout = 1000
+    while ($true) {
+        try {
+            $read = $Stream.Read($buffer, 0, $buffer.Length)
+        }
+        catch {
+            break
+        }
+        if ($read -le 0) { break }
+        [void]$builder.Append([System.Text.Encoding]::ASCII.GetString($buffer, 0, $read))
+    }
+    $text = $builder.ToString()
+    if ($text.Length -gt 0) {
+        $ansiPattern = ([string][char]27) + '\[[0-?]*[ -/]*[@-~]'
+        $clean = [regex]::Replace($text, $ansiPattern, "")
+        Write-Host -NoNewline $clean
+        return $clean
+    }
+    return ""
+}
+
 try {
     if ($Interactive -and $CompileOnly) {
         throw "Interactive and CompileOnly cannot be used together"
@@ -77,27 +184,108 @@ try {
         $firmwarePath = Resolve-OsFirmware $Firmware $qemuPath
         $interactiveDisk = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_os_interactive_" + [guid]::NewGuid().ToString("N") + ".img")
         Copy-Item -LiteralPath $disk -Destination $interactiveDisk -Force
+        $qemuProcess = $null
+        $serialClient = $null
+        $serialStream = $null
         try {
             Write-Host "Sura OS interactive shell"
             Write-Host "Type help for commands. Type shutdown to close QEMU."
-            & $qemuPath `
-                -machine "q35,accel=tcg" `
-                -m "256M" `
-                -display "none" `
-                -monitor "none" `
-                -serial "stdio" `
-                -no-reboot `
-                -drive "if=pflash,format=raw,readonly=on,file=$firmwarePath" `
-                -drive "file=$interactiveDisk,format=raw,if=ide" `
-                -device "isa-debug-exit,iobase=0xf4,iosize=0x04" `
-                -boot "c"
-            $qemuExitCode = $LASTEXITCODE
+            $serialPort = Get-OsFreeTcpPort
+            $qemuArguments = @(
+                "-machine", "q35,accel=tcg",
+                "-m", "256M",
+                "-display", "none",
+                "-monitor", "none",
+                "-serial", "tcp:127.0.0.1:$serialPort,server=on,wait=off",
+                "-no-reboot",
+                "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
+                "-drive", "file=$interactiveDisk,format=raw,if=ide",
+                "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+                "-boot", "c"
+            )
+            $qemuProcess = New-Object System.Diagnostics.Process
+            $qemuProcess.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $qemuProcess.StartInfo.FileName = $qemuPath
+            $qemuProcess.StartInfo.UseShellExecute = $false
+            $qemuProcess.StartInfo.CreateNoWindow = $true
+            $qemuProcess.StartInfo.RedirectStandardOutput = $true
+            $qemuProcess.StartInfo.RedirectStandardError = $true
+            if ($qemuProcess.StartInfo.PSObject.Properties.Name -contains "ArgumentList") {
+                foreach ($argument in $qemuArguments) {
+                    $qemuProcess.StartInfo.ArgumentList.Add($argument)
+                }
+            }
+            else {
+                $qemuProcess.StartInfo.Arguments =
+                    (($qemuArguments | ForEach-Object {
+                        ConvertTo-OsNativeArgument ([string]$_)
+                    }) -join " ")
+            }
+            if (-not $qemuProcess.Start()) { throw "Interactive QEMU did not start" }
+            $qemuStdoutTask = $qemuProcess.StandardOutput.ReadToEndAsync()
+            $qemuStderrTask = $qemuProcess.StandardError.ReadToEndAsync()
+
+            $connectDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while ([DateTime]::UtcNow -lt $connectDeadline -and $null -eq $serialClient) {
+                $candidateClient = New-Object System.Net.Sockets.TcpClient
+                try {
+                    $candidateClient.Connect("127.0.0.1", $serialPort)
+                    $serialClient = $candidateClient
+                }
+                catch {
+                    $candidateClient.Dispose()
+                    Start-Sleep -Milliseconds 100
+                }
+            }
+            if ($null -eq $serialClient) {
+                throw "Could not connect to the QEMU serial bridge"
+            }
+            $serialStream = $serialClient.GetStream()
+            Start-Sleep -Milliseconds 4000
+            $bootText = Read-OsSerialAvailable $serialStream 600
+            if (-not $bootText.Contains("Sura OS shell ready")) {
+                throw "Sura OS serial shell did not become ready"
+            }
+
+            while (-not $qemuProcess.HasExited) {
+                $command = Read-Host
+                if ($null -eq $command) {
+                    throw "Interactive input was closed before shutdown"
+                }
+                $commandBytes = [System.Text.Encoding]::ASCII.GetBytes($command + "`n")
+                $serialStream.Write($commandBytes, 0, $commandBytes.Length)
+                $serialStream.Flush()
+                Start-Sleep -Milliseconds 100
+                [void](Read-OsSerialAvailable $serialStream 400)
+                if ($command.Trim().ToLowerInvariant() -eq "shutdown") {
+                    break
+                }
+            }
+            if (-not $qemuProcess.WaitForExit(10000)) {
+                throw "Interactive QEMU did not exit after shutdown"
+            }
+            [void](Read-OsSerialTail $serialStream)
+            $qemuExitCode = $qemuProcess.ExitCode
             if ($qemuExitCode -ne 33) {
-                throw "Interactive QEMU closed with unexpected exit code $qemuExitCode"
+                $qemuDiagnostics = $qemuStderrTask.GetAwaiter().GetResult()
+                throw "Interactive QEMU closed with unexpected exit code $qemuExitCode`n$qemuDiagnostics"
             }
             "sura_os_vm: INTERACTIVE CLOSED (exit=$qemuExitCode)"
         }
         finally {
+            if ($null -ne $serialStream) {
+                $serialStream.Dispose()
+            }
+            if ($null -ne $serialClient) {
+                $serialClient.Dispose()
+            }
+            if ($null -ne $qemuProcess) {
+                if (-not $qemuProcess.HasExited) {
+                    $qemuProcess.Kill()
+                    $qemuProcess.WaitForExit()
+                }
+                $qemuProcess.Dispose()
+            }
             if (Test-Path -LiteralPath $interactiveDisk -PathType Leaf) {
                 $resolvedInteractiveDisk = [System.IO.Path]::GetFullPath($interactiveDisk)
                 $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())

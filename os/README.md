@@ -36,4 +36,6 @@ The shell supports `help`, `status`, `mem`, `about`, and `shutdown`. Use
 `mem`, and `shutdown` through COM1 and checks their output.
 
 The script uses QEMU with TCG emulation and an EDK2 x86-64 firmware image. It
-does not modify firmware boot entries or boot the host computer.
+does not modify firmware boot entries or boot the host computer. Interactive
+mode connects COM1 to an ephemeral loopback-only TCP port so PowerShell handles
+line input normally; it does not expose the shell on an external interface.
