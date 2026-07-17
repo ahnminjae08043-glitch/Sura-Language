@@ -591,6 +591,17 @@ const machineFacts = {
       screenshot_gate: "tools/sura_os_screenshot.ps1 captures the actual QEMU framebuffer through loopback-only QMP after SURA_OS_DESKTOP_OK",
       limitations: ["no hardware acceleration or GPU driver", "no USB input", "no interactive windows", "font maps lowercase ASCII to uppercase and has a limited glyph set"],
     },
+    graphical_text_terminal: {
+      library: "stdlib/freestanding/text_terminal.sura",
+      model: "caller-owned fixed-capacity ASCII cell buffer",
+      limits: ["1..256 columns", "1..128 rows"],
+      operations: ["printable character", "Backspace", "newline", "wrap", "upward scroll", "clear", "bounded C-string output", "unsigned decimal output", "5x7 framebuffer draw"],
+      os_instance: "92x25 command history shared by COM1 and PS/2 input",
+      commands: ["help", "status", "mem", "about", "clear", "shutdown"],
+      example: "examples/os/text_terminal_features.sura",
+      executed_verification: "QMP PS/2 input fills and scrolls the 25-row OS terminal, clears it, and leaves a visible status result; serial markers prove scroll and clear",
+      limitations: ["ASCII cells only", "no ANSI escape parser", "no selection, clipboard, alternate buffer, or scrollback beyond visible rows"],
+    },
     ps2_desktop_input: {
       library: "stdlib/freestanding/ps2.sura",
       controller: ["bounded i8042 waits", "translated Set-1 keyboard enable", "standard auxiliary mouse enable", "polling data-source dispatch"],
@@ -734,8 +745,8 @@ const machineFacts = {
       source: "os/sura_os.sura",
       gate: "tools/sura_os_vm.ps1",
       output: ["build/os/SuraOS.efi", "build/os/SuraOS.img"],
-      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "graphical terminal keyboard input", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
-      shell_commands: ["help", "status", "mem", "about", "shutdown"],
+      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "92x25 graphical terminal command history", "wrap, scroll, clear, and numeric output", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
+      shell_commands: ["help", "status", "mem", "about", "clear", "shutdown"],
       interactive_command: ".\\tools\\sura_os_vm.ps1 -Engine .\\SuraLanguage.exe -Interactive",
       screenshot_command: ".\\tools\\sura_os_screenshot.ps1 -Engine .\\SuraLanguage.exe",
       execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes",
@@ -769,7 +780,7 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1", "tools/sura_os_vm.ps1", "tools/sura_os_screenshot.ps1", "os/sura_os.sura", "stdlib/freestanding/framebuffer.sura", "stdlib/freestanding/font5x7.sura", "stdlib/freestanding/ps2.sura", "examples/os/framebuffer_features.sura", "examples/os/ps2_features.sura", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/user_process_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1", "tools/sura_os_vm.ps1", "tools/sura_os_screenshot.ps1", "os/sura_os.sura", "stdlib/freestanding/framebuffer.sura", "stdlib/freestanding/font5x7.sura", "stdlib/freestanding/text_terminal.sura", "stdlib/freestanding/ps2.sura", "examples/os/framebuffer_features.sura", "examples/os/text_terminal_features.sura", "examples/os/ps2_features.sura", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/user_process_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
     not_implemented: ["executed AP-startup coverage and complete per-AP initialization lifecycle", "automatic per-CPU TSS/IST allocation", "FPU/SIMD process context-switch policy", "ET_DYN/PIE, relocation, interpreter, dynamic-linking, and TLS executable loading", "demand paging, copy-on-write, shared memory, and memory-mapped files", "signals and fast-syscall blocking/resume conversion", "KPTI, NMI-safe entry, and comprehensive speculative-entry hardening", "synchronized/NUMA physical-memory policy", "complete virtual address-space policy", "PCID and remote TLB shootdown", "SMP run queues and load balancing", "executed ring-3 timer/context-switch verification", "PCI/PCIe resource allocation, bridge setup, and MSI/MSI-X", "network, USB, accelerated graphics, audio, and other device-specific drivers", "interrupt-driven desktop input queues and interactive window management", "extended MBR chains, GPT repair, and partition create/resize/delete", "filesystem allocation, create, resize, delete, long-name, recovery, and locking support", "ARM64 freestanding backend", "source-level freestanding debugger", "executed CI VM boot coverage"],
   },
   interop: {
@@ -1231,7 +1242,7 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
 ));
 
 sections.push(section("freestanding", "OS 개발용 freestanding 기능",
-  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 graphical terminal command input을 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.") +
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 92x25 graphical terminal의 command history·scroll·clear를 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.") +
   pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
@@ -1259,6 +1270,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
     ["그래픽 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 double-buffer desktop·memory self-check와 COM1 shell의 status/mem/shutdown 검증"],
     ["Framebuffer·글꼴", code("framebuffer.sura") + "의 pixel/line/rectangle/present와 " + code("font5x7.sura") + "의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처"],
+    ["그래픽 터미널", code("text_terminal.sura") + "의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 92x25 OS instance 실행 검증"],
     ["PS/2 데스크톱 입력", code("ps2.sura") + "의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
@@ -1266,7 +1278,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
   paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.") +
-  paragraph("Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 그래픽 데스크톱, graphical terminal keyboard input과 software mouse pointer까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, focus/click/drag/resize window manager, user application execution, persistent filesystem create/delete, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 " + code("Guide/OS_DEVELOPMENT.md") + "와 이 문서의 machine-readable data에 있습니다.")
+  paragraph("Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 그래픽 데스크톱, graphical terminal의 input/output/wrap/scroll/clear와 software mouse pointer까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, focus/click/drag/resize window manager, user application execution, persistent filesystem create/delete, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 " + code("Guide/OS_DEVELOPMENT.md") + "와 이 문서의 machine-readable data에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

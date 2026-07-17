@@ -3,6 +3,7 @@ param(
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/hello_uefi.sura"),
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
     [string]$FramebufferSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/framebuffer_features.sura"),
+    [string]$TextTerminalSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/text_terminal_features.sura"),
     [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
@@ -77,6 +78,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $FramebufferSource)) {
         throw "Sura framebuffer feature source not found: $FramebufferSource"
+    }
+    if (-not (Test-Path -LiteralPath $TextTerminalSource)) {
+        throw "Sura text terminal feature source not found: $TextTerminalSource"
     }
     if (-not (Test-Path -LiteralPath $Ps2Source)) {
         throw "Sura PS/2 feature source not found: $Ps2Source"
@@ -319,6 +323,21 @@ try {
     $framebufferAscii = [System.Text.Encoding]::ASCII.GetString($framebufferBytes)
     if ($framebufferAscii -notmatch "SURA 2D") {
         throw "Freestanding framebuffer feature image is missing its bitmap text"
+    }
+
+    $textTerminalEfi = Join-Path $temp "TEXT_TERMINAL.EFI"
+    $textTerminalOutput = & $Engine --target uefi-x86_64 --out $textTerminalEfi $TextTerminalSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding text terminal feature compile failed:`n$($textTerminalOutput -join "`n")"
+    }
+    $textTerminalBytes = [System.IO.File]::ReadAllBytes($textTerminalEfi)
+    if ($textTerminalBytes.Length -lt 40000 -or
+        $textTerminalBytes[0] -ne 0x4d -or $textTerminalBytes[1] -ne 0x5a) {
+        throw "Freestanding text terminal feature image is invalid"
+    }
+    $textTerminalUtf16 = [System.Text.Encoding]::Unicode.GetString($textTerminalBytes)
+    if ($textTerminalUtf16 -notmatch "Sura text terminal feature test") {
+        throw "Freestanding text terminal feature image is missing its diagnostic"
     }
 
     $ps2Efi = Join-Path $temp "PS2.EFI"
@@ -1102,7 +1121,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

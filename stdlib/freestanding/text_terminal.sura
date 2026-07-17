@@ -1,0 +1,149 @@
+# Fixed-capacity ASCII terminal buffer for freestanding graphical consoles.
+
+import "./font5x7.sura"
+
+struct TextTerminal do
+  cells: ptr
+  columns: u64
+  rows: u64
+  cursor_x: u64
+  cursor_y: u64
+  capacity: u64
+  scroll_count: u64
+end
+
+text_terminal_number_buffer is static.zero(32, 16)
+
+func text_terminal_init(state: ptr[TextTerminal], cells: ptr, columns: u64, rows: u64) do
+  if state == 0 or cells == 0 or columns == 0 or rows == 0 then return false
+  if columns > 256 or rows > 128 then return false
+  state.cells is cells
+  state.columns is columns
+  state.rows is rows
+  state.cursor_x is 0
+  state.cursor_y is 0
+  state.capacity is columns * rows
+  state.scroll_count is 0
+  return text_terminal_clear(state)
+end
+
+func text_terminal_clear(state: ptr[TextTerminal]) do
+  if state == 0 or state.cells == 0 or state.capacity == 0 then return false
+  index: u64 is 0
+  while index < state.capacity do
+    mem.write8(ptr.add(state.cells, index), 0)
+    index += 1
+  end
+  state.cursor_x is 0
+  state.cursor_y is 0
+  state.scroll_count is 0
+  return true
+end
+
+func text_terminal_scroll(state: ptr[TextTerminal]) do
+  if state == 0 or state.cells == 0 or state.rows == 0 then return false
+  if state.rows > 1 then
+    target_row: u64 is 0
+    while target_row + 1 < state.rows do
+      column: u64 is 0
+      while column < state.columns do
+        source: u64 is (target_row + 1) * state.columns + column
+        target: u64 is target_row * state.columns + column
+        mem.write8(ptr.add(state.cells, target), mem.read8(ptr.add(state.cells, source)))
+        column += 1
+      end
+      target_row += 1
+    end
+  end
+  last_start: u64 is (state.rows - 1) * state.columns
+  clear_column: u64 is 0
+  while clear_column < state.columns do
+    mem.write8(ptr.add(state.cells, last_start + clear_column), 0)
+    clear_column += 1
+  end
+  state.cursor_x is 0
+  state.cursor_y is state.rows - 1
+  state.scroll_count += 1
+  return true
+end
+
+func text_terminal_newline(state: ptr[TextTerminal]) do
+  if state == 0 or state.rows == 0 then return false
+  state.cursor_x is 0
+  if state.cursor_y + 1 < state.rows then
+    state.cursor_y += 1
+    return true
+  end
+  return text_terminal_scroll(state)
+end
+
+func text_terminal_put(state: ptr[TextTerminal], value: u64) do
+  if state == 0 or state.cells == 0 or value > 255 then return false
+  if value == 13 then return true
+  if value == 10 then return text_terminal_newline(state)
+  if value == 8 then
+    if state.cursor_x > 0 then
+      state.cursor_x -= 1
+      mem.write8(ptr.add(state.cells, state.cursor_y * state.columns + state.cursor_x), 0)
+    end
+    return true
+  end
+  if value < 32 or value > 126 then value is 63
+  offset: u64 is state.cursor_y * state.columns + state.cursor_x
+  mem.write8(ptr.add(state.cells, offset), value)
+  state.cursor_x += 1
+  if state.cursor_x >= state.columns then return text_terminal_newline(state)
+  return true
+end
+
+func text_terminal_write(state: ptr[TextTerminal], text: ptr, length: usize) do
+  if state == 0 or text == 0 then return false
+  index: usize is 0
+  while index < length do
+    if not text_terminal_put(state, mem.read8(ptr.add(text, index))) then return false
+    index += 1
+  end
+  return true
+end
+
+func text_terminal_write_cstr(state: ptr[TextTerminal], text: ptr, max_length: usize) do
+  if state == 0 or text == 0 then return false
+  index: usize is 0
+  while index < max_length do
+    value: u64 is mem.read8(ptr.add(text, index))
+    if value == 0 then return true
+    if not text_terminal_put(state, value) then return false
+    index += 1
+  end
+  return false
+end
+
+func text_terminal_write_u64(state: ptr[TextTerminal], value: u64) do
+  if state == 0 then return false
+  if value == 0 then return text_terminal_put(state, 48)
+  index: u64 is 32
+  remaining: u64 is value
+  while remaining > 0 do
+    index -= 1
+    mem.write8(ptr.add(text_terminal_number_buffer, index), 48 + (remaining % 10))
+    remaining is remaining / 10
+  end
+  return text_terminal_write(state, ptr.add(text_terminal_number_buffer, index), 32 - index)
+end
+
+func text_terminal_draw(state: ptr[TextTerminal], surface: ptr[FramebufferSurface], x: u64, y: u64, style: ptr[BitmapFontStyle]) do
+  if state == 0 or surface == 0 or style == 0 or style.scale == 0 then return false
+  row: u64 is 0
+  while row < state.rows do
+    column: u64 is 0
+    while column < state.columns do
+      value: u64 is mem.read8(ptr.add(state.cells, row * state.columns + column))
+      if value != 0 and value != 32 then
+        font5x7_draw_char(surface, x + column * 6 * style.scale, y + row * 8 * style.scale, value, style)
+      end
+      column += 1
+    end
+    row += 1
+  end
+  return true
+end

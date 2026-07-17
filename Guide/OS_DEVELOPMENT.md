@@ -281,6 +281,30 @@ policy, keyboard layout selection, Unicode text input, wheel/five-button mouse,
 USB HID, focus routing, or click dispatch. Those belong to later interrupt,
 window-manager, and USB stages.
 
+## Graphical terminal
+
+`stdlib/freestanding/text_terminal.sura` provides a fixed-capacity ASCII cell
+buffer for graphical consoles. It supports:
+
+- caller-selected columns and rows, capped at 256x128
+- printable input, Backspace, newline, wrapping, and upward scrolling
+- complete clear with cursor reset
+- bounded C-string and unsigned-decimal output
+- direct 5x7 framebuffer drawing
+
+Sura OS uses a 92x25 instance inside the terminal window. COM1 and PS/2 input
+both update the same command buffer and graphical history. `help`, `status`,
+`mem`, `about`, unknown-command output, the prompt, and command text remain on
+screen and scroll together. `clear` clears the cell buffer before drawing the
+next prompt. `shutdown` remains available from both input paths.
+
+`examples/os/text_terminal_features.sura` verifies wrap, scroll, numeric
+output, framebuffer drawing, and clear in a generated EFI image.
+`tools/sura_os_screenshot.ps1` additionally fills the 25-row terminal through
+QEMU PS/2 input, requires `SURA_OS_TERMINAL_SCROLL_OK`, runs `clear`, requires
+`SURA_OS_CLEAR_OK`, then leaves a visible `status` result in the captured
+framebuffer.
+
 ## Kernel intrinsics
 
 Raw memory:

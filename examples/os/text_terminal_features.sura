@@ -1,0 +1,45 @@
+# Fixed-capacity text terminal wrap, scroll, clear, and draw coverage.
+
+import "../../stdlib/freestanding/text_terminal.sura"
+
+terminal_state is static.struct(TextTerminal)
+terminal_cells is static.zero(24, 16)
+terminal_surface_state is static.struct(FramebufferSurface)
+terminal_style_state is static.struct(BitmapFontStyle)
+terminal_pixels is static.zero(16384, 64)
+terminal_one is static.utf8("ONE")
+terminal_two is static.utf8("TWO")
+terminal_three is static.utf8("THREE")
+terminal_four is static.utf8("FOUR")
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura text terminal feature test")
+  uefi.newline()
+  terminal: ptr[TextTerminal] is terminal_state
+  if not text_terminal_init(terminal, terminal_cells, 8, 3) then return 1
+  text_terminal_write_cstr(terminal, terminal_one, 8)
+  text_terminal_newline(terminal)
+  text_terminal_write_cstr(terminal, terminal_two, 8)
+  text_terminal_newline(terminal)
+  text_terminal_write_cstr(terminal, terminal_three, 8)
+  text_terminal_newline(terminal)
+  text_terminal_write_cstr(terminal, terminal_four, 8)
+  if terminal.scroll_count == 0 then return 2
+  if mem.read8(terminal_cells) != 84 then return 3
+  if mem.read8(ptr.add(terminal_cells, 8)) != 84 then return 4
+  if mem.read8(ptr.add(terminal_cells, 16)) != 70 then return 5
+
+  text_terminal_newline(terminal)
+  if not text_terminal_write_u64(terminal, 12345) then return 6
+  if mem.read8(ptr.add(terminal_cells, 16)) != 49 then return 7
+
+  surface: ptr[FramebufferSurface] is terminal_surface_state
+  style: ptr[BitmapFontStyle] is terminal_style_state
+  if not fb_surface_init(surface, terminal_pixels, 64, 64, 64, 1) then return 8
+  if not font5x7_style_init(style, fb_rgb(surface, 255, 255, 255), 0, 1, 0) then return 9
+  if not text_terminal_draw(terminal, surface, 0, 0, style) then return 10
+  if fb_sample_hash(surface) == 0 then return 11
+  if not text_terminal_clear(terminal) then return 12
+  if terminal.cursor_x != 0 or terminal.cursor_y != 0 or terminal.scroll_count != 0 then return 13
+  return 0
+end

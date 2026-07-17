@@ -6,7 +6,7 @@
 
 import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
-import "../stdlib/freestanding/font5x7.sura"
+import "../stdlib/freestanding/text_terminal.sura"
 import "../stdlib/freestanding/ps2.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
@@ -21,6 +21,8 @@ os_font_green_large is static.struct(BitmapFontStyle)
 os_font_muted_small is static.struct(BitmapFontStyle)
 os_ps2_keyboard_state is static.struct(Ps2KeyboardState)
 os_ps2_mouse_state is static.struct(Ps2MouseState)
+os_terminal_state is static.struct(TextTerminal)
+os_terminal_cells is static.zero(2300, 16)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
@@ -30,6 +32,8 @@ os_keyboard_marker is static.utf8("SURA_OS_KEYBOARD_OK")
 os_mouse_marker is static.utf8("SURA_OS_MOUSE_OK")
 os_shift_marker is static.utf8("SURA_OS_SHIFT_OK")
 os_mouse_click_marker is static.utf8("SURA_OS_MOUSE_CLICK_OK")
+os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
+os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
 os_ready_marker is static.utf8("SURA_OS_KERNEL_READY")
 os_shutdown_marker is static.utf8("SURA_OS_SHUTDOWN")
 
@@ -40,11 +44,12 @@ os_command_help is static.utf8("help")
 os_command_status is static.utf8("status")
 os_command_mem is static.utf8("mem")
 os_command_about is static.utf8("about")
+os_command_clear is static.utf8("clear")
 os_command_shutdown is static.utf8("shutdown")
 
 os_shell_banner is static.utf8("Sura OS shell ready")
 os_shell_prompt is static.utf8("sura> ")
-os_shell_help is static.utf8("commands: help status mem about shutdown")
+os_shell_help is static.utf8("commands: help status mem about clear shutdown")
 os_shell_status is static.utf8("kernel: ready")
 os_shell_memory_prefix is static.utf8("free physical pages: ")
 os_graphics_failure_prefix is static.utf8("graphics failure stage: ")
@@ -83,6 +88,7 @@ os_keyboard_reported: u64 is 0
 os_mouse_reported: u64 is 0
 os_shift_reported: u64 is 0
 os_mouse_click_reported: u64 is 0
+os_terminal_scroll_reported: u64 is 0
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -140,30 +146,54 @@ func os_command_equals(buffer: ptr, length: usize, expected: ptr) do
   return mem.read8(ptr.add(expected, length)) == 0
 end
 
+func os_terminal_cstr_line(text: ptr, max_length: usize) do
+  terminal: ptr[TextTerminal] is os_terminal_state
+  if not text_terminal_write_cstr(terminal, text, max_length) then return false
+  return text_terminal_newline(terminal)
+end
+
+func os_terminal_prompt() do
+  terminal: ptr[TextTerminal] is os_terminal_state
+  return text_terminal_write_cstr(terminal, os_shell_prompt, 16)
+end
+
 func os_shell_execute(buffer: ptr, length: usize) do
   global os_graphics_message
+  terminal: ptr[TextTerminal] is os_terminal_state
   if length == 0 then return true
 
   if os_command_equals(buffer, length, os_command_help) then
     os_graphics_message is os_text_help_result
+    if not os_terminal_cstr_line(os_shell_help, 64) then return false
     return os_serial_cstr_line(os_shell_help)
   end
   if os_command_equals(buffer, length, os_command_status) then
     os_graphics_message is os_shell_status
+    if not os_terminal_cstr_line(os_shell_status, 32) then return false
     return os_serial_cstr_line(os_shell_status)
   end
   if os_command_equals(buffer, length, os_command_mem) then
     os_graphics_message is os_text_mem_result
     allocator: ptr[PhysicalAllocator] is os_allocator_state
+    if not text_terminal_write_cstr(terminal, os_shell_memory_prefix, 32) then return false
+    if not text_terminal_write_u64(terminal, pmem_available_pages(allocator)) then return false
+    if not text_terminal_newline(terminal) then return false
     if not os_serial_text(os_shell_memory_prefix) then return false
     if not os_serial_u64(pmem_available_pages(allocator)) then return false
     return serial_write_byte(1016, 10, 1000000)
   end
   if os_command_equals(buffer, length, os_command_about) then
     os_graphics_message is os_text_about_result
+    if not os_terminal_cstr_line(os_shell_about, 64) then return false
     return os_serial_cstr_line(os_shell_about)
   end
+  if os_command_equals(buffer, length, os_command_clear) then
+    os_graphics_message is 0
+    if not text_terminal_clear(terminal) then return false
+    return os_serial_line(os_clear_marker, 16)
+  end
   if os_command_equals(buffer, length, os_command_shutdown) then
+    os_terminal_cstr_line(os_shutdown_marker, 32)
     os_serial_cstr_line(os_shutdown_marker)
     os_serial_drain()
     os_vm_exit(16)
@@ -171,6 +201,7 @@ func os_shell_execute(buffer: ptr, length: usize) do
   end
 
   os_graphics_message is os_text_unknown_result
+  if not os_terminal_cstr_line(os_shell_unknown, 64) then return false
   return os_serial_cstr_line(os_shell_unknown)
 end
 
@@ -215,21 +246,16 @@ func os_redraw_terminal() do
   window_x: u64 is (back.width - window_width) / 2
   window_y: u64 is (back.height - window_height - 52) / 2
   white_large: ptr[BitmapFontStyle] is os_font_white_large
-  orange_large: ptr[BitmapFontStyle] is os_font_orange_large
-  green_large: ptr[BitmapFontStyle] is os_font_green_large
+  terminal: ptr[TextTerminal] is os_terminal_state
 
   fb_fill_rect(back, window_x + 1, window_y + 39, window_width - 2, window_height - 40, panel)
-  font5x7_draw_text(back, window_x + 24, window_y + 72, os_text_terminal_prompt, 32, orange_large)
-  if os_graphics_message != 0 then
-    font5x7_draw_text(back, window_x + 24, window_y + 108, os_graphics_message, 64, green_large)
-  end
-  font5x7_draw_text(back, window_x + 24, window_y + 144, os_shell_prompt, 16, white_large)
-  if os_shell_length > 0 then
-    font5x7_draw_text(back, window_x + 96, window_y + 144, os_shell_input, 128, white_large)
-  end
-  cursor_x: u64 is window_x + 96 + os_shell_length * 12
-  if cursor_x + 10 < window_x + window_width then
-    fb_fill_rect(back, cursor_x, window_y + 144, 10, 15, white)
+  if terminal.cells != 0 then
+    text_terminal_draw(terminal, back, window_x + 24, window_y + 54, white_large)
+    cursor_x: u64 is window_x + 24 + terminal.cursor_x * 12
+    cursor_y: u64 is window_y + 54 + terminal.cursor_y * 16
+    if cursor_x + 10 < window_x + window_width and cursor_y + 15 < window_y + window_height then
+      fb_fill_rect(back, cursor_x, cursor_y + 14, 10, 2, white)
+    end
   end
   return os_present_with_pointer()
 end
@@ -342,20 +368,28 @@ func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, p
 end
 
 func os_shell_accept(value: u64) do
-  global os_shell_length
+  global os_shell_length, os_terminal_scroll_reported
+  terminal: ptr[TextTerminal] is os_terminal_state
   if value == 13 then return true
   if value == 10 then
     if not serial_write_byte(1016, 10, 1000000) then return false
+    if not text_terminal_newline(terminal) then return false
     if not os_shell_execute(os_shell_input, os_shell_length) then return false
+    if terminal.scroll_count > 0 and os_terminal_scroll_reported == 0 then
+      if not os_serial_line(os_terminal_scroll_marker, 26) then return false
+      os_terminal_scroll_reported is 1
+    end
     os_shell_length is 0
     mem.write8(os_shell_input, 0)
     if not os_serial_text(os_shell_prompt) then return false
+    if not os_terminal_prompt() then return false
     return os_redraw_terminal()
   end
   if value == 8 or value == 127 then
     if os_shell_length > 0 then
       os_shell_length -= 1
       mem.write8(ptr.add(os_shell_input, os_shell_length), 0)
+      text_terminal_put(terminal, 8)
       return os_redraw_terminal()
     end
     return true
@@ -364,6 +398,7 @@ func os_shell_accept(value: u64) do
     mem.write8(ptr.add(os_shell_input, os_shell_length), value)
     os_shell_length += 1
     mem.write8(ptr.add(os_shell_input, os_shell_length), 0)
+    if not text_terminal_put(terminal, value) then return false
     return os_redraw_terminal()
   end
   return true
@@ -414,6 +449,9 @@ func os_shell_run() do
   front: ptr[FramebufferSurface] is os_front_surface_state
   keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
   mouse: ptr[Ps2MouseState] is os_ps2_mouse_state
+  terminal: ptr[TextTerminal] is os_terminal_state
+  if not text_terminal_init(terminal, os_terminal_cells, 46, 14) then return false
+  if not os_terminal_cstr_line(os_shell_banner, 32) then return false
   ps2_keyboard_reset(keyboard)
   ps2_mouse_reset(mouse, front.width - 20, front.height - 22)
   input_ports: u64 is ps2_controller_init()
@@ -425,11 +463,13 @@ func os_shell_run() do
   end
   if input_ports != 3 then
     os_graphics_message is os_text_input_unavailable
-    os_redraw_terminal()
+    if not os_terminal_cstr_line(os_text_input_unavailable, 32) then return false
   end
 
   if not os_serial_cstr_line(os_shell_banner) then return false
   if not os_serial_text(os_shell_prompt) then return false
+  if not os_terminal_prompt() then return false
+  if not os_redraw_terminal() then return false
 
   while true do
     value: u64 is serial_read_byte(1016, 1000)

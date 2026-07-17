@@ -276,12 +276,33 @@ try {
             }
         })
 
-        $inputDeadline = [DateTime]::UtcNow.AddSeconds(8)
+        # Fill the graphical terminal through PS/2 so its scroll path
+        # executes, then clear it and leave one visible status result.
+        for ($round = 0; $round -lt 13; $round++) {
+            foreach ($key in @("s", "t", "a", "t", "u", "s", "ret")) {
+                [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+                    execute = "human-monitor-command"
+                    arguments = @{ "command-line" = "sendkey $key" }
+                })
+                Start-Sleep -Milliseconds 25
+            }
+        }
+        foreach ($key in @("c", "l", "e", "a", "r", "ret", "s", "t", "a", "t", "u", "s", "ret")) {
+            [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+                execute = "human-monitor-command"
+                arguments = @{ "command-line" = "sendkey $key" }
+            })
+            Start-Sleep -Milliseconds 25
+        }
+
+        $inputDeadline = [DateTime]::UtcNow.AddSeconds(12)
         while ([DateTime]::UtcNow -lt $inputDeadline -and
                (-not $serialText.ToString().Contains("SURA_OS_KEYBOARD_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_SHIFT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_MOUSE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_MOUSE_CLICK_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
                 -not $serialText.ToString().Contains("kernel: ready"))) {
             while ($serialStream.DataAvailable) {
                 $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
@@ -298,6 +319,8 @@ try {
             "SURA_OS_SHIFT_OK",
             "SURA_OS_MOUSE_OK",
             "SURA_OS_MOUSE_CLICK_OK",
+            "SURA_OS_TERMINAL_SCROLL_OK",
+            "SURA_OS_CLEAR_OK",
             "kernel: ready"
         )) {
             if (-not $serialText.ToString().Contains($marker)) {

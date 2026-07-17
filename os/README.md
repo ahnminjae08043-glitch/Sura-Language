@@ -15,6 +15,7 @@ experimental freestanding x86-64 target.
 - polls the emulated i8042 controller for translated PS/2 keyboard scan codes
   and three-byte mouse packets
 - accepts commands in the graphical terminal and moves a software pointer
+- keeps a 92x25 terminal history with wrapping, scrolling, and `clear`
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -63,7 +64,7 @@ QEMU QMP, requires `SURA_OS_DESKTOP_OK` and `SURA_OS_PS2_READY`, types
 Shift/keyboard/move/click markers and the command result, and then shuts the
 VM down normally.
 
-The shell supports `help`, `status`, `mem`, `about`, and `shutdown`. Use
+The shell supports `help`, `status`, `mem`, `about`, `clear`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,
 `mem`, and `shutdown` through COM1 and checks their output.
 
