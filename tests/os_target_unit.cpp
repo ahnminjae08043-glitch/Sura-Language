@@ -77,6 +77,10 @@ int main(int argc, char** argv) {
         "boot_counter", std::make_unique<NumLit>(1, 1), 1);
     counter->type_annot = scalar_type("u64");
     root->body.push_back(std::move(counter));
+    auto saved_context = std::make_unique<AssignStmt>(
+        "saved_context_rsp", std::make_unique<NumLit>(0, 1), 1);
+    saved_context->type_annot = scalar_type("u64");
+    root->body.push_back(std::move(saved_context));
 
     {
         std::vector<ExprPtr> args;
@@ -113,6 +117,7 @@ int main(int argc, char** argv) {
     add_static_zero("kernel_stack", 4096, 16);
     add_static_zero("fpu_state", 4096, 64);
     add_static_zero("percpu_state", 256, 64);
+    add_static_zero("task_stack", 4096, 16);
 
     auto helper_body = std::make_unique<SuraBlock>(1);
     {
@@ -139,6 +144,24 @@ int main(int argc, char** argv) {
     auto low = std::make_unique<FuncDef>(
         "low_level_probe", std::vector<std::string>{}, std::move(low_body), 1);
     root->body.push_back(std::move(low));
+
+    auto task_body = std::make_unique<SuraBlock>(1);
+    task_body->body.push_back(std::make_unique<ReturnStmt>(
+        std::make_unique<Ident>("argument", 1), 1));
+    auto task = std::make_unique<FuncDef>(
+        "task_entry", std::vector<std::string>{"argument"},
+        std::move(task_body), 1);
+    task->param_types.push_back(scalar_type("u64"));
+    root->body.push_back(std::move(task));
+
+    auto task_exit_body = std::make_unique<SuraBlock>(1);
+    task_exit_body->body.push_back(
+        std::make_unique<ReturnStmt>(nullptr, 1));
+    auto task_exit = std::make_unique<FuncDef>(
+        "task_exit", std::vector<std::string>{"result"},
+        std::move(task_exit_body), 1);
+    task_exit->param_types.push_back(scalar_type("u64"));
+    root->body.push_back(std::move(task_exit));
 
     auto irq_body = std::make_unique<SuraBlock>(1);
     {
@@ -443,6 +466,59 @@ int main(int argc, char** argv) {
         add_module_statement("paging", "invalidate", std::move(args));
     }
     add_module_statement("paging", "flush");
+    entry_body->body.push_back(std::make_unique<AssignStmt>(
+        "context_frame_size", method_call("context", "frame_size"), 1));
+    {
+        std::vector<ExprPtr> stack_args;
+        stack_args.push_back(std::make_unique<Ident>("task_stack", 1));
+        stack_args.push_back(std::make_unique<NumLit>(4096, 1));
+
+        auto entry_address = std::make_unique<CallExpr>("addr_of", 1);
+        entry_address->args.push_back(std::make_unique<Ident>("task_entry", 1));
+        auto exit_address = std::make_unique<CallExpr>("addr_of", 1);
+        exit_address->args.push_back(std::make_unique<Ident>("task_exit", 1));
+
+        std::vector<ExprPtr> args;
+        args.push_back(method_call("ptr", "add", std::move(stack_args)));
+        args.push_back(std::move(entry_address));
+        args.push_back(std::make_unique<NumLit>(123, 1));
+        args.push_back(std::move(exit_address));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "initial_context_rsp",
+            method_call("context", "init", std::move(args)), 1));
+    }
+    {
+        auto saved_address = std::make_unique<CallExpr>("addr_of", 1);
+        saved_address->args.push_back(
+            std::make_unique<Ident>("saved_context_rsp", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(saved_address));
+        args.push_back(std::make_unique<Ident>("initial_context_rsp", 1));
+        add_module_statement("context", "switch", std::move(args));
+    }
+    {
+        auto task_address = std::make_unique<CallExpr>("addr_of", 1);
+        task_address->args.push_back(
+            std::make_unique<Ident>("task_entry", 1));
+        std::vector<ExprPtr> args;
+        args.push_back(std::move(task_address));
+        args.push_back(std::make_unique<NumLit>(41, 1));
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "indirect_result",
+            method_call("call", "indirect", std::move(args)), 1));
+    }
+    {
+        std::vector<ExprPtr> args;
+        args.push_back(std::make_unique<NumLit>(128, 1));
+        args.push_back(std::make_unique<NumLit>(7, 1));
+        for (uint64_t value = 1; value <= 5; ++value) {
+            args.push_back(std::make_unique<NumLit>(
+                static_cast<double>(value), 1));
+        }
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "syscall_result",
+            method_call("syscall", "invoke", std::move(args)), 1));
+    }
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -500,6 +576,27 @@ int main(int argc, char** argv) {
     assert(contains_bytes(result.image, {0x0f, 0x01, 0x38})); // invlpg
     assert(contains_bytes(result.image,
                           {0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8})); // CR3 flush
+    assert(contains_bytes(result.image,
+                          {0x53, 0x55, 0x57, 0x56, 0x41, 0x54, 0x41,
+                           0x55, 0x41, 0x56, 0x41, 0x57,
+                           0x48, 0x89, 0x21, 0x48, 0x89, 0xd4})); // context save/switch
+    assert(contains_bytes(result.image,
+                          {0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41,
+                           0x5c, 0x5e, 0x5f, 0x5d, 0x5b, 0xc3})); // context restore
+    assert(contains_bytes(result.image,
+                          {0xfc, 0x4c, 0x89, 0xe9, 0x48, 0x83, 0xec,
+                           0x20, 0x41, 0xff, 0xd4})); // task bootstrap entry
+    assert(contains_bytes(result.image,
+                          {0x48, 0x83, 0xe0, 0xf0,
+                           0x48, 0x83, 0xe8, 0x48})); // initial 72-byte frame
+    assert(contains_bytes(result.image,
+                          {0x41, 0xff, 0xd3})); // indirect Win64 call
+    assert(contains_bytes(result.image,
+                          {0xcd, 0x80, 0x5e, 0x5f})); // int 0x80 and restore
+    assert(contains_bytes(result.image,
+                          {0x48, 0x8b, 0xbd})); // syscall argument 0 -> rdi
+    assert(contains_bytes(result.image,
+                          {0x48, 0x8b, 0xb5})); // syscall argument 1 -> rsi
 
     const uint32_t pe = read_u32(result.image, 0x3c);
     assert(result.image.at(pe) == 'P' && result.image.at(pe + 1) == 'E');

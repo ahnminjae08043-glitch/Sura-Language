@@ -6,7 +6,7 @@ the Sura VM, garbage collector, Windows API, C runtime, assembler, or linker.
 
 This is an early systems subset, not a complete general-purpose OS SDK or an
 operating system. The files in `examples/os` are compiler feature tests. They
-do not contain a kernel, scheduler, filesystem, or device drivers. Test
+do not form a complete kernel, filesystem, or device-driver stack. Test
 generated images in a virtual machine before using physical hardware.
 
 ## Build
@@ -468,6 +468,72 @@ for acknowledgements before reclaiming a page visible to another CPU.
 mapping, translation verification, unmapping, freeing, and a non-returning
 post-firmware halt path.
 
+## Cooperative context primitives
+
+The backend emits a small Win64-compatible integer context switch only when
+the source uses the `context` module:
+
+- `context.frame_size()` returns 72 bytes
+- `context.init(stack_top, entry, argument, exit_handler)` returns initial RSP
+- `context.switch(saved_rsp_address, next_rsp)` saves the current RSP and resumes another context
+
+`context.init` aligns the supplied stack top to 16 bytes and builds a frame
+for `r15, r14, r13, r12, rsi, rdi, rbp, rbx` plus a bootstrap return address.
+The bootstrap calls `entry(argument)`. If `entry` returns and `exit_handler`
+is nonzero, it calls `exit_handler(result)`; returning from the exit handler
+or omitting it ends in `cli; hlt`.
+
+The switch follows call-preserved register rules, so volatile general
+registers are intentionally not preserved. It does not save RFLAGS,
+FPU/SIMD state, CR3, FS/GS bases, debug registers, or interrupt state. A
+scheduler must handle those policies separately, keep interrupts/preemption
+safe around queue mutations, and never reclaim a running task stack.
+
+## Cooperative scheduler library
+
+`stdlib/freestanding/scheduler.sura` builds a single-CPU cooperative scheduler
+on the context primitives. It provides:
+
+- `scheduler_init` and `scheduler_create`
+- round-robin `scheduler_yield`
+- explicit `scheduler_tick` and tick-based `scheduler_sleep`
+- `scheduler_block_current` and `scheduler_wake`
+- `scheduler_join`, result lookup, and `scheduler_reap`
+
+Task state and stacks are supplied by the caller. The initial context occupies
+slot zero, created tasks use at least 4096-byte, 16-byte-aligned stacks, and a
+finished stack remains owned by the caller until the task is reaped.
+`examples/os/scheduler_features.sura` emits the creation, switching, joining,
+and reaping paths inside a non-executing feature block. It deliberately does
+not exit UEFI boot services or start an OS.
+
+This scheduler is deliberately cooperative and single-CPU. It does not
+preempt from an interrupt frame, synchronize queues between processors, save
+FPU/SIMD state, or program a hardware timer. A kernel using sleep must call
+`scheduler_tick` from its chosen timer policy, and queue operations must not
+race an interrupt or another processor.
+
+## Indirect calls and software-interrupt syscalls
+
+`call.indirect(function, argument...)` performs a Win64-compatible indirect
+call to a function address with at most five integer or pointer arguments.
+The target must follow the same freestanding Sura calling convention.
+
+`syscall.invoke(vector, number, argument...)` emits `int vector`. The vector
+must be a compile-time integer from 32 through 255. The syscall number is
+placed in RAX and up to five arguments use RDI, RSI, RDX, R10, and R8. This is
+a software-interrupt ABI; it is not the x86-64 `SYSCALL/SYSRET` instruction
+pair.
+
+`stdlib/freestanding/syscall.sura` provides a fixed-size handler table and the
+`software_syscall_dispatch` interrupt handler. The dispatcher returns its
+result through the saved RAX field. The caller must install a matching IDT
+gate and owns every security-sensitive policy: CPL/DPL setup, user-pointer
+validation, copy-in/copy-out, per-process permissions, synchronization,
+address-space selection, and fault recovery. The compile-only
+`examples/os/syscall_features.sura` emits both sides without entering user
+mode or starting an OS.
+
 ## Current lowering boundary
 
 The backend currently lowers fixed-width locals and globals, concrete struct
@@ -484,7 +550,7 @@ Still required for a complete self-hosted OS environment:
 - user/kernel entry validation and `swapgs` policy
 - synchronized/NUMA physical-memory policy, automatic intermediate page-table
   allocation/reclamation, virtual address-space policy, and remote TLB shootdown
-- scheduler, syscall, and driver libraries
+- preemptive/SMP scheduling, `SYSCALL/SYSRET` and user-entry policy, and driver libraries
 - FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend

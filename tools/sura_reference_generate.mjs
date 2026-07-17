@@ -572,6 +572,26 @@ const machineFacts = {
       example: "examples/os/memory_kernel.sura",
       limitations: ["no internal SMP lock", "no NUMA/DMA zones", "caller provides intermediate tables", "no remote TLB shootdown"],
     },
+    context_primitives: {
+      frame_bytes: 72,
+      saved_registers: ["r15", "r14", "r13", "r12", "rsi", "rdi", "rbp", "rbx", "resume RIP"],
+      operations: ["initialize aligned task frame", "save current RSP", "resume next RSP", "entry(argument)", "exit_handler(result)"],
+      limitations: ["no RFLAGS", "no FPU/SIMD", "no CR3", "no FS/GS base", "integer cooperative context only"],
+    },
+    scheduler_library: {
+      model: "single-CPU cooperative round-robin",
+      operations: ["init", "create", "yield", "tick", "sleep", "block", "wake", "join", "reap"],
+      states: ["unused", "runnable", "finished", "sleeping", "blocked"],
+      example: "examples/os/scheduler_features.sura",
+      limitations: ["no interrupt-frame preemption", "no SMP run-queue synchronization", "no FPU/SIMD context save", "caller supplies task storage and stacks"],
+    },
+    software_interrupt_syscalls: {
+      invoke: "syscall.invoke(vector, number, argument...)",
+      argument_registers: ["RAX number", "RDI", "RSI", "RDX", "R10", "R8"],
+      dispatcher: "stdlib/freestanding/syscall.sura",
+      example: "examples/os/syscall_features.sura",
+      limitations: ["INT path only", "no SYSCALL/SYSRET", "no user-pointer validation", "caller owns CPL/DPL, permissions, locking, and fault policy"],
+    },
     boot_disk: {
       cli: "sura --target uefi-x86_64 --out BOOTX64.EFI --disk-image sura-os.img source.sura",
       layout: ["protective MBR", "primary and backup GPT", "FAT32 EFI System Partition"],
@@ -586,8 +606,8 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura"],
-    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "synchronized/NUMA physical-memory policy", "automatic intermediate page-table allocation/reclamation", "virtual address-space policy", "remote TLB shootdown", "scheduler", "syscall library", "drivers", "filesystem", "ARM64 freestanding backend"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/scheduler_features.sura", "examples/os/syscall_features.sura"],
+    not_implemented: ["ACPI MADT processor discovery", "AP trampoline and complete AP startup", "automatic per-CPU TSS/IST allocation", "FPU/SIMD context-switch policy", "user/kernel entry validation and swapgs policy", "synchronized/NUMA physical-memory policy", "automatic intermediate page-table allocation/reclamation", "virtual address-space policy", "remote TLB shootdown", "preemptive/SMP scheduler", "SYSCALL/SYSRET path", "drivers", "filesystem", "ARM64 freestanding backend"],
   },
   interop: {
     ffi_abi: "1.2.0",
@@ -1063,13 +1083,16 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["SMP primitive", "GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI"],
     ["페이징 primitive", "4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush"],
     ["메모리 라이브러리", "UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate"],
+    ["Context primitive", "72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)"],
+    ["스케줄러 라이브러리", "single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap"],
+    ["소프트웨어 인터럽트 syscall", "indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],
   ]) +
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
   paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV, SWAPGS primitive도 지원하지만 실제 per-CPU 할당과 entry/context-switch 정책은 kernel이 정해야 합니다.") +
-  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, GPT/FAT32 UEFI boot-disk builder도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, scheduler·syscall 라이브러리, 장치 드라이버, persistent filesystem, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + "와 " + code("examples/os/memory_kernel.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
+  paragraph("GS-relative per-CPU 저장소와 runtime xAPIC/x2APIC 접근, EOI, IPI, INIT, SIPI 전송, 4-level page-table entry와 CR3/TLB primitive, UEFI memory-map bitmap physical allocator, conflict-checked virtual-memory walker, 72-byte cooperative context frame, single-CPU cooperative scheduler, software-interrupt syscall dispatcher, GPT/FAT32 UEFI boot-disk builder도 구현되어 있습니다. 아직 없는 기능은 ACPI MADT processor discovery, AP trampoline과 complete AP startup, automatic per-CPU TSS/IST 관리, FPU/SIMD context-switch 정책, automatic intermediate page-table allocation/reclamation, virtual address-space policy, preemptive/SMP scheduler, SYSCALL/SYSRET path, 장치 드라이버, persistent filesystem, ARM64 freestanding backend입니다. " + code("examples/os/freestanding_features.sura") + ", " + code("examples/os/memory_kernel.sura") + ", " + code("examples/os/scheduler_features.sura") + ", " + code("examples/os/syscall_features.sura") + "는 기능 시험이며 완성 OS가 아닙니다. 자세한 계약은 " + code("Guide/OS_DEVELOPMENT.md") + "에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

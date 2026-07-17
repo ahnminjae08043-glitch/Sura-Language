@@ -2,7 +2,9 @@ param(
     [string]$Engine = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuraLanguage.exe"),
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/hello_uefi.sura"),
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
-    [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura")
+    [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
+    [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
+    [string]$SyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/syscall_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $MemorySource)) {
         throw "Sura freestanding memory source not found: $MemorySource"
+    }
+    if (-not (Test-Path -LiteralPath $SchedulerSource)) {
+        throw "Sura freestanding scheduler source not found: $SchedulerSource"
+    }
+    if (-not (Test-Path -LiteralPath $SyscallSource)) {
+        throw "Sura freestanding syscall source not found: $SyscallSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -215,6 +223,12 @@ try {
     if (-not (Test-ByteSequence $featureBytes ([byte[]](0x0f, 0x20, 0xd8, 0x0f, 0x22, 0xd8)))) {
         throw "Freestanding feature image is missing CR3 TLB flush"
     }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0x53, 0x55, 0x57, 0x56, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57)))) {
+        throw "Freestanding feature image is missing context-switch register save"
+    }
+    if (-not (Test-ByteSequence $featureBytes ([byte[]](0xfc, 0x4c, 0x89, 0xe9, 0x48, 0x83, 0xec, 0x20, 0x41, 0xff, 0xd4)))) {
+        throw "Freestanding feature image is missing task bootstrap"
+    }
     $ascii = [System.Text.Encoding]::ASCII.GetString($featureBytes)
     if ($ascii -notmatch "sura-device") {
         throw "Freestanding feature image is missing static UTF-8 data"
@@ -244,6 +258,54 @@ try {
     }
     if (-not (Test-ByteSequence $memoryBytes ([byte[]](0x48, 0xc1, 0xe8, 0x27, 0x25, 0xff, 0x01, 0x00, 0x00)))) {
         throw "Freestanding memory-kernel image is missing imported page-table walking"
+    }
+
+    $schedulerEfi = Join-Path $temp "SCHEDULER.EFI"
+    $schedulerOutput = & $Engine --target uefi-x86_64 --out $schedulerEfi $SchedulerSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding scheduler feature compile failed:`n$($schedulerOutput -join "`n")"
+    }
+    $schedulerBytes = [System.IO.File]::ReadAllBytes($schedulerEfi)
+    if ($schedulerBytes.Length -lt 40000 -or
+        $schedulerBytes[0] -ne 0x4d -or $schedulerBytes[1] -ne 0x5a) {
+        throw "Freestanding scheduler feature image did not retain task tables and stacks"
+    }
+    $schedulerUtf16 = [System.Text.Encoding]::Unicode.GetString($schedulerBytes)
+    if ($schedulerUtf16 -notmatch "Sura scheduler feature test") {
+        throw "Freestanding scheduler feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $schedulerBytes ([byte[]](0x53, 0x55, 0x57, 0x56, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x89, 0x21, 0x48, 0x89, 0xd4)))) {
+        throw "Freestanding scheduler feature image is missing integer context save/switch"
+    }
+    if (-not (Test-ByteSequence $schedulerBytes ([byte[]](0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5e, 0x5f, 0x5d, 0x5b, 0xc3)))) {
+        throw "Freestanding scheduler feature image is missing integer context restore"
+    }
+    if (-not (Test-ByteSequence $schedulerBytes ([byte[]](0xfc, 0x4c, 0x89, 0xe9, 0x48, 0x83, 0xec, 0x20, 0x41, 0xff, 0xd4)))) {
+        throw "Freestanding scheduler feature image is missing the task bootstrap"
+    }
+
+    $syscallEfi = Join-Path $temp "SYSCALL.EFI"
+    $syscallOutput = & $Engine --target uefi-x86_64 --out $syscallEfi $SyscallSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding syscall feature compile failed:`n$($syscallOutput -join "`n")"
+    }
+    $syscallBytes = [System.IO.File]::ReadAllBytes($syscallEfi)
+    if ($syscallBytes.Length -lt 7000 -or
+        $syscallBytes[0] -ne 0x4d -or $syscallBytes[1] -ne 0x5a) {
+        throw "Freestanding syscall feature image is invalid"
+    }
+    $syscallUtf16 = [System.Text.Encoding]::Unicode.GetString($syscallBytes)
+    if ($syscallUtf16 -notmatch "Sura software-interrupt syscall feature test") {
+        throw "Freestanding syscall feature image is missing its diagnostic"
+    }
+    if (-not (Test-ByteSequence $syscallBytes ([byte[]](0xcd, 0x80, 0x5e, 0x5f)))) {
+        throw "Freestanding syscall feature image is missing INT 0x80 invocation"
+    }
+    if (-not (Test-ByteSequence $syscallBytes ([byte[]](0x41, 0xff, 0xd3)))) {
+        throw "Freestanding syscall feature image is missing indirect handler call"
+    }
+    if (-not (Test-ByteSequence $syscallBytes ([byte[]](0x48, 0xcf)))) {
+        throw "Freestanding syscall feature image is missing interrupt return"
     }
 
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
@@ -352,6 +414,93 @@ end
         -Pattern "physical address must be 4 KiB aligned" `
         -Description "Unaligned constant page-table address"
 
+    $invalidContextStackSource = Join-Path $temp "invalid_context_stack.sura"
+    $invalidContextStackText = @'
+func task(argument: u64) -> u64 do
+  return argument
+end
+
+func task_exit(result: u64) do
+  return
+end
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  initial_rsp: ptr is context.init(64, addr_of(task), 0, addr_of(task_exit))
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidContextStackSource,
+        $invalidContextStackText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidContextStackSource `
+        -OutputPath (Join-Path $temp "INVALID_CONTEXT_STACK.EFI") `
+        -Pattern "at least 72 bytes" `
+        -Description "Too-small constant task context stack"
+
+    $invalidSyscallVectorSource = Join-Path $temp "invalid_syscall_vector.sura"
+    $invalidSyscallVectorText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  result: u64 is syscall.invoke(31, 0)
+  return result
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidSyscallVectorSource,
+        $invalidSyscallVectorText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidSyscallVectorSource `
+        -OutputPath (Join-Path $temp "INVALID_SYSCALL_VECTOR.EFI") `
+        -Pattern "system-call vector must be 32\.\.255" `
+        -Description "Reserved system-call vector"
+
+    $invalidReservedFunctionSource = Join-Path $temp "invalid_reserved_function.sura"
+    $invalidReservedFunctionText = @'
+func __sura_context_switch() do
+  return
+end
+
+func efi_main(image: u64, system: ptr) -> u64 do
+  return 0
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidReservedFunctionSource,
+        $invalidReservedFunctionText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidReservedFunctionSource `
+        -OutputPath (Join-Path $temp "INVALID_RESERVED_FUNCTION.EFI") `
+        -Pattern "are reserved" `
+        -Description "Reserved freestanding helper name"
+
+    $invalidSyscallVectorSource = Join-Path $temp "invalid_syscall_vector.sura"
+    $invalidSyscallVectorText = @'
+func efi_main(image: u64, system: ptr) -> u64 do
+  result: u64 is syscall.invoke(31, 0)
+  return result
+end
+'@
+    [System.IO.File]::WriteAllText(
+        $invalidSyscallVectorSource,
+        $invalidSyscallVectorText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Invoke-ExpectedCompileFailure `
+        -EnginePath $Engine `
+        -SourcePath $invalidSyscallVectorSource `
+        -OutputPath (Join-Path $temp "INVALID_SYSCALL_VECTOR.EFI") `
+        -Pattern "must be 32..255" `
+        -Description "Reserved CPU-exception syscall vector"
+
     $cycleASource = Join-Path $temp "cycle_a.sura"
     $cycleBSource = Join-Path $temp "cycle_b.sura"
     [System.IO.File]::WriteAllText(
@@ -371,7 +520,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), syscall=$($syscallBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

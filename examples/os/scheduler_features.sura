@@ -1,0 +1,58 @@
+# Compile-only cooperative task-switching feature example.
+#
+# This emits and checks scheduler building blocks, but intentionally does not
+# exit UEFI boot services or start an OS. Full OS integration is deferred.
+
+import "../../stdlib/freestanding/scheduler.sura"
+
+scheduler_state is static.struct(KernelScheduler)
+task_table is static.struct(KernelTask, 3)
+first_stack is static.zero(16384, 16)
+second_stack is static.zero(16384, 16)
+first_counter: u64 is 0
+second_counter: u64 is 0
+
+func first_task(scheduler_address: u64) -> u64 do
+  global first_counter
+  state: ptr[KernelScheduler] is scheduler_address
+  iteration: u64 is 0
+  while iteration < 3 do
+    first_counter += 1
+    scheduler_yield(state)
+    iteration += 1
+  end
+  return 11
+end
+
+func second_task(scheduler_address: u64) -> u64 do
+  global second_counter
+  state: ptr[KernelScheduler] is scheduler_address
+  iteration: u64 is 0
+  while iteration < 5 do
+    second_counter += 1
+    scheduler_yield(state)
+    iteration += 1
+  end
+  return 22
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura scheduler feature test")
+  uefi.newline()
+
+  # Keep the operations non-executing until final OS integration. The
+  # freestanding backend still emits the imported scheduler functions.
+  if 0 == 1 then
+    state: ptr[KernelScheduler] is scheduler_state
+    initialized is scheduler_init(state, task_table, 3)
+    first_id: u64 is scheduler_create(state, first_stack, 16384, addr_of(first_task), scheduler_state)
+    second_id: u64 is scheduler_create(state, second_stack, 16384, addr_of(second_task), scheduler_state)
+    yielded is scheduler_yield(state)
+    first_result: u64 is scheduler_join(state, first_id)
+    second_result: u64 is scheduler_join(state, second_id)
+    reaped_first is scheduler_reap(state, first_id)
+    reaped_second is scheduler_reap(state, second_id)
+  end
+
+  return 0
+end

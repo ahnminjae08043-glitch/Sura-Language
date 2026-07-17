@@ -1207,8 +1207,13 @@ class UefiX64Compiler {
         }
     }
 
-    size_t save_call_args(const std::vector<ExprPtr>& args) {
-        if (args.size() > argument_bank_width) {
+    size_t save_call_args_from(const std::vector<ExprPtr>& args,
+                               size_t first) {
+        if (first > args.size()) {
+            fail(current_function, "invalid freestanding argument range");
+        }
+        const size_t count = args.size() - first;
+        if (count > argument_bank_width) {
             fail(current_function, "freestanding calls support at most " +
                  std::to_string(argument_bank_width) + " arguments");
         }
@@ -1220,12 +1225,16 @@ class UefiX64Compiler {
             temporary_slot_count +
             call_argument_depth * argument_bank_width;
         ++call_argument_depth;
-        for (size_t i = 0; i < args.size(); ++i) {
-            compile_expr(args[i].get());
+        for (size_t i = 0; i < count; ++i) {
+            compile_expr(args[first + i].get());
             x.mov_rbp_rax(scratch_slots[base + i]);
         }
         --call_argument_depth;
         return base;
+    }
+
+    size_t save_call_args(const std::vector<ExprPtr>& args) {
+        return save_call_args_from(args, 0);
     }
 
     void load_call_args(size_t count, size_t base = 0) {
@@ -1293,6 +1302,69 @@ class UefiX64Compiler {
                 fail(origin, "addr_of() requires one local or static global name");
             }
             address_of_named_rax(static_cast<const Ident*>(args[0].get()));
+            return;
+        }
+
+        if (name == "call_indirect") {
+            if (args.empty() || args.size() > 6) {
+                fail(origin, "call.indirect(function, argument...) expects a "
+                             "function address and at most five arguments");
+            }
+            const size_t argument_base = save_call_args(args);
+            x.mov_reg_rbp(11, scratch_slots[argument_base]);
+            load_call_args(args.size() - 1, argument_base + 1);
+            x.bytes({0x41, 0xff, 0xd3}); // call r11
+            return;
+        }
+
+        if (name == "syscall_invoke") {
+            if (args.size() < 2 || args.size() > 7) {
+                fail(origin, "syscall.invoke(vector, number, argument...) "
+                             "expects a vector, number, and at most five "
+                             "arguments");
+            }
+            const uint64_t vector =
+                require_constant_integer(args[0].get(), "system-call vector");
+            if (vector < 32 || vector > 255) {
+                fail(args[0].get(), "system-call vector must be 32..255");
+            }
+            const size_t argument_base = save_call_args_from(args, 1);
+
+            // Keep the Win64 nonvolatile registers used by the syscall
+            // convention intact for the surrounding Sura function.
+            x.bytes({0x57, 0x56}); // push rdi; push rsi
+            x.mov_rax_rbp(scratch_slots[argument_base]); // syscall number
+
+            if (args.size() > 2) {
+                x.bytes({0x48, 0x8b, 0xbd}); // rdi = argument 0
+                x.d(static_cast<uint32_t>(scratch_slots[argument_base + 1]));
+            } else {
+                x.bytes({0x31, 0xff});
+            }
+            if (args.size() > 3) {
+                x.bytes({0x48, 0x8b, 0xb5}); // rsi = argument 1
+                x.d(static_cast<uint32_t>(scratch_slots[argument_base + 2]));
+            } else {
+                x.bytes({0x31, 0xf6});
+            }
+            if (args.size() > 4) {
+                x.mov_reg_rbp(2, scratch_slots[argument_base + 3]);
+            } else {
+                x.bytes({0x31, 0xd2});
+            }
+            if (args.size() > 5) {
+                x.mov_reg_rbp(10, scratch_slots[argument_base + 4]);
+            } else {
+                x.bytes({0x45, 0x31, 0xd2});
+            }
+            if (args.size() > 6) {
+                x.mov_reg_rbp(8, scratch_slots[argument_base + 5]);
+            } else {
+                x.bytes({0x45, 0x31, 0xc0});
+            }
+
+            x.bytes({0xcd, static_cast<uint8_t>(vector),
+                     0x5e, 0x5f}); // int vector; pop rsi; pop rdi
             return;
         }
 
@@ -2940,6 +3012,53 @@ class UefiX64Compiler {
         }
     }
 
+    void emit_context_helpers() {
+        if (!context_helpers_used) return;
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_context_switch"] = x.pos();
+        x.bytes({
+            0x53,                         // push rbx
+            0x55,                         // push rbp
+            0x57,                         // push rdi
+            0x56,                         // push rsi
+            0x41, 0x54,                   // push r12
+            0x41, 0x55,                   // push r13
+            0x41, 0x56,                   // push r14
+            0x41, 0x57,                   // push r15
+            0x48, 0x89, 0x21,             // mov [rcx],rsp
+            0x48, 0x89, 0xd4,             // mov rsp,rdx
+            0x41, 0x5f,                   // pop r15
+            0x41, 0x5e,                   // pop r14
+            0x41, 0x5d,                   // pop r13
+            0x41, 0x5c,                   // pop r12
+            0x5e,                         // pop rsi
+            0x5f,                         // pop rdi
+            0x5d,                         // pop rbp
+            0x5b,                         // pop rbx
+            0xc3                          // ret to continuation/bootstrap
+        });
+
+        while (x.pos() & 15U) x.b(0x90);
+        function_offsets["__sura_context_bootstrap"] = x.pos();
+        x.bytes({
+            0xfc,                         // cld
+            0x4c, 0x89, 0xe9,             // mov rcx,r13 (task argument)
+            0x48, 0x83, 0xec, 0x20,       // Win64 shadow space
+            0x41, 0xff, 0xd4,             // call r12 (task entry)
+            0x48, 0x83, 0xc4, 0x20,
+            0x4d, 0x85, 0xf6,             // test r14,r14
+            0x0f, 0x84, 0x0e, 0x00, 0x00, 0x00,
+            0x48, 0x89, 0xc1,             // mov rcx,rax (task result)
+            0x48, 0x83, 0xec, 0x20,
+            0x41, 0xff, 0xd6,             // call r14 (exit handler)
+            0x48, 0x83, 0xc4, 0x20,
+            0xfa,                         // returned exit handler is fatal
+            0xf4,
+            0xeb, 0xfd
+        });
+    }
+
     void compile_function(const std::string& name, const FuncDef* function,
                           const SuraBlock* body, bool is_entry) {
         while (x.pos() & 15U) x.b(0x90);
@@ -3176,6 +3295,7 @@ class UefiX64Compiler {
 public:
     SuraOsCompileResult compile(const SuraBlock* root) {
         if (!root) throw SuraOsCompileError("missing Sura AST for OS target");
+        context_helpers_used = false;
         functions.clear();
         struct_defs.clear();
         struct_layouts.clear();
@@ -3183,6 +3303,10 @@ public:
         for (const auto& stmt : root->body) {
             if (stmt && stmt->kind == NK::FUNC_DEF) {
                 auto* function = static_cast<const FuncDef*>(stmt.get());
+                if (function->name.rfind("__sura_", 0) == 0) {
+                    fail(function, "freestanding function names beginning "
+                                   "with '__sura_' are reserved");
+                }
                 if (!functions.emplace(function->name, function).second) {
                     fail(function, "duplicate freestanding function '" + function->name + "'");
                 }
@@ -3236,6 +3360,7 @@ public:
                                  functions.at(name)->body.get(), false);
             }
         }
+        emit_context_helpers();
 
         for (const CallPatch& patch : call_patches) {
             auto target = function_offsets.find(patch.function);

@@ -40,6 +40,7 @@ end
 boot_counter: u64 is 0
 timer_ticks: u64 is 0
 last_fault_error: u64 is 0
+saved_context_rsp: u64 is 0
 pci_header is static.struct(PciConfigHeader)
 page_buffer is static.zero(4096, 4096)
 idt_table is static.zero(4096, 16)
@@ -49,6 +50,7 @@ kernel_stack is static.zero(4096, 16)
 fault_stack is static.zero(4096, 16)
 fpu_state is static.zero(4096, 64)
 percpu_state is static.zero(256, 64)
+task_stack is static.zero(4096, 16)
 interrupt_stub is static.bytes([250, 244, 235, 252], 16)
 driver_name is static.utf8("sura-device")
 
@@ -58,6 +60,14 @@ end
 
 func identity(value: u64) -> u64 do
   return value
+end
+
+func context_task_entry(argument: u64) -> u64 do
+  return argument + 1
+end
+
+func context_task_exit(result: u64) do
+  return
 end
 
 func timer_interrupt(frame: ptr[InterruptFrame]) interrupt do
@@ -152,6 +162,10 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     paging.activate(page_buffer)
     paging.invalidate(virtual_address)
     paging.flush()
+
+    context_bytes: usize is context.frame_size()
+    initial_context_rsp: ptr is context.init(ptr.add(task_stack, 4096), addr_of(context_task_entry), 7, addr_of(context_task_exit))
+    context.switch(addr_of(saved_context_rsp), initial_context_rsp)
   end
 
   return 0

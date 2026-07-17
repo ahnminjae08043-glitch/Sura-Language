@@ -194,7 +194,11 @@ try {
         "SuraLanguage.exe",
         "surapkg.exe",
         "stdlib/math.sura",
+        "stdlib/freestanding/scheduler.sura",
+        "stdlib/freestanding/syscall.sura",
         "examples/starter/01_hello.sura",
+        "examples/os/scheduler_features.sura",
+        "examples/os/syscall_features.sura",
         "Assets/StoreLogo.png"
     )) {
         if ($entryNames -notcontains $requiredEntry) {

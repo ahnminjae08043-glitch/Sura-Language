@@ -1,0 +1,250 @@
+# Cooperative integer-context scheduler for the freestanding x86-64 target.
+# Task states: 0 unused, 1 runnable, 2 finished, 3 sleeping, 4 blocked.
+
+struct KernelTask do
+  id: u64
+  rsp: ptr
+  stack_base: ptr
+  stack_size: usize
+  argument: u64
+  result: u64
+  state: u64
+  wake_tick: u64
+  switches: u64
+end
+
+struct KernelScheduler do
+  tasks: ptr
+  capacity: u64
+  current: u64
+  task_count: u64
+  next_id: u64
+  ticks: u64
+  switches: u64
+end
+
+scheduler_active: ptr is 0
+
+func scheduler_task_at(state: ptr[KernelScheduler], index: u64) do
+  return ptr.index(state.tasks, index, sizeof(KernelTask))
+end
+
+func scheduler_clear_task(task: ptr[KernelTask]) do
+  task.id is 0
+  task.rsp is 0
+  task.stack_base is 0
+  task.stack_size is 0
+  task.argument is 0
+  task.result is 0
+  task.state is 0
+  task.wake_tick is 0
+  task.switches is 0
+end
+
+func scheduler_init(state: ptr[KernelScheduler], tasks: ptr, capacity: u64) do
+  global scheduler_active
+  if state == 0 or tasks == 0 or capacity == 0 then return false
+
+  index: u64 is 0
+  while index < capacity do
+    task: ptr[KernelTask] is ptr.index(tasks, index, sizeof(KernelTask))
+    scheduler_clear_task(task)
+    index += 1
+  end
+
+  state.tasks is tasks
+  state.capacity is capacity
+  state.current is 0
+  state.task_count is 1
+  state.next_id is 2
+  state.ticks is 0
+  state.switches is 0
+
+  boot_task: ptr[KernelTask] is ptr.index(tasks, 0, sizeof(KernelTask))
+  boot_task.id is 1
+  boot_task.state is 1
+  scheduler_active is state
+  return true
+end
+
+func scheduler_find_index(state: ptr[KernelScheduler], task_id: u64) do
+  if task_id == 0 then return state.capacity
+  index: u64 is 0
+  while index < state.capacity do
+    task: ptr[KernelTask] is scheduler_task_at(state, index)
+    if task.state != 0 and task.id == task_id then return index
+    index += 1
+  end
+  return state.capacity
+end
+
+func scheduler_create(state: ptr[KernelScheduler], stack_base: ptr, stack_size: usize, entry: ptr, argument: u64) do
+  if state == 0 or stack_base == 0 or entry == 0 then return 0
+  if stack_size < 4096 or not ptr.is_aligned(stack_base, 16) then return 0
+
+  index: u64 is 1
+  while index < state.capacity do
+    task: ptr[KernelTask] is scheduler_task_at(state, index)
+    if task.state == 0 then
+      task.id is state.next_id
+      state.next_id is state.next_id + 1
+      task.stack_base is stack_base
+      task.stack_size is stack_size
+      task.argument is argument
+      task.result is 0
+      task.wake_tick is 0
+      task.switches is 0
+      task.rsp is context.init(ptr.add(stack_base, stack_size), entry, argument, addr_of(scheduler_task_exit))
+      task.state is 1
+      state.task_count is state.task_count + 1
+      return task.id
+    end
+    index += 1
+  end
+  return 0
+end
+
+func scheduler_next_runnable(state: ptr[KernelScheduler]) do
+  if state.task_count == 0 then return state.capacity
+  scanned: u64 is 0
+  index: u64 is state.current
+  while scanned < state.capacity do
+    index += 1
+    if index >= state.capacity then index is 0
+    task: ptr[KernelTask] is scheduler_task_at(state, index)
+    if task.state == 1 then return index
+    scanned += 1
+  end
+  return state.capacity
+end
+
+func scheduler_yield(state: ptr[KernelScheduler]) do
+  if state == 0 or state.current >= state.capacity then return false
+  next_index: u64 is scheduler_next_runnable(state)
+  if next_index >= state.capacity or next_index == state.current then return false
+
+  current_task: ptr[KernelTask] is scheduler_task_at(state, state.current)
+  next_task: ptr[KernelTask] is scheduler_task_at(state, next_index)
+  state.current is next_index
+  state.switches is state.switches + 1
+  next_task.switches is next_task.switches + 1
+  context.switch(ptr.field(current_task, KernelTask, rsp), next_task.rsp)
+  return true
+end
+
+func scheduler_tick(state: ptr[KernelScheduler]) do
+  state.ticks is state.ticks + 1
+  index: u64 is 0
+  while index < state.capacity do
+    task: ptr[KernelTask] is scheduler_task_at(state, index)
+    if task.state == 3 and task.wake_tick <= state.ticks then
+      task.wake_tick is 0
+      task.state is 1
+    end
+    index += 1
+  end
+  return state.ticks
+end
+
+func scheduler_sleep(state: ptr[KernelScheduler], ticks: u64) do
+  if ticks == 0 then return scheduler_yield(state)
+  if state.current >= state.capacity then return false
+  task: ptr[KernelTask] is scheduler_task_at(state, state.current)
+  task.wake_tick is state.ticks + ticks
+  task.state is 3
+  if scheduler_yield(state) then return true
+  task.state is 1
+  task.wake_tick is 0
+  return false
+end
+
+func scheduler_block_current(state: ptr[KernelScheduler]) do
+  if state.current >= state.capacity then return false
+  task: ptr[KernelTask] is scheduler_task_at(state, state.current)
+  task.state is 4
+  if scheduler_yield(state) then return true
+  task.state is 1
+  return false
+end
+
+func scheduler_wake(state: ptr[KernelScheduler], task_id: u64) do
+  index: u64 is scheduler_find_index(state, task_id)
+  if index >= state.capacity then return false
+  task: ptr[KernelTask] is scheduler_task_at(state, index)
+  if task.state != 3 and task.state != 4 then return false
+  task.wake_tick is 0
+  task.state is 1
+  return true
+end
+
+func scheduler_task_state(state: ptr[KernelScheduler], task_id: u64) do
+  index: u64 is scheduler_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  task: ptr[KernelTask] is scheduler_task_at(state, index)
+  return task.state
+end
+
+func scheduler_task_result(state: ptr[KernelScheduler], task_id: u64) do
+  index: u64 is scheduler_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  task: ptr[KernelTask] is scheduler_task_at(state, index)
+  return task.result
+end
+
+func scheduler_join(state: ptr[KernelScheduler], task_id: u64) do
+  index: u64 is scheduler_find_index(state, task_id)
+  if index >= state.capacity then return 0
+  while scheduler_task_state(state, task_id) != 2 do
+    if not scheduler_yield(state) then return 0
+  end
+  return scheduler_task_result(state, task_id)
+end
+
+func scheduler_reap(state: ptr[KernelScheduler], task_id: u64) do
+  index: u64 is scheduler_find_index(state, task_id)
+  if index == 0 or index >= state.capacity then return false
+  task: ptr[KernelTask] is scheduler_task_at(state, index)
+  if task.state != 2 then return false
+  scheduler_clear_task(task)
+  return true
+end
+
+func scheduler_runnable_count(state: ptr[KernelScheduler]) do
+  count: u64 is 0
+  index: u64 is 0
+  while index < state.capacity do
+    task: ptr[KernelTask] is scheduler_task_at(state, index)
+    if task.state == 1 then count += 1
+    index += 1
+  end
+  return count
+end
+
+func scheduler_task_exit(result: u64) do
+  global scheduler_active
+  if scheduler_active == 0 then
+    cpu.disable_interrupts()
+    while true do
+      cpu.halt()
+    end
+  end
+
+  state: ptr[KernelScheduler] is scheduler_active
+  if state.current >= state.capacity then
+    cpu.disable_interrupts()
+    while true do
+      cpu.halt()
+    end
+  end
+  task: ptr[KernelTask] is scheduler_task_at(state, state.current)
+  task.result is result
+  task.state is 2
+  if state.task_count > 0 then state.task_count is state.task_count - 1
+
+  while true do
+    if not scheduler_yield(state) then
+      cpu.disable_interrupts()
+      cpu.halt()
+    end
+  end
+end

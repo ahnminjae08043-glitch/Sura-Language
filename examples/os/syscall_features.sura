@@ -1,0 +1,31 @@
+# Compile-only software-interrupt syscall feature example.
+#
+# This emits an IDT gate, dispatcher, indirect handler call, and client-side
+# INT instruction. It intentionally does not enter user mode or start an OS.
+
+import "../../stdlib/freestanding/syscall.sura"
+
+syscall_idt is static.zero(4096, 16)
+syscall_table is static.struct(SoftwareSyscallTable)
+syscall_handlers is static.zero(512, 16)
+
+func add_syscall(first: u64, second: u64, third: u64, fourth: u64, fifth: u64) -> u64 do
+  return first + second + third + fourth + fifth
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura software-interrupt syscall feature test")
+  uefi.newline()
+
+  # Keep the path non-executing until the final kernel installs its own GDT,
+  # TSS, IDT, privilege policy, and user-address validation.
+  if 0 == 1 then
+    table: ptr[SoftwareSyscallTable] is syscall_table
+    initialized is syscall_table_init(table, syscall_handlers, 64, 1)
+    installed is syscall_table_set(table, 7, addr_of(add_syscall))
+    cpu.idt_set_gate(syscall_idt, 128, addr_of(software_syscall_dispatch), 8, 0, 238)
+    result: u64 is syscall.invoke(128, 7, 1, 2, 3, 4, 5)
+  end
+
+  return 0
+end
