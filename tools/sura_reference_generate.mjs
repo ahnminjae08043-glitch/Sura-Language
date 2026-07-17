@@ -596,10 +596,10 @@ const machineFacts = {
       model: "caller-owned fixed-capacity ASCII cell buffer",
       limits: ["1..256 columns", "1..128 rows"],
       operations: ["printable character", "Backspace", "newline", "wrap", "upward scroll", "clear", "bounded C-string output", "unsigned decimal output", "5x7 framebuffer draw"],
-      os_instance: "92x25 command history shared by COM1 and PS/2 input",
+      os_instance: "46x14 command history rendered with the 5x7 font at 2x scale and shared by COM1 and PS/2 input",
       commands: ["help", "status", "mem", "about", "clear", "shutdown"],
       example: "examples/os/text_terminal_features.sura",
-      executed_verification: "QMP PS/2 input fills and scrolls the 25-row OS terminal, clears it, and leaves a visible status result; serial markers prove scroll and clear",
+      executed_verification: "QMP PS/2 input fills and scrolls the 14-row OS terminal, clears it, and leaves a visible status result; serial markers prove scroll and clear",
       limitations: ["ASCII cells only", "no ANSI escape parser", "no selection, clipboard, alternate buffer, or scrollback beyond visible rows"],
     },
     ps2_desktop_input: {
@@ -745,7 +745,7 @@ const machineFacts = {
       source: "os/sura_os.sura",
       gate: "tools/sura_os_vm.ps1",
       output: ["build/os/SuraOS.efi", "build/os/SuraOS.img"],
-      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "92x25 graphical terminal command history", "wrap, scroll, clear, and numeric output", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
+      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "46x14 graphical terminal command history at 2x font scale", "wrap, scroll, clear, and numeric output", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
       shell_commands: ["help", "status", "mem", "about", "clear", "shutdown"],
       interactive_command: ".\\tools\\sura_os_vm.ps1 -Engine .\\SuraLanguage.exe -Interactive",
       screenshot_command: ".\\tools\\sura_os_screenshot.ps1 -Engine .\\SuraLanguage.exe",
@@ -1242,7 +1242,7 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
 ));
 
 sections.push(section("freestanding", "OS 개발용 freestanding 기능",
-  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 92x25 graphical terminal의 command history·scroll·clear를 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.") +
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 46x14 graphical terminal의 command history·scroll·clear를 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.") +
   pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
@@ -1270,7 +1270,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
     ["그래픽 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 double-buffer desktop·memory self-check와 COM1 shell의 status/mem/shutdown 검증"],
     ["Framebuffer·글꼴", code("framebuffer.sura") + "의 pixel/line/rectangle/present와 " + code("font5x7.sura") + "의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처"],
-    ["그래픽 터미널", code("text_terminal.sura") + "의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 92x25 OS instance 실행 검증"],
+    ["그래픽 터미널", code("text_terminal.sura") + "의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증"],
     ["PS/2 데스크톱 입력", code("ps2.sura") + "의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
     ["UEFI", "console, memory services, protocol lookup, ExitBootServices, GOP framebuffer"],

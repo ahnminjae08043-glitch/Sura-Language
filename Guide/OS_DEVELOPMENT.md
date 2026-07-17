@@ -292,7 +292,8 @@ buffer for graphical consoles. It supports:
 - bounded C-string and unsigned-decimal output
 - direct 5x7 framebuffer drawing
 
-Sura OS uses a 92x25 instance inside the terminal window. COM1 and PS/2 input
+Sura OS uses a 46x14 instance with the 5x7 font at 2x scale inside the terminal
+window. COM1 and PS/2 input
 both update the same command buffer and graphical history. `help`, `status`,
 `mem`, `about`, unknown-command output, the prompt, and command text remain on
 screen and scroll together. `clear` clears the cell buffer before drawing the
@@ -300,7 +301,7 @@ next prompt. `shutdown` remains available from both input paths.
 
 `examples/os/text_terminal_features.sura` verifies wrap, scroll, numeric
 output, framebuffer drawing, and clear in a generated EFI image.
-`tools/sura_os_screenshot.ps1` additionally fills the 25-row terminal through
+`tools/sura_os_screenshot.ps1` additionally fills the terminal through
 QEMU PS/2 input, requires `SURA_OS_TERMINAL_SCROLL_OK`, runs `clear`, requires
 `SURA_OS_CLEAR_OK`, then leaves a visible `status` result in the captured
 framebuffer.
