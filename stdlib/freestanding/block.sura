@@ -1,0 +1,289 @@
+# Fixed-width block-device ABI plus RAM and UEFI Block I/O adapters.
+#
+# Driver callbacks return zero on success. A BlockDevice does not own its
+# context or buffers and provides no locking; callers serialize a device.
+
+struct BlockDevice do
+  context: ptr
+  sector_size: u64
+  sector_count: u64
+  alignment: u64
+  read_only: u64
+  read_blocks: ptr
+  write_blocks: ptr
+  flush_blocks: ptr
+end
+
+struct RamBlockContext do
+  data: ptr
+  byte_size: u64
+  sector_size: u64
+  read_only: u64
+end
+
+struct UefiBlockIoMedia do
+  media_id: u32
+  removable_media: u8
+  media_present: u8
+  logical_partition: u8
+  read_only: u8
+  write_caching: u8
+  block_size: u32
+  io_align: u32
+  last_block: u64
+  lowest_aligned_lba: u64
+  logical_blocks_per_physical_block: u32
+  optimal_transfer_length_granularity: u32
+end
+
+struct UefiBlockIoProtocol do
+  revision: u64
+  media: ptr[UefiBlockIoMedia]
+  reset: ptr
+  read_blocks: ptr
+  write_blocks: ptr
+  flush_blocks: ptr
+end
+
+struct UefiBlockContext do
+  device: ptr[BlockDevice]
+  protocol: ptr[UefiBlockIoProtocol]
+  media: ptr[UefiBlockIoMedia]
+  media_id: u32
+  block_size: u64
+end
+
+uefi_block_io_guid is static.bytes([33, 91, 78, 150, 89, 100, 210, 17, 142, 57, 0, 160, 201, 105, 114, 59], 8)
+
+func block_power_of_two(value: u64) do
+  if value == 0 then return false
+  return (value & (value - 1)) == 0
+end
+
+func block_device_clear(device: ptr[BlockDevice]) do
+  if device == 0 then return false
+  device.context is 0
+  device.sector_size is 0
+  device.sector_count is 0
+  device.alignment is 0
+  device.read_only is 0
+  device.read_blocks is 0
+  device.write_blocks is 0
+  device.flush_blocks is 0
+  return true
+end
+
+func block_device_init(device: ptr[BlockDevice], context: ptr, sector_size: u64, sector_count: u64, alignment: u64, read_only: u64) do
+  if device == 0 or context == 0 then return false
+  if sector_size < 512 or sector_size > 65536 then return false
+  if not block_power_of_two(sector_size) or sector_count == 0 then return false
+  if alignment == 0 then alignment is 1
+  if alignment > 65536 or not block_power_of_two(alignment) then return false
+  device.context is context
+  device.sector_size is sector_size
+  device.sector_count is sector_count
+  device.alignment is alignment
+  device.read_only is read_only
+  device.read_blocks is 0
+  device.write_blocks is 0
+  device.flush_blocks is 0
+  return true
+end
+
+func block_device_valid(device: ptr[BlockDevice]) do
+  if device == 0 or device.context == 0 then return false
+  if device.sector_size < 512 or device.sector_size > 65536 then return false
+  if not block_power_of_two(device.sector_size) or device.sector_count == 0 then return false
+  if device.alignment == 0 or device.alignment > 65536 then return false
+  if not block_power_of_two(device.alignment) then return false
+  return true
+end
+
+func block_request_valid(device: ptr[BlockDevice], lba: u64, count: u64, buffer: ptr) do
+  if not block_device_valid(device) or buffer == 0 or count == 0 then return false
+  if lba >= device.sector_count or count > device.sector_count - lba then return false
+  if device.alignment > 1 and not ptr.is_aligned(buffer, device.alignment) then return false
+  if count > u64("0xffffffffffffffff") / device.sector_size then return false
+  return true
+end
+
+func block_read(device: ptr[BlockDevice], lba: u64, count: u64, buffer: ptr) do
+  if not block_request_valid(device, lba, count, buffer) then return false
+  if device.read_blocks == 0 then return false
+  status: u64 is call.indirect(device.read_blocks, device.context, lba, count, buffer)
+  return status == 0
+end
+
+func block_write(device: ptr[BlockDevice], lba: u64, count: u64, buffer: ptr) do
+  if not block_request_valid(device, lba, count, buffer) then return false
+  if device.read_only != 0 or device.write_blocks == 0 then return false
+  status: u64 is call.indirect(device.write_blocks, device.context, lba, count, buffer)
+  return status == 0
+end
+
+func block_flush(device: ptr[BlockDevice]) do
+  if not block_device_valid(device) then return false
+  if device.flush_blocks == 0 then return true
+  status: u64 is call.indirect(device.flush_blocks, device.context)
+  return status == 0
+end
+
+func ram_block_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func ram_block_read(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[RamBlockContext] is context_address
+  if context == 0 or buffer == 0 or count == 0 then return 1
+  if context.data == 0 or context.byte_size == 0 then return 1
+  if context.sector_size < 512 or context.sector_size > 65536 then return 1
+  if not block_power_of_two(context.sector_size) then return 1
+  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_count: u64 is count * context.sector_size
+  if lba > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_offset: u64 is lba * context.sector_size
+  if byte_offset > context.byte_size or byte_count > context.byte_size - byte_offset then return 1
+  if not ram_block_copy(buffer, ptr.add(context.data, byte_offset), byte_count) then return 1
+  return 0
+end
+
+func ram_block_write(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[RamBlockContext] is context_address
+  if context == 0 or context.read_only != 0 then return 2
+  if buffer == 0 or count == 0 then return 1
+  if context.data == 0 or context.byte_size == 0 then return 1
+  if context.sector_size < 512 or context.sector_size > 65536 then return 1
+  if not block_power_of_two(context.sector_size) then return 1
+  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_count: u64 is count * context.sector_size
+  if lba > u64("0xffffffffffffffff") / context.sector_size then return 1
+  byte_offset: u64 is lba * context.sector_size
+  if byte_offset > context.byte_size or byte_count > context.byte_size - byte_offset then return 1
+  if not ram_block_copy(ptr.add(context.data, byte_offset), buffer, byte_count) then return 1
+  return 0
+end
+
+func ram_block_flush(context: ptr) do
+  if context == 0 then return 1
+  return 0
+end
+
+func ram_block_bind(device: ptr[BlockDevice], context: ptr[RamBlockContext], data: ptr, byte_size: u64, sector_size: u64, read_only: u64) do
+  if device == 0 or context == 0 then return false
+  block_device_clear(device)
+  context.data is 0
+  context.byte_size is 0
+  context.sector_size is 0
+  context.read_only is 0
+  if data == 0 or byte_size == 0 then return false
+  if sector_size < 512 or sector_size > 65536 then return false
+  if not block_power_of_two(sector_size) then return false
+  if (byte_size % sector_size) != 0 then return false
+  context.data is data
+  context.byte_size is byte_size
+  context.sector_size is sector_size
+  context.read_only is read_only
+  if not block_device_init(device, context, sector_size, byte_size / sector_size, 1, read_only) then return false
+  device.read_blocks is addr_of(ram_block_read)
+  device.write_blocks is addr_of(ram_block_write)
+  device.flush_blocks is addr_of(ram_block_flush)
+  return true
+end
+
+func uefi_block_layout_valid() do
+  if sizeof(UefiBlockIoMedia) != 48 or alignof(UefiBlockIoMedia) != 8 then return false
+  if offset_of(UefiBlockIoMedia, block_size) != 12 then return false
+  if offset_of(UefiBlockIoMedia, io_align) != 16 then return false
+  if offset_of(UefiBlockIoMedia, last_block) != 24 then return false
+  if offset_of(UefiBlockIoMedia, lowest_aligned_lba) != 32 then return false
+  if sizeof(UefiBlockIoProtocol) != 48 or alignof(UefiBlockIoProtocol) != 8 then return false
+  if offset_of(UefiBlockIoProtocol, media) != 8 then return false
+  if offset_of(UefiBlockIoProtocol, read_blocks) != 24 then return false
+  if offset_of(UefiBlockIoProtocol, flush_blocks) != 40 then return false
+  return true
+end
+
+func uefi_block_context_valid(context: ptr[UefiBlockContext]) do
+  if context == 0 or context.device == 0 then return false
+  if context.protocol == 0 or context.media == 0 then return false
+  device: ptr[BlockDevice] is context.device
+  protocol: ptr[UefiBlockIoProtocol] is context.protocol
+  media: ptr[UefiBlockIoMedia] is context.media
+  if device.context != context or protocol.media != media then return false
+  if not block_device_valid(device) or media.media_present == 0 then return false
+  if media.last_block == u64("0xffffffffffffffff") then return false
+  if media.media_id != context.media_id or media.block_size != context.block_size then return false
+  if device.sector_size != context.block_size then return false
+  if device.sector_count != media.last_block + 1 then return false
+  return true
+end
+
+func uefi_block_read(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[UefiBlockContext] is context_address
+  if not uefi_block_context_valid(context) or buffer == 0 or count == 0 then return 1
+  protocol: ptr[UefiBlockIoProtocol] is context.protocol
+  if protocol.read_blocks == 0 then return 1
+  if count > u64("0xffffffffffffffff") / context.block_size then return 1
+  byte_count: u64 is count * context.block_size
+  return call.indirect(protocol.read_blocks, protocol, context.media_id, lba, byte_count, buffer)
+end
+
+func uefi_block_write(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
+  context: ptr[UefiBlockContext] is context_address
+  if not uefi_block_context_valid(context) or buffer == 0 or count == 0 then return 1
+  protocol: ptr[UefiBlockIoProtocol] is context.protocol
+  media: ptr[UefiBlockIoMedia] is context.media
+  if protocol.write_blocks == 0 then return 1
+  if media.read_only != 0 then return 2
+  if count > u64("0xffffffffffffffff") / context.block_size then return 1
+  byte_count: u64 is count * context.block_size
+  return call.indirect(protocol.write_blocks, protocol, context.media_id, lba, byte_count, buffer)
+end
+
+func uefi_block_flush(context_address: ptr) do
+  context: ptr[UefiBlockContext] is context_address
+  if not uefi_block_context_valid(context) then return 1
+  protocol: ptr[UefiBlockIoProtocol] is context.protocol
+  if protocol.flush_blocks == 0 then return 1
+  return call.indirect(protocol.flush_blocks, protocol)
+end
+
+func uefi_block_bind(device: ptr[BlockDevice], context: ptr[UefiBlockContext], protocol: ptr[UefiBlockIoProtocol]) do
+  if device == 0 or context == 0 then return false
+  block_device_clear(device)
+  context.device is 0
+  context.protocol is 0
+  context.media is 0
+  context.media_id is 0
+  context.block_size is 0
+  if protocol == 0 or protocol.media == 0 then return false
+  if not uefi_block_layout_valid() then return false
+  media: ptr[UefiBlockIoMedia] is protocol.media
+  if media.media_present == 0 or media.last_block == u64("0xffffffffffffffff") then return false
+  alignment: u64 is media.io_align
+  if alignment == 0 then alignment is 1
+  if not block_device_init(device, context, media.block_size, media.last_block + 1, alignment, media.read_only) then return false
+  context.device is device
+  context.protocol is protocol
+  context.media is media
+  context.media_id is media.media_id
+  context.block_size is media.block_size
+  device.read_blocks is addr_of(uefi_block_read)
+  device.write_blocks is addr_of(uefi_block_write)
+  device.flush_blocks is addr_of(uefi_block_flush)
+  return true
+end
+
+func uefi_block_locate(device: ptr[BlockDevice], context: ptr[UefiBlockContext]) do
+  if device == 0 or context == 0 then return false
+  interface: ptr is 0
+  status: u64 is uefi.locate_protocol(uefi_block_io_guid, 0, addr_of(interface))
+  if status != 0 or interface == 0 then return false
+  return uefi_block_bind(device, context, interface)
+end

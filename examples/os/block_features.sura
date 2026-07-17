@@ -1,0 +1,34 @@
+# RAM-disk self-check plus compile-only UEFI Block I/O adapter coverage.
+
+import "../../stdlib/freestanding/block.sura"
+
+block_device is static.struct(BlockDevice)
+ram_context is static.struct(RamBlockContext)
+uefi_context is static.struct(UefiBlockContext)
+ram_storage is static.zero(32768, 4096)
+block_buffer is static.zero(4096, 4096)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura block device feature test")
+  uefi.newline()
+
+  device: ptr[BlockDevice] is block_device
+  context: ptr[RamBlockContext] is ram_context
+  if not ram_block_bind(device, context, ram_storage, 32768, 512, 0) then return 1
+  mem.write8(block_buffer, 90)
+  mem.write8(ptr.add(block_buffer, 4095), 165)
+  if not block_write(device, 1, 8, block_buffer) then return 2
+  mem.write8(block_buffer, 0)
+  mem.write8(ptr.add(block_buffer, 4095), 0)
+  if not block_read(device, 1, 8, block_buffer) then return 3
+  if mem.read8(block_buffer) != 90 then return 4
+  if mem.read8(ptr.add(block_buffer, 4095)) != 165 then return 5
+  if not block_flush(device) then return 6
+
+  if 0 == 1 then
+    layout_valid: bool is uefi_block_layout_valid()
+    firmware: ptr[UefiBlockContext] is uefi_context
+    firmware_bound: bool is uefi_block_locate(device, firmware)
+  end
+  return 0
+end

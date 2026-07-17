@@ -725,6 +725,45 @@ MSI/MSI-X, allocate resources, or provide a device-specific driver. A kernel
 must also validate BARs and disable conflicting decode before changing device
 resources.
 
+## Block-device foundation
+
+`stdlib/freestanding/block.sura` defines a fixed-width synchronous block-device
+contract. A device records its context, logical-sector size and count, buffer
+alignment, read-only state, and read/write/flush callbacks. Every public
+request checks the device shape, nonzero count, LBA range without wrapping,
+transfer-size multiplication, and buffer alignment before making an indirect
+call. Callbacks return zero on success; the public helpers return `bool`.
+
+The library includes two adapters:
+
+- a caller-owned RAM disk with bounded byte copies and optional read-only mode
+- a UEFI Block I/O adapter with checked native structure offsets, a snapshotted
+  media identifier and block size, media-change rejection, and firmware
+  read/write/flush calls
+
+```sura
+device: ptr[BlockDevice] is block_device
+context: ptr[RamBlockContext] is ram_context
+if not ram_block_bind(device, context, storage, 32768, 512, 0) then return 1
+if not block_write(device, 1, 8, buffer) then return 2
+if not block_read(device, 1, 8, buffer) then return 3
+```
+
+`examples/os/block_features.sura` contains a RAM-disk write/read/flush
+self-check and retains the UEFI adapter path for compilation. The generated
+machine code, diagnostic, and UEFI Block I/O GUID are checked by
+`tools/sura_uefi_target_smoke.ps1`. This is currently compile and image
+verification: the self-check has not yet been executed in QEMU or on hardware.
+
+The UEFI adapter is a boot-stage adapter. Its protocol and media pointers stop
+being usable after successful `ExitBootServices`; a kernel must not retain this
+device for post-boot I/O. `uefi_block_locate` binds the first matching protocol
+only and does not enumerate handles, select a partition, perform asynchronous
+I/O, or recover a changed removable medium automatically. Rebinding refreshes
+the media snapshot. The caller owns every device, context, and buffer and must
+serialize requests. Native post-boot storage still requires drivers such as
+AHCI or NVMe plus DMA, interrupt, timeout, and reset policy.
+
 ## Serial diagnostics and VM boot marker
 
 `stdlib/freestanding/serial.sura` provides polling access to a
@@ -786,7 +825,7 @@ Still required for a complete self-hosted OS environment:
   timer/context-switch verification
 - per-process address spaces and executable loading, user-pointer copy-in/out,
   process fault/exit policy, KPTI, and speculative-entry hardening
-- PCIe ECAM/resource allocation and device-specific drivers
+- PCIe ECAM/resource allocation, native storage, and other device-specific drivers
 - FAT reader and persistent filesystem writer
 - x86-64 ELF/raw-kernel output in addition to UEFI PE32+
 - ARM64 freestanding backend

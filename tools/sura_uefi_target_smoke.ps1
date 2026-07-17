@@ -9,7 +9,8 @@ param(
     [string]$UserModeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_mode_features.sura"),
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
     [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
-    [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura")
+    [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
+    [string]$BlockSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/block_features.sura")
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,6 +86,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $ApStartupSource)) {
         throw "Sura freestanding AP-startup source not found: $ApStartupSource"
+    }
+    if (-not (Test-Path -LiteralPath $BlockSource)) {
+        throw "Sura freestanding block-device source not found: $BlockSource"
     }
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -455,6 +459,25 @@ try {
         }
     }
 
+    $blockEfi = Join-Path $temp "BLOCK.EFI"
+    $blockOutput = & $Engine --target uefi-x86_64 --out $blockEfi $BlockSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding block-device feature compile failed:`n$($blockOutput -join "`n")"
+    }
+    $blockBytes = [System.IO.File]::ReadAllBytes($blockEfi)
+    if ($blockBytes.Length -lt 55000 -or
+        $blockBytes[0] -ne 0x4d -or $blockBytes[1] -ne 0x5a) {
+        throw "Freestanding block-device feature image is invalid"
+    }
+    $blockUtf16 = [System.Text.Encoding]::Unicode.GetString($blockBytes)
+    if ($blockUtf16 -notmatch "Sura block device feature test") {
+        throw "Freestanding block-device feature image is missing its diagnostic"
+    }
+    $blockIoGuid = [byte[]](33, 91, 78, 150, 89, 100, 210, 17, 142, 57, 0, 160, 201, 105, 114, 59)
+    if (-not (Test-ByteSequence $blockBytes $blockIoGuid)) {
+        throw "Freestanding block-device feature image is missing the UEFI Block I/O GUID"
+    }
+
     $invalidSource = Join-Path $temp "invalid_interrupt_abi.sura"
     $invalidText = @'
 idt is static.zero(4096, 16)
@@ -742,7 +765,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), pci=$($pciBytes.Length), acpi=$($acpiBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {
