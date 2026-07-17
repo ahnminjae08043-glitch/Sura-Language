@@ -1,0 +1,24 @@
+# Start menu, taskbar, desktop icon, and shutdown hit-test coverage.
+
+import "../../stdlib/freestanding/desktop_shell.sura"
+
+desktop_shell_state is static.struct(DesktopShell)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura desktop shell feature test")
+  uefi.newline()
+  shell: ptr[DesktopShell] is desktop_shell_state
+  if not desktop_shell_init(shell, 1280, 800, 52) then return 1
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 2
+  if shell.start_open != 1 then return 3
+  if desktop_shell_pointer_press(shell, 160, 630, 1, 1) != desktop_action_terminal_menu then return 4
+  if shell.start_open != 0 then return 5
+  if desktop_shell_pointer_press(shell, 200, 774, 1, 1) != desktop_action_terminal_taskbar then return 6
+  if desktop_shell_pointer_press(shell, 360, 774, 1, 1) != desktop_action_system_taskbar then return 7
+  if desktop_shell_pointer_press(shell, 60, 230, 1, 1) != desktop_action_about_icon then return 8
+  if desktop_shell_pointer_press(shell, 60, 140, 1, 1) != desktop_action_files_icon then return 9
+  if desktop_shell_pointer_press(shell, 60, 774, 1, 1) != desktop_action_start_toggle then return 10
+  if desktop_shell_pointer_press(shell, 160, 725, 1, 1) != desktop_action_shutdown then return 11
+  if desktop_shell_pointer_press(shell, 200, 774, 0, 0) != desktop_action_terminal_taskbar then return 12
+  return 0
+end

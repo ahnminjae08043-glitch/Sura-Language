@@ -20,6 +20,7 @@ experimental freestanding x86-64 target.
 - manages overlapping Terminal and System Information windows with focus,
   z-order, title-bar dragging, close-button input, and desktop bounds
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
+- reads the CMOS RTC and renders an `HH:MM` taskbar clock
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -30,7 +31,8 @@ operating system. The terminal accepts PS/2 keyboard input in QEMU and COM1
 remains available for diagnostics and automation. The mouse pointer moves, but
 the left button now focuses, raises, drags, closes, and reopens managed windows.
 The Start menu and taskbar buttons activate their matching windows. Resize,
-minimize, and maximize are not available.
+minimize, and maximize are not available. The Start menu also exposes the
+QEMU shutdown action.
 There is no application process, persistent desktop filesystem, network stack,
 or browser yet.
 

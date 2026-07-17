@@ -85,6 +85,7 @@ os_text_system_machine is static.utf8("QEMU VIRTUAL MACHINE")
 os_text_system_short is static.utf8("SYSTEM INFO")
 os_text_applications is static.utf8("APPLICATIONS")
 os_text_shutdown is static.utf8("SHUT DOWN")
+os_text_clock_unknown is static.utf8("--:--")
 os_text_terminal_prompt is static.utf8("SURA> STATUS")
 os_text_terminal_ready is static.utf8("KERNEL READY")
 os_text_files is static.utf8("FILES")
@@ -95,6 +96,7 @@ os_text_mem_result is static.utf8("MEMORY COMMAND OK")
 os_text_about_result is static.utf8("FREESTANDING SURA X86-64")
 os_text_unknown_result is static.utf8("UNKNOWN COMMAND")
 os_text_input_unavailable is static.utf8("PS2 INPUT UNAVAILABLE")
+os_text_files_pending is static.utf8("file explorer: planned for the next desktop stage")
 
 os_map_size: usize is 131072
 os_map_key: u64 is 0
@@ -442,12 +444,6 @@ func os_redraw_desktop() do
   return os_present_with_pointer()
 end
 
-func os_point_in_rect(x: i64, y: i64, left: i64, top: i64, width: u64, height: u64) do
-  if x < left or y < top then return false
-  if x >= left + width or y >= top + height then return false
-  return true
-end
-
 func os_activate_window(manager: ptr[WindowManager], id: u64) do
   if manager == 0 then return 0
   window: ptr[DesktopWindow] is window_manager_find(manager, id)
@@ -461,83 +457,65 @@ func os_activate_window(manager: ptr[WindowManager], id: u64) do
 end
 
 func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
-  global os_start_menu_open, os_start_menu_reported, os_window_reopen_reported
+  global os_start_menu_reported, os_window_reopen_reported
   if manager == 0 then return false
-  front: ptr[FramebufferSurface] is os_front_surface_state
-  taskbar_y: i64 is front.height - 52
+  shell: ptr[DesktopShell] is os_desktop_shell_state
+  terminal_window: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  system_window: ptr[DesktopWindow] is window_manager_find(manager, 2)
+  terminal_visible: u64 is 0
+  system_visible: u64 is 0
+  if terminal_window != 0 then terminal_visible is terminal_window.visible
+  if system_window != 0 then system_visible is system_window.visible
+  action: u64 is desktop_shell_pointer_press(shell, x, y, terminal_visible, system_visible)
 
-  if os_point_in_rect(x, y, 10, taskbar_y + 8, 104, 36) then
-    if os_start_menu_open == 0 then
-      os_start_menu_open is 1
-      if os_start_menu_reported == 0 then
-        if not os_serial_cstr_line(os_start_menu_marker) then return false
-        os_start_menu_reported is 1
-      end
-    else
-      os_start_menu_open is 0
-    end
-    manager.dragging_id is 0
+  if action == desktop_action_none then
+    window_manager_pointer_press(manager, x, y)
     return true
   end
-
-  if os_point_in_rect(x, y, 126, taskbar_y + 8, 158, 36) then
-    reopened: u64 is os_activate_window(manager, 1)
-    if reopened == 0 then return false
-    os_start_menu_open is 0
-    if reopened == 2 and os_window_reopen_reported == 0 then
-      if not os_serial_cstr_line(os_window_reopen_marker) then return false
-      os_window_reopen_reported is 1
+  manager.dragging_id is 0
+  if action == desktop_action_start_toggle then
+    if shell.start_open != 0 and os_start_menu_reported == 0 then
+      if not os_serial_cstr_line(os_start_menu_marker) then return false
+      os_start_menu_reported is 1
     end
     return true
   end
-
-  if os_point_in_rect(x, y, 296, taskbar_y + 8, 188, 36) then
-    reopened: u64 is os_activate_window(manager, 2)
-    if reopened == 0 then return false
-    os_start_menu_open is 0
-    if reopened == 2 and os_window_reopen_reported == 0 then
-      if not os_serial_cstr_line(os_window_reopen_marker) then return false
-      os_window_reopen_reported is 1
-    end
+  if action == desktop_action_shutdown then
+    os_terminal_cstr_line(os_desktop_shutdown_marker, 48)
+    if not os_serial_cstr_line(os_desktop_shutdown_marker) then return false
+    if not os_serial_cstr_line(os_shutdown_marker) then return false
+    os_serial_drain()
+    # QEMU isa-debug-exit value 17 produces host exit code 35. This keeps
+    # pointer-driven desktop shutdown distinguishable from shell shutdown.
+    os_vm_exit(17)
     return true
   end
 
-  menu_y: i64 is front.height - 242
-  if os_start_menu_open != 0 then
-    if os_point_in_rect(x, y, 20, menu_y + 54, 240, 38) then
-      if os_activate_window(manager, 1) == 0 then return false
-      os_start_menu_open is 0
-      return true
-    end
-    if os_point_in_rect(x, y, 20, menu_y + 102, 240, 38) then
-      reopened: u64 is os_activate_window(manager, 2)
-      if reopened == 0 then return false
-      os_start_menu_open is 0
-      if reopened == 2 and os_window_reopen_reported == 0 then
-        if not os_serial_cstr_line(os_window_reopen_marker) then return false
-        os_window_reopen_reported is 1
-      end
-      return true
-    end
-    os_start_menu_open is 0
+  target_id: u64 is 0
+  if action == desktop_action_terminal_menu or action == desktop_action_terminal_taskbar then
+    target_id is 1
   end
-
-  if os_point_in_rect(x, y, 34, 206, 48, 48) then
-    reopened: u64 is os_activate_window(manager, 2)
-    if reopened == 0 then return false
-    if reopened == 2 and os_window_reopen_reported == 0 then
-      if not os_serial_cstr_line(os_window_reopen_marker) then return false
-      os_window_reopen_reported is 1
-    end
-    return true
+  if action == desktop_action_system_menu or action == desktop_action_system_taskbar or action == desktop_action_about_icon then
+    target_id is 2
   end
-
-  window_manager_pointer_press(manager, x, y)
+  if action == desktop_action_files_icon then
+    target_id is 1
+    if not os_terminal_cstr_line(os_text_files_pending, 64) then return false
+    if not os_terminal_prompt() then return false
+  end
+  if target_id == 0 then return true
+  reopened: u64 is os_activate_window(manager, target_id)
+  if reopened == 0 then return false
+  if reopened == 2 and os_window_reopen_reported == 0 then
+    if not os_serial_cstr_line(os_window_reopen_marker) then return false
+    os_window_reopen_reported is 1
+  end
   return true
 end
 
 func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
-  if surface == 0 or os_start_menu_open == 0 then return true
+  shell: ptr[DesktopShell] is os_desktop_shell_state
+  if surface == 0 or shell.start_open == 0 then return true
   menu_y: u64 is surface.height - 242
   panel: u32 is fb_rgb(surface, 20, 27, 40)
   panel_light: u32 is fb_rgb(surface, 31, 41, 58)
@@ -560,8 +538,9 @@ func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
   font5x7_draw_text(surface, 36, menu_y + 68, os_text_terminal, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 102, 240, 38, panel_light)
   font5x7_draw_text(surface, 36, menu_y + 116, os_text_system_short, 32, white_small)
-  fb_hline(surface, 20, menu_y + 152, 240, muted)
-  font5x7_draw_text(surface, 36, menu_y + 168, os_text_vm, 16, muted_small)
+  fb_fill_rect(surface, 20, menu_y + 150, 240, 36, panel_light)
+  fb_rect_outline(surface, 20, menu_y + 150, 240, 36, orange)
+  font5x7_draw_text(surface, 36, menu_y + 163, os_text_shutdown, 32, white_small)
   return true
 end
 
@@ -620,7 +599,10 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   taskbar_y: u64 is surface.height - 52
   fb_fill_rect(surface, 0, taskbar_y, surface.width, 52, panel_light)
   fb_hline(surface, 0, taskbar_y, surface.width, orange)
-  fb_fill_rect(surface, 10, taskbar_y + 8, 104, 36, titlebar)
+  start_color: u32 is titlebar
+  shell: ptr[DesktopShell] is os_desktop_shell_state
+  if shell.start_open != 0 then start_color is orange
+  fb_fill_rect(surface, 10, taskbar_y + 8, 104, 36, start_color)
   fb_rect_outline(surface, 10, taskbar_y + 8, 104, 36, orange)
   font5x7_draw_text(surface, 26, taskbar_y + 19, os_text_start, 16, white_large)
   fb_fill_rect(surface, 126, taskbar_y + 8, 158, 36, panel)
@@ -636,7 +618,10 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   if about != 0 and about.active != 0 then
     fb_hline(surface, 296, taskbar_y + 43, 188, orange)
   end
-  font5x7_draw_text(surface, surface.width - 66, taskbar_y + 19, os_text_vm, 16, muted_small)
+  time: ptr[RtcTime] is os_rtc_time_state
+  clock_label: ptr is os_text_clock_unknown
+  if time.valid != 0 then clock_label is os_clock_text
+  font5x7_draw_text(surface, surface.width - 54, taskbar_y + 19, clock_label, 8, muted_small)
   if not os_draw_start_menu(surface) then return false
   return true
 end
@@ -655,6 +640,9 @@ func os_graphics_start(framebuffer: ptr, width: u64, height: u64, stride: u64, p
   os_graphics_status is 3
   if not os_window_manager_start(back) then return false
   os_graphics_status is 4
+  shell: ptr[DesktopShell] is os_desktop_shell_state
+  if not desktop_shell_init(shell, width, height, 52) then return false
+  os_clock_refresh()
   if not os_draw_desktop(back) then return false
   os_graphics_status is 5
   background_sample: u32 is fb_get_pixel(back, 2, 2)
@@ -779,7 +767,7 @@ func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
 end
 
 func os_shell_run() do
-  global os_graphics_message
+  global os_graphics_message, os_rtc_reported
   front: ptr[FramebufferSurface] is os_front_surface_state
   keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
   mouse: ptr[Ps2MouseState] is os_ps2_mouse_state
@@ -821,6 +809,14 @@ func os_shell_run() do
       end
       poll_count += 1
     end
+    clock_status: u64 is os_clock_refresh()
+    if clock_status != 0 and os_rtc_reported == 0 then
+      if not os_serial_cstr_line(os_rtc_marker) then return false
+      os_rtc_reported is 1
+    end
+    if clock_status == 2 then
+      if not os_redraw_desktop() then return false
+    end
     cpu.pause()
   end
   return true
@@ -842,7 +838,7 @@ func os_memory_self_test() do
 end
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
-  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size
+  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size, os_rtc_reported
 
   uefi.clear()
   uefi.set_color(15, 0)
@@ -921,6 +917,14 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not os_serial_cstr_line(os_window_ready_marker) then
     os_vm_exit(12)
     return 12
+  end
+  time: ptr[RtcTime] is os_rtc_time_state
+  if time.valid != 0 then
+    if not os_serial_cstr_line(os_rtc_marker) then
+      os_vm_exit(13)
+      return 13
+    end
+    os_rtc_reported is 1
   end
 
   if not os_memory_self_test() then

@@ -1,0 +1,108 @@
+# Fixed-layout desktop shell hit testing for the initial Sura OS desktop.
+#
+# Rendering and window actions remain caller-owned. This module owns the
+# Start-menu open state and converts pointer presses into bounded actions.
+
+desktop_action_none: u64 is 0
+desktop_action_start_toggle: u64 is 1
+desktop_action_terminal_menu: u64 is 2
+desktop_action_system_menu: u64 is 3
+desktop_action_shutdown: u64 is 4
+desktop_action_terminal_taskbar: u64 is 5
+desktop_action_system_taskbar: u64 is 6
+desktop_action_about_icon: u64 is 7
+desktop_action_files_icon: u64 is 8
+
+struct DesktopShell do
+  width: u64
+  height: u64
+  taskbar_height: u64
+  menu_width: u64
+  menu_height: u64
+  start_open: u64
+  last_action: u64
+end
+
+func desktop_shell_init(state: ptr[DesktopShell], width: u64, height: u64, taskbar_height: u64) do
+  if state == 0 or width < 640 or height < 400 then return false
+  if taskbar_height < 40 or taskbar_height >= height then return false
+  state.width is width
+  state.height is height
+  state.taskbar_height is taskbar_height
+  state.menu_width is 260
+  state.menu_height is 190
+  state.start_open is 0
+  state.last_action is desktop_action_none
+  return true
+end
+
+func desktop_shell_taskbar_y(state: ptr[DesktopShell]) do
+  if state == 0 or state.taskbar_height >= state.height then return 0
+  return state.height - state.taskbar_height
+end
+
+func desktop_shell_menu_y(state: ptr[DesktopShell]) do
+  if state == 0 or state.menu_height + state.taskbar_height >= state.height then return 0
+  return state.height - state.taskbar_height - state.menu_height
+end
+
+func desktop_shell_contains(x: i64, y: i64, left: u64, top: u64, width: u64, height: u64) do
+  if x < 0 or y < 0 or width == 0 or height == 0 then return false
+  if x < left or y < top then return false
+  if x >= left + width or y >= top + height then return false
+  return true
+end
+
+func desktop_shell_pointer_press(state: ptr[DesktopShell], x: i64, y: i64, terminal_visible: u64, system_visible: u64) do
+  if state == 0 or terminal_visible > 1 or system_visible > 1 then return desktop_action_none
+  state.last_action is desktop_action_none
+  taskbar_y: u64 is desktop_shell_taskbar_y(state)
+  menu_y: u64 is desktop_shell_menu_y(state)
+
+  if desktop_shell_contains(x, y, 10, taskbar_y + 8, 104, 36) then
+    if state.start_open == 0 then
+      state.start_open is 1
+    else
+      state.start_open is 0
+    end
+    state.last_action is desktop_action_start_toggle
+    return state.last_action
+  end
+
+  if state.start_open != 0 then
+    if desktop_shell_contains(x, y, 20, menu_y + 54, 240, 38) then
+      state.start_open is 0
+      state.last_action is desktop_action_terminal_menu
+      return state.last_action
+    end
+    if desktop_shell_contains(x, y, 20, menu_y + 102, 240, 38) then
+      state.start_open is 0
+      state.last_action is desktop_action_system_menu
+      return state.last_action
+    end
+    if desktop_shell_contains(x, y, 20, menu_y + 150, 240, 36) then
+      state.start_open is 0
+      state.last_action is desktop_action_shutdown
+      return state.last_action
+    end
+    state.start_open is 0
+  end
+
+  if desktop_shell_contains(x, y, 126, taskbar_y + 8, 158, 36) then
+    state.last_action is desktop_action_terminal_taskbar
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 296, taskbar_y + 8, 188, 36) then
+    state.last_action is desktop_action_system_taskbar
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 34, 206, 48, 48) then
+    state.last_action is desktop_action_about_icon
+    return state.last_action
+  end
+  if desktop_shell_contains(x, y, 34, 114, 48, 48) then
+    state.last_action is desktop_action_files_icon
+    return state.last_action
+  end
+  return desktop_action_none
+end

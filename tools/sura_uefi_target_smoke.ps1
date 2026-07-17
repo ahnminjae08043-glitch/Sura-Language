@@ -5,6 +5,8 @@ param(
     [string]$FramebufferSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/framebuffer_features.sura"),
     [string]$TextTerminalSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/text_terminal_features.sura"),
     [string]$WindowManagerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/window_manager_features.sura"),
+    [string]$DesktopShellSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/desktop_shell_features.sura"),
+    [string]$RtcSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/rtc_features.sura"),
     [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
@@ -85,6 +87,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $WindowManagerSource)) {
         throw "Sura window manager feature source not found: $WindowManagerSource"
+    }
+    if (-not (Test-Path -LiteralPath $DesktopShellSource)) {
+        throw "Sura desktop shell feature source not found: $DesktopShellSource"
+    }
+    if (-not (Test-Path -LiteralPath $RtcSource)) {
+        throw "Sura RTC feature source not found: $RtcSource"
     }
     if (-not (Test-Path -LiteralPath $Ps2Source)) {
         throw "Sura PS/2 feature source not found: $Ps2Source"
@@ -357,6 +365,36 @@ try {
     $windowManagerUtf16 = [System.Text.Encoding]::Unicode.GetString($windowManagerBytes)
     if ($windowManagerUtf16 -notmatch "Sura window manager feature test") {
         throw "Freestanding window manager feature image is missing its diagnostic"
+    }
+
+    $desktopShellEfi = Join-Path $temp "DESKTOP_SHELL.EFI"
+    $desktopShellOutput = & $Engine --target uefi-x86_64 --out $desktopShellEfi $DesktopShellSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding desktop shell feature compile failed:`n$($desktopShellOutput -join "`n")"
+    }
+    $desktopShellBytes = [System.IO.File]::ReadAllBytes($desktopShellEfi)
+    if ($desktopShellBytes.Length -lt 8000 -or
+        $desktopShellBytes[0] -ne 0x4d -or $desktopShellBytes[1] -ne 0x5a) {
+        throw "Freestanding desktop shell feature image is invalid"
+    }
+    $desktopShellUtf16 = [System.Text.Encoding]::Unicode.GetString($desktopShellBytes)
+    if ($desktopShellUtf16 -notmatch "Sura desktop shell feature test") {
+        throw "Freestanding desktop shell feature image is missing its diagnostic"
+    }
+
+    $rtcEfi = Join-Path $temp "RTC.EFI"
+    $rtcOutput = & $Engine --target uefi-x86_64 --out $rtcEfi $RtcSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding RTC feature compile failed:`n$($rtcOutput -join "`n")"
+    }
+    $rtcBytes = [System.IO.File]::ReadAllBytes($rtcEfi)
+    if ($rtcBytes.Length -lt 4500 -or
+        $rtcBytes[0] -ne 0x4d -or $rtcBytes[1] -ne 0x5a) {
+        throw "Freestanding RTC feature image is invalid"
+    }
+    $rtcUtf16 = [System.Text.Encoding]::Unicode.GetString($rtcBytes)
+    if ($rtcUtf16 -notmatch "Sura RTC feature test") {
+        throw "Freestanding RTC feature image is missing its diagnostic"
     }
 
     $ps2Efi = Join-Path $temp "PS2.EFI"
@@ -1140,7 +1178,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), desktop_shell=$($desktopShellBytes.Length), rtc=$($rtcBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

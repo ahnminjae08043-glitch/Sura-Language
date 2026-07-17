@@ -1,0 +1,16 @@
+# CMOS RTC register, conversion, and structure compile coverage.
+
+import "../../stdlib/freestanding/rtc.sura"
+
+rtc_feature_time is static.struct(RtcTime)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura RTC feature test")
+  uefi.newline()
+  if rtc_from_bcd(89) != 59 then return 1
+  time: ptr[RtcTime] is rtc_feature_time
+  if false then
+    if not rtc_read(time) then return 2
+  end
+  return 0
+end

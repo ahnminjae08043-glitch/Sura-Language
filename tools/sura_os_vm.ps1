@@ -316,7 +316,7 @@ try {
         -SerialInputLines @("status", "mem", "shutdown") `
         -SerialInputDelayMilliseconds 8000 `
         -SerialInputIntervalMilliseconds 1000 `
-        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_PS2_READY", "kernel: ready", "free physical pages: ") `
+        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "kernel: ready", "free physical pages: ") `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

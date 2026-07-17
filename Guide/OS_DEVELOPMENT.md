@@ -344,7 +344,19 @@ The executed desktop draws persistent Terminal and System Information taskbar
 buttons with an active-window underline. The Start button toggles a bounded
 menu above the taskbar. Its Terminal and System Info entries focus and raise a
 visible window or reopen a closed one. The desktop About icon also activates
-the System Information window.
+the System Information window. A Shut Down menu action follows the same
+QEMU-exit path as the shell command.
+
+`stdlib/freestanding/desktop_shell.sura` owns the fixed-layout hit testing and
+Start open state. It converts pointer presses into bounded actions without
+performing rendering or window changes itself.
+
+`stdlib/freestanding/rtc.sura` reads the PC CMOS clock only after its update
+window closes, requires two matching samples, and converts BCD and 12-hour
+formats. The OS renders `HH:MM` on the taskbar, refreshes it when the sampled
+second changes, and emits `SURA_OS_RTC_OK` after a valid QEMU RTC read.
+`examples/os/desktop_shell_features.sura` and `examples/os/rtc_features.sura`
+provide compile/image coverage for these modules.
 
 The desktop shell is still kernel-owned fixed UI. It has no application
 process protocol, minimize state, resize handles, notifications, settings

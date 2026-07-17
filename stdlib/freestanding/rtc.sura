@@ -1,0 +1,73 @@
+# CMOS real-time clock reader for freestanding x86-64 kernels.
+#
+# The reader waits for the update window, requires two matching samples, and
+# converts BCD and 12-hour formats reported by the standard PC RTC.
+
+struct RtcTime do
+  hour: u64
+  minute: u64
+  second: u64
+  valid: u64
+end
+
+func rtc_read_register(index: u64) do
+  if index > 127 then return 0
+  io.out8(112, 128 | index)
+  return io.in8(113)
+end
+
+func rtc_wait_ready(spin_limit: u64) do
+  if spin_limit == 0 then return false
+  attempt: u64 is 0
+  while attempt < spin_limit do
+    if (rtc_read_register(10) & 128) == 0 then return true
+    cpu.pause()
+    attempt += 1
+  end
+  return false
+end
+
+func rtc_from_bcd(value: u64) do
+  return (value & 15) + ((value / 16) * 10)
+end
+
+func rtc_read(time: ptr[RtcTime]) do
+  if time == 0 then return false
+  time.valid is 0
+  retry: u64 is 0
+  while retry < 4 do
+    if not rtc_wait_ready(100000) then return false
+    second_a: u64 is rtc_read_register(0)
+    minute_a: u64 is rtc_read_register(2)
+    hour_a: u64 is rtc_read_register(4)
+    status_b: u64 is rtc_read_register(11)
+
+    if not rtc_wait_ready(100000) then return false
+    second_b: u64 is rtc_read_register(0)
+    minute_b: u64 is rtc_read_register(2)
+    hour_b: u64 is rtc_read_register(4)
+    if second_a == second_b and minute_a == minute_b and hour_a == hour_b then
+      pm: u64 is hour_a & 128
+      hour: u64 is hour_a & 127
+      minute: u64 is minute_a
+      second: u64 is second_a
+      if (status_b & 4) == 0 then
+        hour is rtc_from_bcd(hour)
+        minute is rtc_from_bcd(minute)
+        second is rtc_from_bcd(second)
+      end
+      if (status_b & 2) == 0 then
+        if pm != 0 and hour < 12 then hour += 12
+        if pm == 0 and hour == 12 then hour is 0
+      end
+      if hour >= 24 or minute >= 60 or second >= 60 then return false
+      time.hour is hour
+      time.minute is minute
+      time.second is second
+      time.valid is 1
+      return true
+    end
+    retry += 1
+  end
+  return false
+end

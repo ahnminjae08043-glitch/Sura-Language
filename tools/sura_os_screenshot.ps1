@@ -384,6 +384,7 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_WINDOW_CLOSE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_WINDOW_REOPEN_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_START_MENU_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_RTC_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
                 -not $serialText.ToString().Contains("kernel: ready"))) {
@@ -407,6 +408,7 @@ try {
             "SURA_OS_WINDOW_CLOSE_OK",
             "SURA_OS_WINDOW_REOPEN_OK",
             "SURA_OS_START_MENU_OK",
+            "SURA_OS_RTC_OK",
             "SURA_OS_TERMINAL_SCROLL_OK",
             "SURA_OS_CLEAR_OK",
             "kernel: ready"
@@ -432,17 +434,51 @@ try {
     }
     Copy-Item -LiteralPath $temporaryCapture -Destination $Output -Force
 
-    $shutdownBytes = [System.Text.Encoding]::ASCII.GetBytes("shutdown`n")
-    $serialStream.Write($shutdownBytes, 0, $shutdownBytes.Length)
-    $serialStream.Flush()
-    if (-not $qemuProcess.WaitForExit(10000)) {
+    if (-not $SkipInputVerification) {
+        # Open Start again and activate its Shut Down entry. The pointer
+        # remains on the Terminal menu row after the earlier selection.
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 100
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 44
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 -55
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+    }
+    else {
+        $shutdownBytes = [System.Text.Encoding]::ASCII.GetBytes("shutdown`n")
+        $serialStream.Write($shutdownBytes, 0, $shutdownBytes.Length)
+        $serialStream.Flush()
+    }
+    $shutdownDeadline = [DateTime]::UtcNow.AddSeconds(10)
+    while ([DateTime]::UtcNow -lt $shutdownDeadline -and -not $qemuProcess.HasExited) {
+        while ($serialStream.DataAvailable) {
+            $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
+            if ($read -le 0) { break }
+            [void]$serialText.Append(
+                [System.Text.Encoding]::ASCII.GetString($serialBuffer, 0, $read)
+            )
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not $qemuProcess.HasExited) {
         throw "QEMU did not shut down after the screenshot"
     }
-    if ($qemuProcess.ExitCode -ne 33) {
-        $diagnostics = $qemuStderrTask.GetAwaiter().GetResult()
-        throw "QEMU closed with unexpected exit code $($qemuProcess.ExitCode)`n$diagnostics"
+    for ($drain = 0; $drain -lt 20; $drain++) {
+        while ($serialStream.DataAvailable) {
+            $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
+            if ($read -le 0) { break }
+            [void]$serialText.Append(
+                [System.Text.Encoding]::ASCII.GetString($serialBuffer, 0, $read)
+            )
+        }
+        Start-Sleep -Milliseconds 20
     }
-
+    $expectedExitCode = 35
+    if ($SkipInputVerification) { $expectedExitCode = 33 }
+    if ($qemuProcess.ExitCode -ne $expectedExitCode) {
+        $diagnostics = $qemuStderrTask.GetAwaiter().GetResult()
+        throw "QEMU closed with unexpected exit code $($qemuProcess.ExitCode), expected $expectedExitCode`n$diagnostics"
+    }
     $capture = Get-Item -LiteralPath $Output
     $inputStatus = "verified"
     if ($SkipInputVerification) { $inputStatus = "skipped" }
