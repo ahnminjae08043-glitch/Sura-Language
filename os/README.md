@@ -30,7 +30,10 @@ yet.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
-building blocks. Those subsystems are not all executed by this boot image yet.
+building blocks. A fixed-capacity window-manager foundation also implements
+focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
+It is compile/image verified but is not connected to this boot image yet.
+Those subsystems are not all executed by this boot image.
 
 Build and run the VM test from the repository root:
 

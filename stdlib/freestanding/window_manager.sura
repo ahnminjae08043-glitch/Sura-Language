@@ -1,0 +1,249 @@
+# Fixed-capacity desktop window metadata and pointer interaction.
+#
+# Rendering and application contents remain caller-owned. This module manages
+# bounds, z-order, focus, title-bar dragging, and close-button hit testing.
+
+struct DesktopWindow do
+  id: u64
+  x: i64
+  y: i64
+  width: u64
+  height: u64
+  z_order: u64
+  visible: u64
+  active: u64
+  draggable: u64
+  closable: u64
+end
+
+struct WindowManager do
+  windows: ptr
+  capacity: u64
+  count: u64
+  desktop_width: u64
+  desktop_height: u64
+  taskbar_height: u64
+  active_id: u64
+  dragging_id: u64
+  drag_offset_x: i64
+  drag_offset_y: i64
+  next_z: u64
+  last_closed_id: u64
+end
+
+func window_reset(window: ptr[DesktopWindow]) do
+  if window == 0 then return false
+  window.id is 0
+  window.x is 0
+  window.y is 0
+  window.width is 0
+  window.height is 0
+  window.z_order is 0
+  window.visible is 0
+  window.active is 0
+  window.draggable is 0
+  window.closable is 0
+  return true
+end
+
+func window_manager_at(manager: ptr[WindowManager], index: u64) do
+  if manager == 0 or manager.windows == 0 or index >= manager.capacity then return 0
+  return ptr.index(manager.windows, index, sizeof(DesktopWindow))
+end
+
+func window_manager_init(manager: ptr[WindowManager], windows: ptr, capacity: u64, width: u64, height: u64, taskbar_height: u64) do
+  if manager == 0 or windows == 0 or capacity == 0 or capacity > 64 then return false
+  if width < 320 or height < 200 or taskbar_height >= height then return false
+  manager.windows is windows
+  manager.capacity is capacity
+  manager.count is 0
+  manager.desktop_width is width
+  manager.desktop_height is height
+  manager.taskbar_height is taskbar_height
+  manager.active_id is 0
+  manager.dragging_id is 0
+  manager.drag_offset_x is 0
+  manager.drag_offset_y is 0
+  manager.next_z is 1
+  manager.last_closed_id is 0
+  index: u64 is 0
+  while index < capacity do
+    window_reset(window_manager_at(manager, index))
+    index += 1
+  end
+  return true
+end
+
+func window_manager_find(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 or id == 0 then return 0
+  index: u64 is 0
+  while index < manager.capacity do
+    window: ptr[DesktopWindow] is window_manager_at(manager, index)
+    if window.id == id then return window
+    index += 1
+  end
+  return 0
+end
+
+func window_manager_clamp(manager: ptr[WindowManager], window: ptr[DesktopWindow]) do
+  if manager == 0 or window == 0 or window.width == 0 or window.height == 0 then return false
+  usable_height: u64 is manager.desktop_height - manager.taskbar_height
+  maximum_x: i64 is 0
+  maximum_y: i64 is 0
+  if window.width < manager.desktop_width then maximum_x is manager.desktop_width - window.width
+  if window.height < usable_height then maximum_y is usable_height - window.height
+  if window.x < 0 then window.x is 0
+  if window.y < 0 then window.y is 0
+  if window.x > maximum_x then window.x is maximum_x
+  if window.y > maximum_y then window.y is maximum_y
+  return true
+end
+
+func window_manager_add(manager: ptr[WindowManager], id: u64, x: i64, y: i64, width: u64, height: u64) do
+  if manager == 0 or id == 0 or width < 120 or height < 80 then return false
+  usable_height: u64 is manager.desktop_height - manager.taskbar_height
+  if width > manager.desktop_width or height > usable_height then return false
+  if manager.count >= manager.capacity then return false
+  if window_manager_find(manager, id) != 0 then return false
+  slot: ptr[DesktopWindow] is 0
+  index: u64 is 0
+  while index < manager.capacity do
+    candidate: ptr[DesktopWindow] is window_manager_at(manager, index)
+    if candidate.id == 0 and slot == 0 then slot is candidate
+    index += 1
+  end
+  if slot == 0 then return false
+  slot.id is id
+  slot.x is x
+  slot.y is y
+  slot.width is width
+  slot.height is height
+  slot.z_order is manager.next_z
+  slot.visible is 1
+  slot.active is 0
+  slot.draggable is 1
+  slot.closable is 1
+  manager.next_z += 1
+  manager.count += 1
+  window_manager_clamp(manager, slot)
+  return true
+end
+
+func window_contains(window: ptr[DesktopWindow], x: i64, y: i64) do
+  if window == 0 or window.visible == 0 then return false
+  if x < window.x or y < window.y then return false
+  if x >= window.x + window.width or y >= window.y + window.height then return false
+  return true
+end
+
+func window_manager_top_at(manager: ptr[WindowManager], x: i64, y: i64) do
+  if manager == 0 then return 0
+  best: ptr[DesktopWindow] is 0
+  best_z: u64 is 0
+  index: u64 is 0
+  while index < manager.capacity do
+    window: ptr[DesktopWindow] is window_manager_at(manager, index)
+    if window_contains(window, x, y) and (best == 0 or window.z_order > best_z) then
+      best is window
+      best_z is window.z_order
+    end
+    index += 1
+  end
+  return best
+end
+
+func window_manager_focus(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  target: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if target == 0 or target.visible == 0 then return false
+  index: u64 is 0
+  while index < manager.capacity do
+    current: ptr[DesktopWindow] is window_manager_at(manager, index)
+    current.active is 0
+    index += 1
+  end
+  target.active is 1
+  target.z_order is manager.next_z
+  manager.next_z += 1
+  manager.active_id is id
+  return true
+end
+
+func window_manager_focus_top(manager: ptr[WindowManager]) do
+  if manager == 0 then return false
+  best: ptr[DesktopWindow] is 0
+  best_z: u64 is 0
+  index: u64 is 0
+  while index < manager.capacity do
+    window: ptr[DesktopWindow] is window_manager_at(manager, index)
+    if window.visible != 0 and (best == 0 or window.z_order > best_z) then
+      best is window
+      best_z is window.z_order
+    end
+    index += 1
+  end
+  if best == 0 then
+    manager.active_id is 0
+    return true
+  end
+  return window_manager_focus(manager, best.id)
+end
+
+func window_manager_close(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 or window.visible == 0 or window.closable == 0 then return false
+  window.visible is 0
+  window.active is 0
+  manager.last_closed_id is id
+  if manager.count > 0 then manager.count -= 1
+  if manager.dragging_id == id then manager.dragging_id is 0
+  if manager.active_id == id then
+    manager.active_id is 0
+    window_manager_focus_top(manager)
+  end
+  return true
+end
+
+func window_manager_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
+  if manager == 0 then return 0
+  manager.last_closed_id is 0
+  window: ptr[DesktopWindow] is window_manager_top_at(manager, x, y)
+  if window == 0 then
+    manager.dragging_id is 0
+    return 0
+  end
+  window_manager_focus(manager, window.id)
+  local_x: i64 is x - window.x
+  local_y: i64 is y - window.y
+  if window.closable != 0 and local_y < 32 and local_x >= window.width - 32 then
+    id: u64 is window.id
+    window_manager_close(manager, id)
+    return id
+  end
+  if window.draggable != 0 and local_y < 32 then
+    manager.dragging_id is window.id
+    manager.drag_offset_x is local_x
+    manager.drag_offset_y is local_y
+  end
+  return window.id
+end
+
+func window_manager_pointer_move(manager: ptr[WindowManager], x: i64, y: i64, left_down: u64) do
+  if manager == 0 or left_down > 1 then return false
+  if left_down == 0 or manager.dragging_id == 0 then return true
+  window: ptr[DesktopWindow] is window_manager_find(manager, manager.dragging_id)
+  if window == 0 or window.visible == 0 then
+    manager.dragging_id is 0
+    return false
+  end
+  window.x is x - manager.drag_offset_x
+  window.y is y - manager.drag_offset_y
+  return window_manager_clamp(manager, window)
+end
+
+func window_manager_pointer_release(manager: ptr[WindowManager]) do
+  if manager == 0 then return false
+  manager.dragging_id is 0
+  return true
+end

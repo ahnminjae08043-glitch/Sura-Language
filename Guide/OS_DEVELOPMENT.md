@@ -306,6 +306,27 @@ QEMU PS/2 input, requires `SURA_OS_TERMINAL_SCROLL_OK`, runs `clear`, requires
 `SURA_OS_CLEAR_OK`, then leaves a visible `status` result in the captured
 framebuffer.
 
+## Window manager foundation
+
+`stdlib/freestanding/window_manager.sura` provides fixed-capacity desktop
+window metadata without allocating memory. It manages:
+
+- visible and active state, z-order, focus, and top-window hit testing
+- title-bar dragging and close-button hit testing
+- clamping windows to the desktop area above the taskbar
+- at most 64 caller-owned window records
+
+Rendering and application contents remain caller-owned. Window resize,
+minimize, maximize, reopen, taskbar buttons, and application processes are not
+implemented by this module.
+
+`examples/os/window_manager_features.sura` checks overlapping-window
+selection, focus changes, z-order, drag offsets, screen-bound clamping, close,
+and activation of the next top window. `tools/sura_uefi_target_smoke.ps1`
+compiles that example and validates its generated EFI image and diagnostic.
+This is compile and image verification; the manager is not yet connected to
+the mouse and windows in the executed `os/sura_os.sura` desktop.
+
 ## Kernel intrinsics
 
 Raw memory:

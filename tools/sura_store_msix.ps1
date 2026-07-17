@@ -223,6 +223,7 @@ try {
         "stdlib/freestanding/timer.sura",
         "stdlib/freestanding/user_process.sura",
         "stdlib/freestanding/vfs.sura",
+        "stdlib/freestanding/window_manager.sura",
         "examples/starter/01_hello.sura",
         "examples/os/acpi_features.sura",
         "examples/os/ahci_features.sura",
@@ -246,6 +247,7 @@ try {
         "examples/os/user_mode_features.sura",
         "examples/os/user_process_features.sura",
         "examples/os/vfs_features.sura",
+        "examples/os/window_manager_features.sura",
         "os/README.md",
         "os/sura_os.sura",
         "Assets/StoreLogo.png"

@@ -1,0 +1,36 @@
+# Window focus, z-order, hit-test, drag, close, and boundary coverage.
+
+import "../../stdlib/freestanding/window_manager.sura"
+
+window_manager_state is static.struct(WindowManager)
+window_storage is static.struct(DesktopWindow, 4)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura window manager feature test")
+  uefi.newline()
+  manager: ptr[WindowManager] is window_manager_state
+  if not window_manager_init(manager, window_storage, 4, 800, 600, 48) then return 1
+  if not window_manager_add(manager, 1, 80, 80, 420, 280) then return 2
+  if not window_manager_add(manager, 2, 180, 140, 360, 240) then return 3
+  if not window_manager_focus(manager, 2) then return 4
+  top: ptr[DesktopWindow] is window_manager_top_at(manager, 200, 160)
+  if top == 0 or top.id != 2 then return 5
+
+  if window_manager_pointer_press(manager, 100, 92) != 1 then return 6
+  if manager.active_id != 1 or manager.dragging_id != 1 then return 7
+  if not window_manager_pointer_move(manager, -100, -100, 1) then return 8
+  first: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  if first.x != 0 or first.y != 0 then return 9
+  window_manager_pointer_release(manager)
+
+  if window_manager_pointer_press(manager, 410, 10) != 1 then return 10
+  if manager.last_closed_id != 1 or first.visible != 0 then return 11
+  if manager.active_id != 2 then return 12
+
+  second: ptr[DesktopWindow] is window_manager_find(manager, 2)
+  window_manager_pointer_press(manager, 200, 150)
+  window_manager_pointer_move(manager, 2000, 2000, 1)
+  window_manager_pointer_release(manager)
+  if second.x != 440 or second.y != 312 then return 13
+  return 0
+end

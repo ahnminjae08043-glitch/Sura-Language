@@ -4,6 +4,7 @@ param(
     [string]$FeatureSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/freestanding_features.sura"),
     [string]$FramebufferSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/framebuffer_features.sura"),
     [string]$TextTerminalSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/text_terminal_features.sura"),
+    [string]$WindowManagerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/window_manager_features.sura"),
     [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
@@ -81,6 +82,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $TextTerminalSource)) {
         throw "Sura text terminal feature source not found: $TextTerminalSource"
+    }
+    if (-not (Test-Path -LiteralPath $WindowManagerSource)) {
+        throw "Sura window manager feature source not found: $WindowManagerSource"
     }
     if (-not (Test-Path -LiteralPath $Ps2Source)) {
         throw "Sura PS/2 feature source not found: $Ps2Source"
@@ -338,6 +342,21 @@ try {
     $textTerminalUtf16 = [System.Text.Encoding]::Unicode.GetString($textTerminalBytes)
     if ($textTerminalUtf16 -notmatch "Sura text terminal feature test") {
         throw "Freestanding text terminal feature image is missing its diagnostic"
+    }
+
+    $windowManagerEfi = Join-Path $temp "WINDOW_MANAGER.EFI"
+    $windowManagerOutput = & $Engine --target uefi-x86_64 --out $windowManagerEfi $WindowManagerSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding window manager feature compile failed:`n$($windowManagerOutput -join "`n")"
+    }
+    $windowManagerBytes = [System.IO.File]::ReadAllBytes($windowManagerEfi)
+    if ($windowManagerBytes.Length -lt 13000 -or
+        $windowManagerBytes[0] -ne 0x4d -or $windowManagerBytes[1] -ne 0x5a) {
+        throw "Freestanding window manager feature image is invalid"
+    }
+    $windowManagerUtf16 = [System.Text.Encoding]::Unicode.GetString($windowManagerBytes)
+    if ($windowManagerUtf16 -notmatch "Sura window manager feature test") {
+        throw "Freestanding window manager feature image is missing its diagnostic"
     }
 
     $ps2Efi = Join-Path $temp "PS2.EFI"
@@ -1121,7 +1140,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {
