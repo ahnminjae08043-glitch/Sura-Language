@@ -26,11 +26,14 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if window_manager_pointer_press(manager, 410, 10) != 1 then return 10
   if manager.last_closed_id != 1 or first.visible != 0 then return 11
   if manager.active_id != 2 then return 12
+  if not window_manager_show(manager, 1) then return 13
+  if first.visible == 0 or manager.active_id != 1 or manager.count != 2 then return 14
+  if not window_manager_close(manager, 1) then return 15
 
   second: ptr[DesktopWindow] is window_manager_find(manager, 2)
   window_manager_pointer_press(manager, 200, 150)
   window_manager_pointer_move(manager, 2000, 2000, 1)
   window_manager_pointer_release(manager)
-  if second.x != 440 or second.y != 312 then return 13
+  if second.x != 440 or second.y != 312 then return 16
   return 0
 end

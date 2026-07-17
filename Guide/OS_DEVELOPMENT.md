@@ -15,8 +15,9 @@ It is not a complete general-purpose operating system. The rendered terminal
 receives translated PS/2 keyboard input in QEMU and COM1 remains available for
 diagnostics and automation. A polling PS/2 mouse moves a software pointer.
 The terminal and System Information windows can be focused, raised, dragged
-within the desktop, and closed with the left mouse button. Window resize,
-minimize, maximize, reopen, and taskbar-button input are not implemented.
+within the desktop, closed, and reopened from persistent taskbar buttons with
+the left mouse button. The Start menu activates either window. Window resize,
+minimize, and maximize are not implemented.
 There is no application process, persistent desktop filesystem, network stack,
 or browser.
 The files in `examples/os` remain compiler feature tests and do not form a
@@ -319,9 +320,9 @@ window metadata without allocating memory. It manages:
 - clamping windows to the desktop area above the taskbar
 - at most 64 caller-owned window records
 
-Rendering and application contents remain caller-owned. Window resize,
-minimize, maximize, reopen, taskbar buttons, and application processes are not
-implemented by this module.
+Rendering and application contents remain caller-owned. The module can show a
+previously closed registered window, but window resize, minimize, maximize,
+taskbar drawing, and application processes are not implemented by the module.
 
 `examples/os/window_manager_features.sura` checks overlapping-window
 selection, focus changes, z-order, drag offsets, screen-bound clamping, close,
@@ -333,9 +334,21 @@ drags title bars, and closes a window. Keyboard input is routed only to the
 active terminal. `tools/sura_os_screenshot.ps1` drives those actions through
 QEMU, requires `SURA_OS_WINDOW_FOCUS_OK`, `SURA_OS_WINDOW_DRAG_OK`, and
 `SURA_OS_WINDOW_CLOSE_OK`, and captures the dragged overlapping windows before
-closing the information window. It also requires `SURA_OS_WINDOW_READY` and
-writes `build/os/SuraOS-windows.ppm` before close plus
-`build/os/SuraOS-desktop.ppm` afterward.
+closing the information window. It then reopens that window from the taskbar,
+requires `SURA_OS_WINDOW_REOPEN_OK`, opens Start, requires
+`SURA_OS_START_MENU_OK`, captures the menu, and selects Terminal.
+
+## Desktop shell
+
+The executed desktop draws persistent Terminal and System Information taskbar
+buttons with an active-window underline. The Start button toggles a bounded
+menu above the taskbar. Its Terminal and System Info entries focus and raise a
+visible window or reopen a closed one. The desktop About icon also activates
+the System Information window.
+
+The desktop shell is still kernel-owned fixed UI. It has no application
+process protocol, minimize state, resize handles, notifications, settings
+store, or user-configurable launcher entries.
 
 ## Kernel intrinsics
 

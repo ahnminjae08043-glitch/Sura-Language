@@ -8,6 +8,8 @@ import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
 import "../stdlib/freestanding/text_terminal.sura"
 import "../stdlib/freestanding/window_manager.sura"
+import "../stdlib/freestanding/desktop_shell.sura"
+import "../stdlib/freestanding/rtc.sura"
 import "../stdlib/freestanding/ps2.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
@@ -26,6 +28,9 @@ os_terminal_state is static.struct(TextTerminal)
 os_terminal_cells is static.zero(2300, 16)
 os_window_manager_state is static.struct(WindowManager)
 os_window_storage is static.struct(DesktopWindow, 4)
+os_desktop_shell_state is static.struct(DesktopShell)
+os_rtc_time_state is static.struct(RtcTime)
+os_clock_text is static.zero(8, 16)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
@@ -38,6 +43,10 @@ os_mouse_click_marker is static.utf8("SURA_OS_MOUSE_CLICK_OK")
 os_window_focus_marker is static.utf8("SURA_OS_WINDOW_FOCUS_OK")
 os_window_drag_marker is static.utf8("SURA_OS_WINDOW_DRAG_OK")
 os_window_close_marker is static.utf8("SURA_OS_WINDOW_CLOSE_OK")
+os_start_menu_marker is static.utf8("SURA_OS_START_MENU_OK")
+os_window_reopen_marker is static.utf8("SURA_OS_WINDOW_REOPEN_OK")
+os_rtc_marker is static.utf8("SURA_OS_RTC_OK")
+os_desktop_shutdown_marker is static.utf8("SURA_OS_DESKTOP_SHUTDOWN_OK")
 os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
 os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
 os_window_ready_marker is static.utf8("SURA_OS_WINDOW_READY")
@@ -73,6 +82,9 @@ os_text_system_version is static.utf8("SURA OS 0.1")
 os_text_system_target is static.utf8("UEFI X86-64")
 os_text_system_memory is static.utf8("MEMORY READY")
 os_text_system_machine is static.utf8("QEMU VIRTUAL MACHINE")
+os_text_system_short is static.utf8("SYSTEM INFO")
+os_text_applications is static.utf8("APPLICATIONS")
+os_text_shutdown is static.utf8("SHUT DOWN")
 os_text_terminal_prompt is static.utf8("SURA> STATUS")
 os_text_terminal_ready is static.utf8("KERNEL READY")
 os_text_files is static.utf8("FILES")
@@ -103,7 +115,11 @@ os_mouse_click_reported: u64 is 0
 os_window_focus_reported: u64 is 0
 os_window_drag_reported: u64 is 0
 os_window_close_reported: u64 is 0
+os_start_menu_reported: u64 is 0
+os_window_reopen_reported: u64 is 0
+os_rtc_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
+os_clock_second: u64 is 60
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -125,6 +141,22 @@ end
 func os_serial_cstr_line(text: ptr) do
   if not os_serial_text(text) then return false
   return serial_write_byte(1016, 10, 1000000)
+end
+
+func os_clock_refresh() do
+  global os_clock_second
+  time: ptr[RtcTime] is os_rtc_time_state
+  if not rtc_read(time) then return 0
+  changed: u64 is 1
+  if time.second != os_clock_second then changed is 2
+  os_clock_second is time.second
+  mem.write8(ptr.add(os_clock_text, 0), 48 + (time.hour / 10))
+  mem.write8(ptr.add(os_clock_text, 1), 48 + (time.hour % 10))
+  mem.write8(ptr.add(os_clock_text, 2), 58)
+  mem.write8(ptr.add(os_clock_text, 3), 48 + (time.minute / 10))
+  mem.write8(ptr.add(os_clock_text, 4), 48 + (time.minute % 10))
+  mem.write8(ptr.add(os_clock_text, 5), 0)
+  return changed
 end
 
 func os_serial_drain() do
@@ -410,6 +442,129 @@ func os_redraw_desktop() do
   return os_present_with_pointer()
 end
 
+func os_point_in_rect(x: i64, y: i64, left: i64, top: i64, width: u64, height: u64) do
+  if x < left or y < top then return false
+  if x >= left + width or y >= top + height then return false
+  return true
+end
+
+func os_activate_window(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return 0
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return 0
+  if window.visible == 0 then
+    if not window_manager_show(manager, id) then return 0
+    return 2
+  end
+  if not window_manager_focus(manager, id) then return 0
+  return 1
+end
+
+func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
+  global os_start_menu_open, os_start_menu_reported, os_window_reopen_reported
+  if manager == 0 then return false
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  taskbar_y: i64 is front.height - 52
+
+  if os_point_in_rect(x, y, 10, taskbar_y + 8, 104, 36) then
+    if os_start_menu_open == 0 then
+      os_start_menu_open is 1
+      if os_start_menu_reported == 0 then
+        if not os_serial_cstr_line(os_start_menu_marker) then return false
+        os_start_menu_reported is 1
+      end
+    else
+      os_start_menu_open is 0
+    end
+    manager.dragging_id is 0
+    return true
+  end
+
+  if os_point_in_rect(x, y, 126, taskbar_y + 8, 158, 36) then
+    reopened: u64 is os_activate_window(manager, 1)
+    if reopened == 0 then return false
+    os_start_menu_open is 0
+    if reopened == 2 and os_window_reopen_reported == 0 then
+      if not os_serial_cstr_line(os_window_reopen_marker) then return false
+      os_window_reopen_reported is 1
+    end
+    return true
+  end
+
+  if os_point_in_rect(x, y, 296, taskbar_y + 8, 188, 36) then
+    reopened: u64 is os_activate_window(manager, 2)
+    if reopened == 0 then return false
+    os_start_menu_open is 0
+    if reopened == 2 and os_window_reopen_reported == 0 then
+      if not os_serial_cstr_line(os_window_reopen_marker) then return false
+      os_window_reopen_reported is 1
+    end
+    return true
+  end
+
+  menu_y: i64 is front.height - 242
+  if os_start_menu_open != 0 then
+    if os_point_in_rect(x, y, 20, menu_y + 54, 240, 38) then
+      if os_activate_window(manager, 1) == 0 then return false
+      os_start_menu_open is 0
+      return true
+    end
+    if os_point_in_rect(x, y, 20, menu_y + 102, 240, 38) then
+      reopened: u64 is os_activate_window(manager, 2)
+      if reopened == 0 then return false
+      os_start_menu_open is 0
+      if reopened == 2 and os_window_reopen_reported == 0 then
+        if not os_serial_cstr_line(os_window_reopen_marker) then return false
+        os_window_reopen_reported is 1
+      end
+      return true
+    end
+    os_start_menu_open is 0
+  end
+
+  if os_point_in_rect(x, y, 34, 206, 48, 48) then
+    reopened: u64 is os_activate_window(manager, 2)
+    if reopened == 0 then return false
+    if reopened == 2 and os_window_reopen_reported == 0 then
+      if not os_serial_cstr_line(os_window_reopen_marker) then return false
+      os_window_reopen_reported is 1
+    end
+    return true
+  end
+
+  window_manager_pointer_press(manager, x, y)
+  return true
+end
+
+func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
+  if surface == 0 or os_start_menu_open == 0 then return true
+  menu_y: u64 is surface.height - 242
+  panel: u32 is fb_rgb(surface, 20, 27, 40)
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  titlebar: u32 is fb_rgb(surface, 16, 91, 132)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  white: u32 is fb_rgb(surface, 242, 247, 252)
+  muted: u32 is fb_rgb(surface, 155, 172, 190)
+  black: u32 is fb_rgb(surface, 3, 8, 15)
+  white_large: ptr[BitmapFontStyle] is os_font_white_large
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+
+  fb_fill_rect(surface, 18, menu_y + 8, 260, 190, black)
+  fb_fill_rect(surface, 10, menu_y, 260, 190, panel)
+  fb_rect_outline(surface, 10, menu_y, 260, 190, orange)
+  fb_fill_rect(surface, 10, menu_y, 260, 42, titlebar)
+  font5x7_draw_text(surface, 24, menu_y + 13, os_text_brand, 32, white_large)
+  font5x7_draw_text(surface, 176, menu_y + 16, os_text_applications, 32, muted_small)
+  fb_fill_rect(surface, 20, menu_y + 54, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 68, os_text_terminal, 32, white_small)
+  fb_fill_rect(surface, 20, menu_y + 102, 240, 38, panel_light)
+  font5x7_draw_text(surface, 36, menu_y + 116, os_text_system_short, 32, white_small)
+  fb_hline(surface, 20, menu_y + 152, 240, muted)
+  font5x7_draw_text(surface, 36, menu_y + 168, os_text_vm, 16, muted_small)
+  return true
+end
+
 func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   if surface == 0 or surface.width < 640 or surface.height < 400 then return false
 
@@ -471,12 +626,18 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   fb_fill_rect(surface, 126, taskbar_y + 8, 158, 36, panel)
   font5x7_draw_text(surface, 140, taskbar_y + 19, os_text_terminal, 16, white_small)
   manager: ptr[WindowManager] is os_window_manager_state
+  terminal_window: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  if terminal_window != 0 and terminal_window.active != 0 then
+    fb_hline(surface, 126, taskbar_y + 43, 158, orange)
+  end
   about: ptr[DesktopWindow] is window_manager_find(manager, 2)
-  if about != 0 and about.visible != 0 then
-    fb_fill_rect(surface, 296, taskbar_y + 8, 188, 36, panel)
-    font5x7_draw_text(surface, 308, taskbar_y + 19, os_text_about_icon, 16, white_small)
+  fb_fill_rect(surface, 296, taskbar_y + 8, 188, 36, panel)
+  font5x7_draw_text(surface, 308, taskbar_y + 19, os_text_about_icon, 16, white_small)
+  if about != 0 and about.active != 0 then
+    fb_hline(surface, 296, taskbar_y + 43, 188, orange)
   end
   font5x7_draw_text(surface, surface.width - 66, taskbar_y + 19, os_text_vm, 16, muted_small)
+  if not os_draw_start_menu(surface) then return false
   return true
 end
 
@@ -580,7 +741,7 @@ func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
   end
   if (mouse.pressed & 1) != 0 then
     previous_active: u64 is manager.active_id
-    window_manager_pointer_press(manager, mouse.x, mouse.y)
+    if not os_desktop_pointer_press(manager, mouse.x, mouse.y) then return false
     if manager.active_id == 2 and manager.active_id != previous_active and os_window_focus_reported == 0 then
       if not os_serial_cstr_line(os_window_focus_marker) then return false
       os_window_focus_reported is 1

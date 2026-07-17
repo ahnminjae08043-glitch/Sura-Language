@@ -4,6 +4,7 @@ param(
     [string]$Firmware = "",
     [string]$Output = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-desktop.ppm"),
     [string]$WindowOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-windows.ppm"),
+    [string]$StartOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-start-menu.ppm"),
     [int]$TimeoutSeconds = 30,
     [switch]$SkipInputVerification
 )
@@ -172,6 +173,7 @@ $qmpWriter = $null
 $temporaryDisk = $null
 $temporaryCapture = $null
 $temporaryWindowCapture = $null
+$temporaryStartCapture = $null
 
 try {
     & (Join-Path $PSScriptRoot "sura_os_vm.ps1") `
@@ -187,6 +189,7 @@ try {
     $temporaryDisk = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.img"
     $temporaryCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.ppm"
     $temporaryWindowCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_windows.ppm"
+    $temporaryStartCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_start.ppm"
     Copy-Item -LiteralPath $disk -Destination $temporaryDisk -Force
 
     $serialPort = Get-SuraOsFreeTcpPort
@@ -316,6 +319,41 @@ try {
         Send-SuraOsMouseButton $qmpReader $qmpWriter $true
         Send-SuraOsMouseButton $qmpReader $qmpWriter $false
 
+        # Reopen System Information from its persistent taskbar button.
+        for ($step = 0; $step -lt 9; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter -100 0
+        }
+        for ($step = 0; $step -lt 6; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 0 98
+        }
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+
+        # Open Start, capture the menu, and select Terminal so keyboard input
+        # below is routed to the active terminal window.
+        Send-SuraOsMouseMove $qmpReader $qmpWriter -99 0
+        Send-SuraOsMouseMove $qmpReader $qmpWriter -99 0
+        Send-SuraOsMouseMove $qmpReader $qmpWriter -99 0
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+        $qemuStartCapturePath = $temporaryStartCapture.Replace('\', '/')
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "screendump"
+            arguments = @{ filename = $qemuStartCapturePath }
+        })
+        if (-not (Test-Path -LiteralPath $temporaryStartCapture -PathType Leaf)) {
+            throw "QEMU did not create the Start-menu screenshot"
+        }
+        $startOutputDirectory = Split-Path -Parent $StartOutput
+        if (-not [string]::IsNullOrWhiteSpace($startOutputDirectory)) {
+            New-Item -ItemType Directory -Path $startOutputDirectory -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $temporaryStartCapture -Destination $StartOutput -Force
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 -72
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 -72
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+
         # Fill the graphical terminal through PS/2 so its scroll path
         # executes, then clear it and leave one visible status result.
         for ($round = 0; $round -lt 13; $round++) {
@@ -344,6 +382,8 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_WINDOW_FOCUS_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_WINDOW_DRAG_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_WINDOW_CLOSE_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_WINDOW_REOPEN_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_START_MENU_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
                 -not $serialText.ToString().Contains("kernel: ready"))) {
@@ -365,6 +405,8 @@ try {
             "SURA_OS_WINDOW_FOCUS_OK",
             "SURA_OS_WINDOW_DRAG_OK",
             "SURA_OS_WINDOW_CLOSE_OK",
+            "SURA_OS_WINDOW_REOPEN_OK",
+            "SURA_OS_START_MENU_OK",
             "SURA_OS_TERMINAL_SCROLL_OK",
             "SURA_OS_CLEAR_OK",
             "kernel: ready"
@@ -409,7 +451,12 @@ try {
     if ($null -ne $windowCapture) {
         $windowStatus = "$($windowCapture.FullName), $($windowCapture.Length) bytes"
     }
-    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; input=$inputStatus)"
+    $startCapture = Get-Item -LiteralPath $StartOutput -ErrorAction SilentlyContinue
+    $startStatus = "not captured"
+    if ($null -ne $startCapture) {
+        $startStatus = "$($startCapture.FullName), $($startCapture.Length) bytes"
+    }
+    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; input=$inputStatus)"
 }
 catch {
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {
@@ -437,7 +484,7 @@ finally {
         }
         $qemuProcess.Dispose()
     }
-    foreach ($temporaryPath in @($temporaryDisk, $temporaryCapture, $temporaryWindowCapture)) {
+    foreach ($temporaryPath in @($temporaryDisk, $temporaryCapture, $temporaryWindowCapture, $temporaryStartCapture)) {
         if (-not [string]::IsNullOrWhiteSpace($temporaryPath) -and
             (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             $resolvedTemporaryPath = [System.IO.Path]::GetFullPath($temporaryPath)

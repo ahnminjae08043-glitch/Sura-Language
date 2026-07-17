@@ -205,6 +205,20 @@ func window_manager_close(manager: ptr[WindowManager], id: u64) do
   return true
 end
 
+func window_manager_show(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.visible != 0 then return window_manager_focus(manager, id)
+  if manager.count >= manager.capacity then return false
+  window.visible is 1
+  window.active is 0
+  manager.count += 1
+  manager.last_closed_id is 0
+  window_manager_clamp(manager, window)
+  return window_manager_focus(manager, id)
+end
+
 func window_manager_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
   if manager == 0 then return 0
   manager.last_closed_id is 0

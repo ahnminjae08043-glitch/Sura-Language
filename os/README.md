@@ -19,6 +19,7 @@ experimental freestanding x86-64 target.
 - keeps a readable 46x14 terminal history with wrapping, scrolling, and `clear`
 - manages overlapping Terminal and System Information windows with focus,
   z-order, title-bar dragging, close-button input, and desktop bounds
+- opens a Start menu and reopens closed windows from persistent taskbar buttons
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -27,8 +28,9 @@ experimental freestanding x86-64 target.
 This is the first graphical desktop milestone, not a complete desktop
 operating system. The terminal accepts PS/2 keyboard input in QEMU and COM1
 remains available for diagnostics and automation. The mouse pointer moves, but
-the left button now focuses, raises, drags, and closes managed windows.
-Resize, minimize, maximize, reopen, and taskbar-button input are not available.
+the left button now focuses, raises, drags, closes, and reopens managed windows.
+The Start menu and taskbar buttons activate their matching windows. Resize,
+minimize, and maximize are not available.
 There is no application process, persistent desktop filesystem, network stack,
 or browser yet.
 
@@ -65,12 +67,12 @@ Capture the actual QEMU framebuffer after the desktop marker:
 .\tools\sura_os_screenshot.ps1 -Engine .\build\SuraLanguage_user.exe
 ```
 
-The final capture is written to `build\os\SuraOS-desktop.ppm`, and the dragged
-overlapping-window state is written to `build\os\SuraOS-windows.ppm`. The
-capture tool uses QEMU QMP, requires the desktop, window-manager, and PS/2
-ready markers, types through the emulated keyboard, focuses and drags the
-System Information window, captures it, closes it, verifies the window and
-terminal markers, and then shuts the VM down normally.
+The final capture is written to `build\os\SuraOS-desktop.ppm`, the dragged
+overlapping-window state to `build\os\SuraOS-windows.ppm`, and the open Start
+menu to `build\os\SuraOS-start-menu.ppm`. The capture tool uses QEMU QMP,
+focuses, drags, closes, and reopens System Information from the taskbar, opens
+Start, activates Terminal, verifies the desktop/window/terminal markers, and
+then shuts the VM down normally.
 
 The shell supports `help`, `status`, `mem`, `about`, `clear`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,
