@@ -24,8 +24,9 @@ experimental freestanding x86-64 target.
   z-order, title-bar dragging, close-button input, and desktop bounds
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
-- runs kernel-owned File Explorer, Text Editor, Calculator, and Text Browser
-  windows
+- runs kernel-rendered File Explorer, Text Editor, Calculator, and Text Browser
+  windows; Calculator state transitions execute at CPL 3 through a bounded
+  one-page mailbox
 - initializes QEMU's ICH9 AHCI controller after `ExitBootServices`, identifies
   the second SATA disk, reads its MBR, and mounts its FAT32 partition
 - lists FAT32 root entries, enters the generated `DOCS` subdirectory, shows
@@ -61,7 +62,9 @@ The Start menu, desktop icons, and taskbar buttons activate their matching
 windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no separate application process yet.
+There is no scheduled application process with a separate CR3 yet. Calculator
+logic runs at CPL 3 in dedicated executable and stack pages, but it currently
+shares the kernel page-table root and returns synchronously after each input.
 The current filesystem is a deliberately bounded FAT32 implementation: it
 mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
 fixed-length files. Creating, deleting, growing, renaming, or allocating files
@@ -80,18 +83,33 @@ click navigation into short-name FAT32 directories and back to their parent.
 The default image includes `DOCS/README.TXT`. Text Editor edits the 512-byte
 `NOTES.TXT` record and autosaves it through AHCI. Calculator accepts keyboard
 digits, `+ - * / =`, Backspace, and `C`. QEMU verifies directory traversal,
-editor input, the disk write, and the result of `50 - 8 = 42`; these remain
-kernel-owned applications, not Ring 3 processes.
+editor input, the disk write, and the result of `50 - 31 = 19`. File Explorer,
+Text Editor, and Text Browser logic remains in the kernel. Calculator rendering
+also remains in the kernel, while its state-transition function is copied to
+two read-only executable user pages and entered at CPL 3 for each key input.
+Only the mailbox and user stack are writable from CPL 3.
 
-The freestanding libraries also contain compile-verified scheduler, interrupt,
-user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
-building blocks. AHCI, MBR partition discovery, FAT32, VirtIO-net,
+The freestanding libraries also contain scheduler, interrupt, user-process,
+ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe building blocks.
+AHCI, MBR partition discovery, FAT32, VirtIO-net,
 Ethernet/ARP/IPv4/UDP/DNS/TCP/HTTP, framebuffer, PS/2, desktop, and application
 code are executed by the current boot image. A
 fixed-capacity window-manager foundation also implements
 focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
-Scheduler, Ring 3, ELF64, NVMe, and several interrupt foundations remain
-compile-verified libraries and are not yet connected to this desktop boot path.
+The separate Ring 3 QEMU gate executes an IRETQ transition to CPL 3, checks the
+saved CS through a DPL-3 `INT 0x80`, returns with IRETQ, and re-enters the kernel
+through `SYSCALL`. The desktop boot path additionally executes Calculator state
+transitions at CPL 3 and requires `SURA_OS_CALCULATOR_RING3_READY` and
+`SURA_OS_CALCULATOR_RING3_OK`. This is a synchronous same-address-space step,
+not the compile-verified user-process scheduler: per-process CR3 switching,
+ELF64 execution, timer preemption, NVMe, and several interrupt foundations are
+not connected to the desktop boot path.
+
+Run the executed Ring 3 and syscall gate:
+
+```powershell
+.\tools\sura_ring3_qemu_gate.ps1 -Engine .\build\SuraLanguage_user.exe
+```
 
 Build and run the VM test from the repository root:
 

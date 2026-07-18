@@ -15,6 +15,31 @@ import "../stdlib/freestanding/ps2.sura"
 import "icons.sura"
 import "storage.sura"
 import "network.sura"
+import "user_calculator.sura"
+
+struct OsUserInterruptFrame packed do
+  r15: u64
+  r14: u64
+  r13: u64
+  r12: u64
+  r11: u64
+  r10: u64
+  r9: u64
+  r8: u64
+  rdi: u64
+  rsi: u64
+  rbp: u64
+  rbx: u64
+  rdx: u64
+  rcx: u64
+  rax: u64
+  error: u64
+  rip: u64
+  cs: u64
+  rflags: u64
+  rsp: u64
+  ss: u64
+end
 
 os_allocator_state is static.struct(PhysicalAllocator)
 os_allocator_bitmap is static.zero(65536, 4096)
@@ -41,6 +66,19 @@ os_text_editor_state is static.struct(TextEditorState)
 os_text_editor_buffer is static.zero(512, 16)
 os_calculator_state is static.struct(CalculatorState)
 os_calculator_text is static.zero(16, 16)
+os_calculator_user_code is static.zero(8192, 4096)
+os_calculator_user_mailbox_page is static.zero(4096, 4096)
+os_calculator_user_stack is static.zero(16384, 4096)
+os_calculator_kernel_stack is static.zero(16384, 16)
+os_calculator_fault_stack is static.zero(16384, 16)
+os_calculator_resume_stack is static.zero(16384, 16)
+os_calculator_ring3_idt is static.zero(4096, 16)
+os_calculator_ring3_tss is static.zero(104, 16)
+os_calculator_ring3_split_pt0 is static.zero(4096, 4096)
+os_calculator_ring3_split_pt1 is static.zero(4096, 4096)
+os_calculator_ring3_split_pt2 is static.zero(4096, 4096)
+os_calculator_ring3_split_pt3 is static.zero(4096, 4096)
+os_calculator_ring3_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
 os_rtc_time_state is static.struct(RtcTime)
 os_clock_text is static.zero(8, 16)
 os_storage_pci_device is static.struct(PciDevice)
@@ -122,6 +160,9 @@ os_editor_app_marker is static.utf8("SURA_OS_EDITOR_APP_OK")
 os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
 os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
 os_calculator_result_marker is static.utf8("SURA_OS_CALCULATOR_RESULT_OK")
+os_calculator_ring3_ready_marker is static.utf8("SURA_OS_CALCULATOR_RING3_READY")
+os_calculator_ring3_result_marker is static.utf8("SURA_OS_CALCULATOR_RING3_OK")
+os_calculator_ring3_fault_marker is static.utf8("SURA_OS_CALCULATOR_RING3_FAULT")
 os_storage_ready_marker is static.utf8("SURA_OS_STORAGE_READY")
 os_storage_read_marker is static.utf8("SURA_OS_STORAGE_READ_OK")
 os_storage_write_marker is static.utf8("SURA_OS_STORAGE_WRITE_OK")
@@ -250,6 +291,10 @@ os_browser_url_reported: u64 is 0
 os_directory_reported: u64 is 0
 os_editor_input_reported: u64 is 0
 os_calculator_result_reported: u64 is 0
+os_calculator_ring3_ready: u64 is 0
+os_calculator_ring3_sequence: u64 is 0
+os_calculator_ring3_split_count: u64 is 0
+os_calculator_ring3_result_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
 os_clock_second: u64 is 60
 os_storage_mounted: u64 is 0
@@ -1189,6 +1234,298 @@ func os_shell_accept(value: u64) do
   return true
 end
 
+func os_calculator_ring3_ensure_4k(address: u64) do
+  global os_calculator_ring3_split_count
+  root: ptr is paging.root()
+  if root == 0 or not paging.is_canonical48(address) then return false
+
+  pml4_entry: u64 is paging.read(root, paging.pml4_index(address))
+  if not paging.present(pml4_entry) or paging.large(pml4_entry) then return false
+  pdpt: ptr is paging.entry_address(pml4_entry)
+  pdpt_entry: u64 is paging.read(pdpt, paging.pdpt_index(address))
+  if not paging.present(pdpt_entry) or paging.large(pdpt_entry) then return false
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_index: u64 is paging.pd_index(address)
+  pd_entry: u64 is paging.read(pd, pd_index)
+  if not paging.present(pd_entry) then return false
+
+  if paging.large(pd_entry) then
+    split_pt: ptr is 0
+    if os_calculator_ring3_split_count == 0 then
+      split_pt is os_calculator_ring3_split_pt0
+    elif os_calculator_ring3_split_count == 1 then
+      split_pt is os_calculator_ring3_split_pt1
+    elif os_calculator_ring3_split_count == 2 then
+      split_pt is os_calculator_ring3_split_pt2
+    elif os_calculator_ring3_split_count == 3 then
+      split_pt is os_calculator_ring3_split_pt3
+    else
+      return false
+    end
+
+    physical_base: u64 is pd_entry & u64("0x000fffffffe00000")
+    leaf_flags: u64 is paging.entry_flags(pd_entry) & ~128
+    index: u64 is 0
+    while index < 512 do
+      paging.write(split_pt, index, paging.entry(physical_base + index * 4096, leaf_flags))
+      index += 1
+    end
+    table_flags: u64 is (leaf_flags & 31) | 1
+    paging.write(pd, pd_index, paging.entry(split_pt, table_flags))
+    paging.flush()
+    os_calculator_ring3_split_count += 1
+  end
+  return true
+end
+
+func os_calculator_ring3_allow_page(address: u64, writable: bool, executable: bool) do
+  if not os_calculator_ring3_ensure_4k(address) then return false
+  root: ptr is paging.root()
+
+  pml4_index: u64 is paging.pml4_index(address)
+  pml4_entry: u64 is paging.read(root, pml4_index)
+  paging.write(root, pml4_index, pml4_entry | 6)
+
+  pdpt: ptr is paging.entry_address(pml4_entry)
+  pdpt_index: u64 is paging.pdpt_index(address)
+  pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
+  paging.write(pdpt, pdpt_index, pdpt_entry | 6)
+
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_index: u64 is paging.pd_index(address)
+  pd_entry: u64 is paging.read(pd, pd_index)
+  if not paging.present(pd_entry) or paging.large(pd_entry) then return false
+  paging.write(pd, pd_index, pd_entry | 6)
+
+  pt: ptr is paging.entry_address(pd_entry)
+  pt_index: u64 is paging.pt_index(address)
+  pt_entry: u64 is paging.read(pt, pt_index)
+  if not paging.present(pt_entry) then return false
+  user_entry: u64 is pt_entry | 4
+  if writable then
+    user_entry is user_entry | 2
+  else
+    user_entry is user_entry & ~2
+  end
+  if executable then
+    user_entry is user_entry & ~u64("0x8000000000000000")
+  else
+    user_entry is user_entry | u64("0x8000000000000000")
+  end
+  paging.write(pt, pt_index, user_entry)
+  paging.invalidate(address)
+  return true
+end
+
+func os_calculator_ring3_invalid(frame: ptr[OsUserInterruptFrame]) interrupt do
+  os_serial_cstr_line(os_calculator_ring3_fault_marker)
+  os_serial_u64(6)
+  serial_write_byte(1016, 10, 1000000)
+  os_serial_drain()
+  os_vm_exit(40)
+  return
+end
+
+func os_calculator_ring3_general_protection(frame: ptr[OsUserInterruptFrame]) interrupt_error do
+  os_serial_cstr_line(os_calculator_ring3_fault_marker)
+  os_serial_u64(13)
+  serial_write_byte(1016, 32, 1000000)
+  if frame != 0 then
+    os_serial_u64(frame.error)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(frame.rip)
+  end
+  serial_write_byte(1016, 10, 1000000)
+  os_serial_drain()
+  os_vm_exit(41)
+  return
+end
+
+func os_calculator_ring3_page_fault(frame: ptr[OsUserInterruptFrame]) interrupt_error do
+  os_serial_cstr_line(os_calculator_ring3_fault_marker)
+  os_serial_u64(cpu.read_cr2())
+  serial_write_byte(1016, 32, 1000000)
+  if frame != 0 then
+    os_serial_u64(frame.error)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(frame.rip)
+  end
+  serial_write_byte(1016, 10, 1000000)
+  os_serial_drain()
+  os_vm_exit(42)
+  return
+end
+
+func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt do
+  if frame == 0 or frame.cs != 35 or (frame.cs & 3) != 3 then
+    os_serial_cstr_line(os_calculator_ring3_fault_marker)
+    os_vm_exit(43)
+    return
+  end
+
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+  if mailbox.status != 1 or mailbox.request_sequence == 0 or mailbox.response_sequence != mailbox.request_sequence then
+    os_serial_cstr_line(os_calculator_ring3_fault_marker)
+    os_vm_exit(44)
+    return
+  end
+
+  calculator: ptr[CalculatorState] is os_calculator_state
+  calculator.left is mailbox.left
+  calculator.right is mailbox.right
+  calculator.operation is mailbox.operation
+  calculator.entering_right is mailbox.entering_right
+  calculator.result is mailbox.result
+  calculator.has_result is mailbox.has_result
+  calculator.error is mailbox.error
+
+  # Return to a clean kernel continuation instead of exposing the interrupted
+  # kernel call stack to user mode. The interrupt epilogue sees the rewritten
+  # ring-0 selector and therefore keeps the kernel GS base active.
+  frame.rip is addr_of(os_calculator_user_return)
+  frame.cs is 8
+  frame.rflags is 2
+  frame.rsp is ptr.add(os_calculator_resume_stack, 16376)
+  frame.ss is 16
+  frame.rax is 0
+  return
+end
+
+func os_calculator_ring3_start() do
+  global os_calculator_ring3_ready, os_calculator_ring3_split_count
+  if os_calculator_ring3_ready != 0 then return true
+
+  # Copy the self-contained Sura function into its own page. All branches are
+  # internal and position-relative; the function has no global references.
+  index: u64 is 0
+  source: ptr is addr_of(user_calculator_program)
+  source_end: ptr is addr_of(user_calculator_program_end)
+  if source_end <= source or source_end - source > 8192 then return false
+  code_size: u64 is source_end - source
+  while index < code_size do
+    mem.write8(ptr.add(os_calculator_user_code, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+
+  cpu.disable_interrupts()
+  io.out8(33, 255)
+  io.out8(161, 255)
+  cpu.tss_set_rsp(os_calculator_ring3_tss, 0, ptr.add(os_calculator_kernel_stack, 16384))
+  cpu.tss_set_ist(os_calculator_ring3_tss, 1, ptr.add(os_calculator_fault_stack, 16384))
+  cpu.tss_set_iomap(os_calculator_ring3_tss, 104)
+  cpu.gdt_set_tss(os_calculator_ring3_gdt, 5, os_calculator_ring3_tss, 103)
+  cpu.load_gdt(os_calculator_ring3_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  cpu.idt_set_gate(os_calculator_ring3_idt, 6, addr_of(os_calculator_ring3_invalid), 8, 0, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 8, addr_of(os_calculator_ring3_general_protection), 8, 1, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 10, addr_of(os_calculator_ring3_general_protection), 8, 1, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 11, addr_of(os_calculator_ring3_general_protection), 8, 1, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 12, addr_of(os_calculator_ring3_general_protection), 8, 1, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 13, addr_of(os_calculator_ring3_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 14, addr_of(os_calculator_ring3_page_fault), 8, 0, 142)
+  cpu.idt_set_gate(os_calculator_ring3_idt, 128, addr_of(os_calculator_ring3_interrupt), 8, 0, 238)
+  cpu.load_idt(os_calculator_ring3_idt, 4096)
+  percpu.set_base(0)
+  percpu.set_kernel_base(0)
+
+  os_calculator_ring3_split_count is 0
+  protected_cr0: u64 is cpu.read_cr0()
+  cpu.write_cr0(protected_cr0 & ~65536)
+  mapped: bool is os_calculator_ring3_allow_page(os_calculator_user_code, false, true)
+  if mapped and code_size > 4096 then mapped is os_calculator_ring3_allow_page(ptr.add(os_calculator_user_code, 4096), false, true)
+  if mapped then mapped is os_calculator_ring3_allow_page(os_calculator_user_mailbox_page, true, false)
+  stack_offset: u64 is 0
+  while mapped and stack_offset < 16384 do
+    mapped is os_calculator_ring3_allow_page(ptr.add(os_calculator_user_stack, stack_offset), true, false)
+    stack_offset += 4096
+  end
+  cpu.write_cr0(protected_cr0)
+  if not mapped then return false
+
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+  mailbox.request_sequence is 0
+  mailbox.response_sequence is 0
+  mailbox.status is 0
+  os_calculator_ring3_ready is 1
+  return os_serial_cstr_line(os_calculator_ring3_ready_marker)
+end
+
+func os_calculator_ring3_dispatch(value: u64) do
+  global os_calculator_ring3_sequence
+  if os_calculator_ring3_ready == 0 then return false
+  calculator: ptr[CalculatorState] is os_calculator_state
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+
+  mailbox.left is calculator.left
+  mailbox.right is calculator.right
+  mailbox.operation is calculator.operation
+  mailbox.entering_right is calculator.entering_right
+  mailbox.result is calculator.result
+  mailbox.has_result is calculator.has_result
+  mailbox.error is calculator.error
+  os_calculator_ring3_sequence += 1
+  if os_calculator_ring3_sequence == 0 then os_calculator_ring3_sequence is 1
+  mailbox.request_sequence is os_calculator_ring3_sequence
+  mailbox.response_sequence is 0
+  mailbox.input is value
+  mailbox.status is 0
+
+  entered: bool is user.enter(os_calculator_user_code, ptr.add(os_calculator_user_stack, 16376), os_calculator_user_mailbox_page, 35, 27)
+  return false
+end
+
+func os_shell_loop() do
+  global os_rtc_reported
+  keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
+  mouse: ptr[Ps2MouseState] is os_ps2_mouse_state
+  while true do
+    value: u64 is serial_read_byte(1016, 1000)
+    if value != 65535 then
+      if not os_shell_accept(value) then return false
+    end
+    poll_count: u64 is 0
+    while poll_count < 16 do
+      input_kind: u64 is ps2_poll(keyboard, mouse)
+      if input_kind == 1 then
+        if not os_ps2_keyboard(keyboard) then return false
+      end
+      if input_kind == 2 then
+        if not os_ps2_mouse(mouse) then return false
+      end
+      poll_count += 1
+    end
+    clock_status: u64 is os_clock_refresh()
+    if clock_status != 0 and os_rtc_reported == 0 then
+      if not os_serial_cstr_line(os_rtc_marker) then return false
+      os_rtc_reported is 1
+    end
+    if clock_status == 2 then
+      if not os_redraw_desktop() then return false
+    end
+    cpu.pause()
+  end
+  return true
+end
+
+func os_calculator_user_return() do
+  global os_calculator_result_reported, os_calculator_ring3_result_reported
+  calculator: ptr[CalculatorState] is os_calculator_state
+  if os_calculator_ring3_result_reported == 0 then
+    if not os_serial_cstr_line(os_calculator_ring3_result_marker) then os_vm_exit(45)
+    os_calculator_ring3_result_reported is 1
+  end
+  if calculator.has_result != 0 and calculator.error == 0 and calculator.result == 19 and os_calculator_result_reported == 0 then
+    if not os_serial_cstr_line(os_calculator_result_marker) then os_vm_exit(46)
+    os_calculator_result_reported is 1
+  end
+  if not os_redraw_desktop() then os_vm_exit(47)
+  if not os_shell_loop() then os_vm_exit(48)
+  os_vm_exit(49)
+  return
+end
+
 func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
   global os_keyboard_reported, os_shift_reported, os_editor_input_reported, os_calculator_result_reported, os_browser_url_reported
   if keyboard == 0 or keyboard.pressed == 0 then return true
@@ -1217,15 +1554,7 @@ func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
     return os_redraw_desktop()
   end
   if keyboard.ascii != 0 and manager.active_id == 5 then
-    calculator: ptr[CalculatorState] is os_calculator_state
-    if not calculator_input(calculator, keyboard.ascii) then
-      if calculator.error == 0 then return false
-    end
-    if calculator.has_result != 0 and calculator.error == 0 and calculator.result == 19 and os_calculator_result_reported == 0 then
-      if not os_serial_cstr_line(os_calculator_result_marker) then return false
-      os_calculator_result_reported is 1
-    end
-    return os_redraw_desktop()
+    return os_calculator_ring3_dispatch(keyboard.ascii)
   end
   if keyboard.ascii != 0 and manager.active_id == 6 then
     navigation_requested: bool is keyboard.ascii == 10 or keyboard.ascii == 13
@@ -1332,33 +1661,7 @@ func os_shell_run() do
   if not os_terminal_prompt() then return false
   if not os_redraw_terminal() then return false
 
-  while true do
-    value: u64 is serial_read_byte(1016, 1000)
-    if value != 65535 then
-      if not os_shell_accept(value) then return false
-    end
-    poll_count: u64 is 0
-    while poll_count < 16 do
-      input_kind: u64 is ps2_poll(keyboard, mouse)
-      if input_kind == 1 then
-        if not os_ps2_keyboard(keyboard) then return false
-      end
-      if input_kind == 2 then
-        if not os_ps2_mouse(mouse) then return false
-      end
-      poll_count += 1
-    end
-    clock_status: u64 is os_clock_refresh()
-    if clock_status != 0 and os_rtc_reported == 0 then
-      if not os_serial_cstr_line(os_rtc_marker) then return false
-      os_rtc_reported is 1
-    end
-    if clock_status == 2 then
-      if not os_redraw_desktop() then return false
-    end
-    cpu.pause()
-  end
-  return true
+  return os_shell_loop()
 end
 
 func os_memory_self_test() do
@@ -1597,6 +1900,10 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not os_serial_line(os_memory_marker, 17) then
     os_vm_exit(5)
     return 5
+  end
+  if not os_calculator_ring3_start() then
+    os_vm_exit(39)
+    return 39
   end
   if not os_serial_line(os_ready_marker, 20) then
     os_vm_exit(6)

@@ -14,7 +14,7 @@ emitting `SURA_OS_KERNEL_READY`.
 It is not a complete general-purpose operating system. The rendered terminal
 receives translated PS/2 keyboard input in QEMU and COM1 remains available for
 diagnostics and automation. A polling PS/2 mouse moves a software pointer.
-Six kernel-owned windows can be focused, raised, dragged within the desktop,
+Six kernel-rendered windows can be focused, raised, dragged within the desktop,
 closed, and reopened from desktop or taskbar entries with the left mouse
 button. The Start menu activates applications and shutdown. Window resize,
 minimize, and maximize are not implemented.
@@ -24,11 +24,16 @@ and HTTP, and displays a bounded HTML layout from an entered `http://` URL.
 The browser distinguishes heading, paragraph, and link runs and applies a
 small CSS color subset (`body`, `div`, `h1`, `a`; `background`,
 `background-color`, and `color`; `#RGB` and `#RRGGBB`).
-There is no Ring 3 application process, general writable filesystem, IPv6,
-complete TCP reliability, TLS/HTTPS, or general HTML/CSS/JavaScript browser.
-The files in `examples/os` remain compiler feature tests and do not form a
-complete user environment or device-driver stack. Test generated images in a
-virtual machine before considering physical hardware.
+Calculator state transitions execute at CPL 3 through dedicated user code,
+stack, and mailbox pages, while its window rendering and input routing remain
+in the kernel. There is no scheduled desktop application process with a
+separate CR3, general writable filesystem, IPv6, complete TCP reliability,
+TLS/HTTPS, or general HTML/CSS/JavaScript browser. Most files in `examples/os`
+remain compiler feature tests and do not form a complete user environment or
+device-driver stack. The dedicated `ring3_qemu_gate.sura` separately verifies
+one CPL-3 entry and both software-interrupt and fast-syscall paths in QEMU.
+Test generated images in a virtual machine before considering physical
+hardware.
 
 ## Build
 
@@ -67,6 +72,24 @@ disk, waits for `SURA_EXIT_BOOT_SERVICES_OK` on COM1, and requires the expected
 `isa-debug-exit` status. A compile-only pass proves image construction and
 marker retention, not that firmware executed the image.
 
+The Ring 3 transition and syscall path has a separate executed gate:
+
+```powershell
+.\tools\sura_ring3_qemu_gate.ps1 -Engine .\SuraLanguage.exe
+
+# Build and inspect without claiming execution:
+.\tools\sura_ring3_qemu_gate.ps1 -Engine .\SuraLanguage.exe -CompileOnly
+```
+
+The executed form leaves Boot Services, installs its own GDT, TSS, and IDT,
+splits OVMF's 2-MiB identity leaf into 4-KiB leaves when necessary, marks only
+one code page and four stack pages as user accessible, and enters selector 35
+at CPL 3. A DPL-3 `INT 0x80` handler requires saved CS 35, returns the sum
+through IRETQ, and the user code then reaches a kernel-stack dispatcher through
+`SYSCALL`. Success requires `SURA_RING3_READY` and
+`SURA_RING3_CPL3_SYSCALL_OK` with QEMU exit code 33. This proves the transition
+and syscall plumbing, not a scheduled or isolated desktop application process.
+
 The minimal OS integration has a separate build-and-run gate:
 
 ```powershell
@@ -95,8 +118,14 @@ post-self-check shell must answer `status` and `mem`, accept `shutdown`, emit
 listener is not bound to an external interface. The screenshot gate uses a
 second loopback-only QMP connection, types a browser address, verifies a second
 live HTTP navigation, and writes `build/os/SuraOS-desktop.ppm` and
-`build/os/SuraOS-browser.ppm`. Neither gate modifies
-host firmware variables or boot entries.
+`build/os/SuraOS-browser.ppm`. It also opens Calculator, sends
+`50 - 31 = 19`, requires `SURA_OS_CALCULATOR_RING3_READY` and
+`SURA_OS_CALCULATOR_RING3_OK`, and then continues the remaining desktop
+regression. The Calculator user code is read-only/executable, its mailbox and
+stack are writable/NX, and kernel pages remain supervisor-only at the leaf
+level. It still uses the current kernel page-table root and synchronous
+entry/return; this is not a per-process CR3 or scheduled user process. Neither
+gate modifies host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -393,15 +422,23 @@ windows alongside Terminal and System Information. Their image icons, Start
 entries, and persistent taskbar buttons focus or reopen them. File Explorer
 mounts the generated FAT32 data disk, shows a breadcrumb-like current path,
 enters `DOCS`, lists `README.TXT`, and returns through `UP ONE LEVEL`. QEMU
-input types `SURA NOTES` into the editor and evaluates `50 - 8 = 42` in the
+input types `SURA NOTES` into the editor and evaluates `50 - 31 = 19` in the
 calculator. The gate requires `SURA_OS_FILES_APP_OK`,
 `SURA_OS_DIRECTORY_OK`, `SURA_OS_EDITOR_INPUT_OK`, and
 `SURA_OS_CALCULATOR_RESULT_OK`, then captures `build/os/SuraOS-apps.ppm`.
 
 Text Editor loads and autosaves the fixed 512-byte `NOTES.TXT` record. File
 creation, deletion, rename, growth, and long names are not implemented. The
-applications still run inside the kernel; separate Ring 3 application
-processes are not executed yet.
+Calculator UI and input routing remain in the kernel, but its arithmetic state
+model in `os/user_calculator.sura` is copied to dedicated read-only executable
+user pages. Each key dispatch enters selector 35 at CPL 3, reads and updates a
+single bounded mailbox page, invokes DPL-3 vector `0x80`, and returns to a clean
+kernel continuation stack. The QEMU screenshot gate requires
+`SURA_OS_CALCULATOR_RING3_READY` and `SURA_OS_CALCULATOR_RING3_OK`.
+File Explorer, Text Editor, Browser, Terminal, and System Information still run
+inside the kernel. The Calculator worker shares the kernel CR3 and is not an
+ELF-loaded, scheduled `UserProcess`; separate process address spaces and timer
+preemption are not connected to the desktop yet.
 
 ## Kernel intrinsics
 
@@ -1055,7 +1092,13 @@ entry path noted above. `process_copy_to_user` and `process_copy_from_user`
 remain the required checked data-transfer primitives. Both
 `examples/os/user_mode_features.sura` and
 `examples/os/user_process_features.sura` are compile and machine-code feature
-tests; no ring-3 process switch has yet been executed in QEMU or on hardware.
+tests. `examples/os/ring3_qemu_gate.sura` separately executes one checked
+CPL-3 entry, DPL-3 software interrupt return, and fast SYSCALL kernel entry in
+QEMU. The desktop Calculator uses the same checked IRETQ and interrupt
+foundation for a fixed mailbox worker. Neither path executes
+`UserProcessScheduler`, switches to a per-process CR3, loads an ELF application,
+or preempts with a timer; those full user-process lifecycle paths remain
+compile-verified only.
 
 ## PCI configuration-space foundation
 
@@ -1242,6 +1285,11 @@ interrupt-driven receive, or provide buffering and locking.
 writes `SURA_EXIT_BOOT_SERVICES_OK`, and exits a QEMU instance configured with
 `isa-debug-exit`. That debug-exit port is a VM test mechanism, not a portable
 hardware shutdown interface.
+
+`examples/os/ring3_qemu_gate.sura` uses the same VM-only exit mechanism after
+the interrupt frame proves saved CS 35 and the subsequent fast syscall reaches
+its ring-0 dispatcher. Its page-fault handler prints the setup stage, CR2,
+error code, and RIP before failing, which keeps permission failures observable.
 
 ## ACPI MADT discovery
 

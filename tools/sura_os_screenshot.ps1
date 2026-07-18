@@ -9,6 +9,7 @@ param(
     [string]$BrowserOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-browser.ppm"),
     [string]$DataDisk = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraData.img"),
     [string]$DataDiskOutput = "",
+    [string]$QemuDebugLog = "",
     [int]$TimeoutSeconds = 30,
     [switch]$SkipInputVerification
 )
@@ -227,6 +228,13 @@ try {
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "c"
     )
+    if (-not [string]::IsNullOrWhiteSpace($QemuDebugLog)) {
+        $debugDirectory = Split-Path -Parent $QemuDebugLog
+        if (-not [string]::IsNullOrWhiteSpace($debugDirectory)) {
+            New-Item -ItemType Directory -Path $debugDirectory -Force | Out-Null
+        }
+        $qemuArguments += @("-d", "int,cpu_reset", "-D", $QemuDebugLog)
+    }
 
     $qemuProcess = New-Object System.Diagnostics.Process
     $qemuProcess.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -294,6 +302,7 @@ try {
              -not $serialText.ToString().Contains("SURA_OS_HTTP_OK") -or
              -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
              -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK") -or
+             -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_READY") -or
             (-not $SkipInputVerification -and
              (-not $serialText.ToString().Contains("SURA_OS_PS2_READY") -or
               -not $serialText.ToString().Contains("Sura OS shell ready"))))) {
@@ -322,7 +331,8 @@ try {
         -not $serialText.ToString().Contains("SURA_OS_TCP_OK") -or
         -not $serialText.ToString().Contains("SURA_OS_HTTP_OK") -or
         -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
-        -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK")) {
+        -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_READY")) {
         throw "Sura OS storage, persisted desktop state, and VirtIO network were not ready before capture"
     }
 
@@ -596,9 +606,8 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_APP_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_DIRECTORY_OK") -or
-                -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
-                -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_STORAGE_WRITE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
@@ -629,8 +638,7 @@ try {
             "SURA_OS_CALCULATOR_APP_OK",
             "SURA_OS_EDITOR_INPUT_OK",
             "SURA_OS_CALCULATOR_RESULT_OK",
-            "SURA_OS_EDITOR_INPUT_OK",
-            "SURA_OS_CALCULATOR_RESULT_OK",
+            "SURA_OS_CALCULATOR_RING3_OK",
             "SURA_OS_BROWSER_URL_OK",
             "SURA_OS_DIRECTORY_OK",
             "SURA_OS_STORAGE_WRITE_OK",
@@ -739,9 +747,14 @@ try {
     "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; apps=$appsStatus; browser=$browserStatus; input=$inputStatus; data=$dataDiskStatus)"
 }
 catch {
+    if ($null -ne $serialText -and $serialText.Length -gt 0) {
+        Write-Host "Sura OS serial log before failure:"
+        Write-Host $serialText.ToString()
+    }
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {
+        Write-Host "QEMU exit code before failure: $($qemuProcess.ExitCode)"
         try {
-            $diagnostics = $qemuProcess.StandardError.ReadToEnd()
+            $diagnostics = $qemuStderrTask.GetAwaiter().GetResult()
             if (-not [string]::IsNullOrWhiteSpace($diagnostics)) {
                 Write-Host $diagnostics
             }

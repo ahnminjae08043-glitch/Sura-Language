@@ -1,0 +1,382 @@
+# Executed QEMU gate for Sura's x86-64 ring-3 and syscall path.
+#
+# The test leaves UEFI boot services, installs a kernel GDT/TSS/IDT, grants
+# user access to the pages containing one small test function and its stack,
+# enters CPL 3 with IRETQ, returns through a DPL-3 INT 0x80 gate, and finally
+# reaches the kernel again through SYSCALL. The INT handler checks the saved
+# CS selector, so the success marker is evidence of an actual CPL-3 entry.
+#
+# This is an execution gate, not the final process address-space policy. When
+# OVMF uses a 2-MiB identity mapping, the gate splits that mapping into 4-KiB
+# leaves before granting user access, so adjacent kernel pages stay supervisor
+# only.
+
+import "../../stdlib/freestanding/serial.sura"
+
+struct Ring3FastCpuState packed do
+  kernel_rsp: ptr
+  user_rsp: ptr
+end
+
+struct Ring3InterruptFrame packed do
+  r15: u64
+  r14: u64
+  r13: u64
+  r12: u64
+  r11: u64
+  r10: u64
+  r9: u64
+  r8: u64
+  rdi: u64
+  rsi: u64
+  rbp: u64
+  rbx: u64
+  rdx: u64
+  rcx: u64
+  rax: u64
+  error: u64
+  rip: u64
+  cs: u64
+  rflags: u64
+  rsp: u64
+  ss: u64
+end
+
+ring3_memory_map is static.zero(65536, 4096)
+ring3_idt is static.zero(4096, 16)
+ring3_tss is static.zero(104, 16)
+ring3_kernel_stack is static.zero(16384, 16)
+ring3_user_stack is static.zero(16384, 4096)
+ring3_fast_cpu is static.struct(Ring3FastCpuState)
+ring3_split_pt0 is static.zero(4096, 4096)
+ring3_split_pt1 is static.zero(4096, 4096)
+ring3_split_pt2 is static.zero(4096, 4096)
+ring3_split_pt3 is static.zero(4096, 4096)
+
+# Raw user code gets a complete page so making it read-only cannot also affect
+# an adjacent mutable global. The compact template is copied before paging
+# permissions change.
+ring3_user_code is static.zero(4096, 4096)
+ring3_user_code_template is static.bytes([72, 199, 192, 7, 0, 0, 0, 72, 137, 207, 72, 199, 198, 2, 0, 0, 0, 72, 199, 194, 3, 0, 0, 0, 73, 199, 194, 4, 0, 0, 0, 73, 199, 192, 5, 0, 0, 0, 205, 128, 49, 255, 72, 131, 248, 15, 116, 5, 191, 1, 0, 0, 0, 184, 8, 0, 0, 0, 49, 246, 49, 210, 69, 49, 210, 69, 49, 192, 15, 5, 243, 144, 235, 252], 16)
+
+# null, kernel code, kernel data, user data, user code, two TSS slots.
+ring3_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+ring3_ready_marker is static.utf8("SURA_RING3_READY")
+ring3_4k_marker is static.utf8("SURA_RING3_4K_PAGES")
+ring3_large_marker is static.utf8("SURA_RING3_SPLIT_LARGE_PAGE")
+ring3_success_marker is static.utf8("SURA_RING3_CPL3_SYSCALL_OK")
+ring3_bad_result_marker is static.utf8("SURA_RING3_BAD_RESULT")
+ring3_invalid_opcode_marker is static.utf8("SURA_RING3_INVALID_OPCODE")
+ring3_general_protection_marker is static.utf8("SURA_RING3_GENERAL_PROTECTION")
+ring3_page_fault_marker is static.utf8("SURA_RING3_PAGE_FAULT")
+
+ring3_map_size: usize is 65536
+ring3_map_key: u64 is 0
+ring3_descriptor_size: usize is 0
+ring3_descriptor_version: u32 is 0
+ring3_used_large_page: u64 is 0
+ring3_split_count: u64 is 0
+ring3_software_seen: u64 is 0
+ring3_stage: u64 is 0
+
+func ring3_write(text: ptr) do
+  return serial_write_cstr(1016, text, 96, 1000000)
+end
+
+func ring3_write_hex(value: u64) do
+  shift: u64 is 60
+  while true do
+    digit: u64 is (value >> shift) & 15
+    output: u64 is 48 + digit
+    if digit >= 10 then output is 55 + digit
+    serial_write_byte(1016, output, 1000000)
+    if shift == 0 then return true
+    shift -= 4
+  end
+end
+
+func ring3_newline() do
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  return true
+end
+
+func ring3_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+# Convert an existing 2-MiB identity leaf into 512 equivalent 4-KiB leaves.
+func ring3_ensure_4k_address(address: u64) do
+  global ring3_used_large_page, ring3_split_count
+  root: ptr is paging.root()
+  if root == 0 or not paging.is_canonical48(address) then return false
+
+  pml4_index: u64 is paging.pml4_index(address)
+  pml4_entry: u64 is paging.read(root, pml4_index)
+  if not paging.present(pml4_entry) or paging.large(pml4_entry) then return false
+
+  pdpt: ptr is paging.entry_address(pml4_entry)
+  pdpt_index: u64 is paging.pdpt_index(address)
+  pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
+  if not paging.present(pdpt_entry) or paging.large(pdpt_entry) then return false
+
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_index: u64 is paging.pd_index(address)
+  pd_entry: u64 is paging.read(pd, pd_index)
+  if not paging.present(pd_entry) then return false
+  if paging.large(pd_entry) then
+    split_pt: ptr is 0
+    if ring3_split_count == 0 then
+      split_pt is ring3_split_pt0
+    else if ring3_split_count == 1 then
+      split_pt is ring3_split_pt1
+    else if ring3_split_count == 2 then
+      split_pt is ring3_split_pt2
+    else if ring3_split_count == 3 then
+      split_pt is ring3_split_pt3
+    else
+      return false
+    end
+
+    physical_base: u64 is pd_entry & u64("0x000fffffffe00000")
+    leaf_flags: u64 is paging.entry_flags(pd_entry) & ~128
+    index: u64 is 0
+    while index < 512 do
+      paging.write(split_pt, index, paging.entry(physical_base + index * 4096, leaf_flags))
+      index += 1
+    end
+
+    table_flags: u64 is (leaf_flags & 31) | 1
+    paging.write(pd, pd_index, paging.entry(split_pt, table_flags))
+    paging.flush()
+    ring3_used_large_page is 1
+    ring3_split_count += 1
+  end
+  return true
+end
+
+# Add user access at every active paging level. Code is read-only executable;
+# stack pages are writable and non-executable.
+func ring3_allow_user_address(address: u64, writable: bool, executable: bool) do
+  if not ring3_ensure_4k_address(address) then return false
+  root: ptr is paging.root()
+
+  pml4_index: u64 is paging.pml4_index(address)
+  pml4_entry: u64 is paging.read(root, pml4_index)
+  paging.write(root, pml4_index, pml4_entry | 6)
+
+  pdpt: ptr is paging.entry_address(pml4_entry)
+  pdpt_index: u64 is paging.pdpt_index(address)
+  pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
+  paging.write(pdpt, pdpt_index, pdpt_entry | 6)
+
+  pd: ptr is paging.entry_address(pdpt_entry)
+  pd_index: u64 is paging.pd_index(address)
+  pd_entry: u64 is paging.read(pd, pd_index)
+  if not paging.present(pd_entry) or paging.large(pd_entry) then return false
+  paging.write(pd, pd_index, pd_entry | 6)
+
+  pt: ptr is paging.entry_address(pd_entry)
+  pt_index: u64 is paging.pt_index(address)
+  pt_entry: u64 is paging.read(pt, pt_index)
+  if not paging.present(pt_entry) then return false
+  user_entry: u64 is pt_entry | 4
+  if writable then
+    user_entry is user_entry | 2
+  else
+    user_entry is user_entry & ~2
+  end
+  if executable then
+    user_entry is user_entry & ~u64("0x8000000000000000")
+  else
+    user_entry is user_entry | u64("0x8000000000000000")
+  end
+  paging.write(pt, pt_index, user_entry)
+  paging.invalidate(address)
+  return true
+end
+
+func ring3_software_interrupt(frame: ptr[Ring3InterruptFrame]) interrupt do
+  global ring3_software_seen
+  if frame == 0 or (frame.cs & 3) != 3 or frame.cs != 35 then
+    ring3_write(ring3_general_protection_marker)
+    ring3_newline()
+    ring3_exit(19)
+    return
+  end
+  if frame.rax != 7 then
+    frame.rax is u64("0xffffffffffffffff")
+    return
+  end
+  ring3_software_seen is 1
+  frame.rax is frame.rdi + frame.rsi + frame.rdx + frame.r10 + frame.r8
+  return
+end
+
+func ring3_invalid_opcode(frame: ptr[Ring3InterruptFrame]) interrupt do
+  ring3_write(ring3_invalid_opcode_marker)
+  ring3_newline()
+  ring3_exit(20)
+  return
+end
+
+func ring3_general_protection(frame: ptr[Ring3InterruptFrame]) interrupt_error do
+  ring3_write(ring3_general_protection_marker)
+  ring3_newline()
+  ring3_exit(21)
+  return
+end
+
+func ring3_page_fault(frame: ptr[Ring3InterruptFrame]) interrupt_error do
+  global ring3_stage
+  ring3_write(ring3_page_fault_marker)
+  serial_write_byte(1016, 32, 1000000)
+  ring3_write_hex(ring3_stage)
+  serial_write_byte(1016, 32, 1000000)
+  ring3_write_hex(cpu.read_cr2())
+  serial_write_byte(1016, 32, 1000000)
+  if frame != 0 then
+    ring3_write_hex(frame.error)
+    serial_write_byte(1016, 32, 1000000)
+    ring3_write_hex(frame.rip)
+  end
+  ring3_newline()
+  ring3_exit(22)
+  return
+end
+
+func ring3_fast_report(status: u64, second: u64, third: u64, fourth: u64, fifth: u64) -> u64 do
+  global ring3_software_seen
+  if status == 0 and ring3_software_seen == 1 then
+    ring3_write(ring3_success_marker)
+    ring3_newline()
+    ring3_exit(16)
+    return 0
+  end
+  ring3_write(ring3_bad_result_marker)
+  ring3_newline()
+  ring3_exit(17)
+  return 1
+end
+
+func ring3_fast_dispatch(frame: ptr) do
+  if frame == 0 then
+    ring3_write(ring3_bad_result_marker)
+    ring3_newline()
+    ring3_exit(18)
+    return
+  end
+  # FastSyscallFrame.rdi is at byte offset 64 and RAX is at byte offset 112.
+  number: u64 is mem.read64(ptr.add(frame, 112))
+  status: u64 is mem.read64(ptr.add(frame, 64))
+  if number != 8 then status is 1
+  result: u64 is ring3_fast_report(status, 0, 0, 0, 0)
+  mem.write64(ptr.add(frame, 112), result)
+  return
+end
+
+func ring3_fast_bad_return(frame: ptr) do
+  ring3_write(ring3_general_protection_marker)
+  ring3_newline()
+  ring3_exit(23)
+  return
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global ring3_map_size, ring3_map_key, ring3_descriptor_size, ring3_descriptor_version, ring3_stage
+
+  uefi.write("Sura executed ring-3 QEMU gate")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    ring3_exit(1)
+    return 1
+  end
+  code_index: u64 is 0
+  while code_index < 74 do
+    mem.write8(ptr.add(ring3_user_code, code_index), mem.read8(ptr.add(ring3_user_code_template, code_index)))
+    code_index += 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    ring3_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(ring3_map_size), ring3_memory_map, addr_of(ring3_map_key), addr_of(ring3_descriptor_size), addr_of(ring3_descriptor_version))
+    if map_status == 0 then
+      exit_status is uefi.exit_boot_services(ring3_map_key)
+    end
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then
+    ring3_exit(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  # Mask both legacy PICs before user.enter restores IF.
+  io.out8(33, 255)
+  io.out8(161, 255)
+
+  ring3_stage is 1
+  cpu.tss_set_rsp(ring3_tss, 0, ptr.add(ring3_kernel_stack, 16384))
+  cpu.tss_set_iomap(ring3_tss, 104)
+  cpu.gdt_set_tss(ring3_gdt, 5, ring3_tss, 103)
+  cpu.load_gdt(ring3_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  ring3_stage is 2
+  cpu.idt_set_gate(ring3_idt, 6, addr_of(ring3_invalid_opcode), 8, 0, 142)
+  cpu.idt_set_gate(ring3_idt, 13, addr_of(ring3_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(ring3_idt, 14, addr_of(ring3_page_fault), 8, 0, 142)
+  cpu.idt_set_gate(ring3_idt, 128, addr_of(ring3_software_interrupt), 8, 0, 238)
+  cpu.load_idt(ring3_idt, 4096)
+
+  ring3_stage is 3
+  fast_cpu: ptr[Ring3FastCpuState] is ring3_fast_cpu
+  fast_cpu.kernel_rsp is ptr.add(ring3_kernel_stack, 16384)
+  fast_cpu.user_rsp is 0
+  percpu.set_base(ring3_fast_cpu)
+  percpu.set_kernel_base(0)
+  syscall.fast_configure(addr_of(ring3_fast_dispatch), addr_of(ring3_fast_bad_return), 8, 35, 292608, 0, 8)
+
+  ring3_stage is 4
+  # OVMF may identity-map its active page-table pages read-only while CR0.WP is
+  # set. Keep supervisor write protection disabled only while editing those
+  # tables, then restore the exact firmware value before entering user mode.
+  protected_cr0: u64 is cpu.read_cr0()
+  cpu.write_cr0(protected_cr0 & ~65536)
+  code_page: u64 is ring3_user_code & ~4095
+  if not ring3_allow_user_address(code_page, false, true) then ring3_exit(3)
+
+  ring3_stage is 5
+  stack_offset: u64 is 0
+  while stack_offset < 16384 do
+    if not ring3_allow_user_address(ptr.add(ring3_user_stack, stack_offset), true, false) then
+      ring3_exit(5)
+    end
+    stack_offset += 4096
+  end
+  cpu.write_cr0(protected_cr0)
+
+  ring3_stage is 6
+  ring3_write(ring3_ready_marker)
+  ring3_newline()
+  if ring3_used_large_page == 0 then
+    ring3_write(ring3_4k_marker)
+  else
+    ring3_write(ring3_large_marker)
+  end
+  ring3_newline()
+
+  ring3_stage is 7
+  entered: bool is user.enter(ring3_user_code, ptr.add(ring3_user_stack, 16376), 1, 35, 27)
+  ring3_exit(6)
+  return 6
+end

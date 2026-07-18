@@ -1,0 +1,131 @@
+# Ring-3 calculator model used by the Sura OS desktop.
+#
+# The kernel owns rendering and input routing. A single page mailbox is the
+# complete ABI: the user program may read and update only this bounded state,
+# then returns control through interrupt vector 0x80. This function deliberately
+# uses no global data and calls no other Sura function so its position-independent
+# machine code can be copied into a dedicated user-executable page.
+
+struct UserCalculatorMailbox do
+  left: u64
+  right: u64
+  operation: u64
+  entering_right: u64
+  result: u64
+  has_result: u64
+  error: u64
+  request_sequence: u64
+  response_sequence: u64
+  input: u64
+  status: u64
+end
+
+func user_calculator_program(mailbox_address: u64) do
+  mailbox: ptr[UserCalculatorMailbox] is mailbox_address
+  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    value: u64 is mailbox.input
+
+    if value == 99 or value == 67 then
+      mailbox.left is 0
+      mailbox.right is 0
+      mailbox.operation is 0
+      mailbox.entering_right is 0
+      mailbox.result is 0
+      mailbox.has_result is 0
+      mailbox.error is 0
+    elif value >= 48 and value <= 57 then
+      if mailbox.error != 0 or mailbox.has_result != 0 then
+        mailbox.left is 0
+        mailbox.right is 0
+        mailbox.operation is 0
+        mailbox.entering_right is 0
+        mailbox.result is 0
+        mailbox.has_result is 0
+        mailbox.error is 0
+      end
+      digit: u64 is value - 48
+      if mailbox.entering_right == 0 then
+        if mailbox.left <= 99999999 then
+          mailbox.left is mailbox.left * 10 + digit
+        end
+      else
+        if mailbox.right <= 99999999 then
+          mailbox.right is mailbox.right * 10 + digit
+        end
+      end
+    elif value == 8 or value == 127 then
+      if mailbox.has_result != 0 or mailbox.error != 0 then
+        mailbox.left is 0
+        mailbox.right is 0
+        mailbox.operation is 0
+        mailbox.entering_right is 0
+        mailbox.result is 0
+        mailbox.has_result is 0
+        mailbox.error is 0
+      elif mailbox.entering_right != 0 then
+        mailbox.right is mailbox.right / 10
+      else
+        mailbox.left is mailbox.left / 10
+      end
+    elif value == 43 or value == 45 or value == 42 or value == 47 then
+      if mailbox.has_result != 0 and mailbox.error == 0 then
+        mailbox.left is mailbox.result
+      end
+      mailbox.right is 0
+      mailbox.result is 0
+      mailbox.has_result is 0
+      mailbox.error is 0
+      mailbox.operation is value
+      mailbox.entering_right is 1
+    elif value == 10 or value == 13 or value == 61 then
+      if mailbox.operation != 0 then
+        mailbox.error is 0
+        if mailbox.operation == 43 then
+          if mailbox.left > 999999999 - mailbox.right then
+            mailbox.error is 1
+          end
+          if mailbox.error == 0 then
+            mailbox.result is mailbox.left + mailbox.right
+          end
+        end
+        if mailbox.operation == 45 then
+          if mailbox.right > mailbox.left then
+            mailbox.error is 1
+          end
+          if mailbox.error == 0 then
+            mailbox.result is mailbox.left - mailbox.right
+          end
+        end
+        if mailbox.operation == 42 then
+          if mailbox.right != 0 and mailbox.left > 999999999 / mailbox.right then
+            mailbox.error is 1
+          end
+          if mailbox.error == 0 then
+            mailbox.result is mailbox.left * mailbox.right
+          end
+        end
+        if mailbox.operation == 47 then
+          if mailbox.right == 0 then
+            mailbox.error is 1
+          end
+          if mailbox.error == 0 then
+            mailbox.result is mailbox.left / mailbox.right
+          end
+        end
+        mailbox.has_result is 1
+      end
+    end
+
+    mailbox.response_sequence is mailbox.request_sequence
+    mailbox.status is 1
+  end
+
+  completed: bool is interrupt.invoke(128)
+  while true do
+    cpu.pause()
+  end
+end
+
+func user_calculator_program_end() do
+  return true
+end
