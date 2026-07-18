@@ -1,0 +1,237 @@
+# Polling legacy VirtIO PCI network driver for the QEMU x86-64 OS path.
+#
+# QEMU is started with virtio-net-pci,disable-modern=on. The caller supplies
+# one 64-KiB page-aligned, identity-mapped DMA region below the legacy PFN
+# limit. Queue size 256 is required so the fixed split-ring layout stays
+# deterministic.
+
+import "pci.sura"
+
+struct VirtioNetContext do
+  io_base: u64
+  device_features: u64
+  rx_queue: ptr
+  rx_queue_physical: u64
+  tx_queue: ptr
+  tx_queue_physical: u64
+  rx_buffers: ptr
+  rx_buffers_physical: u64
+  tx_buffer: ptr
+  tx_buffer_physical: u64
+  rx_last_used: u64
+  tx_last_used: u64
+  mac0: u8
+  mac1: u8
+  mac2: u8
+  mac3: u8
+  mac4: u8
+  mac5: u8
+  ready: u64
+end
+
+func virtio_net_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func virtio_net_clear(context: ptr[VirtioNetContext]) do
+  if context == 0 then return false
+  context.io_base is 0
+  context.device_features is 0
+  context.rx_queue is 0
+  context.rx_queue_physical is 0
+  context.tx_queue is 0
+  context.tx_queue_physical is 0
+  context.rx_buffers is 0
+  context.rx_buffers_physical is 0
+  context.tx_buffer is 0
+  context.tx_buffer_physical is 0
+  context.rx_last_used is 0
+  context.tx_last_used is 0
+  context.mac0 is 0
+  context.mac1 is 0
+  context.mac2 is 0
+  context.mac3 is 0
+  context.mac4 is 0
+  context.mac5 is 0
+  context.ready is 0
+  return true
+end
+
+func virtio_net_find_pci(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  return pci_find_vendor(6900, 4096, device)
+end
+
+func virtio_net_queue_setup(io_base: u64, queue_index: u64, queue: ptr, physical: u64) do
+  if io_base == 0 or queue == 0 or (physical & 4095) != 0 then return false
+  if queue_index > 1 then return false
+  io.out16(io_base + 14, queue_index)
+  queue_size: u64 is io.in16(io_base + 12)
+  if queue_size != 256 then return false
+  if io.in32(io_base + 8) != 0 then return false
+  if not virtio_net_zero(queue, 12288) then return false
+  io.out32(io_base + 8, physical >> 12)
+  return io.in32(io_base + 8) == (physical >> 12)
+end
+
+func virtio_net_post_receive_buffers(context: ptr[VirtioNetContext]) do
+  if context == 0 or context.rx_queue == 0 or context.rx_buffers == 0 then return false
+  descriptor: u64 is 0
+  while descriptor < 8 do
+    entry: ptr is ptr.add(context.rx_queue, descriptor * 16)
+    mem.write64(entry, context.rx_buffers_physical + descriptor * 2048)
+    mem.write32(ptr.add(entry, 8), 2048)
+    mem.write16(ptr.add(entry, 12), 2)
+    mem.write16(ptr.add(entry, 14), 0)
+    descriptor += 1
+  end
+  available: ptr is ptr.add(context.rx_queue, 4096)
+  mem.write16(available, 0)
+  descriptor is 0
+  while descriptor < 8 do
+    mem.write16(ptr.add(available, 4 + descriptor * 2), descriptor)
+    descriptor += 1
+  end
+  atomic.fence()
+  mem.write16(ptr.add(available, 2), 8)
+  atomic.fence()
+  io.out16(context.io_base + 16, 0)
+  return true
+end
+
+func virtio_net_init(context: ptr[VirtioNetContext], device: ptr[PciDevice], dma_virtual: ptr, dma_physical: u64, dma_bytes: u64) do
+  if context == 0 or device == 0 or dma_virtual == 0 then return false
+  if dma_bytes < 65536 or (dma_physical & 4095) != 0 then return false
+  virtio_net_clear(context)
+  if not virtio_net_find_pci(device) then return false
+  if not pci_enable_command(device.bdf, 5) then return false
+  bar: u64 is pci_bar_value(device.bdf, 0)
+  if not pci_bar_is_io(bar) then return false
+  io_base: u64 is bar & u64("0xfffffffc")
+  if io_base == 0 then return false
+
+  context.io_base is io_base
+  io.out8(io_base + 18, 0)
+  io.out8(io_base + 18, 1)
+  io.out8(io_base + 18, 3)
+  features: u64 is io.in32(io_base)
+  context.device_features is features
+  if (features & 32) == 0 then
+    io.out8(io_base + 18, 128)
+    return false
+  end
+  # Only negotiate the stable device-provided MAC feature.
+  io.out32(io_base + 4, 32)
+
+  context.rx_queue is dma_virtual
+  context.rx_queue_physical is dma_physical
+  context.tx_queue is ptr.add(dma_virtual, 12288)
+  context.tx_queue_physical is dma_physical + 12288
+  context.rx_buffers is ptr.add(dma_virtual, 24576)
+  context.rx_buffers_physical is dma_physical + 24576
+  context.tx_buffer is ptr.add(dma_virtual, 40960)
+  context.tx_buffer_physical is dma_physical + 40960
+  if not virtio_net_queue_setup(io_base, 0, context.rx_queue, context.rx_queue_physical) then
+    io.out8(io_base + 18, 128)
+    return false
+  end
+  if not virtio_net_queue_setup(io_base, 1, context.tx_queue, context.tx_queue_physical) then
+    io.out8(io_base + 18, 128)
+    return false
+  end
+
+  context.mac0 is io.in8(io_base + 20)
+  context.mac1 is io.in8(io_base + 21)
+  context.mac2 is io.in8(io_base + 22)
+  context.mac3 is io.in8(io_base + 23)
+  context.mac4 is io.in8(io_base + 24)
+  context.mac5 is io.in8(io_base + 25)
+  if (context.mac0 | context.mac1 | context.mac2 | context.mac3 | context.mac4 | context.mac5) == 0 then
+    io.out8(io_base + 18, 128)
+    return false
+  end
+  if not virtio_net_post_receive_buffers(context) then
+    io.out8(io_base + 18, 128)
+    return false
+  end
+  io.out8(io_base + 18, 7)
+  if (io.in8(io_base + 18) & 7) != 7 then return false
+  context.ready is 1
+  io.out16(io_base + 16, 0)
+  return true
+end
+
+func virtio_net_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func virtio_net_send(context: ptr[VirtioNetContext], frame: ptr, frame_bytes: u64, spin_limit: u64) do
+  if context == 0 or context.ready == 0 or frame == 0 then return false
+  if frame_bytes < 14 or frame_bytes > 2038 or spin_limit == 0 then return false
+  if not virtio_net_zero(context.tx_buffer, frame_bytes + 10) then return false
+  if not virtio_net_copy(ptr.add(context.tx_buffer, 10), frame, frame_bytes) then return false
+
+  descriptor: ptr is context.tx_queue
+  mem.write64(descriptor, context.tx_buffer_physical)
+  mem.write32(ptr.add(descriptor, 8), frame_bytes + 10)
+  mem.write16(ptr.add(descriptor, 12), 0)
+  mem.write16(ptr.add(descriptor, 14), 0)
+  available: ptr is ptr.add(context.tx_queue, 4096)
+  available_index: u64 is mem.read16(ptr.add(available, 2))
+  mem.write16(ptr.add(available, 4 + (available_index % 256) * 2), 0)
+  atomic.fence()
+  mem.write16(ptr.add(available, 2), (available_index + 1) & 65535)
+  atomic.fence()
+  io.out16(context.io_base + 16, 1)
+
+  used: ptr is ptr.add(context.tx_queue, 8192)
+  spins: u64 is 0
+  while spins < spin_limit do
+    used_index: u64 is mem.read16(ptr.add(used, 2))
+    if used_index != context.tx_last_used then
+      context.tx_last_used is used_index
+      return true
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func virtio_net_receive(context: ptr[VirtioNetContext], output: ptr, capacity: u64) do
+  if context == 0 or context.ready == 0 or output == 0 or capacity == 0 then return 0
+  used: ptr is ptr.add(context.rx_queue, 8192)
+  used_index: u64 is mem.read16(ptr.add(used, 2))
+  if used_index == context.rx_last_used then return 0
+  slot: u64 is context.rx_last_used % 256
+  element: ptr is ptr.add(used, 4 + slot * 8)
+  descriptor: u64 is mem.read32(element)
+  total_bytes: u64 is mem.read32(ptr.add(element, 4))
+  if descriptor >= 8 or total_bytes < 10 or total_bytes > 2048 then return 0
+  frame_bytes: u64 is total_bytes - 10
+  if frame_bytes > capacity then frame_bytes is capacity
+  source: ptr is ptr.add(context.rx_buffers, descriptor * 2048 + 10)
+  if not virtio_net_copy(output, source, frame_bytes) then return 0
+
+  context.rx_last_used is (context.rx_last_used + 1) & 65535
+  available: ptr is ptr.add(context.rx_queue, 4096)
+  available_index: u64 is mem.read16(ptr.add(available, 2))
+  mem.write16(ptr.add(available, 4 + (available_index % 256) * 2), descriptor)
+  atomic.fence()
+  mem.write16(ptr.add(available, 2), (available_index + 1) & 65535)
+  atomic.fence()
+  io.out16(context.io_base + 16, 0)
+  return frame_bytes
+end

@@ -9,7 +9,8 @@ experimental freestanding x86-64 target.
 - records the GOP framebuffer and allocates a 64 MiB-bounded backbuffer
 - initializes the COM1 serial port
 - obtains the UEFI memory map and calls `ExitBootServices`
-- renders pixels, lines, rectangles, icons, and 5x7 bitmap text
+- renders pixels, lines, rectangles, embedded 16x16 raster image icons, and
+  5x7 bitmap text
 - presents a double-buffered 1280x800-tested desktop with overlapping Terminal
   and System Information windows, desktop icons, and a taskbar
 - polls the emulated i8042 controller for translated PS/2 keyboard scan codes
@@ -23,13 +24,30 @@ experimental freestanding x86-64 target.
   z-order, title-bar dragging, close-button input, and desktop bounds
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
-- runs kernel-owned File Explorer, Text Editor, and Calculator windows
+- runs kernel-owned File Explorer, Text Editor, Calculator, and Text Browser
+  windows
 - initializes QEMU's ICH9 AHCI controller after `ExitBootServices`, identifies
   the second SATA disk, reads its MBR, and mounts its FAT32 partition
-- lists FAT32 root entries in File Explorer and loads and overwrites the fixed
-  `NOTES.TXT` file from Text Editor
+- lists FAT32 root entries, enters the generated `DOCS` subdirectory, shows
+  the current path and parent navigation in File Explorer, and loads and
+  overwrites the fixed `NOTES.TXT` file from Text Editor
 - persists the selected file and each managed window's position, visibility,
   z-order, and active state in `SETTINGS.CFG` and `DESKTOP.CFG`
+- initializes a legacy-compatible VirtIO-net PCI device with caller-owned
+  split virtqueues and DMA receive/transmit buffers
+- completes DHCP Discover, Offer, Request, and ACK with QEMU user networking,
+  then uses the leased IPv4 address, subnet mask, gateway, and DNS server
+- exchanges real Ethernet ARP packets, builds and validates IPv4 headers,
+  sends UDP DNS queries, completes TCP three-way handshakes, and receives
+  HTTP/1.0 responses
+- tokenizes a bounded HTML body, lays out `h1`, `p`, `br`, and `a` content with
+  distinct heading, paragraph, and link styles, and renders it in the movable
+  `TEXT BROWSER` window
+- reads a bounded CSS subset for `body`, `div`, `h1`, and `a` selectors,
+  applying `background`, `background-color`, and `color` with three- or
+  six-digit hexadecimal values
+- accepts a hostname or `http://` URL in the active browser address bar and
+  performs a new DNS, TCP, and HTTP request when Enter is pressed
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -39,25 +57,37 @@ This is the first graphical desktop milestone, not a complete desktop
 operating system. The terminal accepts PS/2 keyboard input in QEMU and COM1
 remains available for diagnostics and automation. The mouse pointer moves, but
 the left button now focuses, raises, drags, closes, and reopens managed windows.
-The Start menu and taskbar buttons activate their matching windows. Resize,
+The Start menu, desktop icons, and taskbar buttons activate their matching
+windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no separate application process, network stack, or browser yet.
+There is no separate application process yet.
 The current filesystem is a deliberately bounded FAT32 implementation: it
 mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
 fixed-length files. Creating, deleting, growing, renaming, or allocating files
 is not implemented.
 
-File Explorer shows the mounted data disk's root entries. Text Editor edits the
-512-byte `NOTES.TXT` record and autosaves it through AHCI. Calculator accepts
-keyboard digits, `+ - * / =`, Backspace, and `C`. QEMU verifies editor input,
-the disk write, and the result of `50 - 8 = 42`; these remain kernel-owned
-applications, not Ring 3 processes.
+The network path is also deliberately bounded. It obtains IPv4 configuration
+through DHCP, polls VirtIO queues, performs DNS A-record queries and HTTP/1.0
+GET requests, and uses fixed-size packet and response buffers. Browser input
+supports hostnames and `http://` URLs with paths. It does not yet provide IPv6,
+TCP retransmission or congestion control, TLS/HTTPS, ports other than HTTP 80,
+cookies, JavaScript, nested DOM layout, images, forms, or general CSS cascade,
+box-model, flex, and grid layout.
+
+File Explorer shows the mounted data disk's root entries and supports bounded
+click navigation into short-name FAT32 directories and back to their parent.
+The default image includes `DOCS/README.TXT`. Text Editor edits the 512-byte
+`NOTES.TXT` record and autosaves it through AHCI. Calculator accepts keyboard
+digits, `+ - * / =`, Backspace, and `C`. QEMU verifies directory traversal,
+editor input, the disk write, and the result of `50 - 8 = 42`; these remain
+kernel-owned applications, not Ring 3 processes.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
-building blocks. AHCI, MBR partition discovery, FAT32, framebuffer, PS/2,
-desktop, and application code are executed by the current boot image. A
+building blocks. AHCI, MBR partition discovery, FAT32, VirtIO-net,
+Ethernet/ARP/IPv4/UDP/DNS/TCP/HTTP, framebuffer, PS/2, desktop, and application
+code are executed by the current boot image. A
 fixed-capacity window-manager foundation also implements
 focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
 Scheduler, Ring 3, ELF64, NVMe, and several interrupt foundations remain
@@ -83,8 +113,11 @@ focused when entering serial-shell commands. For terminal-only automation:
   -Interactive -HeadlessInteractive
 ```
 
-Interactive mode attaches `build\os\SuraData.img` directly, so Text Editor and
-desktop-state changes survive the next run. Recreate a clean data disk with:
+Interactive mode runs the data disk from a temporary ASCII-only path so QEMU
+works when the repository path contains Korean characters. A normal
+`shutdown` copies the modified disk back to `build\os\SuraData.img`, so Text
+Editor and desktop-state changes survive the next run. Recreate a clean data
+disk with:
 
 ```powershell
 .\tools\sura_os_data_disk.ps1 -Path .\build\os\SuraData.img -Force
@@ -97,12 +130,16 @@ Capture the actual QEMU framebuffer after the desktop marker:
 ```
 
 The final capture is written to `build\os\SuraOS-desktop.ppm`, the dragged
-overlapping-window state to `build\os\SuraOS-windows.ppm`, and the open Start
-menu to `build\os\SuraOS-start-menu.ppm`. The capture tool uses QEMU QMP,
+overlapping-window state to `build\os\SuraOS-windows.ppm`, the open Start menu
+to `build\os\SuraOS-start-menu.ppm`, and the foreground HTTP text browser to
+`build\os\SuraOS-browser.ppm`. The capture tool uses QEMU QMP,
 focuses, drags, closes, and reopens System Information from the taskbar, opens
-Start, opens and exercises the three built-in apps, writes
-`build\os\SuraOS-apps.ppm`, activates Terminal, verifies the
-desktop/window/app/terminal/storage markers, and then shuts the VM down
+Start, opens and exercises the three built-in apps, enters `DOCS` in File
+Explorer, writes `build\os\SuraOS-apps.ppm`, activates the browser, types
+`example.com/`,
+performs a second live navigation, activates Terminal, verifies the
+desktop/window/app/terminal/storage/DHCP/network/DNS/TCP/HTTP/browser markers,
+and then shuts the VM down
 normally. The test normally works on a disposable data-disk copy. Preserve
 that modified copy for a second-boot persistence check with:
 

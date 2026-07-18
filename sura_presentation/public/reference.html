@@ -694,7 +694,7 @@ Usage:
   surapkg info &lt;name&gt; [--json] Show package metadata, benchmark evidence, and exported symbols
   surapkg restore [--json report.json]  Install manifest and transitive dependencies locally</code></pre></section>
 <section id='targets'><h2>JavaScript·WebAssembly 타깃</h2><div class='table-wrap'><table><thead><tr><th>타깃</th><th>2026-07-17 AST lowering 분류</th></tr></thead><tbody><tr><td>Native VM/JIT</td><td>register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline</td></tr><tr><td>JavaScript</td><td>43개 node 중 full 41, ignored 2, partial 0</td></tr><tr><td>WebAssembly</td><td>43개 node 중 full 27, partial 14, ignored 2</td></tr></tbody></table></div><p>AST JSON은 type annotation의 원래 표기를 source_name에 보존합니다. WASM에서 매개변수와 반환 타입을 모두 float 또는 double로 명시한 최상위 함수는 이 표기를 기준으로 기존 Sura Value ABI export와 함께 함수명__f64 동반 export를 생성합니다. 동반 export는 WebAssembly 호스트가 f64 매개변수와 f64 결과를 직접 사용하며, 원래 함수 이름의 export 계약은 바꾸지 않습니다.</p><p>JavaScript의 full 41·ignored 2는 43개 AST node의 lowering 분류입니다. JavaScript의 Python·FFI·plugin·async.cmd는 stub 또는 미지원 경로이며, autograd·media·nn·dataset·tokenizer 등 일부 module은 JavaScript runtime object 목록에 없습니다.</p><p>WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics 14개 node가 partial 상태입니다. 전체 audit status는 <code>INCOMPLETE</code>입니다.</p></section>
-<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI와 FAT32 데이터 디스크를 실행합니다. File Explorer 루트 목록, NOTES.TXT 자동 저장, SETTINGS.CFG와 DESKTOP.CFG의 재부팅 복원까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·memory self-check와 COM1 shell의 status/mem/shutdown 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/full present/cursor damage copy와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state; QEMU에서 FAT32 목록·editor 저장·50-8=42 실행 검증</td></tr><tr><td>영속 데이터 디스크</td><td><code>ahci.sura</code>·<code>partition.sura</code>·<code>fat32.sura</code>로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
+<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI·FAT32 데이터 디스크, VirtIO-net을 실행합니다. File Explorer 하위 디렉터리, NOTES.TXT 자동 저장, 설정·여섯 창 상태 복원, DHCP·ARP·IPv4·UDP·DNS·TCP·HTTP와 입력 가능한 주소창, 제한된 HTML/CSS 그래픽 레이아웃까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·VirtIO TCP/IP/HTTP·memory self-check와 COM1 shell 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/full present/cursor damage copy와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state; QEMU에서 FAT32 목록·editor 저장·50-8=42 실행 검증</td></tr><tr><td>영속 데이터 디스크</td><td><code>ahci.sura</code>·<code>partition.sura</code>·<code>fat32.sura</code>로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증</td></tr><tr><td>VirtIO 네트워크·브라우저</td><td><code>virtio_net.sura</code>·<code>net.sura</code>·<code>os/network.sura</code>로 split queue, DHCP, ARP, IPv4, UDP DNS, TCP, HTTP/1.0, 주소 입력, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합을 실행 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
   vendor: u16
   command: u16
 end
@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 다섯 창, editor 입력과 FAT32 자동 저장, 설정·창 상태 재부팅 복원, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window keyboard routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·VirtIO-net·Ethernet/DHCP/ARP/IPv4/UDP/DNS/TCP/HTTP·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator/Text Browser·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 여섯 창, FAT32 하위 디렉터리와 자동 저장·재부팅 복원, DHCP 주소 임대, DNS와 HTTP 응답, 키보드로 입력한 HTTP 주소의 두 번째 탐색, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input/network queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, IPv6·완전한 TCP 재전송/혼잡 제어·TLS, 중첩 DOM box layout·이미지·폼·일반 CSS cascade/box/flex/grid·JavaScript 브라우저, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -7061,12 +7061,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       &quot;library&quot;: &quot;stdlib/freestanding/fat32.sura&quot;,
       &quot;example&quot;: &quot;examples/os/fat32_features.sura&quot;,
-      &quot;executed_verification&quot;: &quot;The OS mounts a generated FAT32 data image, lists root short names, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image&quot;,
+      &quot;executed_verification&quot;: &quot;The OS mounts a generated FAT32 data image, lists root short names, enters DOCS and lists README.TXT through a bounded directory stack, returns through the parent entry, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image&quot;,
       &quot;limitations&quot;: [
         &quot;no cluster allocation/free&quot;,
         &quot;no create, resize, delete, or rename&quot;,
         &quot;no long file names&quot;,
-        &quot;no subdirectory path parser&quot;,
+        &quot;no general string path parser; the OS supplies bounded click navigation&quot;,
         &quot;no FAT repair or FSInfo update&quot;,
         &quot;no journaling or locking&quot;
       ]
@@ -7131,6 +7131,71 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;compile and image verification only&quot;
       ]
     },
+    &quot;virtio_network_and_browser&quot;: {
+      &quot;libraries&quot;: [
+        &quot;stdlib/freestanding/virtio_net.sura&quot;,
+        &quot;stdlib/freestanding/net.sura&quot;
+      ],
+      &quot;integration&quot;: [
+        &quot;os/network.sura&quot;,
+        &quot;os/sura_os.sura&quot;
+      ],
+      &quot;device&quot;: [
+        &quot;legacy-compatible VirtIO-net PCI discovery&quot;,
+        &quot;I/O BAR&quot;,
+        &quot;feature negotiation&quot;,
+        &quot;two 256-entry split virtqueues&quot;,
+        &quot;eight posted 2048-byte RX buffers&quot;,
+        &quot;single polling TX descriptor&quot;
+      ],
+      &quot;protocols&quot;: [
+        &quot;Ethernet II&quot;,
+        &quot;DHCP Discover/Offer/Request/ACK&quot;,
+        &quot;leased IPv4 address, subnet, gateway, and DNS configuration&quot;,
+        &quot;ARP request/reply&quot;,
+        &quot;IPv4 header build and checksum validation&quot;,
+        &quot;UDP&quot;,
+        &quot;DNS A query and compressed-name response traversal&quot;,
+        &quot;TCP SYN/SYN-ACK/ACK&quot;,
+        &quot;TCP payload acknowledgement and FIN&quot;,
+        &quot;HTTP/1.0 GET&quot;
+      ],
+      &quot;browser&quot;: [
+        &quot;sixth managed TEXT BROWSER window&quot;,
+        &quot;keyboard-editable hostname or http:// URL with path&quot;,
+        &quot;Enter-triggered DNS/TCP/HTTP navigation&quot;,
+        &quot;HTTP header removal&quot;,
+        &quot;bounded h1/p/br/a HTML tokenization&quot;,
+        &quot;separate heading, body, and link layout runs&quot;,
+        &quot;CSS body/div/h1/a selector colors&quot;,
+        &quot;CSS background, background-color, and color with #RGB or #RRGGBB&quot;,
+        &quot;desktop icon and taskbar activation&quot;,
+        &quot;QMP framebuffer capture&quot;
+      ],
+      &quot;executed_verification&quot;: [
+        &quot;SURA_OS_NETWORK_READY&quot;,
+        &quot;SURA_OS_DHCP_OK&quot;,
+        &quot;SURA_OS_ARP_OK&quot;,
+        &quot;SURA_OS_UDP_OK&quot;,
+        &quot;SURA_OS_DNS_OK&quot;,
+        &quot;SURA_OS_TCP_OK&quot;,
+        &quot;SURA_OS_HTTP_OK&quot;,
+        &quot;SURA_OS_BROWSER_APP_OK&quot;,
+        &quot;SURA_OS_BROWSER_CSS_OK&quot;,
+        &quot;SURA_OS_BROWSER_FOCUS_OK&quot;,
+        &quot;SURA_OS_BROWSER_URL_OK&quot;,
+        &quot;build/os/SuraOS-browser.ppm&quot;
+      ],
+      &quot;limitations&quot;: [
+        &quot;QEMU user networking is the executed environment&quot;,
+        &quot;polling only&quot;,
+        &quot;no IPv6&quot;,
+        &quot;bounded connections without retransmission, congestion control, or out-of-order reassembly&quot;,
+        &quot;no TLS/HTTPS or non-80 URL ports&quot;,
+        &quot;no nested DOM box layout, images, forms, or general CSS cascade/box/flex/grid&quot;,
+        &quot;no JavaScript, cookies, cache, history, or downloads&quot;
+      ]
+    },
     &quot;serial_and_vm_gate&quot;: {
       &quot;serial&quot;: [
         &quot;16550 initialization&quot;,
@@ -7150,6 +7215,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     },
     &quot;minimal_os_integration&quot;: {
       &quot;source&quot;: &quot;os/sura_os.sura&quot;,
+      &quot;ui_assets&quot;: [
+        &quot;os/icons.sura&quot;,
+        &quot;seven embedded 16x16 palette-index raster images&quot;,
+        &quot;desktop, window-title, Start-menu, taskbar, and File Explorer rendering&quot;
+      ],
       &quot;gate&quot;: &quot;tools/sura_os_vm.ps1&quot;,
       &quot;output&quot;: [
         &quot;build/os/SuraOS.efi&quot;,
@@ -7160,14 +7230,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;UEFI entry&quot;,
         &quot;GOP framebuffer discovery&quot;,
         &quot;64 MiB-bounded backbuffer allocation&quot;,
-        &quot;AHCI DMA allocation&quot;,
+        &quot;AHCI and VirtIO-net DMA allocation&quot;,
         &quot;COM1 initialization&quot;,
         &quot;memory-map acquisition&quot;,
         &quot;ExitBootServices&quot;,
         &quot;pixel/shape/icon/bitmap-text desktop rendering&quot;,
         &quot;double-buffer presentation&quot;,
         &quot;cursor-only damage repair&quot;,
-        &quot;five managed application windows&quot;,
+        &quot;six managed application windows&quot;,
         &quot;focus and z-order&quot;,
         &quot;title-bar drag&quot;,
         &quot;close-button hit dispatch&quot;,
@@ -7177,11 +7247,22 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;ICH9 AHCI discovery and ATA IDENTIFY&quot;,
         &quot;MBR type-0xEF partition lookup&quot;,
         &quot;FAT32 mount&quot;,
-        &quot;root short-name listing&quot;,
+        &quot;root and DOCS short-name directory traversal&quot;,
         &quot;NOTES.TXT load and fixed-size autosave&quot;,
         &quot;SETTINGS.CFG selected-row persistence&quot;,
-        &quot;DESKTOP.CFG position/visibility/z-order/active-window persistence&quot;,
+        &quot;DESKTOP.CFG six-window position/visibility/z-order/active-window persistence&quot;,
         &quot;second-boot state restore&quot;,
+        &quot;VirtIO-net split queues&quot;,
+        &quot;DHCP Discover/Offer/Request/ACK&quot;,
+        &quot;leased IPv4/subnet/gateway/DNS configuration&quot;,
+        &quot;Ethernet ARP gateway and DNS discovery&quot;,
+        &quot;IPv4 UDP DNS A query&quot;,
+        &quot;TCP port-80 handshake&quot;,
+        &quot;HTTP/1.0 response receive&quot;,
+        &quot;keyboard-editable browser URL and second live navigation&quot;,
+        &quot;bounded h1/p/br/a HTML layout&quot;,
+        &quot;CSS body/div/h1/a colors with background/background-color/color and #RGB/#RRGGBB&quot;,
+        &quot;TEXT BROWSER framebuffer rendering&quot;,
         &quot;Text Editor SURA NOTES input&quot;,
         &quot;Calculator 50 - 8 = 42&quot;,
         &quot;CMOS RTC HH:MM taskbar clock&quot;,
@@ -7194,6 +7275,18 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;SURA_OS_STORAGE_WRITE_OK&quot;,
         &quot;SURA_OS_SETTINGS_READY&quot;,
         &quot;SURA_OS_DESKTOP_STATE_READY&quot;,
+        &quot;SURA_OS_DIRECTORY_OK&quot;,
+        &quot;SURA_OS_NETWORK_READY&quot;,
+        &quot;SURA_OS_DHCP_OK&quot;,
+        &quot;SURA_OS_ARP_OK&quot;,
+        &quot;SURA_OS_UDP_OK&quot;,
+        &quot;SURA_OS_DNS_OK&quot;,
+        &quot;SURA_OS_TCP_OK&quot;,
+        &quot;SURA_OS_HTTP_OK&quot;,
+        &quot;SURA_OS_BROWSER_APP_OK&quot;,
+        &quot;SURA_OS_BROWSER_CSS_OK&quot;,
+        &quot;SURA_OS_BROWSER_FOCUS_OK&quot;,
+        &quot;SURA_OS_BROWSER_URL_OK&quot;,
         &quot;SURA_OS_WINDOW_READY&quot;,
         &quot;SURA_OS_WINDOW_FOCUS_OK&quot;,
         &quot;SURA_OS_WINDOW_DRAG_OK&quot;,
@@ -7227,17 +7320,20 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;build/os/SuraOS-windows.ppm after drag&quot;,
         &quot;build/os/SuraOS-start-menu.ppm with reopened System Information&quot;,
         &quot;build/os/SuraOS-apps.ppm with File Explorer, Text Editor, and Calculator&quot;,
+        &quot;build/os/SuraOS-browser.ppm with the fetched example.com body&quot;,
         &quot;build/os/SuraOS-desktop.ppm after Terminal activation&quot;
       ],
       &quot;execution_environment&quot;: &quot;QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes&quot;,
       &quot;limitations&quot;: [
         &quot;graphical desktop milestone, not a complete desktop OS&quot;,
-        &quot;polling PS/2, AHCI, and COM1 rather than interrupt-driven queues&quot;,
+        &quot;polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues&quot;,
         &quot;no resize, minimize, maximize, or Ring 3 application process windows&quot;,
         &quot;fixed kernel-owned Start/taskbar entries&quot;,
         &quot;FAT32 mutation is limited to fixed-size existing-file overwrite&quot;,
+        &quot;DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not&quot;,
+        &quot;browser HTML/CSS support is a bounded semantic and color subset without nested DOM box layout, images, forms, general cascade, box model, flex, grid, or JavaScript&quot;,
         &quot;does not execute every compile-verified freestanding subsystem&quot;,
-        &quot;no network, USB, audio, or browser&quot;
+        &quot;no USB or audio&quot;
       ]
     },
     &quot;acpi_madt&quot;: {
@@ -7328,6 +7424,9 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;tools/sura_os_data_disk.ps1&quot;,
       &quot;os/sura_os.sura&quot;,
       &quot;os/storage.sura&quot;,
+      &quot;os/network.sura&quot;,
+      &quot;stdlib/freestanding/virtio_net.sura&quot;,
+      &quot;stdlib/freestanding/net.sura&quot;,
       &quot;stdlib/freestanding/framebuffer.sura&quot;,
       &quot;stdlib/freestanding/font5x7.sura&quot;,
       &quot;stdlib/freestanding/text_terminal.sura&quot;,
@@ -14051,12 +14150,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       "library": "stdlib/freestanding/fat32.sura",
       "example": "examples/os/fat32_features.sura",
-      "executed_verification": "The OS mounts a generated FAT32 data image, lists root short names, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image",
+      "executed_verification": "The OS mounts a generated FAT32 data image, lists root short names, enters DOCS and lists README.TXT through a bounded directory stack, returns through the parent entry, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image",
       "limitations": [
         "no cluster allocation/free",
         "no create, resize, delete, or rename",
         "no long file names",
-        "no subdirectory path parser",
+        "no general string path parser; the OS supplies bounded click navigation",
         "no FAT repair or FSInfo update",
         "no journaling or locking"
       ]
@@ -14121,6 +14220,71 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "compile and image verification only"
       ]
     },
+    "virtio_network_and_browser": {
+      "libraries": [
+        "stdlib/freestanding/virtio_net.sura",
+        "stdlib/freestanding/net.sura"
+      ],
+      "integration": [
+        "os/network.sura",
+        "os/sura_os.sura"
+      ],
+      "device": [
+        "legacy-compatible VirtIO-net PCI discovery",
+        "I/O BAR",
+        "feature negotiation",
+        "two 256-entry split virtqueues",
+        "eight posted 2048-byte RX buffers",
+        "single polling TX descriptor"
+      ],
+      "protocols": [
+        "Ethernet II",
+        "DHCP Discover/Offer/Request/ACK",
+        "leased IPv4 address, subnet, gateway, and DNS configuration",
+        "ARP request/reply",
+        "IPv4 header build and checksum validation",
+        "UDP",
+        "DNS A query and compressed-name response traversal",
+        "TCP SYN/SYN-ACK/ACK",
+        "TCP payload acknowledgement and FIN",
+        "HTTP/1.0 GET"
+      ],
+      "browser": [
+        "sixth managed TEXT BROWSER window",
+        "keyboard-editable hostname or http:// URL with path",
+        "Enter-triggered DNS/TCP/HTTP navigation",
+        "HTTP header removal",
+        "bounded h1/p/br/a HTML tokenization",
+        "separate heading, body, and link layout runs",
+        "CSS body/div/h1/a selector colors",
+        "CSS background, background-color, and color with #RGB or #RRGGBB",
+        "desktop icon and taskbar activation",
+        "QMP framebuffer capture"
+      ],
+      "executed_verification": [
+        "SURA_OS_NETWORK_READY",
+        "SURA_OS_DHCP_OK",
+        "SURA_OS_ARP_OK",
+        "SURA_OS_UDP_OK",
+        "SURA_OS_DNS_OK",
+        "SURA_OS_TCP_OK",
+        "SURA_OS_HTTP_OK",
+        "SURA_OS_BROWSER_APP_OK",
+        "SURA_OS_BROWSER_CSS_OK",
+        "SURA_OS_BROWSER_FOCUS_OK",
+        "SURA_OS_BROWSER_URL_OK",
+        "build/os/SuraOS-browser.ppm"
+      ],
+      "limitations": [
+        "QEMU user networking is the executed environment",
+        "polling only",
+        "no IPv6",
+        "bounded connections without retransmission, congestion control, or out-of-order reassembly",
+        "no TLS/HTTPS or non-80 URL ports",
+        "no nested DOM box layout, images, forms, or general CSS cascade/box/flex/grid",
+        "no JavaScript, cookies, cache, history, or downloads"
+      ]
+    },
     "serial_and_vm_gate": {
       "serial": [
         "16550 initialization",
@@ -14140,6 +14304,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     },
     "minimal_os_integration": {
       "source": "os/sura_os.sura",
+      "ui_assets": [
+        "os/icons.sura",
+        "seven embedded 16x16 palette-index raster images",
+        "desktop, window-title, Start-menu, taskbar, and File Explorer rendering"
+      ],
       "gate": "tools/sura_os_vm.ps1",
       "output": [
         "build/os/SuraOS.efi",
@@ -14150,14 +14319,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "UEFI entry",
         "GOP framebuffer discovery",
         "64 MiB-bounded backbuffer allocation",
-        "AHCI DMA allocation",
+        "AHCI and VirtIO-net DMA allocation",
         "COM1 initialization",
         "memory-map acquisition",
         "ExitBootServices",
         "pixel/shape/icon/bitmap-text desktop rendering",
         "double-buffer presentation",
         "cursor-only damage repair",
-        "five managed application windows",
+        "six managed application windows",
         "focus and z-order",
         "title-bar drag",
         "close-button hit dispatch",
@@ -14167,11 +14336,22 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "ICH9 AHCI discovery and ATA IDENTIFY",
         "MBR type-0xEF partition lookup",
         "FAT32 mount",
-        "root short-name listing",
+        "root and DOCS short-name directory traversal",
         "NOTES.TXT load and fixed-size autosave",
         "SETTINGS.CFG selected-row persistence",
-        "DESKTOP.CFG position/visibility/z-order/active-window persistence",
+        "DESKTOP.CFG six-window position/visibility/z-order/active-window persistence",
         "second-boot state restore",
+        "VirtIO-net split queues",
+        "DHCP Discover/Offer/Request/ACK",
+        "leased IPv4/subnet/gateway/DNS configuration",
+        "Ethernet ARP gateway and DNS discovery",
+        "IPv4 UDP DNS A query",
+        "TCP port-80 handshake",
+        "HTTP/1.0 response receive",
+        "keyboard-editable browser URL and second live navigation",
+        "bounded h1/p/br/a HTML layout",
+        "CSS body/div/h1/a colors with background/background-color/color and #RGB/#RRGGBB",
+        "TEXT BROWSER framebuffer rendering",
         "Text Editor SURA NOTES input",
         "Calculator 50 - 8 = 42",
         "CMOS RTC HH:MM taskbar clock",
@@ -14184,6 +14364,18 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "SURA_OS_STORAGE_WRITE_OK",
         "SURA_OS_SETTINGS_READY",
         "SURA_OS_DESKTOP_STATE_READY",
+        "SURA_OS_DIRECTORY_OK",
+        "SURA_OS_NETWORK_READY",
+        "SURA_OS_DHCP_OK",
+        "SURA_OS_ARP_OK",
+        "SURA_OS_UDP_OK",
+        "SURA_OS_DNS_OK",
+        "SURA_OS_TCP_OK",
+        "SURA_OS_HTTP_OK",
+        "SURA_OS_BROWSER_APP_OK",
+        "SURA_OS_BROWSER_CSS_OK",
+        "SURA_OS_BROWSER_FOCUS_OK",
+        "SURA_OS_BROWSER_URL_OK",
         "SURA_OS_WINDOW_READY",
         "SURA_OS_WINDOW_FOCUS_OK",
         "SURA_OS_WINDOW_DRAG_OK",
@@ -14217,17 +14409,20 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "build/os/SuraOS-windows.ppm after drag",
         "build/os/SuraOS-start-menu.ppm with reopened System Information",
         "build/os/SuraOS-apps.ppm with File Explorer, Text Editor, and Calculator",
+        "build/os/SuraOS-browser.ppm with the fetched example.com body",
         "build/os/SuraOS-desktop.ppm after Terminal activation"
       ],
       "execution_environment": "QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes",
       "limitations": [
         "graphical desktop milestone, not a complete desktop OS",
-        "polling PS/2, AHCI, and COM1 rather than interrupt-driven queues",
+        "polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues",
         "no resize, minimize, maximize, or Ring 3 application process windows",
         "fixed kernel-owned Start/taskbar entries",
         "FAT32 mutation is limited to fixed-size existing-file overwrite",
+        "DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not",
+        "browser HTML/CSS support is a bounded semantic and color subset without nested DOM box layout, images, forms, general cascade, box model, flex, grid, or JavaScript",
         "does not execute every compile-verified freestanding subsystem",
-        "no network, USB, audio, or browser"
+        "no USB or audio"
       ]
     },
     "acpi_madt": {
@@ -14318,6 +14513,9 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "tools/sura_os_data_disk.ps1",
       "os/sura_os.sura",
       "os/storage.sura",
+      "os/network.sura",
+      "stdlib/freestanding/virtio_net.sura",
+      "stdlib/freestanding/net.sura",
       "stdlib/freestanding/framebuffer.sura",
       "stdlib/freestanding/font5x7.sura",
       "stdlib/freestanding/text_terminal.sura",

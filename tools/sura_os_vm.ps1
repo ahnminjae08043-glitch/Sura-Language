@@ -193,7 +193,9 @@ try {
         $qemuPath = Resolve-OsQemu $Qemu
         $firmwarePath = Resolve-OsFirmware $Firmware $qemuPath
         $interactiveDisk = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_os_interactive_" + [guid]::NewGuid().ToString("N") + ".img")
+        $interactiveDataDisk = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_os_interactive_data_" + [guid]::NewGuid().ToString("N") + ".img")
         Copy-Item -LiteralPath $disk -Destination $interactiveDisk -Force
+        Copy-Item -LiteralPath $dataDisk -Destination $interactiveDataDisk -Force
         $qemuProcess = $null
         $serialClient = $null
         $serialStream = $null
@@ -212,7 +214,9 @@ try {
                 "-no-reboot",
                 "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
                 "-drive", "file=$interactiveDisk,format=raw,if=ide,index=0",
-                "-drive", "file=$dataDisk,format=raw,if=ide,index=1",
+                "-drive", "file=$interactiveDataDisk,format=raw,if=ide,index=1",
+                "-netdev", "user,id=suranet",
+                "-device", "virtio-net-pci,netdev=suranet,disable-modern=on,mac=52:54:00:12:34:56",
                 "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-boot", "c"
             )
@@ -238,8 +242,13 @@ try {
             $qemuStdoutTask = $qemuProcess.StandardOutput.ReadToEndAsync()
             $qemuStderrTask = $qemuProcess.StandardError.ReadToEndAsync()
 
-            $connectDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            $connectTimeoutSeconds = [Math]::Min(
+                60,
+                [Math]::Max(15, $TimeoutSeconds)
+            )
+            $connectDeadline = [DateTime]::UtcNow.AddSeconds($connectTimeoutSeconds)
             while ([DateTime]::UtcNow -lt $connectDeadline -and $null -eq $serialClient) {
+                if ($qemuProcess.HasExited) { break }
                 $candidateClient = New-Object System.Net.Sockets.TcpClient
                 try {
                     $candidateClient.Connect("127.0.0.1", $serialPort)
@@ -251,7 +260,12 @@ try {
                 }
             }
             if ($null -eq $serialClient) {
-                throw "Could not connect to the QEMU serial bridge"
+                $exitDetail = ""
+                if ($qemuProcess.HasExited) {
+                    $qemuDiagnostics = $qemuStderrTask.GetAwaiter().GetResult()
+                    $exitDetail = " QEMU exited with code $($qemuProcess.ExitCode).`n$qemuDiagnostics"
+                }
+                throw "Could not connect to the QEMU serial bridge within $connectTimeoutSeconds seconds.$exitDetail"
             }
             $serialStream = $serialClient.GetStream()
             $bootText = ""
@@ -292,6 +306,8 @@ try {
                 $qemuDiagnostics = $qemuStderrTask.GetAwaiter().GetResult()
                 throw "Interactive QEMU closed with unexpected exit code $qemuExitCode`n$qemuDiagnostics"
             }
+            Copy-Item -LiteralPath $interactiveDataDisk -Destination $dataDisk -Force
+            "sura_os_vm: DATA SAVED ($dataDisk)"
             "sura_os_vm: INTERACTIVE CLOSED (exit=$qemuExitCode)"
         }
         finally {
@@ -316,6 +332,14 @@ try {
                     Remove-Item -LiteralPath $resolvedInteractiveDisk -Force
                 }
             }
+            if (Test-Path -LiteralPath $interactiveDataDisk -PathType Leaf) {
+                $resolvedInteractiveDataDisk = [System.IO.Path]::GetFullPath($interactiveDataDisk)
+                $resolvedTempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
+                if ($resolvedInteractiveDataDisk.StartsWith($resolvedTempRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+                    (Split-Path -Leaf $resolvedInteractiveDataDisk).StartsWith("sura_os_interactive_data_")) {
+                    Remove-Item -LiteralPath $resolvedInteractiveDataDisk -Force
+                }
+            }
         }
         return
     }
@@ -324,6 +348,7 @@ try {
         -Engine $Engine `
         -Source $source `
         -DataDisk $dataDisk `
+        -EnableNetwork `
         -Qemu $Qemu `
         -Firmware $Firmware `
         -TimeoutSeconds $TimeoutSeconds `
@@ -333,7 +358,7 @@ try {
         -SerialInputLines @("status", "mem", "shutdown") `
         -SerialInputDelayMilliseconds 8000 `
         -SerialInputIntervalMilliseconds 1000 `
-        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "SURA_OS_STORAGE_READY", "SURA_OS_STORAGE_READ_OK", "SURA_OS_SETTINGS_READY", "SURA_OS_DESKTOP_STATE_READY", "kernel: ready", "free physical pages: ") `
+        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "SURA_OS_STORAGE_READY", "SURA_OS_STORAGE_READ_OK", "SURA_OS_SETTINGS_READY", "SURA_OS_DESKTOP_STATE_READY", "SURA_OS_DHCP_OK", "SURA_OS_NETWORK_READY", "SURA_OS_ARP_OK", "SURA_OS_UDP_OK", "SURA_OS_DNS_OK", "SURA_OS_TCP_OK", "SURA_OS_HTTP_OK", "SURA_OS_BROWSER_APP_OK", "SURA_OS_BROWSER_CSS_OK", "dns example.com: ", "kernel: ready", "free physical pages: ") `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

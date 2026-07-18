@@ -168,12 +168,12 @@ func os_storage_save_desktop() do
   manager: ptr[WindowManager] is os_window_manager_state
   if manager == 0 or not os_storage_zero(buffer, 512) then return false
   if not os_storage_write_magic(buffer, os_storage_desktop_magic) then return false
-  mem.write64(ptr.add(buffer, 8), 1)
+  mem.write64(ptr.add(buffer, 8), 2)
   mem.write64(ptr.add(buffer, 16), manager.active_id)
   mem.write64(ptr.add(buffer, 24), manager.next_z)
 
   index: u64 is 0
-  while index < 5 do
+  while index < 6 do
     id: u64 is index + 1
     window: ptr[DesktopWindow] is window_manager_find(manager, id)
     if window == 0 then return false
@@ -196,7 +196,7 @@ func os_storage_load_desktop() do
   if entry.file_size != 512 then return false
   buffer: ptr is os_storage_desktop_buffer
   if not fat32_read_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data) then return false
-  if not os_storage_magic_equal(buffer, os_storage_desktop_magic) or mem.read64(ptr.add(buffer, 8)) != 1 then
+  if not os_storage_magic_equal(buffer, os_storage_desktop_magic) or mem.read64(ptr.add(buffer, 8)) != 2 then
     return os_storage_save_desktop()
   end
 
@@ -206,7 +206,7 @@ func os_storage_load_desktop() do
   manager.dragging_id is 0
   maximum_z: u64 is 0
   index: u64 is 0
-  while index < 5 do
+  while index < 6 do
     id: u64 is index + 1
     offset: u64 is 32 + index * 32
     if mem.read64(ptr.add(buffer, offset)) != id then return false
@@ -237,22 +237,97 @@ func os_storage_load_desktop() do
   return true
 end
 
-func os_storage_load_root() do
-  global os_storage_entry_count
+func os_storage_rebuild_path() do
+  if not os_storage_zero(os_storage_path_buffer, 128) then return false
+  index: u64 is 0
+  while index < 6 do
+    mem.write8(ptr.add(os_storage_path_buffer, index), mem.read8(ptr.add(os_storage_root_path, index)))
+    index += 1
+  end
+  output: u64 is 6
+  depth: u64 is 0
+  while depth < os_storage_directory_depth do
+    if output + 3 >= 127 then return false
+    mem.write8(ptr.add(os_storage_path_buffer, output), 32)
+    output += 1
+    name: ptr is ptr.add(os_storage_path_names, depth * 13)
+    name_index: u64 is 0
+    while name_index < 12 and mem.read8(ptr.add(name, name_index)) != 0 do
+      mem.write8(ptr.add(os_storage_path_buffer, output), mem.read8(ptr.add(name, name_index)))
+      output += 1
+      name_index += 1
+    end
+    mem.write8(ptr.add(os_storage_path_buffer, output), 32)
+    mem.write8(ptr.add(os_storage_path_buffer, output + 1), 47)
+    output += 2
+    depth += 1
+  end
+  mem.write8(ptr.add(os_storage_path_buffer, output), 0)
+  return true
+end
+
+func os_storage_load_directory(directory_cluster: u64) do
+  global os_storage_entry_count, os_storage_directory_cluster
   volume: ptr[Fat32Volume] is os_storage_volume
   files: ptr[FileExplorerState] is os_file_explorer_state
+  if not fat32_cluster_valid(volume, directory_cluster) then return false
+  os_storage_directory_cluster is directory_cluster
   os_storage_entry_count is 0
-  while os_storage_entry_count < 6 do
+  ordinal: u64 is 0
+  while os_storage_entry_count < 6 and ordinal < 32 do
     entry: ptr[Fat32DirEntry] is ptr.index(os_storage_root_entries, os_storage_entry_count, sizeof(Fat32DirEntry))
     display_name: ptr is ptr.add(os_storage_display_names, os_storage_entry_count * 13)
-    if not fat32_list_root_short(volume, os_storage_entry_count, entry, os_storage_short_name, os_storage_dma_data) then
+    if not fat32_list_short(volume, directory_cluster, ordinal, entry, os_storage_short_name, os_storage_dma_data) then
       break
     end
+    ordinal += 1
     if not os_storage_format_short_name(os_storage_short_name, display_name) then return false
-    os_storage_entry_count += 1
+    is_current: bool is mem.read8(display_name) == 46 and mem.read8(ptr.add(display_name, 1)) == 0
+    if not is_current then os_storage_entry_count += 1
   end
   if os_storage_entry_count == 0 then return false
   return file_explorer_init(files, os_storage_entry_count)
+end
+
+func os_storage_load_root() do
+  global os_storage_directory_depth, os_storage_directory_cluster
+  volume: ptr[Fat32Volume] is os_storage_volume
+  os_storage_directory_depth is 0
+  os_storage_directory_cluster is volume.root_cluster
+  if not os_storage_zero(os_storage_directory_stack, 64) then return false
+  if not os_storage_zero(os_storage_path_names, 104) then return false
+  mem.write64(os_storage_directory_stack, volume.root_cluster)
+  if not os_storage_rebuild_path() then return false
+  return os_storage_load_directory(volume.root_cluster)
+end
+
+func os_storage_open_selected() do
+  global os_storage_directory_depth, os_storage_directory_cluster
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.selected >= os_storage_entry_count then return false
+  entry: ptr[Fat32DirEntry] is ptr.index(os_storage_root_entries, files.selected, sizeof(Fat32DirEntry))
+  if entry.valid == 0 or (entry.attributes & 16) == 0 then return true
+  name: ptr is ptr.add(os_storage_display_names, files.selected * 13)
+  is_parent: bool is mem.read8(name) == 46 and mem.read8(ptr.add(name, 1)) == 46 and mem.read8(ptr.add(name, 2)) == 0
+  if is_parent then
+    if os_storage_directory_depth == 0 then return true
+    os_storage_directory_depth -= 1
+    os_storage_directory_cluster is mem.read64(ptr.add(os_storage_directory_stack, os_storage_directory_depth * 8))
+    if not os_storage_rebuild_path() then return false
+    return os_storage_load_directory(os_storage_directory_cluster)
+  end
+  if os_storage_directory_depth >= 7 or not fat32_cluster_valid(os_storage_volume, entry.first_cluster) then return false
+  destination: ptr is ptr.add(os_storage_path_names, os_storage_directory_depth * 13)
+  index: u64 is 0
+  while index < 13 do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(name, index)))
+    index += 1
+  end
+  os_storage_directory_depth += 1
+  os_storage_directory_cluster is entry.first_cluster
+  mem.write64(ptr.add(os_storage_directory_stack, os_storage_directory_depth * 8), os_storage_directory_cluster)
+  if not os_storage_rebuild_path() then return false
+  return os_storage_load_directory(os_storage_directory_cluster)
 end
 
 func os_storage_load_notes() do

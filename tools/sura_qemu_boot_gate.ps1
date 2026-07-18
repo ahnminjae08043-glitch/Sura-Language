@@ -4,6 +4,7 @@ param(
     [string]$Qemu = "",
     [string]$Firmware = "",
     [string]$DataDisk = "",
+    [switch]$EnableNetwork,
     [int]$TimeoutSeconds = 30,
     [string]$ExpectedEfiText = "Sura QEMU boot gate",
     [string]$ExpectedMarker = "SURA_EXIT_BOOT_SERVICES_OK",
@@ -173,6 +174,12 @@ try {
     if (-not [string]::IsNullOrWhiteSpace($temporaryDataDisk)) {
         $qemuArguments += @(
             "-drive", "file=$temporaryDataDisk,format=raw,if=ide,index=1"
+        )
+    }
+    if ($EnableNetwork) {
+        $qemuArguments += @(
+            "-netdev", "user,id=suranet",
+            "-device", "virtio-net-pci,netdev=suranet,disable-modern=on,mac=52:54:00:12:34:56"
         )
     }
     if ($process.StartInfo.PSObject.Properties.Name -contains "ArgumentList") {

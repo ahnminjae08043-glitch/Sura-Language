@@ -6,6 +6,7 @@ param(
     [string]$WindowOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-windows.ppm"),
     [string]$StartOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-start-menu.ppm"),
     [string]$AppsOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-apps.ppm"),
+    [string]$BrowserOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-browser.ppm"),
     [string]$DataDisk = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraData.img"),
     [string]$DataDiskOutput = "",
     [int]$TimeoutSeconds = 30,
@@ -180,6 +181,7 @@ $temporaryCapture = $null
 $temporaryWindowCapture = $null
 $temporaryStartCapture = $null
 $temporaryAppsCapture = $null
+$temporaryBrowserCapture = $null
 
 try {
     & (Join-Path $PSScriptRoot "sura_os_vm.ps1") `
@@ -198,6 +200,7 @@ try {
     $temporaryWindowCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_windows.ppm"
     $temporaryStartCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_start.ppm"
     $temporaryAppsCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_apps.ppm"
+    $temporaryBrowserCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_browser.ppm"
     Copy-Item -LiteralPath $disk -Destination $temporaryDisk -Force
     & $dataDiskTool -Path $DataDisk
     if (-not $?) {
@@ -219,6 +222,8 @@ try {
         "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
         "-drive", "file=$temporaryDisk,format=raw,if=ide,index=0",
         "-drive", "file=$temporaryDataDisk,format=raw,if=ide,index=1",
+        "-netdev", "user,id=suranet",
+        "-device", "virtio-net-pci,netdev=suranet,disable-modern=on,mac=52:54:00:12:34:56",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "c"
     )
@@ -280,6 +285,15 @@ try {
             -not $serialText.ToString().Contains("SURA_OS_STORAGE_READ_OK") -or
             -not $serialText.ToString().Contains("SURA_OS_SETTINGS_READY") -or
             -not $serialText.ToString().Contains("SURA_OS_DESKTOP_STATE_READY") -or
+            -not $serialText.ToString().Contains("SURA_OS_DHCP_OK") -or
+            -not $serialText.ToString().Contains("SURA_OS_NETWORK_READY") -or
+            -not $serialText.ToString().Contains("SURA_OS_ARP_OK") -or
+            -not $serialText.ToString().Contains("SURA_OS_UDP_OK") -or
+            -not $serialText.ToString().Contains("SURA_OS_DNS_OK") -or
+             -not $serialText.ToString().Contains("SURA_OS_TCP_OK") -or
+             -not $serialText.ToString().Contains("SURA_OS_HTTP_OK") -or
+             -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
+             -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK") -or
             (-not $SkipInputVerification -and
              (-not $serialText.ToString().Contains("SURA_OS_PS2_READY") -or
               -not $serialText.ToString().Contains("Sura OS shell ready"))))) {
@@ -299,8 +313,17 @@ try {
     if (-not $serialText.ToString().Contains("SURA_OS_STORAGE_READY") -or
         -not $serialText.ToString().Contains("SURA_OS_STORAGE_READ_OK") -or
         -not $serialText.ToString().Contains("SURA_OS_SETTINGS_READY") -or
-        -not $serialText.ToString().Contains("SURA_OS_DESKTOP_STATE_READY")) {
-        throw "Sura OS FAT32 data disk and persisted desktop state were not ready before capture"
+        -not $serialText.ToString().Contains("SURA_OS_DESKTOP_STATE_READY") -or
+        -not $serialText.ToString().Contains("SURA_OS_DHCP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_NETWORK_READY") -or
+        -not $serialText.ToString().Contains("SURA_OS_ARP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_UDP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_DNS_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_TCP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_HTTP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK")) {
+        throw "Sura OS storage, persisted desktop state, and VirtIO network were not ready before capture"
     }
 
     if (-not $SkipInputVerification) {
@@ -422,9 +445,118 @@ try {
             New-Item -ItemType Directory -Path $appsOutputDirectory -Force | Out-Null
         }
         Copy-Item -LiteralPath $temporaryAppsCapture -Destination $AppsOutput -Force
-        Send-SuraOsMouseMove $qmpReader $qmpWriter 130 120
-        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 120
-        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 120
+
+        # Focus File Explorer from a known pointer origin and open DOCS.
+        # This verifies FAT32 subdirectory traversal and the path bar.
+        for ($step = 0; $step -lt 14; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter -100 -100
+        }
+        for ($step = 0; $step -lt 5; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 46 0
+        for ($step = 0; $step -lt 7; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 0 100
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 70
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+        for ($step = 0; $step -lt 14; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter -100 -100
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 100
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 100
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 100
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 55
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "screendump"
+            arguments = @{ filename = $qemuAppsCapturePath }
+        })
+        Copy-Item -LiteralPath $temporaryAppsCapture -Destination $AppsOutput -Force
+
+        # Move from a known top-left clamp point to the Browser taskbar
+        # button, capture the actual HTTP text window, then focus Terminal.
+        for ($step = 0; $step -lt 14; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter -100 -100
+        }
+        for ($step = 0; $step -lt 8; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 82 0
+        for ($step = 0; $step -lt 7; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 0 100
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 70
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $true
+        Send-SuraOsMouseButton $qmpReader $qmpWriter $false
+
+        $browserFocusDeadline = [DateTime]::UtcNow.AddSeconds(5)
+        while ([DateTime]::UtcNow -lt $browserFocusDeadline -and
+               -not $serialText.ToString().Contains("SURA_OS_BROWSER_FOCUS_OK")) {
+            while ($serialStream.DataAvailable) {
+                $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
+                if ($read -le 0) { break }
+                [void]$serialText.Append(
+                    [System.Text.Encoding]::ASCII.GetString($serialBuffer, 0, $read)
+                )
+            }
+            if ($qemuProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $serialText.ToString().Contains("SURA_OS_BROWSER_FOCUS_OK")) {
+            throw "Sura OS browser taskbar click did not focus the browser.`n$($serialText.ToString())"
+        }
+
+        # Replace the address and perform a second live DNS/TCP/HTTP
+        # navigation through the graphical browser input path.
+        foreach ($key in @("e", "x", "a", "m", "p", "l", "e", "dot", "c", "o", "m", "slash", "ret")) {
+            [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+                execute = "human-monitor-command"
+                arguments = @{ "command-line" = "sendkey $key" }
+            })
+            Start-Sleep -Milliseconds 90
+        }
+        $browserDeadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ([DateTime]::UtcNow -lt $browserDeadline -and
+               -not $serialText.ToString().Contains("SURA_OS_BROWSER_URL_OK")) {
+            while ($serialStream.DataAvailable) {
+                $read = $serialStream.Read($serialBuffer, 0, $serialBuffer.Length)
+                if ($read -le 0) { break }
+                [void]$serialText.Append(
+                    [System.Text.Encoding]::ASCII.GetString($serialBuffer, 0, $read)
+                )
+            }
+            if ($qemuProcess.HasExited) { break }
+            Start-Sleep -Milliseconds 50
+        }
+        if (-not $serialText.ToString().Contains("SURA_OS_BROWSER_URL_OK")) {
+            throw "Sura OS browser URL input did not complete a live navigation:`n$($serialText.ToString())"
+        }
+        $qemuBrowserCapturePath = $temporaryBrowserCapture.Replace('\', '/')
+        [void](Invoke-SuraOsQmp $qmpReader $qmpWriter @{
+            execute = "screendump"
+            arguments = @{ filename = $qemuBrowserCapturePath }
+        })
+        if (-not (Test-Path -LiteralPath $temporaryBrowserCapture -PathType Leaf)) {
+            throw "QEMU did not create the text-browser screenshot"
+        }
+        $browserOutputDirectory = Split-Path -Parent $BrowserOutput
+        if (-not [string]::IsNullOrWhiteSpace($browserOutputDirectory)) {
+            New-Item -ItemType Directory -Path $browserOutputDirectory -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $temporaryBrowserCapture -Destination $BrowserOutput -Force
+
+        for ($step = 0; $step -lt 14; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter -100 -100
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 100 0
+        for ($step = 0; $step -lt 7; $step++) {
+            Send-SuraOsMouseMove $qmpReader $qmpWriter 0 100
+        }
+        Send-SuraOsMouseMove $qmpReader $qmpWriter 0 70
         Send-SuraOsMouseButton $qmpReader $qmpWriter $true
         Send-SuraOsMouseButton $qmpReader $qmpWriter $false
 
@@ -464,6 +596,7 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_APP_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_DIRECTORY_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_STORAGE_WRITE_OK") -or
@@ -498,6 +631,8 @@ try {
             "SURA_OS_CALCULATOR_RESULT_OK",
             "SURA_OS_EDITOR_INPUT_OK",
             "SURA_OS_CALCULATOR_RESULT_OK",
+            "SURA_OS_BROWSER_URL_OK",
+            "SURA_OS_DIRECTORY_OK",
             "SURA_OS_STORAGE_WRITE_OK",
             "SURA_OS_TERMINAL_SCROLL_OK",
             "SURA_OS_CLEAR_OK",
@@ -596,7 +731,12 @@ try {
     if ($null -ne $appsCapture) {
         $appsStatus = "$($appsCapture.FullName), $($appsCapture.Length) bytes"
     }
-    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; apps=$appsStatus; input=$inputStatus; data=$dataDiskStatus)"
+    $browserCapture = Get-Item -LiteralPath $BrowserOutput -ErrorAction SilentlyContinue
+    $browserStatus = "not captured"
+    if ($null -ne $browserCapture) {
+        $browserStatus = "$($browserCapture.FullName), $($browserCapture.Length) bytes"
+    }
+    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; apps=$appsStatus; browser=$browserStatus; input=$inputStatus; data=$dataDiskStatus)"
 }
 catch {
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {
@@ -624,7 +764,7 @@ finally {
         }
         $qemuProcess.Dispose()
     }
-    foreach ($temporaryPath in @($temporaryDisk, $temporaryDataDisk, $temporaryCapture, $temporaryWindowCapture, $temporaryStartCapture, $temporaryAppsCapture)) {
+    foreach ($temporaryPath in @($temporaryDisk, $temporaryDataDisk, $temporaryCapture, $temporaryWindowCapture, $temporaryStartCapture, $temporaryAppsCapture, $temporaryBrowserCapture)) {
         if (-not [string]::IsNullOrWhiteSpace($temporaryPath) -and
             (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             $resolvedTemporaryPath = [System.IO.Path]::GetFullPath($temporaryPath)

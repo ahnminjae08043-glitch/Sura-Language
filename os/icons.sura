@@ -1,0 +1,45 @@
+# Embedded 16x16 raster icon set for the Sura OS desktop.
+#
+# Each sprite is a palette-index image rather than a placeholder rectangle.
+# A period is transparent; the remaining letters map to the established
+# Sura navy, blue, orange, gold, white, gray, and light-blue palette.
+
+import "../stdlib/freestanding/framebuffer.sura"
+
+os_icon_logo is static.utf8(".....................BBBBBB........BBBWWBBBB......BBWW............BBWW.............BBBWWW............BBBWWW............BBWW..........OOOWW.........OOOWWW.........OOWW............OOWW.............OOOWWWOO..........OOOOOO.....................................")
+os_icon_files is static.utf8("..................................YYYYY..........YYYYYYYYYYYY....YYOOOOOOOOOY....YYOOOOOOOOOY....YYYYYYYYYYYY....YYYYYYYYYYYY....YYWWWWYYYYYY....YYWWWWYYYYYY....YYYYYYYYYYYY....YYYYYYYYYYYY.....YYYYYYYYYY.......OOOOOOOO.....................................")
+os_icon_about is static.utf8(".....................BBBBBB........BBLLLLLLBB.....BLLLLLLLLLLB...BLLLLWWLLLLLLB..BLLLLWWLLLLLLB..BLLLLLLLLLLLLB..BLLLLWWLLLLLLB..BLLLLWWLLLLLLB..BLLLLWWLLLLLLB..BLLLLWWLLLLLLB...BLLLLLLLLLLB.....BBLLLLLLBB........BBBBBB.....................................")
+os_icon_notes is static.utf8("....................BBBBBBBB.......BWWWWWWWB.......BWWWWWWWB.......BWWWWWWBB.......BWWWWWBBL.......BWWWWBBLL.......BWWWWWWWB.......BWBWBWBWB.......BWWWWWWWB.......BWBWBWBWB.......BWWWWWWWB.......BWBWBWBWB........BBBBBBBB....................................")
+os_icon_calc is static.utf8("....................OOOOOOOO.......OYYYYYYYYO......OYWWWWWWYO......OYWWWWWWYO......OYYYYYYYYO......OYOOYYOOYO......OYOOYYOOYO......OYYYYYYYYO......OYOOYYOOYO......OYOOYYOOYO......OYYYYYYYYO......OYOOYYOOYO.......OOOOOOOO....................................")
+os_icon_web is static.utf8(".....................BBBBBB........BBLLLLLLBB.....BLLLBLLBLLLB...BLLLLBLLBLLLLB..BBBBBBBBBBBBBB..BLLLLBLLBLLLLB..BLLLLBLLBLLLLB..BBBBBBBBBBBBBB..BLLLLBLLBLLLLB..BLLLLBLLBLLLLB...BLLLBLLBLLLB.....BBLLLLLLBB........BBBBBB.....................................")
+os_icon_terminal is static.utf8("..................GGGGGGGGGGGG...GNNNNNNNNNNNNG..GNLLLLLLLLLLNG..GNLWWLLLLLLLNG..GNLLWWLLLLLLNG..GNLLLWWLLLLLNG..GNLLLLWWLLLLNG..GNLLLLLLLLLLNG..GNLLLLLLWWLLNG..GNLLLLLLWWLLNG..GNLLLLLLLLLLNG..GNNNNNNNNNNNNG...GGGGGGGGGGGG..................................")
+
+func os_icon_palette(surface: ptr[FramebufferSurface], code: u64) do
+  if surface == 0 then return 0
+  if code == 78 then return fb_rgb(surface, 12, 24, 44)
+  if code == 66 then return fb_rgb(surface, 16, 91, 132)
+  if code == 79 then return fb_rgb(surface, 255, 102, 35)
+  if code == 89 then return fb_rgb(surface, 255, 190, 72)
+  if code == 87 then return fb_rgb(surface, 242, 247, 252)
+  if code == 71 then return fb_rgb(surface, 113, 128, 146)
+  if code == 76 then return fb_rgb(surface, 106, 190, 230)
+  return 0
+end
+
+func os_draw_bitmap_icon(surface: ptr[FramebufferSurface], x: u64, y: u64, image: ptr, scale: u64) do
+  if surface == 0 or image == 0 or scale == 0 or scale > 4 then return false
+  row: u64 is 0
+  while row < 16 do
+    column: u64 is 0
+    while column < 16 do
+      code: u64 is mem.read8(ptr.add(image, row * 16 + column))
+      if code != 46 and code != 0 then
+        color: u32 is os_icon_palette(surface, code)
+        fb_fill_rect(surface, x + column * scale, y + row * scale, scale, scale, color)
+      end
+      column += 1
+    end
+    row += 1
+  end
+  return true
+end

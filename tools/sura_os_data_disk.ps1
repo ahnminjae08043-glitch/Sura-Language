@@ -284,15 +284,16 @@ try {
 
         $desktop = New-Object byte[] $sectorSize
         Set-Ascii $desktop 0 "SURADSK1"
-        Set-U64 $desktop 8 1
+        Set-U64 $desktop 8 2
         Set-U64 $desktop 16 1
-        Set-U64 $desktop 24 7
+        Set-U64 $desktop 24 8
         $desktopDefaults = @(
-            @{ Id = 1; X = 320; Y = 209; Z = 6; Visible = 1 },
-            @{ Id = 2; X = 840; Y = 96;  Z = 1; Visible = 1 },
-            @{ Id = 3; X = 100; Y = 130; Z = 3; Visible = 0 },
-            @{ Id = 4; X = 220; Y = 170; Z = 4; Visible = 0 },
-            @{ Id = 5; X = 860; Y = 220; Z = 5; Visible = 0 }
+            @{ Id = 1; X = 320; Y = 209; Z = 7; Visible = 1 },
+            @{ Id = 2; X = 840; Y = 96;  Z = 2; Visible = 1 },
+            @{ Id = 3; X = 100; Y = 130; Z = 4; Visible = 0 },
+            @{ Id = 4; X = 220; Y = 170; Z = 5; Visible = 0 },
+            @{ Id = 5; X = 860; Y = 220; Z = 6; Visible = 0 },
+            @{ Id = 6; X = 280; Y = 88;  Z = 1; Visible = 0 }
         )
         for ($index = 0; $index -lt $desktopDefaults.Count; $index++) {
             $record = $desktopDefaults[$index]

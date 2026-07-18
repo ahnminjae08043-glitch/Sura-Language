@@ -14,12 +14,18 @@ emitting `SURA_OS_KERNEL_READY`.
 It is not a complete general-purpose operating system. The rendered terminal
 receives translated PS/2 keyboard input in QEMU and COM1 remains available for
 diagnostics and automation. A polling PS/2 mouse moves a software pointer.
-The terminal and System Information windows can be focused, raised, dragged
-within the desktop, closed, and reopened from persistent taskbar buttons with
-the left mouse button. The Start menu activates either window. Window resize,
+Six kernel-owned windows can be focused, raised, dragged within the desktop,
+closed, and reopened from desktop or taskbar entries with the left mouse
+button. The Start menu activates applications and shutdown. Window resize,
 minimize, and maximize are not implemented.
-There is no application process, persistent desktop filesystem, network stack,
-or browser.
+The executed image mounts a FAT32 data disk, saves notes and desktop state,
+obtains IPv4 configuration with DHCP over VirtIO-net, performs ARP, DNS, TCP,
+and HTTP, and displays a bounded HTML layout from an entered `http://` URL.
+The browser distinguishes heading, paragraph, and link runs and applies a
+small CSS color subset (`body`, `div`, `h1`, `a`; `background`,
+`background-color`, and `color`; `#RGB` and `#RRGGBB`).
+There is no Ring 3 application process, general writable filesystem, IPv6,
+complete TCP reliability, TLS/HTTPS, or general HTML/CSS/JavaScript browser.
 The files in `examples/os` remain compiler feature tests and do not form a
 complete user environment or device-driver stack. Test generated images in a
 virtual machine before considering physical hardware.
@@ -81,13 +87,15 @@ The minimal OS integration has a separate build-and-run gate:
 ```
 
 The executed form uses QEMU TCG rather than host hardware. Success requires
-the desktop to emit `SURA_OS_DESKTOP_OK`, the post-self-check shell to answer
-`status` and `mem`, accept `shutdown`, emit `SURA_OS_SHUTDOWN`, and produce
-process exit code 33. Interactive mode supports `help`, `status`, `mem`,
-`about`, and `shutdown`. It uses an ephemeral `127.0.0.1` TCP bridge for COM1
-so PowerShell retains normal line editing; the listener is not bound to an
-external interface. The screenshot gate uses a second loopback-only QMP
-connection and writes `build/os/SuraOS-desktop.ppm`. Neither gate modifies
+the desktop, FAT32 storage, DHCP, DNS, TCP, HTTP, and browser markers; the
+post-self-check shell must answer `status` and `mem`, accept `shutdown`, emit
+`SURA_OS_SHUTDOWN`, and produce process exit code 33. Interactive mode supports
+`help`, `status`, `mem`, `about`, and `shutdown`. It uses an ephemeral
+`127.0.0.1` TCP bridge for COM1 so PowerShell retains normal line editing; the
+listener is not bound to an external interface. The screenshot gate uses a
+second loopback-only QMP connection, types a browser address, verifies a second
+live HTTP navigation, and writes `build/os/SuraOS-desktop.ppm` and
+`build/os/SuraOS-browser.ppm`. Neither gate modifies
 host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
@@ -250,6 +258,12 @@ desktop to that buffer and calls `fb_present` once. The QEMU gate observes
 actual pixels through QMP. This proves the current QEMU render path, not
 hardware GPU acceleration or a complete application window system.
 
+`os/icons.sura` supplies seven embedded 16x16 palette-index raster images for
+the logo, Terminal, File Explorer/folders, System Information, Text Editor,
+Calculator, and Browser. The desktop, window title bars, Start menu, taskbar,
+and File Explorer rows scale those image assets instead of using placeholder
+square-and-line icons.
+
 `examples/os/framebuffer_features.sura` independently compiles the surface,
 pixel, rectangle, line, icon, font, hash, and presentation paths into an EFI
 feature image. The OS VM gate is the executed proof for the same libraries.
@@ -282,8 +296,9 @@ resulting framebuffer.
 
 This is polling input with no IRQ1/IRQ12 handler, event queue, key repeat
 policy, keyboard layout selection, Unicode text input, wheel/five-button mouse,
-or USB HID. Pointer clicks are dispatched to the initial window manager, and
-printable PS/2 input is routed to the active terminal window.
+or USB HID. Pointer clicks are dispatched to the window manager, and printable
+PS/2 input is routed to the active Terminal, Text Editor, Calculator, or
+Browser address bar.
 
 ## Graphical terminal
 
@@ -328,11 +343,12 @@ taskbar drawing, and application processes are not implemented by the module.
 selection, focus changes, z-order, drag offsets, screen-bound clamping, close,
 and activation of the next top window. `tools/sura_uefi_target_smoke.ps1`
 compiles that example and validates its generated EFI image and diagnostic.
-The executed `os/sura_os.sura` desktop connects the manager to a terminal and
-System Information window. PS/2 left-button input changes focus and z-order,
-drags title bars, and closes a window. Keyboard input is routed only to the
-active terminal. `tools/sura_os_screenshot.ps1` drives those actions through
-QEMU, requires `SURA_OS_WINDOW_FOCUS_OK`, `SURA_OS_WINDOW_DRAG_OK`, and
+The executed `os/sura_os.sura` desktop connects the manager to six kernel-owned
+windows: Terminal, System Information, File Explorer, Text Editor, Calculator,
+and Browser. PS/2 left-button input changes focus and z-order, drags title
+bars, and closes a window. Keyboard input is routed according to the active
+application. `tools/sura_os_screenshot.ps1` drives those actions through QEMU,
+requires `SURA_OS_WINDOW_FOCUS_OK`, `SURA_OS_WINDOW_DRAG_OK`, and
 `SURA_OS_WINDOW_CLOSE_OK`, and captures the dragged overlapping windows before
 closing the information window. It then reopens that window from the taskbar,
 requires `SURA_OS_WINDOW_REOPEN_OK`, opens Start, requires
@@ -340,11 +356,11 @@ requires `SURA_OS_WINDOW_REOPEN_OK`, opens Start, requires
 
 ## Desktop shell
 
-The executed desktop draws persistent Terminal and System Information taskbar
-buttons with an active-window underline. The Start button toggles a bounded
-menu above the taskbar. Its Terminal and System Info entries focus and raise a
-visible window or reopen a closed one. The desktop About icon also activates
-the System Information window. A Shut Down menu action follows the same
+The executed desktop draws persistent taskbar buttons for all six applications
+with an active-window underline. The Start button toggles a bounded menu above
+the taskbar. Start, desktop, and taskbar entries focus and raise a visible
+window or reopen a closed one. The default browser window is hidden until
+activated, reducing initial overlap. A Shut Down menu action follows the same
 QEMU-exit path as the shell command.
 
 `stdlib/freestanding/desktop_shell.sura` owns the fixed-layout hit testing and
@@ -372,18 +388,20 @@ for the first built-in applications:
 - unsigned-integer Calculator input for `+`, `-`, `*`, `/`, `=`, and `C`,
   with bounded values and division/overflow errors
 
-The executed OS registers File Explorer, Text Editor, and Calculator windows
-alongside Terminal and System Information. Their desktop icons, Start entries,
-and persistent taskbar buttons focus or reopen them. QEMU input types
-`SURA NOTES` into the editor and evaluates `50 - 8 = 42` in the calculator.
-The gate requires `SURA_OS_FILES_APP_OK`, `SURA_OS_EDITOR_INPUT_OK`, and
+The executed OS registers File Explorer, Text Editor, Calculator, and Browser
+windows alongside Terminal and System Information. Their image icons, Start
+entries, and persistent taskbar buttons focus or reopen them. File Explorer
+mounts the generated FAT32 data disk, shows a breadcrumb-like current path,
+enters `DOCS`, lists `README.TXT`, and returns through `UP ONE LEVEL`. QEMU
+input types `SURA NOTES` into the editor and evaluates `50 - 8 = 42` in the
+calculator. The gate requires `SURA_OS_FILES_APP_OK`,
+`SURA_OS_DIRECTORY_OK`, `SURA_OS_EDITOR_INPUT_OK`, and
 `SURA_OS_CALCULATOR_RESULT_OK`, then captures `build/os/SuraOS-apps.ppm`.
 
-File Explorer currently reports that no virtual disk is mounted. This is an
-honest application shell, not filesystem integration: disk enumeration,
-directory contents, file open/save, and persistent editor storage belong to
-the next filesystem stage. The applications still run inside the kernel;
-separate Ring 3 application processes are not executed yet.
+Text Editor loads and autosaves the fixed 512-byte `NOTES.TXT` record. File
+creation, deletion, rename, growth, and long names are not implemented. The
+applications still run inside the kernel; separate Ring 3 application
+processes are not executed yet.
 
 ## Kernel intrinsics
 
@@ -1182,8 +1200,10 @@ partial final sector and flushes the device.
 
 The FAT32 writer deliberately does not allocate or free clusters. It cannot
 create, resize, delete, or rename files, and it does not support long file
-names, subdirectory path parsing, FAT mirroring repair, FSInfo updates,
-journaling, or concurrent access. A malformed or cyclic cluster chain is
+names, a general string path parser, FAT mirroring repair, FSInfo updates,
+journaling, or concurrent access. The OS builds a separate bounded
+eight-level click-navigation stack over `fat32_list_short`; this is not a
+general filesystem path resolver. A malformed or cyclic cluster chain is
 bounded by the volume cluster count and fails.
 
 `stdlib/freestanding/vfs.sura` supplies a fixed-capacity mount table and file

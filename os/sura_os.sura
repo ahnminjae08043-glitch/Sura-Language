@@ -12,7 +12,9 @@ import "../stdlib/freestanding/desktop_shell.sura"
 import "../stdlib/freestanding/desktop_apps.sura"
 import "../stdlib/freestanding/rtc.sura"
 import "../stdlib/freestanding/ps2.sura"
+import "icons.sura"
 import "storage.sura"
+import "network.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
 os_allocator_bitmap is static.zero(65536, 4096)
@@ -24,6 +26,9 @@ os_font_white_small is static.struct(BitmapFontStyle)
 os_font_orange_large is static.struct(BitmapFontStyle)
 os_font_green_large is static.struct(BitmapFontStyle)
 os_font_muted_small is static.struct(BitmapFontStyle)
+os_font_browser_heading is static.struct(BitmapFontStyle)
+os_font_browser_body is static.struct(BitmapFontStyle)
+os_font_browser_link is static.struct(BitmapFontStyle)
 os_ps2_keyboard_state is static.struct(Ps2KeyboardState)
 os_ps2_mouse_state is static.struct(Ps2MouseState)
 os_terminal_state is static.struct(TextTerminal)
@@ -57,6 +62,10 @@ os_storage_root_entries is static.struct(Fat32DirEntry, 16)
 os_storage_gpt_entry_buffer is static.zero(256, 16)
 os_storage_short_name is static.zero(12, 16)
 os_storage_display_names is static.zero(208, 16)
+os_storage_directory_stack is static.zero(64, 16)
+os_storage_path_names is static.zero(104, 16)
+os_storage_path_buffer is static.zero(128, 16)
+os_storage_root_path is static.utf8("ROOT /")
 os_storage_settings_buffer is static.zero(512, 16)
 os_storage_desktop_buffer is static.zero(512, 16)
 os_storage_marker_name is static.bytes([83, 85, 82, 65, 32, 32, 32, 32, 68, 83, 75], 16)
@@ -65,6 +74,33 @@ os_storage_settings_name is static.bytes([83, 69, 84, 84, 73, 78, 71, 83, 67, 70
 os_storage_desktop_name is static.bytes([68, 69, 83, 75, 84, 79, 80, 32, 67, 70, 71], 16)
 os_storage_settings_magic is static.bytes([83, 85, 82, 65, 83, 69, 84, 49], 8)
 os_storage_desktop_magic is static.bytes([83, 85, 82, 65, 68, 83, 75, 49], 8)
+os_network_pci_device is static.struct(PciDevice)
+os_network_context is static.struct(VirtioNetContext)
+os_network_udp_spec is static.struct(NetUdpSpec)
+os_network_tcp_spec is static.struct(NetTcpSpec)
+os_network_dhcp_offer is static.struct(NetDhcpLease)
+os_network_dhcp_lease is static.struct(NetDhcpLease)
+os_network_dhcp_request is static.struct(NetDhcpRequest)
+os_network_tx_frame is static.zero(2048, 16)
+os_network_rx_frame is static.zero(2048, 16)
+os_network_source_mac is static.zero(6, 16)
+os_network_broadcast_mac is static.bytes([255, 255, 255, 255, 255, 255], 16)
+os_network_gateway_mac is static.zero(6, 16)
+os_network_dns_mac is static.zero(6, 16)
+os_network_dhcp_buffer is static.zero(576, 16)
+os_network_dns_query_buffer is static.zero(512, 16)
+os_browser_default_address is static.utf8("http://example.com/")
+os_network_http_get_prefix is static.bytes([71, 69, 84, 32], 16)
+os_network_http_host_prefix is static.bytes([32, 72, 84, 84, 80, 47, 49, 46, 48, 13, 10, 72, 111, 115, 116, 58, 32], 16)
+os_network_http_close_suffix is static.bytes([13, 10, 67, 111, 110, 110, 101, 99, 116, 105, 111, 110, 58, 32, 99, 108, 111, 115, 101, 13, 10, 13, 10], 16)
+os_browser_address_buffer is static.zero(256, 16)
+os_browser_hostname_buffer is static.zero(256, 16)
+os_browser_path_buffer is static.zero(512, 16)
+os_network_http_request is static.zero(1024, 16)
+os_browser_buffer is static.zero(8192, 16)
+os_browser_text_buffer is static.zero(4096, 16)
+os_browser_layout_lines is static.zero(4096, 16)
+os_browser_layout_styles is static.zero(32, 16)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
@@ -91,8 +127,24 @@ os_storage_read_marker is static.utf8("SURA_OS_STORAGE_READ_OK")
 os_storage_write_marker is static.utf8("SURA_OS_STORAGE_WRITE_OK")
 os_storage_settings_marker is static.utf8("SURA_OS_SETTINGS_READY")
 os_storage_desktop_state_marker is static.utf8("SURA_OS_DESKTOP_STATE_READY")
+os_storage_directory_marker is static.utf8("SURA_OS_DIRECTORY_OK")
 os_storage_unavailable_marker is static.utf8("SURA_OS_STORAGE_UNAVAILABLE")
 os_storage_status_prefix is static.utf8("storage status: ")
+os_network_ready_marker is static.utf8("SURA_OS_NETWORK_READY")
+os_network_dhcp_marker is static.utf8("SURA_OS_DHCP_OK")
+os_network_arp_marker is static.utf8("SURA_OS_ARP_OK")
+os_network_udp_marker is static.utf8("SURA_OS_UDP_OK")
+os_network_dns_marker is static.utf8("SURA_OS_DNS_OK")
+os_network_tcp_marker is static.utf8("SURA_OS_TCP_OK")
+os_network_http_marker is static.utf8("SURA_OS_HTTP_OK")
+os_browser_app_marker is static.utf8("SURA_OS_BROWSER_APP_OK")
+os_browser_focus_marker is static.utf8("SURA_OS_BROWSER_FOCUS_OK")
+os_browser_url_marker is static.utf8("SURA_OS_BROWSER_URL_OK")
+os_browser_css_marker is static.utf8("SURA_OS_BROWSER_CSS_OK")
+os_browser_url_failure_prefix is static.utf8("browser navigation failure: ")
+os_network_unavailable_marker is static.utf8("SURA_OS_NETWORK_UNAVAILABLE")
+os_network_status_prefix is static.utf8("network status: ")
+os_network_dns_prefix is static.utf8("dns example.com: ")
 os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
 os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
 os_window_ready_marker is static.utf8("SURA_OS_WINDOW_READY")
@@ -138,14 +190,23 @@ os_text_files is static.utf8("FILES")
 os_text_about_icon is static.utf8("ABOUT")
 os_text_editor_icon is static.utf8("NOTES")
 os_text_calculator_icon is static.utf8("CALC")
+os_text_browser_icon is static.utf8("WEB")
 os_text_file_explorer is static.utf8("FILE EXPLORER")
 os_text_text_editor is static.utf8("TEXT EDITOR")
 os_text_calculator is static.utf8("CALCULATOR")
+os_text_browser is static.utf8("TEXT BROWSER")
+os_text_browser_status_ready is static.utf8("READY - TYPE HTTP URL AND PRESS ENTER")
+os_text_browser_status_loading is static.utf8("LOADING...")
+os_text_browser_status_invalid is static.utf8("INVALID HTTP URL")
+os_text_browser_status_https is static.utf8("HTTPS/TLS IS NOT IMPLEMENTED YET")
+os_text_browser_status_network is static.utf8("NETWORK REQUEST FAILED")
 os_text_root is static.utf8("ROOT /")
 os_text_no_disk is static.utf8("[NO MOUNTED DISK]")
 os_text_read_only is static.utf8("VIRTUAL DISK CONNECTION PENDING")
 os_text_editor_hint is static.utf8("TYPE TO EDIT - MEMORY BUFFER")
 os_text_storage_ready is static.utf8("FAT32 DATA DISK - ROOT DIRECTORY")
+os_text_storage_directory is static.utf8("FAT32 DATA DISK - DIRECTORY VIEW")
+os_text_parent_folder is static.utf8("UP ONE LEVEL")
 os_text_editor_autosave is static.utf8("TYPE TO EDIT - FAT32 AUTOSAVE")
 os_text_calculator_hint is static.utf8("KEYS: 0-9 + - * / = C")
 os_text_calc_error is static.utf8("ERROR")
@@ -184,6 +245,9 @@ os_rtc_reported: u64 is 0
 os_files_app_reported: u64 is 0
 os_editor_app_reported: u64 is 0
 os_calculator_app_reported: u64 is 0
+os_browser_app_reported: u64 is 0
+os_browser_url_reported: u64 is 0
+os_directory_reported: u64 is 0
 os_editor_input_reported: u64 is 0
 os_calculator_result_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
@@ -191,6 +255,8 @@ os_clock_second: u64 is 60
 os_storage_mounted: u64 is 0
 os_storage_port: u64 is 32
 os_storage_entry_count: u64 is 0
+os_storage_directory_cluster: u64 is 0
+os_storage_directory_depth: u64 is 0
 os_storage_write_reported: u64 is 0
 os_storage_status: u64 is 0
 os_storage_dma_address: u64 is 0
@@ -202,6 +268,46 @@ os_storage_mbr_start: u64 is 0
 os_storage_sector_count: u64 is 0
 os_storage_direct_read_status: u64 is 99
 os_storage_read_callback: u64 is 0
+os_network_dma_address: u64 is 0
+os_network_dma_pages: u64 is 16
+os_network_status: u64 is 0
+os_network_local_ip: u64 is 0
+os_network_subnet_mask: u64 is 0
+os_network_gateway_ip: u64 is 0
+os_network_dns_ip: u64 is 0
+os_network_dhcp_server_ip: u64 is 0
+os_network_lease_seconds: u64 is 0
+os_gateway_mac0: u64 is 0
+os_gateway_mac1: u64 is 0
+os_gateway_mac2: u64 is 0
+os_gateway_mac3: u64 is 0
+os_gateway_mac4: u64 is 0
+os_gateway_mac5: u64 is 0
+os_network_resolved_ip: u64 is 0
+os_network_remote_sequence: u64 is 0
+os_network_local_sequence: u64 is 0
+os_network_request_counter: u64 is 0
+os_network_dns_transaction_id: u64 is 21333
+os_browser_length: u64 is 0
+os_browser_text_length: u64 is 0
+os_browser_layout_line_count: u64 is 0
+os_browser_layout_line: u64 is 0
+os_browser_layout_column: u64 is 0
+os_browser_layout_style: u64 is 0
+os_browser_layout_pending_space: u64 is 0
+os_browser_css_page_rgb: u64 is u64("0xf6f9fc")
+os_browser_css_card_rgb: u64 is u64("0xffffff")
+os_browser_css_text_rgb: u64 is u64("0x0c182c")
+os_browser_css_heading_rgb: u64 is u64("0xff6623")
+os_browser_css_link_rgb: u64 is u64("0x105b84")
+os_browser_css_rule_count: u64 is 0
+os_browser_address_length: u64 is 0
+os_browser_hostname_length: u64 is 0
+os_browser_path_length: u64 is 0
+os_browser_http_request_length: u64 is 0
+os_browser_edit_started: u64 is 0
+os_browser_status_text: ptr is 0
+os_browser_last_error: u64 is 0
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -405,7 +511,14 @@ func os_window_manager_start(surface: ptr[FramebufferSurface]) do
   about_height: u64 is 220
   about_x: i64 is surface.width - about_width - 80
   about_y: i64 is 96
+  browser_width: u64 is 720
+  if surface.width < 800 then browser_width is surface.width - 80
+  browser_height: u64 is 420
+  if surface.height < 520 then browser_height is surface.height - 92
+  browser_x: i64 is (surface.width - browser_width) / 2
+  browser_y: i64 is 88
 
+  if not window_manager_add(manager, 6, browser_x, browser_y, browser_width, browser_height) then return false
   if not window_manager_add(manager, 2, about_x, about_y, about_width, about_height) then
     return false
   end
@@ -418,6 +531,7 @@ func os_window_manager_start(surface: ptr[FramebufferSurface]) do
   if not window_manager_close(manager, 3) then return false
   if not window_manager_close(manager, 4) then return false
   if not window_manager_close(manager, 5) then return false
+  if not window_manager_close(manager, 6) then return false
   manager.last_closed_id is 0
   return window_manager_focus(manager, 1)
 end
@@ -445,7 +559,14 @@ func os_draw_window_frame(surface: ptr[FramebufferSurface], window: ptr[DesktopW
   fb_fill_rect(surface, x, y, window.width, window.height, panel)
   fb_rect_outline(surface, x, y, window.width, window.height, border_color)
   fb_fill_rect(surface, x, y, window.width, 38, bar_color)
-  font5x7_draw_text(surface, x + 16, y + 11, title, 32, white_large)
+  title_icon: ptr is os_icon_terminal
+  if window.id == 2 then title_icon is os_icon_about
+  if window.id == 3 then title_icon is os_icon_files
+  if window.id == 4 then title_icon is os_icon_notes
+  if window.id == 5 then title_icon is os_icon_calc
+  if window.id == 6 then title_icon is os_icon_web
+  os_draw_bitmap_icon(surface, x + 10, y + 11, title_icon, 1)
+  font5x7_draw_text(surface, x + 34, y + 11, title, 32, white_large)
   if window.closable != 0 then
     fb_fill_rect(surface, x + window.width - 34, y + 8, 24, 22, orange)
     fb_line(surface, x + window.width - 28, y + 14, x + window.width - 17, y + 24, white)
@@ -503,7 +624,7 @@ func os_draw_file_explorer_window(surface: ptr[FramebufferSurface], window: ptr[
   white_small: ptr[BitmapFontStyle] is os_font_white_small
   muted_small: ptr[BitmapFontStyle] is os_font_muted_small
   files: ptr[FileExplorerState] is os_file_explorer_state
-  font5x7_draw_text(surface, x + 20, y + 54, os_text_root, 16, white_small)
+  font5x7_draw_text(surface, x + 20, y + 54, os_storage_path_buffer, 96, white_small)
   row: u64 is 0
   while row < files.entry_count do
     row_y: u64 is y + 78 + row * 34
@@ -513,7 +634,13 @@ func os_draw_file_explorer_window(surface: ptr[FramebufferSurface], window: ptr[
     if files.selected == row then fb_rect_outline(surface, x + 18, row_y, window.width - 36, 28, orange)
     if os_storage_mounted != 0 and row < os_storage_entry_count then
       name: ptr is ptr.add(os_storage_display_names, row * 13)
-      font5x7_draw_text(surface, x + 30, row_y + 10, name, 13, white_small)
+      entry: ptr[Fat32DirEntry] is ptr.index(os_storage_root_entries, row, sizeof(Fat32DirEntry))
+      entry_icon: ptr is os_icon_notes
+      if (entry.attributes & 16) != 0 then entry_icon is os_icon_files
+      os_draw_bitmap_icon(surface, x + 26, row_y + 6, entry_icon, 1)
+      display_text: ptr is name
+      if mem.read8(name) == 46 and mem.read8(ptr.add(name, 1)) == 46 then display_text is os_text_parent_folder
+      font5x7_draw_text(surface, x + 50, row_y + 10, display_text, 16, white_small)
     end
     row += 1
   end
@@ -521,7 +648,9 @@ func os_draw_file_explorer_window(surface: ptr[FramebufferSurface], window: ptr[
     font5x7_draw_text(surface, x + 30, y + 88, os_text_no_disk, 32, white_small)
     font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_read_only, 48, muted_small)
   else
-    font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_storage_ready, 48, muted_small)
+    storage_hint: ptr is os_text_storage_ready
+    if os_storage_directory_depth != 0 then storage_hint is os_text_storage_directory
+    font5x7_draw_text(surface, x + 20, y + window.height - 28, storage_hint, 48, muted_small)
   end
   return true
 end
@@ -566,6 +695,64 @@ func os_draw_calculator_window(surface: ptr[FramebufferSurface], window: ptr[Des
   return true
 end
 
+func os_draw_browser_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
+  if not os_draw_window_frame(surface, window, os_text_browser) then return false
+  x: u64 is window.x
+  y: u64 is window.y
+  panel_light: u32 is fb_rgb(surface, 31, 41, 58)
+  muted: u32 is fb_rgb(surface, 155, 172, 190)
+  orange: u32 is fb_rgb(surface, 255, 102, 35)
+  page: u32 is fb_rgb(surface, (os_browser_css_page_rgb >> 16) & 255, (os_browser_css_page_rgb >> 8) & 255, os_browser_css_page_rgb & 255)
+  page_panel: u32 is fb_rgb(surface, (os_browser_css_card_rgb >> 16) & 255, (os_browser_css_card_rgb >> 8) & 255, os_browser_css_card_rgb & 255)
+  white_small: ptr[BitmapFontStyle] is os_font_white_small
+  muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  heading_style: ptr[BitmapFontStyle] is os_font_browser_heading
+  body_style: ptr[BitmapFontStyle] is os_font_browser_body
+  link_style: ptr[BitmapFontStyle] is os_font_browser_link
+  fb_fill_rect(surface, x + 16, y + 50, window.width - 32, 30, panel_light)
+  fb_rect_outline(surface, x + 16, y + 50, window.width - 32, 30, orange)
+  font5x7_draw_text(surface, x + 28, y + 61, os_browser_address_buffer, 96, white_small)
+  if window.active != 0 and os_browser_address_length < 95 then
+    cursor_x: u64 is x + 28 + os_browser_address_length * 6
+    if cursor_x + 2 < x + window.width - 18 then fb_vline(surface, cursor_x, y + 59, 10, orange)
+  end
+  fb_fill_rect(surface, x + 16, y + 90, window.width - 32, window.height - 128, page)
+  fb_fill_rect(surface, x + 24, y + 98, window.width - 48, window.height - 144, page_panel)
+  fb_rect_outline(surface, x + 16, y + 90, window.width - 32, window.height - 128, muted)
+  if os_browser_layout_line_count != 0 then
+    line: u64 is 0
+    draw_y: u64 is y + 108
+    content_bottom: u64 is y + window.height - 44
+    while line < os_browser_layout_line_count and draw_y + 8 < content_bottom do
+      style_id: u64 is mem.read8(ptr.add(os_browser_layout_styles, line))
+      style: ptr[BitmapFontStyle] is body_style
+      draw_x: u64 is x + 30
+      line_height: u64 is 12
+      if style_id == 1 then
+        style is heading_style
+        draw_x is x + 36
+        line_height is 22
+        fb_fill_rect(surface, x + 26, draw_y, 4, 16, orange)
+      end
+      if style_id == 2 then
+        style is link_style
+        fb_fill_rect(surface, x + 26, draw_y + 3, 3, 3, orange)
+      end
+      font5x7_draw_text(surface, draw_x, draw_y, ptr.add(os_browser_layout_lines, line * 97), 96, style)
+      draw_y += line_height
+      line += 1
+    end
+  else
+    if os_browser_text_length != 0 then
+      font5x7_draw_text(surface, x + 24, y + 104, os_browser_text_buffer, 4096, body_style)
+    end
+  end
+  status: ptr is os_browser_status_text
+  if status == 0 then status is os_text_browser_status_network
+  font5x7_draw_text(surface, x + 20, y + window.height - 26, status, 48, muted_small)
+  return true
+end
+
 func os_draw_managed_windows(surface: ptr[FramebufferSurface]) do
   manager: ptr[WindowManager] is os_window_manager_state
   if surface == 0 or manager.windows == 0 then return false
@@ -598,6 +785,9 @@ func os_draw_managed_windows(surface: ptr[FramebufferSurface]) do
     end
     if selected.id == 5 then
       if not os_draw_calculator_window(surface, selected) then return false
+    end
+    if selected.id == 6 then
+      if not os_draw_browser_window(surface, selected) then return false
     end
     last_z is selected_z
     drawn += 1
@@ -649,7 +839,7 @@ func os_activate_window(manager: ptr[WindowManager], id: u64) do
 end
 
 func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
-  global os_start_menu_reported, os_window_reopen_reported, os_files_app_reported, os_editor_app_reported, os_calculator_app_reported
+  global os_start_menu_reported, os_window_reopen_reported, os_files_app_reported, os_editor_app_reported, os_calculator_app_reported, os_browser_app_reported, os_directory_reported
   if manager == 0 then return false
   shell: ptr[DesktopShell] is os_desktop_shell_state
   terminal_window: ptr[DesktopWindow] is window_manager_find(manager, 1)
@@ -658,18 +848,38 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
   system_visible: u64 is 0
   if terminal_window != 0 then terminal_visible is terminal_window.visible
   if system_window != 0 then system_visible is system_window.visible
+  taskbar_y: u64 is desktop_shell_taskbar_y(shell)
+  browser_hit: bool is desktop_shell_contains(x, y, 34, 482, 48, 48)
+  if shell.width >= 1100 and desktop_shell_contains(x, y, 832, taskbar_y + 8, 100, 36) then browser_hit is true
+  if browser_hit then
+    shell.start_open is 0
+    manager.dragging_id is 0
+    if os_activate_window(manager, 6) == 0 then return false
+    if not os_serial_cstr_line(os_browser_focus_marker) then return false
+    if os_browser_app_reported == 0 then
+      if not os_serial_cstr_line(os_browser_app_marker) then return false
+      os_browser_app_reported is 1
+    end
+    return true
+  end
   action: u64 is desktop_shell_pointer_press(shell, x, y, terminal_visible, system_visible)
 
   if action == desktop_action_none then
     top: ptr[DesktopWindow] is window_manager_top_at(manager, x, y)
     if top != 0 and top.id == 3 then
       local_y: i64 is y - top.y
-      if local_y >= 78 and local_y < 214 then
+      files: ptr[FileExplorerState] is os_file_explorer_state
+      if local_y >= 78 and local_y < 78 + files.entry_count * 34 then
         row: u64 is (local_y - 78) / 34
-        files: ptr[FileExplorerState] is os_file_explorer_state
         if row < files.entry_count then
           file_explorer_select(files, row)
           if os_storage_mounted != 0 then
+            previous_cluster: u64 is os_storage_directory_cluster
+            if not os_storage_open_selected() then return false
+            if os_storage_directory_cluster != previous_cluster and os_directory_reported == 0 then
+              if not os_serial_cstr_line(os_storage_directory_marker) then return false
+              os_directory_reported is 1
+            end
             if not os_storage_save_settings() then return false
           end
           window_manager_focus(manager, 3)
@@ -753,18 +963,24 @@ func os_draw_start_menu(surface: ptr[FramebufferSurface]) do
   font5x7_draw_text(surface, 24, menu_y + 13, os_text_brand, 32, white_large)
   font5x7_draw_text(surface, 176, menu_y + 16, os_text_applications, 32, muted_small)
   fb_fill_rect(surface, 20, menu_y + 54, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 68, os_text_terminal, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 65, os_icon_terminal, 1)
+  font5x7_draw_text(surface, 54, menu_y + 68, os_text_terminal, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 96, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 110, os_text_system_short, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 107, os_icon_about, 1)
+  font5x7_draw_text(surface, 54, menu_y + 110, os_text_system_short, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 138, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 152, os_text_files, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 149, os_icon_files, 1)
+  font5x7_draw_text(surface, 54, menu_y + 152, os_text_files, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 180, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 194, os_text_editor_icon, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 191, os_icon_notes, 1)
+  font5x7_draw_text(surface, 54, menu_y + 194, os_text_editor_icon, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 222, 240, 38, panel_light)
-  font5x7_draw_text(surface, 36, menu_y + 236, os_text_calculator_icon, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 233, os_icon_calc, 1)
+  font5x7_draw_text(surface, 54, menu_y + 236, os_text_calculator_icon, 32, white_small)
   fb_fill_rect(surface, 20, menu_y + 280, 240, 36, panel_light)
   fb_rect_outline(surface, 20, menu_y + 280, 240, 36, orange)
-  font5x7_draw_text(surface, 36, menu_y + 293, os_text_shutdown, 32, white_small)
+  os_draw_bitmap_icon(surface, 30, menu_y + 290, os_icon_logo, 1)
+  font5x7_draw_text(surface, 54, menu_y + 293, os_text_shutdown, 32, white_small)
   return true
 end
 
@@ -787,11 +1003,20 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   orange_large: ptr[BitmapFontStyle] is os_font_orange_large
   green_large: ptr[BitmapFontStyle] is os_font_green_large
   muted_small: ptr[BitmapFontStyle] is os_font_muted_small
+  browser_heading: ptr[BitmapFontStyle] is os_font_browser_heading
+  browser_body: ptr[BitmapFontStyle] is os_font_browser_body
+  browser_link: ptr[BitmapFontStyle] is os_font_browser_link
   font5x7_style_init(white_large, white, panel, 2, 0)
   font5x7_style_init(white_small, white, panel, 1, 0)
   font5x7_style_init(orange_large, orange_light, panel, 2, 0)
   font5x7_style_init(green_large, green, panel, 2, 0)
   font5x7_style_init(muted_small, muted, panel_light, 1, 0)
+  browser_heading_color: u32 is fb_rgb(surface, (os_browser_css_heading_rgb >> 16) & 255, (os_browser_css_heading_rgb >> 8) & 255, os_browser_css_heading_rgb & 255)
+  browser_body_color: u32 is fb_rgb(surface, (os_browser_css_text_rgb >> 16) & 255, (os_browser_css_text_rgb >> 8) & 255, os_browser_css_text_rgb & 255)
+  browser_link_color: u32 is fb_rgb(surface, (os_browser_css_link_rgb >> 16) & 255, (os_browser_css_link_rgb >> 8) & 255, os_browser_css_link_rgb & 255)
+  font5x7_style_init(browser_heading, browser_heading_color, white, 2, 0)
+  font5x7_style_init(browser_body, browser_body_color, white, 1, 0)
+  font5x7_style_init(browser_link, browser_link_color, white, 1, 0)
 
   if not fb_clear(surface, navy) then return false
 
@@ -804,23 +1029,23 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
     band += 1
   end
 
-  # Brand mark and desktop icons.
-  fb_fill_rect(surface, 28, 24, 54, 54, orange)
-  fb_rect_outline(surface, 28, 24, 54, 54, white)
-  fb_line(surface, 40, 37, 69, 37, white)
-  fb_line(surface, 69, 37, 40, 65, white)
-  fb_line(surface, 40, 65, 69, 65, white)
+  # Embedded raster logo and application images.
+  os_draw_bitmap_icon(surface, 28, 24, os_icon_logo, 3)
   font5x7_draw_text(surface, 96, 31, os_text_brand, 32, white_large)
 
-  fb_draw_app_icon(surface, 34, 114, 48, titlebar, white)
+  os_draw_bitmap_icon(surface, 34, 114, os_icon_files, 3)
   font5x7_draw_text(surface, 36, 168, os_text_files, 16, white_small)
-  fb_draw_app_icon(surface, 34, 206, 48, orange, white)
+  os_draw_bitmap_icon(surface, 34, 206, os_icon_about, 3)
   font5x7_draw_text(surface, 36, 260, os_text_about_icon, 16, white_small)
   if surface.height >= 520 then
-    fb_draw_app_icon(surface, 34, 298, 48, titlebar, white)
+    os_draw_bitmap_icon(surface, 34, 298, os_icon_notes, 3)
     font5x7_draw_text(surface, 36, 352, os_text_editor_icon, 16, white_small)
-    fb_draw_app_icon(surface, 34, 390, 48, orange, white)
+    os_draw_bitmap_icon(surface, 34, 390, os_icon_calc, 3)
     font5x7_draw_text(surface, 36, 444, os_text_calculator_icon, 16, white_small)
+  end
+  if surface.height >= 620 then
+    os_draw_bitmap_icon(surface, 34, 482, os_icon_web, 3)
+    font5x7_draw_text(surface, 36, 536, os_text_browser_icon, 16, white_small)
   end
 
   if not os_draw_managed_windows(surface) then return false
@@ -834,9 +1059,11 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   if shell.start_open != 0 then start_color is orange
   fb_fill_rect(surface, 10, taskbar_y + 8, 104, 36, start_color)
   fb_rect_outline(surface, 10, taskbar_y + 8, 104, 36, orange)
-  font5x7_draw_text(surface, 26, taskbar_y + 19, os_text_start, 16, white_large)
+  os_draw_bitmap_icon(surface, 18, taskbar_y + 18, os_icon_logo, 1)
+  font5x7_draw_text(surface, 42, taskbar_y + 19, os_text_start, 16, white_large)
   fb_fill_rect(surface, 126, taskbar_y + 8, 158, 36, panel)
-  font5x7_draw_text(surface, 140, taskbar_y + 19, os_text_terminal, 16, white_small)
+  os_draw_bitmap_icon(surface, 138, taskbar_y + 18, os_icon_terminal, 1)
+  font5x7_draw_text(surface, 160, taskbar_y + 19, os_text_terminal, 16, white_small)
   manager: ptr[WindowManager] is os_window_manager_state
   terminal_window: ptr[DesktopWindow] is window_manager_find(manager, 1)
   if terminal_window != 0 and terminal_window.active != 0 then
@@ -844,28 +1071,41 @@ func os_draw_desktop(surface: ptr[FramebufferSurface]) do
   end
   about: ptr[DesktopWindow] is window_manager_find(manager, 2)
   fb_fill_rect(surface, 296, taskbar_y + 8, 188, 36, panel)
-  font5x7_draw_text(surface, 308, taskbar_y + 19, os_text_about_icon, 16, white_small)
+  os_draw_bitmap_icon(surface, 306, taskbar_y + 18, os_icon_about, 1)
+  font5x7_draw_text(surface, 328, taskbar_y + 19, os_text_about_icon, 16, white_small)
   if about != 0 and about.active != 0 then
     fb_hline(surface, 296, taskbar_y + 43, 188, orange)
   end
   if surface.width >= 900 then
     fb_fill_rect(surface, 496, taskbar_y + 8, 100, 36, panel)
-    font5x7_draw_text(surface, 510, taskbar_y + 19, os_text_files, 16, white_small)
+    os_draw_bitmap_icon(surface, 504, taskbar_y + 18, os_icon_files, 1)
+    font5x7_draw_text(surface, 526, taskbar_y + 19, os_text_files, 16, white_small)
     files_window: ptr[DesktopWindow] is window_manager_find(manager, 3)
     if files_window != 0 and files_window.active != 0 then
       fb_hline(surface, 496, taskbar_y + 43, 100, orange)
     end
     fb_fill_rect(surface, 608, taskbar_y + 8, 100, 36, panel)
-    font5x7_draw_text(surface, 619, taskbar_y + 19, os_text_editor_icon, 16, white_small)
+    os_draw_bitmap_icon(surface, 616, taskbar_y + 18, os_icon_notes, 1)
+    font5x7_draw_text(surface, 638, taskbar_y + 19, os_text_editor_icon, 16, white_small)
     editor_window: ptr[DesktopWindow] is window_manager_find(manager, 4)
     if editor_window != 0 and editor_window.active != 0 then
       fb_hline(surface, 608, taskbar_y + 43, 100, orange)
     end
     fb_fill_rect(surface, 720, taskbar_y + 8, 100, 36, panel)
-    font5x7_draw_text(surface, 736, taskbar_y + 19, os_text_calculator_icon, 16, white_small)
+    os_draw_bitmap_icon(surface, 728, taskbar_y + 18, os_icon_calc, 1)
+    font5x7_draw_text(surface, 750, taskbar_y + 19, os_text_calculator_icon, 16, white_small)
     calculator_window: ptr[DesktopWindow] is window_manager_find(manager, 5)
     if calculator_window != 0 and calculator_window.active != 0 then
       fb_hline(surface, 720, taskbar_y + 43, 100, orange)
+    end
+  end
+  if surface.width >= 1100 then
+    fb_fill_rect(surface, 832, taskbar_y + 8, 100, 36, panel)
+    os_draw_bitmap_icon(surface, 840, taskbar_y + 18, os_icon_web, 1)
+    font5x7_draw_text(surface, 862, taskbar_y + 19, os_text_browser_icon, 16, white_small)
+    browser_window: ptr[DesktopWindow] is window_manager_find(manager, 6)
+    if browser_window != 0 and browser_window.active != 0 then
+      fb_hline(surface, 832, taskbar_y + 43, 100, orange)
     end
   end
   time: ptr[RtcTime] is os_rtc_time_state
@@ -950,7 +1190,7 @@ func os_shell_accept(value: u64) do
 end
 
 func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
-  global os_keyboard_reported, os_shift_reported, os_editor_input_reported, os_calculator_result_reported
+  global os_keyboard_reported, os_shift_reported, os_editor_input_reported, os_calculator_result_reported, os_browser_url_reported
   if keyboard == 0 or keyboard.pressed == 0 then return true
   if os_keyboard_reported == 0 then
     if not os_serial_line(os_keyboard_marker, 19) then return false
@@ -984,6 +1224,20 @@ func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
     if calculator.has_result != 0 and calculator.error == 0 and calculator.result == 19 and os_calculator_result_reported == 0 then
       if not os_serial_cstr_line(os_calculator_result_marker) then return false
       os_calculator_result_reported is 1
+    end
+    return os_redraw_desktop()
+  end
+  if keyboard.ascii != 0 and manager.active_id == 6 then
+    navigation_requested: bool is keyboard.ascii == 10 or keyboard.ascii == 13
+    if not os_browser_accept(keyboard.ascii) then return false
+    if navigation_requested and os_browser_status_text == os_text_browser_status_ready and os_browser_url_reported == 0 then
+      if not os_serial_cstr_line(os_browser_url_marker) then return false
+      os_browser_url_reported is 1
+    end
+    if navigation_requested and os_browser_status_text != os_text_browser_status_ready then
+      if not os_serial_text(os_browser_url_failure_prefix) then return false
+      if not os_serial_u64(os_browser_last_error) then return false
+      if not serial_write_byte(1016, 10, 1000000) then return false
     end
     return os_redraw_desktop()
   end
@@ -1123,7 +1377,7 @@ func os_memory_self_test() do
 end
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
-  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size, os_rtc_reported, os_storage_dma_address
+  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size, os_rtc_reported, os_storage_dma_address, os_network_dma_address
 
   uefi.clear()
   uefi.set_color(15, 0)
@@ -1151,6 +1405,8 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   end
   storage_allocation_status: u64 is uefi.allocate_pages(0, 2, os_storage_dma_pages, addr_of(os_storage_dma_address))
   if storage_allocation_status != 0 then os_storage_dma_address is 0
+  network_allocation_status: u64 is uefi.allocate_pages(0, 2, os_network_dma_pages, addr_of(os_network_dma_address))
+  if network_allocation_status != 0 then os_network_dma_address is 0
 
   if not serial_init(1016, 1) then
     os_vm_exit(1)
@@ -1242,6 +1498,79 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     os_serial_u64(os_storage_direct_read_status)
     serial_write_byte(1016, 32, 1000000)
     os_serial_u64(os_storage_read_callback)
+    serial_write_byte(1016, 10, 1000000)
+  end
+  if os_network_start() then
+    if not os_serial_cstr_line(os_network_ready_marker) then
+      os_vm_exit(19)
+      return 19
+    end
+    if not os_serial_cstr_line(os_network_dhcp_marker) then
+      os_vm_exit(30)
+      return 30
+    end
+    if not os_serial_cstr_line(os_network_arp_marker) then
+      os_vm_exit(20)
+      return 20
+    end
+    if not os_serial_cstr_line(os_network_udp_marker) then
+      os_vm_exit(21)
+      return 21
+    end
+    if not os_serial_cstr_line(os_network_dns_marker) then
+      os_vm_exit(22)
+      return 22
+    end
+    if not os_serial_cstr_line(os_network_tcp_marker) then
+      os_vm_exit(26)
+      return 26
+    end
+    if not os_serial_cstr_line(os_network_http_marker) then
+      os_vm_exit(27)
+      return 27
+    end
+    if not os_serial_cstr_line(os_browser_app_marker) then
+      os_vm_exit(28)
+      return 28
+    end
+    if os_browser_css_rule_count != 0 then
+      if not os_serial_cstr_line(os_browser_css_marker) then
+        os_vm_exit(31)
+        return 31
+      end
+    end
+    if not os_serial_text(os_network_dns_prefix) then
+      os_vm_exit(23)
+      return 23
+    end
+    if not os_serial_u64(os_network_resolved_ip) then
+      os_vm_exit(24)
+      return 24
+    end
+    if not serial_write_byte(1016, 10, 1000000) then
+      os_vm_exit(25)
+      return 25
+    end
+    if not os_redraw_desktop() then
+      os_vm_exit(29)
+      return 29
+    end
+  else
+    os_serial_cstr_line(os_network_unavailable_marker)
+    os_serial_text(os_network_status_prefix)
+    os_serial_u64(os_network_status)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_network_dma_address)
+    serial_write_byte(1016, 32, 1000000)
+    network_device: ptr[PciDevice] is os_network_pci_device
+    os_serial_u64(network_device.vendor_id)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(network_device.device_id)
+    serial_write_byte(1016, 32, 1000000)
+    network_context: ptr[VirtioNetContext] is os_network_context
+    os_serial_u64(network_context.io_base)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(network_context.device_features)
     serial_write_byte(1016, 10, 1000000)
   end
   if not os_serial_line(os_desktop_marker, 18) then

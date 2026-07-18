@@ -1,0 +1,393 @@
+# Allocation-free Ethernet, IPv4, UDP, and DNS packet helpers.
+
+struct NetUdpSpec do
+  destination_mac: ptr
+  source_mac: ptr
+  source_ip: u64
+  destination_ip: u64
+  source_port: u64
+  destination_port: u64
+end
+
+struct NetTcpSpec do
+  destination_mac: ptr
+  source_mac: ptr
+  source_ip: u64
+  destination_ip: u64
+  source_port: u64
+  destination_port: u64
+  sequence: u64
+  acknowledgement: u64
+  flags: u64
+  window: u64
+end
+
+struct NetDhcpLease do
+  address: u64
+  subnet_mask: u64
+  gateway: u64
+  dns: u64
+  server: u64
+  lease_seconds: u64
+end
+
+struct NetDhcpRequest do
+  message_type: u64
+  transaction_id: u64
+  mac: ptr
+  requested_ip: u64
+  server_ip: u64
+end
+
+func net_read_u16_be(buffer: ptr, offset: u64) do
+  if buffer == 0 then return 0
+  return (mem.read8(ptr.add(buffer, offset)) << 8) | mem.read8(ptr.add(buffer, offset + 1))
+end
+
+func net_read_u32_be(buffer: ptr, offset: u64) do
+  if buffer == 0 then return 0
+  return (mem.read8(ptr.add(buffer, offset)) << 24) | (mem.read8(ptr.add(buffer, offset + 1)) << 16) | (mem.read8(ptr.add(buffer, offset + 2)) << 8) | mem.read8(ptr.add(buffer, offset + 3))
+end
+
+func net_write_u16_be(buffer: ptr, offset: u64, value: u64) do
+  if buffer == 0 or value > 65535 then return false
+  mem.write8(ptr.add(buffer, offset), (value >> 8) & 255)
+  mem.write8(ptr.add(buffer, offset + 1), value & 255)
+  return true
+end
+
+func net_write_u32_be(buffer: ptr, offset: u64, value: u64) do
+  if buffer == 0 or value > u64("0xffffffff") then return false
+  mem.write8(ptr.add(buffer, offset), (value >> 24) & 255)
+  mem.write8(ptr.add(buffer, offset + 1), (value >> 16) & 255)
+  mem.write8(ptr.add(buffer, offset + 2), (value >> 8) & 255)
+  mem.write8(ptr.add(buffer, offset + 3), value & 255)
+  return true
+end
+
+func net_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func net_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func net_dhcp_clear_lease(lease: ptr[NetDhcpLease]) do
+  if lease == 0 then return false
+  lease.address is 0
+  lease.subnet_mask is 0
+  lease.gateway is 0
+  lease.dns is 0
+  lease.server is 0
+  lease.lease_seconds is 0
+  return true
+end
+
+func net_dhcp_build(output: ptr, capacity: u64, request: ptr[NetDhcpRequest]) do
+  if output == 0 or request == 0 or request.mac == 0 or capacity < 300 then return 0
+  if request.message_type != 1 and request.message_type != 3 then return 0
+  if request.transaction_id > u64("0xffffffff") then return 0
+  if not net_zero(output, 300) then return 0
+  mem.write8(output, 1)
+  mem.write8(ptr.add(output, 1), 1)
+  mem.write8(ptr.add(output, 2), 6)
+  net_write_u32_be(output, 4, request.transaction_id)
+  net_write_u16_be(output, 10, 32768)
+  if not net_copy(ptr.add(output, 28), request.mac, 6) then return 0
+  mem.write8(ptr.add(output, 236), 99)
+  mem.write8(ptr.add(output, 237), 130)
+  mem.write8(ptr.add(output, 238), 83)
+  mem.write8(ptr.add(output, 239), 99)
+
+  cursor: u64 is 240
+  mem.write8(ptr.add(output, cursor), 53)
+  mem.write8(ptr.add(output, cursor + 1), 1)
+  mem.write8(ptr.add(output, cursor + 2), request.message_type)
+  cursor += 3
+  mem.write8(ptr.add(output, cursor), 61)
+  mem.write8(ptr.add(output, cursor + 1), 7)
+  mem.write8(ptr.add(output, cursor + 2), 1)
+  if not net_copy(ptr.add(output, cursor + 3), request.mac, 6) then return 0
+  cursor += 9
+  if request.message_type == 3 then
+    if request.requested_ip == 0 or request.server_ip == 0 then return 0
+    mem.write8(ptr.add(output, cursor), 50)
+    mem.write8(ptr.add(output, cursor + 1), 4)
+    net_write_u32_be(output, cursor + 2, request.requested_ip)
+    cursor += 6
+    mem.write8(ptr.add(output, cursor), 54)
+    mem.write8(ptr.add(output, cursor + 1), 4)
+    net_write_u32_be(output, cursor + 2, request.server_ip)
+    cursor += 6
+  end
+  mem.write8(ptr.add(output, cursor), 55)
+  mem.write8(ptr.add(output, cursor + 1), 5)
+  mem.write8(ptr.add(output, cursor + 2), 1)
+  mem.write8(ptr.add(output, cursor + 3), 3)
+  mem.write8(ptr.add(output, cursor + 4), 6)
+  mem.write8(ptr.add(output, cursor + 5), 51)
+  mem.write8(ptr.add(output, cursor + 6), 54)
+  cursor += 7
+  mem.write8(ptr.add(output, cursor), 255)
+  return 300
+end
+
+func net_dhcp_parse(packet: ptr, packet_bytes: u64, expected_type: u64, transaction_id: u64, mac: ptr, lease: ptr[NetDhcpLease]) do
+  if packet == 0 or mac == 0 or lease == 0 or packet_bytes < 241 then return false
+  if expected_type != 2 and expected_type != 5 then return false
+  if mem.read8(packet) != 2 or mem.read8(ptr.add(packet, 1)) != 1 or mem.read8(ptr.add(packet, 2)) != 6 then return false
+  if net_read_u32_be(packet, 4) != transaction_id then return false
+  index: u64 is 0
+  while index < 6 do
+    if mem.read8(ptr.add(packet, 28 + index)) != mem.read8(ptr.add(mac, index)) then return false
+    index += 1
+  end
+  if mem.read8(ptr.add(packet, 236)) != 99 or mem.read8(ptr.add(packet, 237)) != 130 then return false
+  if mem.read8(ptr.add(packet, 238)) != 83 or mem.read8(ptr.add(packet, 239)) != 99 then return false
+  if not net_dhcp_clear_lease(lease) then return false
+  lease.address is net_read_u32_be(packet, 16)
+
+  found_type: u64 is 0
+  cursor: u64 is 240
+  while cursor < packet_bytes do
+    option: u64 is mem.read8(ptr.add(packet, cursor))
+    cursor += 1
+    if option == 255 then break
+    if option == 0 then
+      continue
+    end
+    if cursor >= packet_bytes then return false
+    length: u64 is mem.read8(ptr.add(packet, cursor))
+    cursor += 1
+    if cursor + length > packet_bytes then return false
+    if option == 53 and length == 1 then found_type is mem.read8(ptr.add(packet, cursor))
+    if option == 1 and length >= 4 then lease.subnet_mask is net_read_u32_be(packet, cursor)
+    if option == 3 and length >= 4 then lease.gateway is net_read_u32_be(packet, cursor)
+    if option == 6 and length >= 4 then lease.dns is net_read_u32_be(packet, cursor)
+    if option == 51 and length == 4 then lease.lease_seconds is net_read_u32_be(packet, cursor)
+    if option == 54 and length == 4 then lease.server is net_read_u32_be(packet, cursor)
+    cursor += length
+  end
+  if found_type != expected_type or lease.address == 0 then return false
+  if expected_type == 2 and lease.server == 0 then return false
+  return true
+end
+
+func net_checksum(buffer: ptr, byte_count: u64) do
+  if buffer == 0 or byte_count == 0 then return 0
+  sum: u64 is 0
+  index: u64 is 0
+  while index + 1 < byte_count do
+    sum += (mem.read8(ptr.add(buffer, index)) << 8) | mem.read8(ptr.add(buffer, index + 1))
+    index += 2
+  end
+  if index < byte_count then sum += mem.read8(ptr.add(buffer, index)) << 8
+  while (sum >> 16) != 0 do
+    sum is (sum & 65535) + (sum >> 16)
+  end
+  return (~sum) & 65535
+end
+
+func net_build_ipv4_udp(frame: ptr, capacity: u64, spec: ptr[NetUdpSpec], payload: ptr, payload_bytes: u64, identification: u64) do
+  if frame == 0 or spec == 0 or payload == 0 then return 0
+  if spec.destination_mac == 0 or spec.source_mac == 0 then return 0
+  if spec.source_ip > u64("0xffffffff") or spec.destination_ip > u64("0xffffffff") then return 0
+  if spec.source_port == 0 or spec.source_port > 65535 or spec.destination_port == 0 or spec.destination_port > 65535 then return 0
+  if payload_bytes == 0 or payload_bytes > 1472 or identification > 65535 then return 0
+  ip_bytes: u64 is 20 + 8 + payload_bytes
+  frame_bytes: u64 is 14 + ip_bytes
+  wire_bytes: u64 is frame_bytes
+  if wire_bytes < 60 then wire_bytes is 60
+  if wire_bytes > capacity then return 0
+  if not net_zero(frame, wire_bytes) then return 0
+  if not net_copy(frame, spec.destination_mac, 6) then return 0
+  if not net_copy(ptr.add(frame, 6), spec.source_mac, 6) then return 0
+  mem.write8(ptr.add(frame, 12), 8)
+  mem.write8(ptr.add(frame, 13), 0)
+
+  ip: ptr is ptr.add(frame, 14)
+  mem.write8(ip, 69)
+  net_write_u16_be(ip, 2, ip_bytes)
+  net_write_u16_be(ip, 4, identification)
+  net_write_u16_be(ip, 6, 16384)
+  mem.write8(ptr.add(ip, 8), 64)
+  mem.write8(ptr.add(ip, 9), 17)
+  net_write_u32_be(ip, 12, spec.source_ip)
+  net_write_u32_be(ip, 16, spec.destination_ip)
+  net_write_u16_be(ip, 10, net_checksum(ip, 20))
+
+  udp: ptr is ptr.add(ip, 20)
+  net_write_u16_be(udp, 0, spec.source_port)
+  net_write_u16_be(udp, 2, spec.destination_port)
+  net_write_u16_be(udp, 4, 8 + payload_bytes)
+  # A zero UDP checksum is valid for IPv4.
+  net_write_u16_be(udp, 6, 0)
+  if not net_copy(ptr.add(udp, 8), payload, payload_bytes) then return 0
+  return wire_bytes
+end
+
+func net_tcp_checksum(source_ip: u64, destination_ip: u64, segment: ptr, segment_bytes: u64) do
+  if segment == 0 or segment_bytes < 20 or segment_bytes > 65535 then return 0
+  sum: u64 is ((source_ip >> 16) & 65535) + (source_ip & 65535)
+  sum += ((destination_ip >> 16) & 65535) + (destination_ip & 65535)
+  sum += 6 + segment_bytes
+  index: u64 is 0
+  while index + 1 < segment_bytes do
+    sum += (mem.read8(ptr.add(segment, index)) << 8) | mem.read8(ptr.add(segment, index + 1))
+    index += 2
+  end
+  if index < segment_bytes then sum += mem.read8(ptr.add(segment, index)) << 8
+  while (sum >> 16) != 0 do
+    sum is (sum & 65535) + (sum >> 16)
+  end
+  return (~sum) & 65535
+end
+
+func net_build_ipv4_tcp(frame: ptr, capacity: u64, spec: ptr[NetTcpSpec], payload: ptr, payload_bytes: u64, identification: u64) do
+  if frame == 0 or spec == 0 then return 0
+  if spec.destination_mac == 0 or spec.source_mac == 0 then return 0
+  if spec.source_ip > u64("0xffffffff") or spec.destination_ip > u64("0xffffffff") then return 0
+  if spec.source_port == 0 or spec.source_port > 65535 or spec.destination_port == 0 or spec.destination_port > 65535 then return 0
+  if spec.sequence > u64("0xffffffff") or spec.acknowledgement > u64("0xffffffff") then return 0
+  if spec.flags > 255 or spec.window > 65535 or identification > 65535 then return 0
+  if payload_bytes > 1460 or (payload_bytes != 0 and payload == 0) then return 0
+  ip_bytes: u64 is 20 + 20 + payload_bytes
+  frame_bytes: u64 is 14 + ip_bytes
+  wire_bytes: u64 is frame_bytes
+  if wire_bytes < 60 then wire_bytes is 60
+  if wire_bytes > capacity then return 0
+  if not net_zero(frame, wire_bytes) then return 0
+  if not net_copy(frame, spec.destination_mac, 6) then return 0
+  if not net_copy(ptr.add(frame, 6), spec.source_mac, 6) then return 0
+  mem.write8(ptr.add(frame, 12), 8)
+  mem.write8(ptr.add(frame, 13), 0)
+
+  ip: ptr is ptr.add(frame, 14)
+  mem.write8(ip, 69)
+  net_write_u16_be(ip, 2, ip_bytes)
+  net_write_u16_be(ip, 4, identification)
+  net_write_u16_be(ip, 6, 16384)
+  mem.write8(ptr.add(ip, 8), 64)
+  mem.write8(ptr.add(ip, 9), 6)
+  net_write_u32_be(ip, 12, spec.source_ip)
+  net_write_u32_be(ip, 16, spec.destination_ip)
+  net_write_u16_be(ip, 10, net_checksum(ip, 20))
+
+  tcp: ptr is ptr.add(ip, 20)
+  net_write_u16_be(tcp, 0, spec.source_port)
+  net_write_u16_be(tcp, 2, spec.destination_port)
+  net_write_u32_be(tcp, 4, spec.sequence)
+  net_write_u32_be(tcp, 8, spec.acknowledgement)
+  mem.write8(ptr.add(tcp, 12), 80)
+  mem.write8(ptr.add(tcp, 13), spec.flags)
+  net_write_u16_be(tcp, 14, spec.window)
+  if payload_bytes != 0 then
+    if not net_copy(ptr.add(tcp, 20), payload, payload_bytes) then return 0
+  end
+  net_write_u16_be(tcp, 16, net_tcp_checksum(spec.source_ip, spec.destination_ip, tcp, 20 + payload_bytes))
+  return wire_bytes
+end
+
+func net_dns_build_query(output: ptr, capacity: u64, transaction_id: u64, hostname: ptr, hostname_bytes: u64) do
+  if output == 0 or hostname == 0 or transaction_id > 65535 then return 0
+  if hostname_bytes == 0 or hostname_bytes > 253 or capacity < 17 then return 0
+  if not net_zero(output, capacity) then return 0
+  net_write_u16_be(output, 0, transaction_id)
+  net_write_u16_be(output, 2, 256)
+  net_write_u16_be(output, 4, 1)
+
+  input: u64 is 0
+  cursor: u64 is 12
+  label_start: u64 is 0
+  label_bytes: u64 is 0
+  while input <= hostname_bytes do
+    at_end: bool is input == hostname_bytes
+    value: u64 is 46
+    if not at_end then value is mem.read8(ptr.add(hostname, input))
+    if value == 46 then
+      if label_bytes == 0 or label_bytes > 63 then return 0
+      if cursor + 1 + label_bytes + 5 > capacity then return 0
+      mem.write8(ptr.add(output, cursor), label_bytes)
+      cursor += 1
+      if not net_copy(ptr.add(output, cursor), ptr.add(hostname, label_start), label_bytes) then return 0
+      cursor += label_bytes
+      label_start is input + 1
+      label_bytes is 0
+    else
+      if value <= 32 or value >= 127 then return 0
+      label_bytes += 1
+    end
+    input += 1
+  end
+  mem.write8(ptr.add(output, cursor), 0)
+  cursor += 1
+  net_write_u16_be(output, cursor, 1)
+  net_write_u16_be(output, cursor + 2, 1)
+  return cursor + 4
+end
+
+func net_dns_skip_name(packet: ptr, packet_bytes: u64, offset: u64) do
+  if packet == 0 or offset >= packet_bytes then return 0
+  cursor: u64 is offset
+  labels: u64 is 0
+  while cursor < packet_bytes and labels < 128 do
+    length: u64 is mem.read8(ptr.add(packet, cursor))
+    if length == 0 then return cursor + 1
+    if (length & 192) == 192 then
+      if cursor + 1 >= packet_bytes then return 0
+      return cursor + 2
+    end
+    if (length & 192) != 0 or length > 63 then return 0
+    if cursor + 1 + length > packet_bytes then return 0
+    cursor += 1 + length
+    labels += 1
+  end
+  return 0
+end
+
+func net_dns_first_a(packet: ptr, packet_bytes: u64, transaction_id: u64) do
+  if packet == 0 or packet_bytes < 12 or transaction_id > 65535 then return 0
+  if net_read_u16_be(packet, 0) != transaction_id then return 0
+  flags: u64 is net_read_u16_be(packet, 2)
+  if (flags & 32768) == 0 or (flags & 15) != 0 then return 0
+  questions: u64 is net_read_u16_be(packet, 4)
+  answers: u64 is net_read_u16_be(packet, 6)
+  if questions == 0 or questions > 16 or answers == 0 or answers > 64 then return 0
+  cursor: u64 is 12
+  index: u64 is 0
+  while index < questions do
+    cursor is net_dns_skip_name(packet, packet_bytes, cursor)
+    if cursor == 0 or cursor + 4 > packet_bytes then return 0
+    cursor += 4
+    index += 1
+  end
+  index is 0
+  while index < answers do
+    cursor is net_dns_skip_name(packet, packet_bytes, cursor)
+    if cursor == 0 or cursor + 10 > packet_bytes then return 0
+    record_type: u64 is net_read_u16_be(packet, cursor)
+    record_class: u64 is net_read_u16_be(packet, cursor + 2)
+    data_bytes: u64 is net_read_u16_be(packet, cursor + 8)
+    cursor += 10
+    if cursor + data_bytes > packet_bytes then return 0
+    if record_type == 1 and record_class == 1 and data_bytes == 4 then
+      return net_read_u32_be(packet, cursor)
+    end
+    cursor += data_bytes
+    index += 1
+  end
+  return 0
+end
