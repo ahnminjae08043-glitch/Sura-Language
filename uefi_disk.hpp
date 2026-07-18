@@ -16,6 +16,9 @@ struct SuraUefiDiskResult {
     uint64_t partition_last_lba = 0;
     uint32_t fat_sectors = 0;
     uint32_t file_first_cluster = 0;
+    uint32_t notes_first_cluster = 0;
+    uint32_t settings_first_cluster = 0;
+    uint32_t desktop_first_cluster = 0;
 };
 
 namespace SuraUefiDisk {
@@ -90,8 +93,11 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
 
     const uint64_t file_clusters =
         std::max<uint64_t>(1, (efi.size() + sector_size - 1) / sector_size);
+    constexpr uint64_t persistent_clusters = 5;
     const uint64_t desired_clusters =
-        std::max<uint64_t>(65525, file_clusters + 3 + 2048);
+        std::max<uint64_t>(
+            65525,
+            file_clusters + 3 + persistent_clusters + 2048);
     const uint64_t desired_fat =
         (desired_clusters + 2 + 127) / 128;
     const uint64_t desired_partition =
@@ -120,7 +126,7 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
         static_cast<uint64_t>(fat_count) * fat_sectors;
     const uint64_t cluster_count = data_sectors / sectors_per_cluster;
     if (cluster_count < 65525 || cluster_count >= 0x0ffffff0ULL ||
-        file_clusters + 3 > cluster_count) {
+        file_clusters + 3 + persistent_clusters > cluster_count) {
         throw std::runtime_error("UEFI payload does not fit the FAT32 partition");
     }
     if (fat_sectors64 * sector_size / 4 < cluster_count + 2) {
@@ -137,6 +143,12 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
     result.partition_last_lba = partition_last_lba;
     result.fat_sectors = fat_sectors;
     result.file_first_cluster = 5;
+    result.notes_first_cluster =
+        static_cast<uint32_t>(5 + file_clusters);
+    result.settings_first_cluster =
+        result.notes_first_cluster + 1;
+    result.desktop_first_cluster =
+        result.notes_first_cluster + 2;
     auto& image = result.image;
 
     // Protective MBR.
@@ -263,7 +275,8 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
                 image.begin() + static_cast<std::ptrdiff_t>(
                     partition_offset + 6 * sector_size));
 
-    const uint64_t used_clusters = 3 + file_clusters;
+    const uint64_t used_clusters =
+        3 + file_clusters + persistent_clusters;
     const auto write_fsinfo = [&](uint32_t relative_sector) {
         const size_t offset =
             partition_offset + static_cast<size_t>(relative_sector) * sector_size;
@@ -272,7 +285,8 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
         put32(image, offset + 488,
               static_cast<uint32_t>(cluster_count - used_clusters));
         put32(image, offset + 492,
-              static_cast<uint32_t>(5 + file_clusters));
+              static_cast<uint32_t>(
+                  5 + file_clusters + persistent_clusters));
         put32(image, offset + 508, 0xaa550000);
     };
     write_fsinfo(1);
@@ -302,6 +316,11 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
             : static_cast<uint32_t>(cluster + 1);
         put_fat(cluster, next);
     }
+    for (uint64_t i = 0; i < persistent_clusters; ++i) {
+        put_fat(
+            static_cast<uint32_t>(5 + file_clusters + i),
+            0x0fffffff);
+    }
 
     const uint64_t data_first_lba =
         fat_first_lba + static_cast<uint64_t>(fat_count) * fat_sectors;
@@ -314,6 +333,20 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
 
     write_short_entry(image, cluster_offset(2),
                       "EFI        ", 0x10, 3, 0);
+    write_short_entry(
+        image, cluster_offset(2) + 32,
+        "NOTES   TXT", 0x20, result.notes_first_cluster, sector_size);
+    write_short_entry(
+        image, cluster_offset(2) + 64,
+        "SETTINGSCFG", 0x20, result.settings_first_cluster, sector_size);
+    write_short_entry(
+        image, cluster_offset(2) + 96,
+        "DESKTOP CFG", 0x20, result.desktop_first_cluster, sector_size);
+    const uint32_t docs_cluster = result.notes_first_cluster + 3;
+    const uint32_t readme_cluster = result.notes_first_cluster + 4;
+    write_short_entry(
+        image, cluster_offset(2) + 128,
+        "DOCS       ", 0x10, docs_cluster, 0);
     write_short_entry(image, cluster_offset(3),
                       ".          ", 0x10, 3, 0);
     write_short_entry(image, cluster_offset(3) + 32,
@@ -329,6 +362,41 @@ inline SuraUefiDiskResult build(const std::vector<uint8_t>& efi) {
                       static_cast<uint32_t>(efi.size()));
     std::copy(efi.begin(), efi.end(),
               image.begin() + static_cast<std::ptrdiff_t>(cluster_offset(5)));
+
+    static constexpr char notes_text[] =
+        "Welcome to Sura OS Notes.";
+    static constexpr char settings_text[] =
+        "version=1\r\naccent=orange\r\n";
+    static constexpr char desktop_text[] =
+        "version=1\r\nwallpaper=default\r\n";
+    static constexpr char readme_text[] =
+        "Sura OS persistent data volume.";
+    std::copy(
+        std::begin(notes_text), std::end(notes_text) - 1,
+        image.begin() + static_cast<std::ptrdiff_t>(
+            cluster_offset(result.notes_first_cluster)));
+    std::copy(
+        std::begin(settings_text), std::end(settings_text) - 1,
+        image.begin() + static_cast<std::ptrdiff_t>(
+            cluster_offset(result.settings_first_cluster)));
+    std::copy(
+        std::begin(desktop_text), std::end(desktop_text) - 1,
+        image.begin() + static_cast<std::ptrdiff_t>(
+            cluster_offset(result.desktop_first_cluster)));
+
+    write_short_entry(
+        image, cluster_offset(docs_cluster),
+        ".          ", 0x10, docs_cluster, 0);
+    write_short_entry(
+        image, cluster_offset(docs_cluster) + 32,
+        "..         ", 0x10, 2, 0);
+    write_short_entry(
+        image, cluster_offset(docs_cluster) + 64,
+        "README  TXT", 0x20, readme_cluster, sector_size);
+    std::copy(
+        std::begin(readme_text), std::end(readme_text) - 1,
+        image.begin() + static_cast<std::ptrdiff_t>(
+            cluster_offset(readme_cluster)));
 
     return result;
 }

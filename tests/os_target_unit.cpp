@@ -859,6 +859,26 @@ int main(int argc, char** argv) {
     assert(std::equal(result.image.begin(), result.image.end(),
                       disk.image.begin() +
                           static_cast<std::ptrdiff_t>(cluster_offset(5))));
+    assert(std::memcmp(disk.image.data() + cluster_offset(2) + 32,
+                       "NOTES   TXT", 11) == 0);
+    assert(std::memcmp(disk.image.data() + cluster_offset(2) + 64,
+                       "SETTINGSCFG", 11) == 0);
+    assert(std::memcmp(disk.image.data() + cluster_offset(2) + 96,
+                       "DESKTOP CFG", 11) == 0);
+    assert(std::memcmp(disk.image.data() + cluster_offset(2) + 128,
+                       "DOCS       ", 11) == 0);
+    assert(std::memcmp(
+               disk.image.data() + cluster_offset(disk.notes_first_cluster),
+               "Welcome to Sura OS Notes.", 25) == 0);
+    assert(std::memcmp(
+               disk.image.data() + cluster_offset(disk.settings_first_cluster),
+               "version=1\r\naccent=orange\r\n", 26) == 0);
+    assert(std::memcmp(
+               disk.image.data() + cluster_offset(disk.desktop_first_cluster),
+               "version=1\r\nwallpaper=default\r\n", 30) == 0);
+    const uint32_t docs_cluster = disk.notes_first_cluster + 3;
+    assert(std::memcmp(disk.image.data() + cluster_offset(docs_cluster) + 64,
+                       "README  TXT", 11) == 0);
 
     if (argc > 1) {
         std::ofstream out(argv[1], std::ios::binary | std::ios::trunc);

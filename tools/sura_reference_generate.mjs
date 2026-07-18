@@ -586,7 +586,7 @@ const machineFacts = {
       example: "examples/os/framebuffer_features.sura",
       surface_contract: "caller-owned 32-bit GOP RGB/BGR surface, bounded to 64 MiB",
       drawing: ["checked pixel access", "clipped fill and outline rectangles", "horizontal and vertical lines", "integer Bresenham lines", "basic application icon", "5x7 bitmap text with scale and optional background"],
-      presentation: ["caller-owned backbuffer", "64-bit copy presentation", "sampled framebuffer hash"],
+      presentation: ["caller-owned backbuffer", "64-bit full-frame copy presentation", "clipped rectangle copy for software-cursor damage repair", "sampled framebuffer hash"],
       executed_resolution: "1280x800 in the current QEMU/EDK2 gate",
       screenshot_gate: "tools/sura_os_screenshot.ps1 captures the actual QEMU framebuffer through loopback-only QMP after SURA_OS_DESKTOP_OK",
       limitations: ["no hardware acceleration, GPU driver, or accelerated compositing", "no USB input", "font maps lowercase ASCII to uppercase and has a limited glyph set"],
@@ -608,7 +608,7 @@ const machineFacts = {
       limits: ["1..64 registered windows", "windows must fit inside the desktop area above the taskbar"],
       operations: ["visible and active state", "z-order", "focus", "top-window hit testing", "title-bar drag", "close-button hit testing", "close and show", "desktop-bound clamping"],
       example: "examples/os/window_manager_features.sura",
-      os_integration: "Terminal and System Information windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, and active-terminal keyboard routing",
+      os_integration: "Five kernel-owned application windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, active-window keyboard routing, and FAT32-backed desktop-state restore",
       verification: "compile and EFI image verification plus QEMU PS/2 focus, drag, close, taskbar reopen, Start activation, serial-marker, and screenshot verification",
       limitations: ["caller owns rendering and application contents", "no resize, minimize, maximize, taskbar rendering, or application processes"],
     },
@@ -618,20 +618,20 @@ const machineFacts = {
       actions: ["Start toggle", "Terminal/System/Files/Editor/Calculator menu", "shutdown", "Terminal/System/Files/Editor/Calculator taskbar", "About/Files/Editor/Calculator icon"],
       state: ["screen and taskbar dimensions", "Start open", "last action"],
       example: "examples/os/desktop_shell_features.sura",
-      os_integration: "Start and taskbar activation, close/reopen routing, Files placeholder message, and desktop shutdown dispatch",
+      os_integration: "Start and taskbar activation, close/reopen routing, mounted Files window, and desktop shutdown dispatch",
       limitations: ["fixed coordinates and launcher entries", "caller performs rendering and window actions", "no settings store, notifications, or process launcher"],
     },
     desktop_applications: {
       library: "stdlib/freestanding/desktop_apps.sura",
       applications: {
-        file_explorer: ["bounded entry count and selection", "executed OS displays explicit no-mounted-disk state"],
-        text_editor: ["caller-owned buffer", "printable text", "Enter", "Backspace", "dirty state"],
+        file_explorer: ["bounded entry count and selection", "executed OS lists FAT32 root short names and persists the selected row"],
+        text_editor: ["caller-owned buffer", "printable text", "Enter", "Backspace", "dirty state", "executed OS loads and autosaves fixed-size NOTES.TXT"],
         calculator: ["unsigned integer input", "+", "-", "*", "/", "=", "C", "Backspace", "overflow, underflow, and division-by-zero error state"],
       },
       example: "examples/os/desktop_apps_features.sura",
       os_integration: "registered windows 3..5, desktop/Start/taskbar launch and reopen, active-app keyboard routing",
-      executed_verification: "QEMU opens all three apps, types SURA NOTES, evaluates 50 - 8 = 42, requires app/input/result markers, and captures build/os/SuraOS-apps.ppm",
-      limitations: ["kernel-owned rather than Ring 3 processes", "File Explorer has no mounted disk yet", "Text Editor buffer is volatile", "Calculator is unsigned integer only"],
+      executed_verification: "QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 8 = 42, requires app/input/result/storage markers, and captures build/os/SuraOS-apps.ppm",
+      limitations: ["kernel-owned rather than Ring 3 processes", "File Explorer lists one root directory and does not navigate paths", "Text Editor overwrites one fixed 512-byte file", "Calculator is unsigned integer only"],
     },
     cmos_rtc: {
       library: "stdlib/freestanding/rtc.sura",
@@ -730,7 +730,7 @@ const machineFacts = {
       uefi_checks: ["native structure size and offsets", "snapshotted media ID and block size", "media-change rejection", "read-only state"],
       library: "stdlib/freestanding/block.sura",
       example: "examples/os/block_features.sura",
-      limitations: ["caller owns storage, contexts, buffers, and serialization", "bool public result does not preserve detailed callback status", "first matching UEFI protocol only", "UEFI adapter invalid after ExitBootServices", "block.sura itself does not drive native hardware", "compile and image verification only"],
+      limitations: ["caller owns storage, contexts, buffers, and serialization", "bool public result does not preserve detailed callback status", "first matching UEFI protocol only", "UEFI adapter invalid after ExitBootServices", "the current OS executes the generic block ABI through AHCI; RAM and UEFI adapters remain feature-image verified"],
     },
     ahci_library: {
       model: "polling AHCI 1.x SATA with one command slot and one PRDT entry",
@@ -738,7 +738,8 @@ const machineFacts = {
       dma_contract: ["caller-owned stable virtual and physical addresses", "registered contiguous DMA window", "uncached ABAR mapping", "4 MiB maximum request", "32-bit controller address-range enforcement"],
       library: "stdlib/freestanding/ahci.sura",
       example: "examples/os/ahci_features.sura",
-      limitations: ["no executed AHCI command proof", "no interrupts or NCQ", "one outstanding command", "no ATAPI or port multiplier", "no hot-plug, TRIM, COMRESET recovery, or power management", "no IOMMU mapping"],
+      executed_verification: "The QEMU q35 OS path discovers ICH9 AHCI, identifies the second SATA disk, DMA-reads its MBR and FAT32 sectors, DMA-writes NOTES/SETTINGS/DESKTOP records, flushes, and remounts the modified image on a second boot",
+      limitations: ["polling only; no interrupts or NCQ", "one outstanding command", "one registered DMA scratch window", "no ATAPI or port multiplier", "no hot-plug, TRIM, COMRESET recovery, or power management", "no IOMMU mapping"],
     },
     nvme_library: {
       model: "polling NVMe NVM command set with admin queue and I/O queue pair 1",
@@ -753,7 +754,8 @@ const machineFacts = {
       operations: ["cluster-chain traversal", "uppercase space-padded 8.3 directory lookup", "complete regular-file read", "same-size existing-file overwrite", "flush"],
       library: "stdlib/freestanding/fat32.sura",
       example: "examples/os/fat32_features.sura",
-      limitations: ["no cluster allocation/free", "no create, resize, delete, or rename", "no long file names", "no subdirectory path parser", "no FAT repair or FSInfo update", "no journaling or locking", "compile and image verification only"],
+      executed_verification: "The OS mounts a generated FAT32 data image, lists root short names, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image",
+      limitations: ["no cluster allocation/free", "no create, resize, delete, or rename", "no long file names", "no subdirectory path parser", "no FAT repair or FSInfo update", "no journaling or locking"],
     },
     partition_libraries: {
       gpt_checks: ["primary or backup header CRC32", "usable-LBA and entry-array bounds", "nonzero disk GUID", "entry geometry", "complete partition-entry-array CRC32"],
@@ -782,14 +784,14 @@ const machineFacts = {
     minimal_os_integration: {
       source: "os/sura_os.sura",
       gate: "tools/sura_os_vm.ps1",
-      output: ["build/os/SuraOS.efi", "build/os/SuraOS.img"],
-      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "five managed application windows", "focus and z-order", "title-bar drag", "close-button hit dispatch", "desktop-bound clamping", "taskbar reopen", "expanded Start menu", "File Explorer no-disk state", "Text Editor SURA NOTES input", "Calculator 50 - 8 = 42", "CMOS RTC HH:MM taskbar clock", "active-window keyboard routing", "SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK", "SURA_OS_EDITOR_INPUT_OK", "SURA_OS_CALCULATOR_RESULT_OK", "SURA_OS_WINDOW_READY", "SURA_OS_WINDOW_FOCUS_OK", "SURA_OS_WINDOW_DRAG_OK", "SURA_OS_WINDOW_CLOSE_OK", "SURA_OS_WINDOW_REOPEN_OK", "SURA_OS_START_MENU_OK", "SURA_OS_RTC_OK", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "46x14 graphical terminal command history at 2x font scale", "wrap, scroll, clear, and numeric output", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
+      output: ["build/os/SuraOS.efi", "build/os/SuraOS.img", "build/os/SuraData.img"],
+      executed_path: ["UEFI entry", "GOP framebuffer discovery", "64 MiB-bounded backbuffer allocation", "AHCI DMA allocation", "COM1 initialization", "memory-map acquisition", "ExitBootServices", "pixel/shape/icon/bitmap-text desktop rendering", "double-buffer presentation", "cursor-only damage repair", "five managed application windows", "focus and z-order", "title-bar drag", "close-button hit dispatch", "desktop-bound clamping", "taskbar reopen", "expanded Start menu", "ICH9 AHCI discovery and ATA IDENTIFY", "MBR type-0xEF partition lookup", "FAT32 mount", "root short-name listing", "NOTES.TXT load and fixed-size autosave", "SETTINGS.CFG selected-row persistence", "DESKTOP.CFG position/visibility/z-order/active-window persistence", "second-boot state restore", "Text Editor SURA NOTES input", "Calculator 50 - 8 = 42", "CMOS RTC HH:MM taskbar clock", "active-window keyboard routing", "SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK", "SURA_OS_EDITOR_INPUT_OK", "SURA_OS_CALCULATOR_RESULT_OK", "SURA_OS_STORAGE_READY", "SURA_OS_STORAGE_READ_OK", "SURA_OS_STORAGE_WRITE_OK", "SURA_OS_SETTINGS_READY", "SURA_OS_DESKTOP_STATE_READY", "SURA_OS_WINDOW_READY", "SURA_OS_WINDOW_FOCUS_OK", "SURA_OS_WINDOW_DRAG_OK", "SURA_OS_WINDOW_CLOSE_OK", "SURA_OS_WINDOW_REOPEN_OK", "SURA_OS_START_MENU_OK", "SURA_OS_RTC_OK", "SURA_OS_DESKTOP_OK", "physical page allocate/write/read/free self-check", "SURA_OS_KERNEL_READY", "polling PS/2 controller initialization", "46x14 graphical terminal command history at 2x font scale", "wrap, scroll, clear, and numeric output", "software mouse pointer movement", "COM1 command shell", "status and mem command validation", "shutdown command", "QEMU isa-debug-exit"],
       shell_commands: ["help", "status", "mem", "about", "clear", "shutdown"],
       interactive_command: ".\\tools\\sura_os_vm.ps1 -Engine .\\SuraLanguage.exe -Interactive",
       screenshot_command: ".\\tools\\sura_os_screenshot.ps1 -Engine .\\SuraLanguage.exe",
       screenshots: ["build/os/SuraOS-windows.ppm after drag", "build/os/SuraOS-start-menu.ppm with reopened System Information", "build/os/SuraOS-apps.ppm with File Explorer, Text Editor, and Calculator", "build/os/SuraOS-desktop.ppm after Terminal activation"],
       execution_environment: "QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes",
-      limitations: ["graphical desktop milestone, not a complete desktop OS", "polling PS/2 and COM1 input rather than interrupt-driven queues", "no resize, minimize, maximize, or Ring 3 application process windows", "fixed kernel-owned Start/taskbar entries", "does not execute every compile-verified freestanding subsystem", "no persistent filesystem mutation, network, USB, audio, or browser"],
+      limitations: ["graphical desktop milestone, not a complete desktop OS", "polling PS/2, AHCI, and COM1 rather than interrupt-driven queues", "no resize, minimize, maximize, or Ring 3 application process windows", "fixed kernel-owned Start/taskbar entries", "FAT32 mutation is limited to fixed-size existing-file overwrite", "does not execute every compile-verified freestanding subsystem", "no network, USB, audio, or browser"],
     },
     acpi_madt: {
       library: "stdlib/freestanding/acpi.sura",
@@ -819,7 +821,7 @@ const machineFacts = {
       gate_helper: "cpu.idt_set_gate(table, vector, addr_of(handler), selector, ist, attributes)",
       compile_time_checks: ["direct interrupt-function address", "vector error-code ABI", "vector/selector/IST/attributes ranges"],
     },
-    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1", "tools/sura_os_vm.ps1", "tools/sura_os_screenshot.ps1", "os/sura_os.sura", "stdlib/freestanding/framebuffer.sura", "stdlib/freestanding/font5x7.sura", "stdlib/freestanding/text_terminal.sura", "stdlib/freestanding/window_manager.sura", "stdlib/freestanding/desktop_shell.sura", "stdlib/freestanding/desktop_apps.sura", "stdlib/freestanding/rtc.sura", "stdlib/freestanding/ps2.sura", "examples/os/framebuffer_features.sura", "examples/os/text_terminal_features.sura", "examples/os/window_manager_features.sura", "examples/os/desktop_shell_features.sura", "examples/os/desktop_apps_features.sura", "examples/os/rtc_features.sura", "examples/os/ps2_features.sura", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/user_process_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
+    verification: ["tests/os_target_unit.cpp", "tests/freestanding_import_unit.cpp", "tools/sura_uefi_target_smoke.ps1", "tools/sura_ap_startup_smoke.ps1", "tools/sura_qemu_boot_gate.ps1", "tools/sura_os_vm.ps1", "tools/sura_os_screenshot.ps1", "tools/sura_os_data_disk.ps1", "os/sura_os.sura", "os/storage.sura", "stdlib/freestanding/framebuffer.sura", "stdlib/freestanding/font5x7.sura", "stdlib/freestanding/text_terminal.sura", "stdlib/freestanding/window_manager.sura", "stdlib/freestanding/desktop_shell.sura", "stdlib/freestanding/desktop_apps.sura", "stdlib/freestanding/rtc.sura", "stdlib/freestanding/ps2.sura", "examples/os/framebuffer_features.sura", "examples/os/text_terminal_features.sura", "examples/os/window_manager_features.sura", "examples/os/desktop_shell_features.sura", "examples/os/desktop_apps_features.sura", "examples/os/rtc_features.sura", "examples/os/ps2_features.sura", "examples/os/freestanding_features.sura", "examples/os/memory_kernel.sura", "examples/os/process_elf_features.sura", "examples/os/user_process_features.sura", "examples/os/scheduler_features.sura", "examples/os/preemptive_timer_features.sura", "examples/os/syscall_features.sura", "examples/os/user_mode_features.sura", "examples/os/pci_features.sura", "examples/os/pcie_features.sura", "examples/os/block_features.sura", "examples/os/ahci_features.sura", "examples/os/nvme_features.sura", "examples/os/gpt_features.sura", "examples/os/partition_features.sura", "examples/os/fat32_features.sura", "examples/os/vfs_features.sura", "examples/os/qemu_boot_gate.sura", "examples/os/acpi_features.sura", "examples/os/ioapic_features.sura", "examples/os/ap_startup_features.sura"],
     not_implemented: ["executed AP-startup coverage and complete per-AP initialization lifecycle", "automatic per-CPU TSS/IST allocation", "FPU/SIMD process context-switch policy", "ET_DYN/PIE, relocation, interpreter, dynamic-linking, and TLS executable loading", "demand paging, copy-on-write, shared memory, and memory-mapped files", "signals and fast-syscall blocking/resume conversion", "KPTI, NMI-safe entry, and comprehensive speculative-entry hardening", "synchronized/NUMA physical-memory policy", "complete virtual address-space policy", "PCID and remote TLB shootdown", "SMP run queues and load balancing", "executed ring-3 timer/context-switch verification", "PCI/PCIe resource allocation, bridge setup, and MSI/MSI-X", "network, USB, accelerated graphics, audio, and other device-specific drivers", "interrupt-driven desktop input queues and complete resize/minimize/maximize/application window lifecycle", "extended MBR chains, GPT repair, and partition create/resize/delete", "filesystem allocation, create, resize, delete, long-name, recovery, and locking support", "ARM64 freestanding backend", "source-level freestanding debugger", "executed CI VM boot coverage"],
   },
   interop: {
@@ -1281,7 +1283,7 @@ sections.push(section("targets", "JavaScript·WebAssembly 타깃",
 ));
 
 sections.push(section("freestanding", "OS 개발용 freestanding 기능",
-  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 46x14 graphical terminal의 command history·scroll·clear를 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.") +
+  paragraph(code("uefi-x86_64") + "는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. " + code("os/sura_os.sura") + "는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI와 FAT32 데이터 디스크를 실행합니다. File Explorer 루트 목록, NOTES.TXT 자동 저장, SETTINGS.CFG와 DESKTOP.CFG의 재부팅 복원까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.") +
   pre(".\\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\\os\\freestanding_features.sura") +
   table(["영역", "현재 구현"], [
     ["정수·포인터", code("i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr") + ", " + code("ptr[StructName]")],
@@ -1307,11 +1309,12 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
     ["ACPI MADT", "checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides"],
     ["AP 시작", "16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake"],
     ["직렬/VM 부팅 게이트", "16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode"],
-    ["그래픽 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 double-buffer desktop·memory self-check와 COM1 shell의 status/mem/shutdown 검증"],
-    ["Framebuffer·글꼴", code("framebuffer.sura") + "의 pixel/line/rectangle/present와 " + code("font5x7.sura") + "의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처"],
+    ["그래픽 OS 통합", code("os/sura_os.sura") + "와 " + code("tools/sura_os_vm.ps1") + "; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·memory self-check와 COM1 shell의 status/mem/shutdown 검증"],
+    ["Framebuffer·글꼴", code("framebuffer.sura") + "의 pixel/line/rectangle/full present/cursor damage copy와 " + code("font5x7.sura") + "의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처"],
     ["그래픽 터미널", code("text_terminal.sura") + "의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증"],
     ["창 관리자·데스크톱 셸", code("window_manager.sura") + "의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증"],
-    ["기본 데스크톱 앱", code("desktop_apps.sura") + "의 File Explorer·Text Editor·Calculator state; QEMU에서 editor 입력과 50-8=42 실행 검증"],
+    ["기본 데스크톱 앱", code("desktop_apps.sura") + "의 File Explorer·Text Editor·Calculator state; QEMU에서 FAT32 목록·editor 저장·50-8=42 실행 검증"],
+    ["영속 데이터 디스크", code("ahci.sura") + "·" + code("partition.sura") + "·" + code("fat32.sura") + "로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증"],
     ["RTC·작업 표시줄 시계", code("rtc.sura") + "의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 " + code("SURA_OS_RTC_OK") + " 실행 검증"],
     ["PS/2 데스크톱 입력", code("ps2.sura") + "의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증"],
     ["부팅 디스크", code("--disk-image") + "로 protective MBR, GPT, FAT32 ESP와 " + code("EFI/BOOT/BOOTX64.EFI") + " 생성"],
@@ -1320,7 +1323,7 @@ sections.push(section("freestanding", "OS 개발용 freestanding 기능",
   paragraph("top-level " + code("name is value") + "는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 " + code("global name") + " 문법을 사용합니다. " + code("struct Name packed do") + "는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.") +
   pre("struct Device packed do\n  vendor: u16\n  command: u16\nend\n\ndevice_storage is static.struct(Device)\ncount: u64 is 0\n\nfunc probe() -> u64 do\n  global count\n  device: ptr[Device] is device_storage\n  device.command is 7\n  previous is atomic.fetch_add64(addr_of(count), 1)\n  return device.vendor\nend") +
   paragraph(code("func timer(frame: ptr[Frame]) interrupt do") + "는 error code가 없는 vector용이고 " + code("interrupt_error") + "는 CPU가 error code를 푸시하는 vector용입니다. " + code("cpu.idt_set_gate") + "는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.") +
-  paragraph("Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 다섯 창, editor 입력, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window keyboard routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, persistent filesystem create/delete/save, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 " + code("Guide/OS_DEVELOPMENT.md") + "와 이 문서의 machine-readable data에 있습니다.")
+  paragraph("Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 다섯 창, editor 입력과 FAT32 자동 저장, 설정·창 상태 재부팅 복원, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window keyboard routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 " + code("Guide/OS_DEVELOPMENT.md") + "와 이 문서의 machine-readable data에 있습니다.")
 ));
 
 sections.push(section("release", "빌드와 배포",

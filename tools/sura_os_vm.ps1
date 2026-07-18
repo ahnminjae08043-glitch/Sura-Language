@@ -14,6 +14,8 @@ $source = Join-Path $root "os/sura_os.sura"
 $outputDirectory = Join-Path $root "build/os"
 $efi = Join-Path $outputDirectory "SuraOS.efi"
 $disk = Join-Path $outputDirectory "SuraOS.img"
+$dataDisk = Join-Path $outputDirectory "SuraData.img"
+$dataDiskTool = Join-Path $PSScriptRoot "sura_os_data_disk.ps1"
 
 function Resolve-OsQemu {
     param([string]$Requested)
@@ -173,6 +175,10 @@ try {
         throw "Sura OS source was not found: $source"
     }
     New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+    & $dataDiskTool -Path $dataDisk
+    if (-not $?) {
+        throw "Sura OS data disk creation failed"
+    }
 
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -205,7 +211,8 @@ try {
                 "-serial", "tcp:127.0.0.1:$serialPort,server=on,wait=off",
                 "-no-reboot",
                 "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
-                "-drive", "file=$interactiveDisk,format=raw,if=ide",
+                "-drive", "file=$interactiveDisk,format=raw,if=ide,index=0",
+                "-drive", "file=$dataDisk,format=raw,if=ide,index=1",
                 "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-boot", "c"
             )
@@ -316,6 +323,7 @@ try {
     & (Join-Path $PSScriptRoot "sura_qemu_boot_gate.ps1") `
         -Engine $Engine `
         -Source $source `
+        -DataDisk $dataDisk `
         -Qemu $Qemu `
         -Firmware $Firmware `
         -TimeoutSeconds $TimeoutSeconds `
@@ -325,7 +333,7 @@ try {
         -SerialInputLines @("status", "mem", "shutdown") `
         -SerialInputDelayMilliseconds 8000 `
         -SerialInputIntervalMilliseconds 1000 `
-        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "kernel: ready", "free physical pages: ") `
+        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "SURA_OS_STORAGE_READY", "SURA_OS_STORAGE_READ_OK", "SURA_OS_SETTINGS_READY", "SURA_OS_DESKTOP_STATE_READY", "kernel: ready", "free physical pages: ") `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

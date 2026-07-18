@@ -12,6 +12,7 @@ import "../stdlib/freestanding/desktop_shell.sura"
 import "../stdlib/freestanding/desktop_apps.sura"
 import "../stdlib/freestanding/rtc.sura"
 import "../stdlib/freestanding/ps2.sura"
+import "storage.sura"
 
 os_allocator_state is static.struct(PhysicalAllocator)
 os_allocator_bitmap is static.zero(65536, 4096)
@@ -37,6 +38,33 @@ os_calculator_state is static.struct(CalculatorState)
 os_calculator_text is static.zero(16, 16)
 os_rtc_time_state is static.struct(RtcTime)
 os_clock_text is static.zero(8, 16)
+os_storage_pci_device is static.struct(PciDevice)
+os_storage_controller is static.struct(AhciController)
+os_storage_dma is static.struct(AhciDma)
+os_storage_context is static.struct(AhciContext)
+os_storage_port_info is static.struct(AhciPortInfo)
+os_storage_block_device is static.struct(BlockDevice)
+os_storage_gpt_buffers is static.struct(GptBuffers)
+os_storage_gpt_header is static.struct(GptHeader)
+os_storage_gpt_partition is static.struct(GptPartition)
+os_storage_partition is static.struct(DiskPartition)
+os_storage_volume is static.struct(Fat32Volume)
+os_storage_probe_entry is static.struct(Fat32DirEntry)
+os_storage_notes_entry is static.struct(Fat32DirEntry)
+os_storage_settings_entry is static.struct(Fat32DirEntry)
+os_storage_desktop_entry is static.struct(Fat32DirEntry)
+os_storage_root_entries is static.struct(Fat32DirEntry, 16)
+os_storage_gpt_entry_buffer is static.zero(256, 16)
+os_storage_short_name is static.zero(12, 16)
+os_storage_display_names is static.zero(208, 16)
+os_storage_settings_buffer is static.zero(512, 16)
+os_storage_desktop_buffer is static.zero(512, 16)
+os_storage_marker_name is static.bytes([83, 85, 82, 65, 32, 32, 32, 32, 68, 83, 75], 16)
+os_storage_notes_name is static.bytes([78, 79, 84, 69, 83, 32, 32, 32, 84, 88, 84], 16)
+os_storage_settings_name is static.bytes([83, 69, 84, 84, 73, 78, 71, 83, 67, 70, 71], 16)
+os_storage_desktop_name is static.bytes([68, 69, 83, 75, 84, 79, 80, 32, 67, 70, 71], 16)
+os_storage_settings_magic is static.bytes([83, 85, 82, 65, 83, 69, 84, 49], 8)
+os_storage_desktop_magic is static.bytes([83, 85, 82, 65, 68, 83, 75, 49], 8)
 
 os_boot_marker is static.utf8("SURA_OS_BOOT_OK")
 os_memory_marker is static.utf8("SURA_OS_MEMORY_OK")
@@ -58,6 +86,13 @@ os_editor_app_marker is static.utf8("SURA_OS_EDITOR_APP_OK")
 os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
 os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
 os_calculator_result_marker is static.utf8("SURA_OS_CALCULATOR_RESULT_OK")
+os_storage_ready_marker is static.utf8("SURA_OS_STORAGE_READY")
+os_storage_read_marker is static.utf8("SURA_OS_STORAGE_READ_OK")
+os_storage_write_marker is static.utf8("SURA_OS_STORAGE_WRITE_OK")
+os_storage_settings_marker is static.utf8("SURA_OS_SETTINGS_READY")
+os_storage_desktop_state_marker is static.utf8("SURA_OS_DESKTOP_STATE_READY")
+os_storage_unavailable_marker is static.utf8("SURA_OS_STORAGE_UNAVAILABLE")
+os_storage_status_prefix is static.utf8("storage status: ")
 os_terminal_scroll_marker is static.utf8("SURA_OS_TERMINAL_SCROLL_OK")
 os_clear_marker is static.utf8("SURA_OS_CLEAR_OK")
 os_window_ready_marker is static.utf8("SURA_OS_WINDOW_READY")
@@ -110,6 +145,8 @@ os_text_root is static.utf8("ROOT /")
 os_text_no_disk is static.utf8("[NO MOUNTED DISK]")
 os_text_read_only is static.utf8("VIRTUAL DISK CONNECTION PENDING")
 os_text_editor_hint is static.utf8("TYPE TO EDIT - MEMORY BUFFER")
+os_text_storage_ready is static.utf8("FAT32 DATA DISK - ROOT DIRECTORY")
+os_text_editor_autosave is static.utf8("TYPE TO EDIT - FAT32 AUTOSAVE")
 os_text_calculator_hint is static.utf8("KEYS: 0-9 + - * / = C")
 os_text_calc_error is static.utf8("ERROR")
 os_text_vm is static.utf8("QEMU VM")
@@ -131,6 +168,9 @@ os_shell_length: usize is 0
 os_graphics_message: ptr is 0
 os_mouse_x: i64 is 640
 os_mouse_y: i64 is 400
+os_pointer_drawn_x: i64 is 640
+os_pointer_drawn_y: i64 is 400
+os_pointer_drawn: u64 is 0
 os_keyboard_reported: u64 is 0
 os_mouse_reported: u64 is 0
 os_shift_reported: u64 is 0
@@ -148,6 +188,20 @@ os_editor_input_reported: u64 is 0
 os_calculator_result_reported: u64 is 0
 os_terminal_scroll_reported: u64 is 0
 os_clock_second: u64 is 60
+os_storage_mounted: u64 is 0
+os_storage_port: u64 is 32
+os_storage_entry_count: u64 is 0
+os_storage_write_reported: u64 is 0
+os_storage_status: u64 is 0
+os_storage_dma_address: u64 is 0
+os_storage_dma_pages: u64 is 17
+os_storage_dma_data: u64 is 0
+os_storage_mbr_signature: u64 is 0
+os_storage_mbr_type: u64 is 0
+os_storage_mbr_start: u64 is 0
+os_storage_sector_count: u64 is 0
+os_storage_direct_read_status: u64 is 99
+os_storage_read_callback: u64 is 0
 
 func os_vm_exit(code: u64) do
   io.out32(244, code)
@@ -302,10 +356,33 @@ func os_draw_mouse_pointer(surface: ptr[FramebufferSurface]) do
 end
 
 func os_present_with_pointer() do
+  global os_pointer_drawn_x, os_pointer_drawn_y, os_pointer_drawn
   front: ptr[FramebufferSurface] is os_front_surface_state
   back: ptr[FramebufferSurface] is os_back_surface_state
   if not fb_present(back, front.pixels) then return false
-  os_draw_mouse_pointer(front)
+  if not os_draw_mouse_pointer(front) then return false
+  os_pointer_drawn_x is os_mouse_x
+  os_pointer_drawn_y is os_mouse_y
+  os_pointer_drawn is 1
+  return true
+end
+
+func os_present_pointer_only() do
+  global os_pointer_drawn_x, os_pointer_drawn_y, os_pointer_drawn
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  back: ptr[FramebufferSurface] is os_back_surface_state
+  if front == 0 or back == 0 then return false
+  if os_pointer_drawn == 0 then return os_present_with_pointer()
+  if os_pointer_drawn_x < 0 or os_pointer_drawn_y < 0 then return os_present_with_pointer()
+
+  # Restore only the old cursor damage from the clean desktop backbuffer.
+  if not fb_copy_rect(back, front, os_pointer_drawn_x, os_pointer_drawn_y, 14, 22) then
+    return false
+  end
+  if not os_draw_mouse_pointer(front) then return false
+  os_pointer_drawn_x is os_mouse_x
+  os_pointer_drawn_y is os_mouse_y
+  os_pointer_drawn is 1
   return true
 end
 
@@ -434,10 +511,18 @@ func os_draw_file_explorer_window(surface: ptr[FramebufferSurface], window: ptr[
     if files.selected == row then row_color is titlebar
     fb_fill_rect(surface, x + 18, row_y, window.width - 36, 28, row_color)
     if files.selected == row then fb_rect_outline(surface, x + 18, row_y, window.width - 36, 28, orange)
+    if os_storage_mounted != 0 and row < os_storage_entry_count then
+      name: ptr is ptr.add(os_storage_display_names, row * 13)
+      font5x7_draw_text(surface, x + 30, row_y + 10, name, 13, white_small)
+    end
     row += 1
   end
-  font5x7_draw_text(surface, x + 30, y + 88, os_text_no_disk, 32, white_small)
-  font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_read_only, 48, muted_small)
+  if os_storage_mounted == 0 then
+    font5x7_draw_text(surface, x + 30, y + 88, os_text_no_disk, 32, white_small)
+    font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_read_only, 48, muted_small)
+  else
+    font5x7_draw_text(surface, x + 20, y + window.height - 28, os_text_storage_ready, 48, muted_small)
+  end
   return true
 end
 
@@ -458,7 +543,9 @@ func os_draw_text_editor_window(surface: ptr[FramebufferSurface], window: ptr[De
   if cursor_x + 5 < x + window.width - 16 and cursor_y + 8 < y + window.height - 40 then
     fb_fill_rect(surface, cursor_x, cursor_y + 7, 5, 1, white)
   end
-  font5x7_draw_text(surface, x + 20, y + window.height - 26, os_text_editor_hint, 48, muted_small)
+  editor_hint: ptr is os_text_editor_hint
+  if os_storage_mounted != 0 then editor_hint is os_text_editor_autosave
+  font5x7_draw_text(surface, x + 20, y + window.height - 26, editor_hint, 48, muted_small)
   return true
 end
 
@@ -582,6 +669,9 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
         files: ptr[FileExplorerState] is os_file_explorer_state
         if row < files.entry_count then
           file_explorer_select(files, row)
+          if os_storage_mounted != 0 then
+            if not os_storage_save_settings() then return false
+          end
           window_manager_focus(manager, 3)
           return true
         end
@@ -877,6 +967,9 @@ func os_ps2_keyboard(keyboard: ptr[Ps2KeyboardState]) do
   if keyboard.ascii != 0 and manager.active_id == 4 then
     editor: ptr[TextEditorState] is os_text_editor_state
     if not text_editor_input(editor, keyboard.ascii) then return false
+    if os_storage_mounted != 0 then
+      if not os_storage_save_notes() then return false
+    end
     if os_editor_input_reported == 0 then
       if not os_serial_cstr_line(os_editor_input_marker) then return false
       os_editor_input_reported is 1
@@ -941,14 +1034,20 @@ func os_ps2_mouse(mouse: ptr[Ps2MouseState]) do
   end
   if (mouse.released & 1) != 0 then
     if not window_manager_pointer_release(manager) then return false
+    if os_storage_mounted != 0 then
+      if not os_storage_save_desktop() then return false
+    end
   end
-  if not os_redraw_desktop() then return false
   if first_mouse != 0 then
     if not os_serial_line(os_mouse_marker, 16) then return false
   end
   if first_click != 0 then
     if not os_serial_line(os_mouse_click_marker, 22) then return false
   end
+  if manager.dragging_id != 0 then return os_redraw_desktop()
+  if mouse.pressed != 0 then return os_redraw_desktop()
+  if mouse.released != 0 then return os_redraw_desktop()
+  if mouse.moved != 0 then return os_present_pointer_only()
   return true
 end
 
@@ -1024,7 +1123,7 @@ func os_memory_self_test() do
 end
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
-  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size, os_rtc_reported
+  global os_map_size, os_map_key, os_descriptor_size, os_descriptor_version, os_backbuffer_address, os_backbuffer_pages, os_framebuffer_size, os_rtc_reported, os_storage_dma_address
 
   uefi.clear()
   uefi.set_color(15, 0)
@@ -1050,6 +1149,8 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     os_vm_exit(10)
     return 10
   end
+  storage_allocation_status: u64 is uefi.allocate_pages(0, 2, os_storage_dma_pages, addr_of(os_storage_dma_address))
+  if storage_allocation_status != 0 then os_storage_dma_address is 0
 
   if not serial_init(1016, 1) then
     os_vm_exit(1)
@@ -1095,6 +1196,53 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     os_serial_drain()
     os_vm_exit(7)
     return 7
+  end
+  if os_storage_start() then
+    if not os_serial_cstr_line(os_storage_ready_marker) then
+      os_vm_exit(14)
+      return 14
+    end
+    if not os_serial_cstr_line(os_storage_read_marker) then
+      os_vm_exit(15)
+      return 15
+    end
+    if not os_serial_cstr_line(os_storage_settings_marker) then
+      os_vm_exit(17)
+      return 17
+    end
+    if not os_serial_cstr_line(os_storage_desktop_state_marker) then
+      os_vm_exit(18)
+      return 18
+    end
+    if not os_redraw_desktop() then
+      os_vm_exit(16)
+      return 16
+    end
+  else
+    os_serial_cstr_line(os_storage_unavailable_marker)
+    os_serial_text(os_storage_status_prefix)
+    os_serial_u64(os_storage_status)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_dma_address)
+    serial_write_byte(1016, 32, 1000000)
+    storage_controller: ptr[AhciController] is os_storage_controller
+    os_serial_u64(storage_controller.ports_implemented)
+    serial_write_byte(1016, 32, 1000000)
+    storage_context: ptr[AhciContext] is os_storage_context
+    os_serial_u64(storage_context.last_error)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_mbr_signature)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_mbr_type)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_mbr_start)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_sector_count)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_direct_read_status)
+    serial_write_byte(1016, 32, 1000000)
+    os_serial_u64(os_storage_read_callback)
+    serial_write_byte(1016, 10, 1000000)
   end
   if not os_serial_line(os_desktop_marker, 18) then
     os_vm_exit(11)

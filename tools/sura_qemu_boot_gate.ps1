@@ -3,6 +3,7 @@ param(
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/qemu_boot_gate.sura"),
     [string]$Qemu = "",
     [string]$Firmware = "",
+    [string]$DataDisk = "",
     [int]$TimeoutSeconds = 30,
     [string]$ExpectedEfiText = "Sura QEMU boot gate",
     [string]$ExpectedMarker = "SURA_EXIT_BOOT_SERVICES_OK",
@@ -110,6 +111,10 @@ try {
     if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
         throw "QEMU boot source was not found: $Source"
     }
+    if (-not [string]::IsNullOrWhiteSpace($DataDisk) -and
+        -not (Test-Path -LiteralPath $DataDisk -PathType Leaf)) {
+        throw "QEMU data disk was not found: $DataDisk"
+    }
 
     New-Item -ItemType Directory -Path $temp | Out-Null
     $efi = Join-Path $temp "BOOTX64.EFI"
@@ -140,6 +145,11 @@ try {
 
     $qemuPath = Resolve-Qemu $Qemu
     $firmwarePath = Resolve-Firmware $Firmware $qemuPath
+    $temporaryDataDisk = ""
+    if (-not [string]::IsNullOrWhiteSpace($DataDisk)) {
+        $temporaryDataDisk = Join-Path $temp "sura-data.img"
+        Copy-Item -LiteralPath $DataDisk -Destination $temporaryDataDisk -Force
+    }
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
     $process.StartInfo.FileName = $qemuPath
@@ -156,10 +166,15 @@ try {
         "-serial", "stdio",
         "-no-reboot",
         "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
-        "-drive", "file=$disk,format=raw,if=ide",
+        "-drive", "file=$disk,format=raw,if=ide,index=0",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "c"
     )
+    if (-not [string]::IsNullOrWhiteSpace($temporaryDataDisk)) {
+        $qemuArguments += @(
+            "-drive", "file=$temporaryDataDisk,format=raw,if=ide,index=1"
+        )
+    }
     if ($process.StartInfo.PSObject.Properties.Name -contains "ArgumentList") {
         foreach ($argument in $qemuArguments) {
             $process.StartInfo.ArgumentList.Add($argument)

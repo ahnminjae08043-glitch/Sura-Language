@@ -103,7 +103,8 @@ func block_request_valid(device: ptr[BlockDevice], lba: u64, count: u64, buffer:
   if not block_device_valid(device) or buffer == 0 or count == 0 then return false
   if lba >= device.sector_count or count > device.sector_count - lba then return false
   if device.alignment > 1 and not ptr.is_aligned(buffer, device.alignment) then return false
-  if count > u64("0xffffffffffffffff") / device.sector_size then return false
+  byte_count: u64 is count * device.sector_size
+  if byte_count / count != device.sector_size then return false
   return true
 end
 

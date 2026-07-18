@@ -164,6 +164,40 @@ func fb_present(backbuffer: ptr[FramebufferSurface], target_pixels: ptr) do
   return true
 end
 
+# Copies one clipped rectangle between compatible 32-bit surfaces. This is
+# used for cursor damage repair so ordinary pointer movement does not require
+# presenting the complete framebuffer.
+func fb_copy_rect(source: ptr[FramebufferSurface], target: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64) do
+  if source == 0 or target == 0 or width == 0 or height == 0 then return false
+  if source.pixels == 0 or target.pixels == 0 then return false
+  if source.width != target.width or source.height != target.height then return false
+  if source.pixel_format != target.pixel_format then return false
+  if x >= source.width or y >= source.height then return false
+
+  right: u64 is source.width
+  if width <= source.width - x then right is x + width
+  bottom: u64 is source.height
+  if height <= source.height - y then bottom is y + height
+
+  row: u64 is y
+  while row < bottom do
+    column: u64 is x
+    while column + 1 < right do
+      source_offset: u64 is (row * source.stride + column) * 4
+      target_offset: u64 is (row * target.stride + column) * 4
+      mem.write64(ptr.add(target.pixels, target_offset), mem.read64(ptr.add(source.pixels, source_offset)))
+      column += 2
+    end
+    if column < right then
+      source_offset: u64 is (row * source.stride + column) * 4
+      target_offset: u64 is (row * target.stride + column) * 4
+      mem.write32(ptr.add(target.pixels, target_offset), mem.read32(ptr.add(source.pixels, source_offset)))
+    end
+    row += 1
+  end
+  return true
+end
+
 func fb_sample_hash(surface: ptr[FramebufferSurface]) do
   if surface == 0 or surface.width == 0 or surface.height == 0 then return 0
   step_x: u64 is surface.width / 23 + 1

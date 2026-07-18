@@ -76,8 +76,9 @@ end
 
 func ahci_physical_range_valid(address: u64, byte_count: u64, supports_64bit: u64) do
   if address == 0 or byte_count == 0 then return false
-  if address > u64("0xffffffffffffffff") - (byte_count - 1) then return false
-  if supports_64bit == 0 and address + byte_count - 1 > u64("0xffffffff") then return false
+  last: u64 is address + byte_count - 1
+  if last < address then return false
+  if supports_64bit == 0 and last > u64("0xffffffff") then return false
   return true
 end
 
@@ -288,15 +289,12 @@ end
 func ahci_translate_dma(context: ptr[AhciContext], buffer: ptr, byte_count: u64) do
   if context == 0 or context.dma == 0 or buffer == 0 or byte_count == 0 then return 0
   dma: ptr[AhciDma] is context.dma
-  start: u64 is dma.data_virtual
-  address: u64 is buffer
-  if address < start or address - start > dma.data_bytes then return 0
-  offset: u64 is address - start
-  if byte_count > dma.data_bytes - offset then return 0
-  if dma.data_physical > u64("0xffffffffffffffff") - offset then return 0
-  physical: u64 is dma.data_physical + offset
-  if not ahci_physical_range_valid(physical, byte_count, context.supports_64bit_dma) then return 0
-  return physical
+  # The freestanding target does not expose an implicit ptr-to-u64 cast.
+  # Commands therefore use the caller-owned DMA scratch buffer from its base.
+  # Sub-buffer requests can be staged into this buffer by the block client.
+  if buffer != dma.data_virtual or byte_count > dma.data_bytes then return 0
+  if not ahci_physical_range_valid(dma.data_physical, byte_count, context.supports_64bit_dma) then return 0
+  return dma.data_physical
 end
 
 func ahci_prepare_command(context: ptr[AhciContext], command: u64, lba: u64, sector_count: u64, physical: u64, byte_count: u64) do
@@ -439,8 +437,8 @@ end
 func ahci_read_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
   context: ptr[AhciContext] is context_address
   if context == 0 or context.sector_size == 0 or count == 0 then return 1
-  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
   byte_count: u64 is count * context.sector_size
+  if byte_count / count != context.sector_size then return 1
   if byte_count > 4194304 or count > 65535 then return 1
   physical: u64 is ahci_translate_dma(context, buffer, byte_count)
   if physical == 0 then return 1
@@ -452,8 +450,8 @@ func ahci_write_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) 
   context: ptr[AhciContext] is context_address
   if context == 0 or context.read_only != 0 then return 2
   if context.sector_size == 0 or count == 0 then return 1
-  if count > u64("0xffffffffffffffff") / context.sector_size then return 1
   byte_count: u64 is count * context.sector_size
+  if byte_count / count != context.sector_size then return 1
   if byte_count > 4194304 or count > 65535 then return 1
   physical: u64 is ahci_translate_dma(context, buffer, byte_count)
   if physical == 0 then return 1

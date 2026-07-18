@@ -6,6 +6,8 @@ param(
     [string]$WindowOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-windows.ppm"),
     [string]$StartOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-start-menu.ppm"),
     [string]$AppsOutput = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraOS-apps.ppm"),
+    [string]$DataDisk = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/os/SuraData.img"),
+    [string]$DataDiskOutput = "",
     [int]$TimeoutSeconds = 30,
     [switch]$SkipInputVerification
 )
@@ -13,6 +15,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $disk = Join-Path $root "build/os/SuraOS.img"
+$dataDiskTool = Join-Path $PSScriptRoot "sura_os_data_disk.ps1"
 
 function Resolve-SuraOsQemu {
     param([string]$Requested)
@@ -172,6 +175,7 @@ $serialStream = $null
 $qmpReader = $null
 $qmpWriter = $null
 $temporaryDisk = $null
+$temporaryDataDisk = $null
 $temporaryCapture = $null
 $temporaryWindowCapture = $null
 $temporaryStartCapture = $null
@@ -189,11 +193,17 @@ try {
     $firmwarePath = Resolve-SuraOsFirmware $Firmware $qemuPath
     $token = [guid]::NewGuid().ToString("N")
     $temporaryDisk = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.img"
+    $temporaryDataDisk = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_data.img"
     $temporaryCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$token.ppm"
     $temporaryWindowCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_windows.ppm"
     $temporaryStartCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_start.ppm"
     $temporaryAppsCapture = Join-Path ([System.IO.Path]::GetTempPath()) "sura_os_capture_$($token)_apps.ppm"
     Copy-Item -LiteralPath $disk -Destination $temporaryDisk -Force
+    & $dataDiskTool -Path $DataDisk
+    if (-not $?) {
+        throw "Sura OS data disk creation failed"
+    }
+    Copy-Item -LiteralPath $DataDisk -Destination $temporaryDataDisk -Force
 
     $serialPort = Get-SuraOsFreeTcpPort
     $qmpPort = Get-SuraOsFreeTcpPort
@@ -207,7 +217,8 @@ try {
         "-serial", "tcp:127.0.0.1:$serialPort,server=on,wait=off",
         "-no-reboot",
         "-drive", "if=pflash,format=raw,readonly=on,file=$firmwarePath",
-        "-drive", "file=$temporaryDisk,format=raw,if=ide",
+        "-drive", "file=$temporaryDisk,format=raw,if=ide,index=0",
+        "-drive", "file=$temporaryDataDisk,format=raw,if=ide,index=1",
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "c"
     )
@@ -265,6 +276,10 @@ try {
     $bootDeadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
     while ([DateTime]::UtcNow -lt $bootDeadline -and
            (-not $serialText.ToString().Contains("SURA_OS_DESKTOP_OK") -or
+            -not $serialText.ToString().Contains("SURA_OS_STORAGE_READY") -or
+            -not $serialText.ToString().Contains("SURA_OS_STORAGE_READ_OK") -or
+            -not $serialText.ToString().Contains("SURA_OS_SETTINGS_READY") -or
+            -not $serialText.ToString().Contains("SURA_OS_DESKTOP_STATE_READY") -or
             (-not $SkipInputVerification -and
              (-not $serialText.ToString().Contains("SURA_OS_PS2_READY") -or
               -not $serialText.ToString().Contains("Sura OS shell ready"))))) {
@@ -280,6 +295,12 @@ try {
     }
     if (-not $serialText.ToString().Contains("SURA_OS_DESKTOP_OK")) {
         throw "Sura OS desktop marker was not observed before capture"
+    }
+    if (-not $serialText.ToString().Contains("SURA_OS_STORAGE_READY") -or
+        -not $serialText.ToString().Contains("SURA_OS_STORAGE_READ_OK") -or
+        -not $serialText.ToString().Contains("SURA_OS_SETTINGS_READY") -or
+        -not $serialText.ToString().Contains("SURA_OS_DESKTOP_STATE_READY")) {
+        throw "Sura OS FAT32 data disk and persisted desktop state were not ready before capture"
     }
 
     if (-not $SkipInputVerification) {
@@ -445,6 +466,7 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_STORAGE_WRITE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CLEAR_OK") -or
                 -not $serialText.ToString().Contains("kernel: ready"))) {
@@ -476,6 +498,7 @@ try {
             "SURA_OS_CALCULATOR_RESULT_OK",
             "SURA_OS_EDITOR_INPUT_OK",
             "SURA_OS_CALCULATOR_RESULT_OK",
+            "SURA_OS_STORAGE_WRITE_OK",
             "SURA_OS_TERMINAL_SCROLL_OK",
             "SURA_OS_CLEAR_OK",
             "kernel: ready"
@@ -545,6 +568,16 @@ try {
         $diagnostics = $qemuStderrTask.GetAwaiter().GetResult()
         throw "QEMU closed with unexpected exit code $($qemuProcess.ExitCode), expected $expectedExitCode`n$diagnostics"
     }
+    $dataDiskStatus = "not preserved"
+    if (-not [string]::IsNullOrWhiteSpace($DataDiskOutput)) {
+        $dataDiskOutputDirectory = Split-Path -Parent $DataDiskOutput
+        if (-not [string]::IsNullOrWhiteSpace($dataDiskOutputDirectory)) {
+            New-Item -ItemType Directory -Path $dataDiskOutputDirectory -Force | Out-Null
+        }
+        Copy-Item -LiteralPath $temporaryDataDisk -Destination $DataDiskOutput -Force
+        $preservedDataDisk = Get-Item -LiteralPath $DataDiskOutput
+        $dataDiskStatus = "$($preservedDataDisk.FullName), $($preservedDataDisk.Length) bytes"
+    }
     $capture = Get-Item -LiteralPath $Output
     $inputStatus = "verified"
     if ($SkipInputVerification) { $inputStatus = "skipped" }
@@ -563,7 +596,7 @@ try {
     if ($null -ne $appsCapture) {
         $appsStatus = "$($appsCapture.FullName), $($appsCapture.Length) bytes"
     }
-    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; apps=$appsStatus; input=$inputStatus)"
+    "sura_os_screenshot: PASS (desktop=$($capture.FullName), $($capture.Length) bytes; windows=$windowStatus; start=$startStatus; apps=$appsStatus; input=$inputStatus; data=$dataDiskStatus)"
 }
 catch {
     if ($null -ne $qemuProcess -and $qemuProcess.HasExited) {
@@ -591,7 +624,7 @@ finally {
         }
         $qemuProcess.Dispose()
     }
-    foreach ($temporaryPath in @($temporaryDisk, $temporaryCapture, $temporaryWindowCapture, $temporaryStartCapture, $temporaryAppsCapture)) {
+    foreach ($temporaryPath in @($temporaryDisk, $temporaryDataDisk, $temporaryCapture, $temporaryWindowCapture, $temporaryStartCapture, $temporaryAppsCapture)) {
         if (-not [string]::IsNullOrWhiteSpace($temporaryPath) -and
             (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             $resolvedTemporaryPath = [System.IO.Path]::GetFullPath($temporaryPath)

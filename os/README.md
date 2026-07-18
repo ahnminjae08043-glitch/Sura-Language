@@ -16,12 +16,20 @@ experimental freestanding x86-64 target.
   and three-byte mouse packets
 - accepts commands in the active graphical terminal and moves a software
   pointer
+- repairs only the old cursor rectangle during ordinary pointer movement
+  instead of presenting the complete framebuffer for every mouse packet
 - keeps a readable 46x14 terminal history with wrapping, scrolling, and `clear`
 - manages overlapping Terminal and System Information windows with focus,
   z-order, title-bar dragging, close-button input, and desktop bounds
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
 - runs kernel-owned File Explorer, Text Editor, and Calculator windows
+- initializes QEMU's ICH9 AHCI controller after `ExitBootServices`, identifies
+  the second SATA disk, reads its MBR, and mounts its FAT32 partition
+- lists FAT32 root entries in File Explorer and loads and overwrites the fixed
+  `NOTES.TXT` file from Text Editor
+- persists the selected file and each managed window's position, visibility,
+  z-order, and active state in `SETTINGS.CFG` and `DESKTOP.CFG`
 - initializes the bitmap physical-page allocator from conventional memory
 - allocates, writes, reads, and releases one physical page
 - emits deterministic boot, memory, and kernel-ready markers
@@ -34,20 +42,26 @@ the left button now focuses, raises, drags, closes, and reopens managed windows.
 The Start menu and taskbar buttons activate their matching windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no application process, persistent desktop filesystem, network stack,
-or browser yet.
+There is no separate application process, network stack, or browser yet.
+The current filesystem is a deliberately bounded FAT32 implementation: it
+mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
+fixed-length files. Creating, deleting, growing, renaming, or allocating files
+is not implemented.
 
-File Explorer currently shows an explicit no-mounted-disk state. Text Editor
-uses a 512-byte in-memory buffer, and Calculator accepts keyboard digits,
-`+ - * / =`, Backspace, and `C`. QEMU verifies editor input and the result of
-`50 - 8 = 42`; these are kernel-owned applications, not Ring 3 processes.
+File Explorer shows the mounted data disk's root entries. Text Editor edits the
+512-byte `NOTES.TXT` record and autosaves it through AHCI. Calculator accepts
+keyboard digits, `+ - * / =`, Backspace, and `C`. QEMU verifies editor input,
+the disk write, and the result of `50 - 8 = 42`; these remain kernel-owned
+applications, not Ring 3 processes.
 
 The freestanding libraries also contain compile-verified scheduler, interrupt,
 user-process, ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe
-building blocks. A fixed-capacity window-manager foundation also implements
+building blocks. AHCI, MBR partition discovery, FAT32, framebuffer, PS/2,
+desktop, and application code are executed by the current boot image. A
+fixed-capacity window-manager foundation also implements
 focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
-The boot image executes that window manager for its two current windows. The
-other listed subsystems are not all executed by this boot image.
+Scheduler, Ring 3, ELF64, NVMe, and several interrupt foundations remain
+compile-verified libraries and are not yet connected to this desktop boot path.
 
 Build and run the VM test from the repository root:
 
@@ -69,6 +83,13 @@ focused when entering serial-shell commands. For terminal-only automation:
   -Interactive -HeadlessInteractive
 ```
 
+Interactive mode attaches `build\os\SuraData.img` directly, so Text Editor and
+desktop-state changes survive the next run. Recreate a clean data disk with:
+
+```powershell
+.\tools\sura_os_data_disk.ps1 -Path .\build\os\SuraData.img -Force
+```
+
 Capture the actual QEMU framebuffer after the desktop marker:
 
 ```powershell
@@ -81,7 +102,18 @@ menu to `build\os\SuraOS-start-menu.ppm`. The capture tool uses QEMU QMP,
 focuses, drags, closes, and reopens System Information from the taskbar, opens
 Start, opens and exercises the three built-in apps, writes
 `build\os\SuraOS-apps.ppm`, activates Terminal, verifies the
-desktop/window/app/terminal markers, and then shuts the VM down normally.
+desktop/window/app/terminal/storage markers, and then shuts the VM down
+normally. The test normally works on a disposable data-disk copy. Preserve
+that modified copy for a second-boot persistence check with:
+
+```powershell
+.\tools\sura_os_screenshot.ps1 `
+  -Engine .\build\SuraLanguage_user.exe `
+  -DataDiskOutput .\build\os\SuraData-persistence-test.img
+```
+
+Use `-DataDisk <path>` to capture a previously saved disk, and
+`-SkipInputVerification` when only its restored desktop is needed.
 
 The shell supports `help`, `status`, `mem`, `about`, `clear`, and `shutdown`. Use
 `shutdown` to close QEMU normally. The non-interactive VM test sends `status`,

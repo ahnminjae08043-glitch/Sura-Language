@@ -1,0 +1,358 @@
+# Sura OS AHCI/FAT32 data-volume integration.
+#
+# The root image owns the fixed storage objects referenced here. Imported
+# freestanding modules share one namespace, so these helpers remain kernel
+# code while keeping device/filesystem logic separate from the desktop loop.
+
+import "../stdlib/freestanding/ahci.sura"
+import "../stdlib/freestanding/partition.sura"
+import "../stdlib/freestanding/fat32.sura"
+
+func os_storage_format_short_name(source: ptr, destination: ptr) do
+  if source == 0 or destination == 0 then return false
+  index: u64 is 0
+  while index < 13 do
+    mem.write8(ptr.add(destination, index), 0)
+    index += 1
+  end
+  output: u64 is 0
+  index is 0
+  while index < 8 do
+    value: u64 is mem.read8(ptr.add(source, index))
+    if value != 32 and output < 12 then
+      mem.write8(ptr.add(destination, output), value)
+      output += 1
+    end
+    index += 1
+  end
+  has_extension: u64 is 0
+  index is 8
+  while index < 11 do
+    if mem.read8(ptr.add(source, index)) != 32 then has_extension is 1
+    index += 1
+  end
+  if has_extension != 0 and output < 12 then
+    mem.write8(ptr.add(destination, output), 46)
+    output += 1
+    index is 8
+    while index < 11 do
+      value: u64 is mem.read8(ptr.add(source, index))
+      if value != 32 and output < 12 then
+        mem.write8(ptr.add(destination, output), value)
+        output += 1
+      end
+      index += 1
+    end
+  end
+  mem.write8(ptr.add(destination, output), 0)
+  return true
+end
+
+func os_storage_prepare_dma() do
+  global os_storage_status, os_storage_dma_data
+  dma: ptr[AhciDma] is os_storage_dma
+  if os_storage_dma_address == 0 then return false
+  dma.command_list is os_storage_dma_address
+  dma.command_list_physical is os_storage_dma_address
+  dma.received_fis is os_storage_dma_address + 1024
+  dma.received_fis_physical is os_storage_dma_address + 1024
+  dma.command_table is os_storage_dma_address + 1280
+  dma.command_table_physical is os_storage_dma_address + 1280
+  dma.command_table_bytes is 256
+  os_storage_dma_data is os_storage_dma_address + 4096
+  dma.data_virtual is os_storage_dma_data
+  dma.data_physical is os_storage_dma_data
+  dma.data_bytes is 65536
+  os_storage_status is 11
+  if dma.command_list == 0 or dma.received_fis == 0 or dma.command_table == 0 then return false
+  os_storage_status is 12
+  if dma.data_virtual == 0 or dma.command_table_bytes < 144 or dma.command_table_bytes > 65536 then return false
+  os_storage_status is 13
+  if dma.data_bytes < 512 or dma.data_bytes > 4194304 then return false
+  os_storage_status is 14
+  if not ptr.is_aligned(dma.command_list, 1024) then return false
+  os_storage_status is 15
+  if not ptr.is_aligned(dma.received_fis, 256) then return false
+  os_storage_status is 16
+  if not ptr.is_aligned(dma.command_table, 128) then return false
+  os_storage_status is 17
+  if not ptr.is_aligned(dma.data_virtual, 2) then return false
+  os_storage_status is 18
+  if (dma.command_list_physical & 1023) != 0 then return false
+  os_storage_status is 19
+  if (dma.received_fis_physical & 255) != 0 then return false
+  os_storage_status is 20
+  if (dma.command_table_physical & 127) != 0 then return false
+  os_storage_status is 21
+  if (dma.data_physical & 1) != 0 then return false
+  os_storage_status is 22
+  if not ahci_physical_range_valid(dma.command_list_physical, 1024, 1) then return false
+  os_storage_status is 23
+  if not ahci_physical_range_valid(dma.received_fis_physical, 256, 1) then return false
+  os_storage_status is 24
+  if not ahci_physical_range_valid(dma.command_table_physical, dma.command_table_bytes, 1) then return false
+  os_storage_status is 25
+  if not ahci_physical_range_valid(dma.data_physical, dma.data_bytes, 1) then return false
+  os_storage_status is 0
+  return true
+end
+
+func os_storage_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func os_storage_magic_equal(buffer: ptr, magic: ptr) do
+  if buffer == 0 or magic == 0 then return false
+  index: u64 is 0
+  while index < 8 do
+    if mem.read8(ptr.add(buffer, index)) != mem.read8(ptr.add(magic, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func os_storage_write_magic(buffer: ptr, magic: ptr) do
+  if buffer == 0 or magic == 0 then return false
+  index: u64 is 0
+  while index < 8 do
+    mem.write8(ptr.add(buffer, index), mem.read8(ptr.add(magic, index)))
+    index += 1
+  end
+  return true
+end
+
+func os_storage_save_settings() do
+  if os_storage_mounted == 0 then return false
+  entry: ptr[Fat32DirEntry] is os_storage_settings_entry
+  if entry.valid == 0 or entry.file_size != 512 then return false
+  buffer: ptr is os_storage_settings_buffer
+  if not os_storage_zero(buffer, 512) then return false
+  if not os_storage_write_magic(buffer, os_storage_settings_magic) then return false
+  mem.write64(ptr.add(buffer, 8), 1)
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  mem.write64(ptr.add(buffer, 16), files.selected)
+  # Reserved setting: 24-hour clock. The desktop currently always uses it.
+  mem.write64(ptr.add(buffer, 24), 1)
+  return fat32_overwrite_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data)
+end
+
+func os_storage_load_settings() do
+  entry: ptr[Fat32DirEntry] is os_storage_settings_entry
+  if not fat32_find_root_short(os_storage_volume, os_storage_settings_name, entry, os_storage_dma_data) then
+    return false
+  end
+  if entry.file_size != 512 then return false
+  buffer: ptr is os_storage_settings_buffer
+  if not fat32_read_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data) then return false
+  if not os_storage_magic_equal(buffer, os_storage_settings_magic) or mem.read64(ptr.add(buffer, 8)) != 1 then
+    return os_storage_save_settings()
+  end
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  selected: u64 is mem.read64(ptr.add(buffer, 16))
+  if selected >= files.entry_count then selected is 0
+  files.selected is selected
+  return true
+end
+
+func os_storage_save_desktop() do
+  if os_storage_mounted == 0 then return false
+  entry: ptr[Fat32DirEntry] is os_storage_desktop_entry
+  if entry.valid == 0 or entry.file_size != 512 then return false
+  buffer: ptr is os_storage_desktop_buffer
+  manager: ptr[WindowManager] is os_window_manager_state
+  if manager == 0 or not os_storage_zero(buffer, 512) then return false
+  if not os_storage_write_magic(buffer, os_storage_desktop_magic) then return false
+  mem.write64(ptr.add(buffer, 8), 1)
+  mem.write64(ptr.add(buffer, 16), manager.active_id)
+  mem.write64(ptr.add(buffer, 24), manager.next_z)
+
+  index: u64 is 0
+  while index < 5 do
+    id: u64 is index + 1
+    window: ptr[DesktopWindow] is window_manager_find(manager, id)
+    if window == 0 then return false
+    offset: u64 is 32 + index * 32
+    mem.write64(ptr.add(buffer, offset), id)
+    mem.write32(ptr.add(buffer, offset + 8), window.x)
+    mem.write32(ptr.add(buffer, offset + 12), window.y)
+    mem.write64(ptr.add(buffer, offset + 16), window.z_order)
+    mem.write64(ptr.add(buffer, offset + 24), window.visible)
+    index += 1
+  end
+  return fat32_overwrite_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data)
+end
+
+func os_storage_load_desktop() do
+  entry: ptr[Fat32DirEntry] is os_storage_desktop_entry
+  if not fat32_find_root_short(os_storage_volume, os_storage_desktop_name, entry, os_storage_dma_data) then
+    return false
+  end
+  if entry.file_size != 512 then return false
+  buffer: ptr is os_storage_desktop_buffer
+  if not fat32_read_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data) then return false
+  if not os_storage_magic_equal(buffer, os_storage_desktop_magic) or mem.read64(ptr.add(buffer, 8)) != 1 then
+    return os_storage_save_desktop()
+  end
+
+  manager: ptr[WindowManager] is os_window_manager_state
+  manager.count is 0
+  manager.active_id is 0
+  manager.dragging_id is 0
+  maximum_z: u64 is 0
+  index: u64 is 0
+  while index < 5 do
+    id: u64 is index + 1
+    offset: u64 is 32 + index * 32
+    if mem.read64(ptr.add(buffer, offset)) != id then return false
+    window: ptr[DesktopWindow] is window_manager_find(manager, id)
+    if window == 0 then return false
+    visible: u64 is mem.read64(ptr.add(buffer, offset + 24))
+    if visible > 1 then return false
+    window.x is mem.read32(ptr.add(buffer, offset + 8))
+    window.y is mem.read32(ptr.add(buffer, offset + 12))
+    window.z_order is mem.read64(ptr.add(buffer, offset + 16))
+    window.visible is visible
+    window.active is 0
+    if not window_manager_clamp(manager, window) then return false
+    if visible != 0 then manager.count += 1
+    if window.z_order > maximum_z then maximum_z is window.z_order
+    index += 1
+  end
+  manager.next_z is maximum_z + 1
+  if manager.next_z == 0 then manager.next_z is 1
+  saved_active: u64 is mem.read64(ptr.add(buffer, 16))
+  active: ptr[DesktopWindow] is window_manager_find(manager, saved_active)
+  if active != 0 and active.visible != 0 then
+    active.active is 1
+    manager.active_id is saved_active
+  else
+    if not window_manager_focus_top(manager) then return false
+  end
+  return true
+end
+
+func os_storage_load_root() do
+  global os_storage_entry_count
+  volume: ptr[Fat32Volume] is os_storage_volume
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  os_storage_entry_count is 0
+  while os_storage_entry_count < 6 do
+    entry: ptr[Fat32DirEntry] is ptr.index(os_storage_root_entries, os_storage_entry_count, sizeof(Fat32DirEntry))
+    display_name: ptr is ptr.add(os_storage_display_names, os_storage_entry_count * 13)
+    if not fat32_list_root_short(volume, os_storage_entry_count, entry, os_storage_short_name, os_storage_dma_data) then
+      break
+    end
+    if not os_storage_format_short_name(os_storage_short_name, display_name) then return false
+    os_storage_entry_count += 1
+  end
+  if os_storage_entry_count == 0 then return false
+  return file_explorer_init(files, os_storage_entry_count)
+end
+
+func os_storage_load_notes() do
+  volume: ptr[Fat32Volume] is os_storage_volume
+  entry: ptr[Fat32DirEntry] is os_storage_notes_entry
+  editor: ptr[TextEditorState] is os_text_editor_state
+  if not fat32_find_root_short(volume, os_storage_notes_name, entry, os_storage_dma_data) then return false
+  if entry.file_size != 512 or editor.buffer == 0 or editor.capacity != 512 then return false
+  if not fat32_read_file(volume, entry, editor.buffer, editor.capacity, os_storage_dma_data) then return false
+  length: u64 is 0
+  while length + 1 < editor.capacity and mem.read8(ptr.add(editor.buffer, length)) != 0 do
+    length += 1
+  end
+  mem.write8(ptr.add(editor.buffer, length), 0)
+  editor.length is length
+  editor.dirty is 0
+  return true
+end
+
+func os_storage_save_notes() do
+  global os_storage_write_reported
+  if os_storage_mounted == 0 then return false
+  editor: ptr[TextEditorState] is os_text_editor_state
+  if editor.dirty == 0 then return true
+  if not fat32_overwrite_file(os_storage_volume, os_storage_notes_entry, editor.buffer, 512, os_storage_dma_data) then
+    return false
+  end
+  editor.dirty is 0
+  if os_storage_write_reported == 0 then
+    if not os_serial_cstr_line(os_storage_write_marker) then return false
+    os_storage_write_reported is 1
+  end
+  return true
+end
+
+func os_storage_start() do
+  global os_storage_mounted, os_storage_port, os_storage_status, os_storage_mbr_signature, os_storage_mbr_type, os_storage_mbr_start, os_storage_sector_count, os_storage_direct_read_status, os_storage_read_callback
+  os_storage_mounted is 0
+  os_storage_port is 32
+  os_storage_status is 1
+  if not os_storage_prepare_dma() then return false
+
+  pci: ptr[PciDevice] is os_storage_pci_device
+  controller: ptr[AhciController] is os_storage_controller
+  context: ptr[AhciContext] is os_storage_context
+  device: ptr[BlockDevice] is os_storage_block_device
+  os_storage_status is 2
+  if not ahci_pci_find(pci) then return false
+  os_storage_status is 3
+  if not ahci_pci_enable(pci) then return false
+  abar: ptr is ahci_pci_bar_physical(pci)
+  os_storage_status is 4
+  if abar == 0 then return false
+  os_storage_status is 5
+  if not ahci_controller_attach(controller, abar) then return false
+  os_storage_status is 6
+  if not ahci_take_bios_ownership(controller, 1000000) then return false
+  os_storage_status is 7
+  if not ahci_mmio_write32(abar, 4, ahci_mmio_read32(abar, 4) | u64("0x80000000")) then return false
+
+  buffers: ptr[GptBuffers] is os_storage_gpt_buffers
+  buffers.sector is os_storage_dma_data
+  buffers.sector_capacity is 65536
+  buffers.entry is os_storage_gpt_entry_buffer
+  buffers.entry_capacity is 256
+
+  port: u64 is 1
+  os_storage_status is 100
+  if not ahci_port_active_sata(controller, port, os_storage_port_info) then return false
+  os_storage_status is 101
+  if not ahci_initialize_disk(device, controller, port, os_storage_dma, context, 1000000) then return false
+  os_storage_status is 102
+  os_storage_sector_count is device.sector_count
+  os_storage_read_callback is device.read_blocks
+  os_storage_direct_read_status is ahci_read_blocks(context, 0, 1, buffers.sector)
+  if os_storage_direct_read_status == 0 then
+    os_storage_mbr_signature is mem.read16(ptr.add(buffers.sector, 510))
+    os_storage_mbr_type is mem.read8(ptr.add(buffers.sector, 450))
+    os_storage_mbr_start is mem.read32(ptr.add(buffers.sector, 454))
+  end
+  partition_found: bool is mbr_find_type(device, 239, 0, os_storage_partition, buffers.sector)
+  if not partition_found then
+    partition_found is partition_find_efi_system(device, buffers, os_storage_gpt_header, os_storage_gpt_partition, os_storage_partition)
+  end
+  if not partition_found then return false
+  partition: ptr[DiskPartition] is os_storage_partition
+  os_storage_status is 103
+  if not fat32_mount(os_storage_volume, device, partition.start_lba, os_storage_dma_data) then return false
+  os_storage_status is 104
+  if not fat32_find_root_short(os_storage_volume, os_storage_marker_name, os_storage_probe_entry, os_storage_dma_data) then return false
+  os_storage_port is port
+  os_storage_mounted is 1
+  os_storage_status is 105
+  if not os_storage_load_root() then return false
+  os_storage_status is 106
+  if not os_storage_load_notes() then return false
+  os_storage_status is 107
+  if not os_storage_load_settings() then return false
+  os_storage_status is 108
+  if not os_storage_load_desktop() then return false
+  os_storage_status is 0
+  return true
+end

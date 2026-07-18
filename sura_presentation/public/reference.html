@@ -694,7 +694,7 @@ Usage:
   surapkg info &lt;name&gt; [--json] Show package metadata, benchmark evidence, and exported symbols
   surapkg restore [--json report.json]  Install manifest and transitive dependencies locally</code></pre></section>
 <section id='targets'><h2>JavaScript·WebAssembly 타깃</h2><div class='table-wrap'><table><thead><tr><th>타깃</th><th>2026-07-17 AST lowering 분류</th></tr></thead><tbody><tr><td>Native VM/JIT</td><td>register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline</td></tr><tr><td>JavaScript</td><td>43개 node 중 full 41, ignored 2, partial 0</td></tr><tr><td>WebAssembly</td><td>43개 node 중 full 27, partial 14, ignored 2</td></tr></tbody></table></div><p>AST JSON은 type annotation의 원래 표기를 source_name에 보존합니다. WASM에서 매개변수와 반환 타입을 모두 float 또는 double로 명시한 최상위 함수는 이 표기를 기준으로 기존 Sura Value ABI export와 함께 함수명__f64 동반 export를 생성합니다. 동반 export는 WebAssembly 호스트가 f64 매개변수와 f64 결과를 직접 사용하며, 원래 함수 이름의 export 계약은 바꾸지 않습니다.</p><p>JavaScript의 full 41·ignored 2는 43개 AST node의 lowering 분류입니다. JavaScript의 Python·FFI·plugin·async.cmd는 stub 또는 미지원 경로이며, autograd·media·nn·dataset·tokenizer 등 일부 module은 JavaScript runtime object 목록에 없습니다.</p><p>WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics 14개 node가 partial 상태입니다. 전체 audit status는 <code>INCOMPLETE</code>입니다.</p></section>
-<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse와 46x14 graphical terminal의 command history·scroll·clear를 실행합니다. 현재 그래픽 데스크톱과 입력은 실제 QEMU framebuffer와 emulated i8042에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·memory self-check와 COM1 shell의 status/mem/shutdown 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/present와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state; QEMU에서 editor 입력과 50-8=42 실행 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
+<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI와 FAT32 데이터 디스크를 실행합니다. File Explorer 루트 목록, NOTES.TXT 자동 저장, SETTINGS.CFG와 DESKTOP.CFG의 재부팅 복원까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·memory self-check와 COM1 shell의 status/mem/shutdown 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/full present/cursor damage copy와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state; QEMU에서 FAT32 목록·editor 저장·50-8=42 실행 검증</td></tr><tr><td>영속 데이터 디스크</td><td><code>ahci.sura</code>·<code>partition.sura</code>·<code>fat32.sura</code>로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
   vendor: u16
   command: u16
 end
@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 다섯 창, editor 입력, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window keyboard routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, persistent filesystem create/delete/save, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·framebuffer·bitmap font·text terminal·window manager·desktop shell·kernel-owned File Explorer/Text Editor/Calculator·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 다섯 창, editor 입력과 FAT32 자동 저장, 설정·창 상태 재부팅 복원, calculator 결과, Start·taskbar activation, HH:MM clock과 active-window keyboard routing까지 실행 검증합니다. 아직 없는 핵심 기능은 interrupt-driven input queue, resize/minimize/maximize와 Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, network/browser, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -6484,7 +6484,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       &quot;presentation&quot;: [
         &quot;caller-owned backbuffer&quot;,
-        &quot;64-bit copy presentation&quot;,
+        &quot;64-bit full-frame copy presentation&quot;,
+        &quot;clipped rectangle copy for software-cursor damage repair&quot;,
         &quot;sampled framebuffer hash&quot;
       ],
       &quot;executed_resolution&quot;: &quot;1280x800 in the current QEMU/EDK2 gate&quot;,
@@ -6548,7 +6549,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;desktop-bound clamping&quot;
       ],
       &quot;example&quot;: &quot;examples/os/window_manager_features.sura&quot;,
-      &quot;os_integration&quot;: &quot;Terminal and System Information windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, and active-terminal keyboard routing&quot;,
+      &quot;os_integration&quot;: &quot;Five kernel-owned application windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, active-window keyboard routing, and FAT32-backed desktop-state restore&quot;,
       &quot;verification&quot;: &quot;compile and EFI image verification plus QEMU PS/2 focus, drag, close, taskbar reopen, Start activation, serial-marker, and screenshot verification&quot;,
       &quot;limitations&quot;: [
         &quot;caller owns rendering and application contents&quot;,
@@ -6571,7 +6572,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;last action&quot;
       ],
       &quot;example&quot;: &quot;examples/os/desktop_shell_features.sura&quot;,
-      &quot;os_integration&quot;: &quot;Start and taskbar activation, close/reopen routing, Files placeholder message, and desktop shutdown dispatch&quot;,
+      &quot;os_integration&quot;: &quot;Start and taskbar activation, close/reopen routing, mounted Files window, and desktop shutdown dispatch&quot;,
       &quot;limitations&quot;: [
         &quot;fixed coordinates and launcher entries&quot;,
         &quot;caller performs rendering and window actions&quot;,
@@ -6583,14 +6584,15 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;applications&quot;: {
         &quot;file_explorer&quot;: [
           &quot;bounded entry count and selection&quot;,
-          &quot;executed OS displays explicit no-mounted-disk state&quot;
+          &quot;executed OS lists FAT32 root short names and persists the selected row&quot;
         ],
         &quot;text_editor&quot;: [
           &quot;caller-owned buffer&quot;,
           &quot;printable text&quot;,
           &quot;Enter&quot;,
           &quot;Backspace&quot;,
-          &quot;dirty state&quot;
+          &quot;dirty state&quot;,
+          &quot;executed OS loads and autosaves fixed-size NOTES.TXT&quot;
         ],
         &quot;calculator&quot;: [
           &quot;unsigned integer input&quot;,
@@ -6606,11 +6608,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       },
       &quot;example&quot;: &quot;examples/os/desktop_apps_features.sura&quot;,
       &quot;os_integration&quot;: &quot;registered windows 3..5, desktop/Start/taskbar launch and reopen, active-app keyboard routing&quot;,
-      &quot;executed_verification&quot;: &quot;QEMU opens all three apps, types SURA NOTES, evaluates 50 - 8 = 42, requires app/input/result markers, and captures build/os/SuraOS-apps.ppm&quot;,
+      &quot;executed_verification&quot;: &quot;QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 8 = 42, requires app/input/result/storage markers, and captures build/os/SuraOS-apps.ppm&quot;,
       &quot;limitations&quot;: [
         &quot;kernel-owned rather than Ring 3 processes&quot;,
-        &quot;File Explorer has no mounted disk yet&quot;,
-        &quot;Text Editor buffer is volatile&quot;,
+        &quot;File Explorer lists one root directory and does not navigate paths&quot;,
+        &quot;Text Editor overwrites one fixed 512-byte file&quot;,
         &quot;Calculator is unsigned integer only&quot;
       ]
     },
@@ -6973,8 +6975,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;bool public result does not preserve detailed callback status&quot;,
         &quot;first matching UEFI protocol only&quot;,
         &quot;UEFI adapter invalid after ExitBootServices&quot;,
-        &quot;block.sura itself does not drive native hardware&quot;,
-        &quot;compile and image verification only&quot;
+        &quot;the current OS executes the generic block ABI through AHCI; RAM and UEFI adapters remain feature-image verified&quot;
       ]
     },
     &quot;ahci_library&quot;: {
@@ -6999,10 +7000,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       &quot;library&quot;: &quot;stdlib/freestanding/ahci.sura&quot;,
       &quot;example&quot;: &quot;examples/os/ahci_features.sura&quot;,
+      &quot;executed_verification&quot;: &quot;The QEMU q35 OS path discovers ICH9 AHCI, identifies the second SATA disk, DMA-reads its MBR and FAT32 sectors, DMA-writes NOTES/SETTINGS/DESKTOP records, flushes, and remounts the modified image on a second boot&quot;,
       &quot;limitations&quot;: [
-        &quot;no executed AHCI command proof&quot;,
-        &quot;no interrupts or NCQ&quot;,
+        &quot;polling only; no interrupts or NCQ&quot;,
         &quot;one outstanding command&quot;,
+        &quot;one registered DMA scratch window&quot;,
         &quot;no ATAPI or port multiplier&quot;,
         &quot;no hot-plug, TRIM, COMRESET recovery, or power management&quot;,
         &quot;no IOMMU mapping&quot;
@@ -7059,14 +7061,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       &quot;library&quot;: &quot;stdlib/freestanding/fat32.sura&quot;,
       &quot;example&quot;: &quot;examples/os/fat32_features.sura&quot;,
+      &quot;executed_verification&quot;: &quot;The OS mounts a generated FAT32 data image, lists root short names, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image&quot;,
       &quot;limitations&quot;: [
         &quot;no cluster allocation/free&quot;,
         &quot;no create, resize, delete, or rename&quot;,
         &quot;no long file names&quot;,
         &quot;no subdirectory path parser&quot;,
         &quot;no FAT repair or FSInfo update&quot;,
-        &quot;no journaling or locking&quot;,
-        &quot;compile and image verification only&quot;
+        &quot;no journaling or locking&quot;
       ]
     },
     &quot;partition_libraries&quot;: {
@@ -7151,17 +7153,20 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;gate&quot;: &quot;tools/sura_os_vm.ps1&quot;,
       &quot;output&quot;: [
         &quot;build/os/SuraOS.efi&quot;,
-        &quot;build/os/SuraOS.img&quot;
+        &quot;build/os/SuraOS.img&quot;,
+        &quot;build/os/SuraData.img&quot;
       ],
       &quot;executed_path&quot;: [
         &quot;UEFI entry&quot;,
         &quot;GOP framebuffer discovery&quot;,
         &quot;64 MiB-bounded backbuffer allocation&quot;,
+        &quot;AHCI DMA allocation&quot;,
         &quot;COM1 initialization&quot;,
         &quot;memory-map acquisition&quot;,
         &quot;ExitBootServices&quot;,
         &quot;pixel/shape/icon/bitmap-text desktop rendering&quot;,
         &quot;double-buffer presentation&quot;,
+        &quot;cursor-only damage repair&quot;,
         &quot;five managed application windows&quot;,
         &quot;focus and z-order&quot;,
         &quot;title-bar drag&quot;,
@@ -7169,7 +7174,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;desktop-bound clamping&quot;,
         &quot;taskbar reopen&quot;,
         &quot;expanded Start menu&quot;,
-        &quot;File Explorer no-disk state&quot;,
+        &quot;ICH9 AHCI discovery and ATA IDENTIFY&quot;,
+        &quot;MBR type-0xEF partition lookup&quot;,
+        &quot;FAT32 mount&quot;,
+        &quot;root short-name listing&quot;,
+        &quot;NOTES.TXT load and fixed-size autosave&quot;,
+        &quot;SETTINGS.CFG selected-row persistence&quot;,
+        &quot;DESKTOP.CFG position/visibility/z-order/active-window persistence&quot;,
+        &quot;second-boot state restore&quot;,
         &quot;Text Editor SURA NOTES input&quot;,
         &quot;Calculator 50 - 8 = 42&quot;,
         &quot;CMOS RTC HH:MM taskbar clock&quot;,
@@ -7177,6 +7189,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK&quot;,
         &quot;SURA_OS_EDITOR_INPUT_OK&quot;,
         &quot;SURA_OS_CALCULATOR_RESULT_OK&quot;,
+        &quot;SURA_OS_STORAGE_READY&quot;,
+        &quot;SURA_OS_STORAGE_READ_OK&quot;,
+        &quot;SURA_OS_STORAGE_WRITE_OK&quot;,
+        &quot;SURA_OS_SETTINGS_READY&quot;,
+        &quot;SURA_OS_DESKTOP_STATE_READY&quot;,
         &quot;SURA_OS_WINDOW_READY&quot;,
         &quot;SURA_OS_WINDOW_FOCUS_OK&quot;,
         &quot;SURA_OS_WINDOW_DRAG_OK&quot;,
@@ -7215,11 +7232,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;execution_environment&quot;: &quot;QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes&quot;,
       &quot;limitations&quot;: [
         &quot;graphical desktop milestone, not a complete desktop OS&quot;,
-        &quot;polling PS/2 and COM1 input rather than interrupt-driven queues&quot;,
+        &quot;polling PS/2, AHCI, and COM1 rather than interrupt-driven queues&quot;,
         &quot;no resize, minimize, maximize, or Ring 3 application process windows&quot;,
         &quot;fixed kernel-owned Start/taskbar entries&quot;,
+        &quot;FAT32 mutation is limited to fixed-size existing-file overwrite&quot;,
         &quot;does not execute every compile-verified freestanding subsystem&quot;,
-        &quot;no persistent filesystem mutation, network, USB, audio, or browser&quot;
+        &quot;no network, USB, audio, or browser&quot;
       ]
     },
     &quot;acpi_madt&quot;: {
@@ -7307,7 +7325,9 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;tools/sura_qemu_boot_gate.ps1&quot;,
       &quot;tools/sura_os_vm.ps1&quot;,
       &quot;tools/sura_os_screenshot.ps1&quot;,
+      &quot;tools/sura_os_data_disk.ps1&quot;,
       &quot;os/sura_os.sura&quot;,
+      &quot;os/storage.sura&quot;,
       &quot;stdlib/freestanding/framebuffer.sura&quot;,
       &quot;stdlib/freestanding/font5x7.sura&quot;,
       &quot;stdlib/freestanding/text_terminal.sura&quot;,
@@ -13454,7 +13474,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       "presentation": [
         "caller-owned backbuffer",
-        "64-bit copy presentation",
+        "64-bit full-frame copy presentation",
+        "clipped rectangle copy for software-cursor damage repair",
         "sampled framebuffer hash"
       ],
       "executed_resolution": "1280x800 in the current QEMU/EDK2 gate",
@@ -13518,7 +13539,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "desktop-bound clamping"
       ],
       "example": "examples/os/window_manager_features.sura",
-      "os_integration": "Terminal and System Information windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, and active-terminal keyboard routing",
+      "os_integration": "Five kernel-owned application windows use the manager for focus, z-order, title-bar drag, close/reopen, bounds, Start/taskbar activation, active-window keyboard routing, and FAT32-backed desktop-state restore",
       "verification": "compile and EFI image verification plus QEMU PS/2 focus, drag, close, taskbar reopen, Start activation, serial-marker, and screenshot verification",
       "limitations": [
         "caller owns rendering and application contents",
@@ -13541,7 +13562,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "last action"
       ],
       "example": "examples/os/desktop_shell_features.sura",
-      "os_integration": "Start and taskbar activation, close/reopen routing, Files placeholder message, and desktop shutdown dispatch",
+      "os_integration": "Start and taskbar activation, close/reopen routing, mounted Files window, and desktop shutdown dispatch",
       "limitations": [
         "fixed coordinates and launcher entries",
         "caller performs rendering and window actions",
@@ -13553,14 +13574,15 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "applications": {
         "file_explorer": [
           "bounded entry count and selection",
-          "executed OS displays explicit no-mounted-disk state"
+          "executed OS lists FAT32 root short names and persists the selected row"
         ],
         "text_editor": [
           "caller-owned buffer",
           "printable text",
           "Enter",
           "Backspace",
-          "dirty state"
+          "dirty state",
+          "executed OS loads and autosaves fixed-size NOTES.TXT"
         ],
         "calculator": [
           "unsigned integer input",
@@ -13576,11 +13598,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       },
       "example": "examples/os/desktop_apps_features.sura",
       "os_integration": "registered windows 3..5, desktop/Start/taskbar launch and reopen, active-app keyboard routing",
-      "executed_verification": "QEMU opens all three apps, types SURA NOTES, evaluates 50 - 8 = 42, requires app/input/result markers, and captures build/os/SuraOS-apps.ppm",
+      "executed_verification": "QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 8 = 42, requires app/input/result/storage markers, and captures build/os/SuraOS-apps.ppm",
       "limitations": [
         "kernel-owned rather than Ring 3 processes",
-        "File Explorer has no mounted disk yet",
-        "Text Editor buffer is volatile",
+        "File Explorer lists one root directory and does not navigate paths",
+        "Text Editor overwrites one fixed 512-byte file",
         "Calculator is unsigned integer only"
       ]
     },
@@ -13943,8 +13965,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "bool public result does not preserve detailed callback status",
         "first matching UEFI protocol only",
         "UEFI adapter invalid after ExitBootServices",
-        "block.sura itself does not drive native hardware",
-        "compile and image verification only"
+        "the current OS executes the generic block ABI through AHCI; RAM and UEFI adapters remain feature-image verified"
       ]
     },
     "ahci_library": {
@@ -13969,10 +13990,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       "library": "stdlib/freestanding/ahci.sura",
       "example": "examples/os/ahci_features.sura",
+      "executed_verification": "The QEMU q35 OS path discovers ICH9 AHCI, identifies the second SATA disk, DMA-reads its MBR and FAT32 sectors, DMA-writes NOTES/SETTINGS/DESKTOP records, flushes, and remounts the modified image on a second boot",
       "limitations": [
-        "no executed AHCI command proof",
-        "no interrupts or NCQ",
+        "polling only; no interrupts or NCQ",
         "one outstanding command",
+        "one registered DMA scratch window",
         "no ATAPI or port multiplier",
         "no hot-plug, TRIM, COMRESET recovery, or power management",
         "no IOMMU mapping"
@@ -14029,14 +14051,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       ],
       "library": "stdlib/freestanding/fat32.sura",
       "example": "examples/os/fat32_features.sura",
+      "executed_verification": "The OS mounts a generated FAT32 data image, lists root short names, reads NOTES.TXT, overwrites and flushes NOTES/SETTINGS/DESKTOP fixed-size files, and remounts the preserved modified image",
       "limitations": [
         "no cluster allocation/free",
         "no create, resize, delete, or rename",
         "no long file names",
         "no subdirectory path parser",
         "no FAT repair or FSInfo update",
-        "no journaling or locking",
-        "compile and image verification only"
+        "no journaling or locking"
       ]
     },
     "partition_libraries": {
@@ -14121,17 +14143,20 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "gate": "tools/sura_os_vm.ps1",
       "output": [
         "build/os/SuraOS.efi",
-        "build/os/SuraOS.img"
+        "build/os/SuraOS.img",
+        "build/os/SuraData.img"
       ],
       "executed_path": [
         "UEFI entry",
         "GOP framebuffer discovery",
         "64 MiB-bounded backbuffer allocation",
+        "AHCI DMA allocation",
         "COM1 initialization",
         "memory-map acquisition",
         "ExitBootServices",
         "pixel/shape/icon/bitmap-text desktop rendering",
         "double-buffer presentation",
+        "cursor-only damage repair",
         "five managed application windows",
         "focus and z-order",
         "title-bar drag",
@@ -14139,7 +14164,14 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "desktop-bound clamping",
         "taskbar reopen",
         "expanded Start menu",
-        "File Explorer no-disk state",
+        "ICH9 AHCI discovery and ATA IDENTIFY",
+        "MBR type-0xEF partition lookup",
+        "FAT32 mount",
+        "root short-name listing",
+        "NOTES.TXT load and fixed-size autosave",
+        "SETTINGS.CFG selected-row persistence",
+        "DESKTOP.CFG position/visibility/z-order/active-window persistence",
+        "second-boot state restore",
         "Text Editor SURA NOTES input",
         "Calculator 50 - 8 = 42",
         "CMOS RTC HH:MM taskbar clock",
@@ -14147,6 +14179,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK",
         "SURA_OS_EDITOR_INPUT_OK",
         "SURA_OS_CALCULATOR_RESULT_OK",
+        "SURA_OS_STORAGE_READY",
+        "SURA_OS_STORAGE_READ_OK",
+        "SURA_OS_STORAGE_WRITE_OK",
+        "SURA_OS_SETTINGS_READY",
+        "SURA_OS_DESKTOP_STATE_READY",
         "SURA_OS_WINDOW_READY",
         "SURA_OS_WINDOW_FOCUS_OK",
         "SURA_OS_WINDOW_DRAG_OK",
@@ -14185,11 +14222,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "execution_environment": "QEMU x86-64 TCG with EDK2/OVMF; interactive COM1 uses an ephemeral 127.0.0.1-only TCP bridge; no host boot or firmware-variable changes",
       "limitations": [
         "graphical desktop milestone, not a complete desktop OS",
-        "polling PS/2 and COM1 input rather than interrupt-driven queues",
+        "polling PS/2, AHCI, and COM1 rather than interrupt-driven queues",
         "no resize, minimize, maximize, or Ring 3 application process windows",
         "fixed kernel-owned Start/taskbar entries",
+        "FAT32 mutation is limited to fixed-size existing-file overwrite",
         "does not execute every compile-verified freestanding subsystem",
-        "no persistent filesystem mutation, network, USB, audio, or browser"
+        "no network, USB, audio, or browser"
       ]
     },
     "acpi_madt": {
@@ -14277,7 +14315,9 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "tools/sura_qemu_boot_gate.ps1",
       "tools/sura_os_vm.ps1",
       "tools/sura_os_screenshot.ps1",
+      "tools/sura_os_data_disk.ps1",
       "os/sura_os.sura",
+      "os/storage.sura",
       "stdlib/freestanding/framebuffer.sura",
       "stdlib/freestanding/font5x7.sura",
       "stdlib/freestanding/text_terminal.sura",
