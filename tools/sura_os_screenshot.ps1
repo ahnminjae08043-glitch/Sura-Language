@@ -607,6 +607,7 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_EDITOR_INPUT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_CR3_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_DIRECTORY_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_STORAGE_WRITE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
@@ -639,6 +640,7 @@ try {
             "SURA_OS_EDITOR_INPUT_OK",
             "SURA_OS_CALCULATOR_RESULT_OK",
             "SURA_OS_CALCULATOR_RING3_OK",
+            "SURA_OS_CALCULATOR_CR3_OK",
             "SURA_OS_BROWSER_URL_OK",
             "SURA_OS_DIRECTORY_OK",
             "SURA_OS_STORAGE_WRITE_OK",

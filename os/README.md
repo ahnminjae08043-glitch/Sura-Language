@@ -62,9 +62,10 @@ The Start menu, desktop icons, and taskbar buttons activate their matching
 windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no scheduled application process with a separate CR3 yet. Calculator
-logic runs at CPL 3 in dedicated executable and stack pages, but it currently
-shares the kernel page-table root and returns synchronously after each input.
+There is no scheduled or preemptive application process yet. Calculator logic
+runs at CPL 3 in its own `ProcessAddressSpace` and CR3 with dedicated
+executable, mailbox, guarded-stack, and page-table pages, then returns
+synchronously after each input.
 The current filesystem is a deliberately bounded FAT32 implementation: it
 mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
 fixed-length files. Creating, deleting, growing, renaming, or allocating files
@@ -87,7 +88,9 @@ editor input, the disk write, and the result of `50 - 31 = 19`. File Explorer,
 Text Editor, and Text Browser logic remains in the kernel. Calculator rendering
 also remains in the kernel, while its state-transition function is copied to
 two read-only executable user pages and entered at CPL 3 for each key input.
-Only the mailbox and user stack are writable from CPL 3.
+Only the mailbox and user stack are writable from CPL 3. The process CR3
+shares kernel mappings with U/S cleared and reserves a different lower-half
+PML4 slot for the Calculator.
 
 The freestanding libraries also contain scheduler, interrupt, user-process,
 ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe building blocks.
@@ -100,10 +103,12 @@ The separate Ring 3 QEMU gate executes an IRETQ transition to CPL 3, checks the
 saved CS through a DPL-3 `INT 0x80`, returns with IRETQ, and re-enters the kernel
 through `SYSCALL`. The desktop boot path additionally executes Calculator state
 transitions at CPL 3 and requires `SURA_OS_CALCULATOR_RING3_READY` and
-`SURA_OS_CALCULATOR_RING3_OK`. This is a synchronous same-address-space step,
-not the compile-verified user-process scheduler: per-process CR3 switching,
-ELF64 execution, timer preemption, NVMe, and several interrupt foundations are
-not connected to the desktop boot path.
+`SURA_OS_CALCULATOR_RING3_OK`. `SURA_OS_CALCULATOR_CR3_OK` is emitted only
+after the interrupt handler observes the Calculator CR3 and switches back to
+the distinct kernel root. This synchronous address-space switch does not yet
+use the compile-verified `UserProcessScheduler`; ELF64 execution, timer
+preemption, NVMe, and several interrupt foundations are not connected to the
+desktop boot path.
 
 Run the executed Ring 3 and syscall gate:
 

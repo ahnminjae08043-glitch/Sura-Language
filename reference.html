@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·VirtIO-net·Ethernet/DHCP/ARP/IPv4/UDP/DNS/TCP/HTTP·framebuffer·bitmap font·text terminal·window manager·desktop shell·File Explorer·Text Editor·Calculator·Text Browser·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 여섯 개의 kernel-rendered 창, FAT32 하위 디렉터리와 자동 저장·재부팅 복원, DHCP 주소 임대, DNS와 HTTP 응답, 키보드로 입력한 HTTP 주소의 두 번째 탐색, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합, bounded mailbox를 사용한 Calculator CPL 3 상태 전이, Start·taskbar activation, HH:MM clock과 active-window routing까지 실행 검증합니다. Calculator 경로는 같은 page-table root에서 동기식으로 실행되므로 별도 CR3와 scheduler를 가진 독립 process는 아닙니다. 아직 없는 핵심 기능은 interrupt-driven input/network queue, resize/minimize/maximize와 scheduled Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, IPv6·완전한 TCP 재전송/혼잡 제어·TLS, 중첩 DOM box layout·이미지·폼·일반 CSS cascade/box/flex/grid·JavaScript 브라우저, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·VirtIO-net·Ethernet/DHCP/ARP/IPv4/UDP/DNS/TCP/HTTP·framebuffer·bitmap font·text terminal·window manager·desktop shell·File Explorer·Text Editor·Calculator·Text Browser·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 여섯 개의 kernel-rendered 창, FAT32 하위 디렉터리와 자동 저장·재부팅 복원, DHCP 주소 임대, DNS와 HTTP 응답, 키보드로 입력한 HTTP 주소의 두 번째 탐색, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합, 별도 ProcessAddressSpace CR3와 bounded mailbox를 사용한 Calculator CPL 3 상태 전이, Start·taskbar activation, HH:MM clock과 active-window routing까지 실행 검증합니다. Calculator는 독립 CR3를 사용하지만 현재 입력마다 동기식으로 진입·복귀하며 UserProcessScheduler나 timer preemption으로 관리되지는 않습니다. 아직 없는 핵심 기능은 interrupt-driven input/network queue, resize/minimize/maximize와 scheduled Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, IPv6·완전한 TCP 재전송/혼잡 제어·TLS, 중첩 DOM box layout·이미지·폼·일반 CSS cascade/box/flex/grid·JavaScript 브라우저, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -6610,10 +6610,10 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       },
       &quot;example&quot;: &quot;examples/os/desktop_apps_features.sura&quot;,
       &quot;os_integration&quot;: &quot;registered windows 3..5, desktop/Start/taskbar launch and reopen, active-app keyboard routing; Calculator rendering remains in ring 0 while its state-transition function runs at CPL 3 through a bounded one-page mailbox&quot;,
-      &quot;executed_verification&quot;: &quot;QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, requires app/input/result/storage and SURA_OS_CALCULATOR_RING3_READY/OK markers, and captures build/os/SuraOS-apps.ppm&quot;,
+      &quot;executed_verification&quot;: &quot;QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies a distinct Calculator CR3 with SURA_OS_CALCULATOR_CR3_OK, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm&quot;,
       &quot;limitations&quot;: [
         &quot;File Explorer, Text Editor, and all window rendering remain kernel-owned&quot;,
-        &quot;Calculator uses the kernel page-table root and synchronous CPL-3 entry rather than a separate CR3 or scheduled process&quot;,
+        &quot;Calculator has a separate ProcessAddressSpace and CR3 but uses synchronous entry/return rather than UserProcessScheduler or timer preemption&quot;,
         &quot;File Explorer supports bounded short-name directory traversal only&quot;,
         &quot;Text Editor overwrites one fixed 512-byte file&quot;,
         &quot;Calculator is unsigned integer only&quot;
@@ -6825,10 +6825,18 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;SYSCALL kernel-stack entry&quot;,
         &quot;ring-0 debug exit&quot;
       ],
+      &quot;desktop_process_gate&quot;: [
+        &quot;Calculator uses a distinct ProcessAddressSpace CR3&quot;,
+        &quot;shared kernel PML4 entries have U/S cleared&quot;,
+        &quot;process-owned W^X code&quot;,
+        &quot;writable/NX mailbox&quot;,
+        &quot;guarded writable/NX user stack&quot;,
+        &quot;SURA_OS_CALCULATOR_CR3_OK after handler observes process root and restores kernel root&quot;
+      ],
       &quot;limitations&quot;: [
         &quot;entry primitive does not automatically select an address space or validate syscall pointers&quot;,
-        &quot;executed gate is one fixed test context, not a scheduled desktop application process&quot;,
-        &quot;no executed per-process CR3 switch or ELF application&quot;,
+        &quot;standalone executed gate is one fixed test context, not a scheduled desktop application process&quot;,
+        &quot;desktop Calculator executes CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler&quot;,
         &quot;generic interrupt wrapper is not an NMI/MCE paranoid-entry implementation&quot;,
         &quot;no KPTI or comprehensive speculative-entry hardening&quot;,
         &quot;no FPU/SIMD save&quot;
@@ -6921,7 +6929,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;no fast-syscall blocking/resume conversion&quot;,
         &quot;no FPU/SIMD or debug-state save&quot;,
         &quot;no signals, priorities, SMP queues, PCID, KPTI, remote TLB shootdown, or NMI-safe entry&quot;,
-        &quot;compile and machine-code verification only; the executed Ring 3 gate does not run this scheduler or switch per-process CR3&quot;
+        &quot;scheduler remains compile-verified only; the desktop Calculator switches a ProcessAddressSpace CR3 synchronously without running UserProcessScheduler&quot;
       ]
     },
     &quot;pci_configuration_library&quot;: {
@@ -7285,9 +7293,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;CSS body/div/h1/a colors with background/background-color/color and #RGB/#RRGGBB&quot;,
         &quot;TEXT BROWSER framebuffer rendering&quot;,
         &quot;Text Editor SURA NOTES input&quot;,
-        &quot;Calculator CPL-3 state transition for 50 - 31 = 19 through a bounded mailbox&quot;,
+        &quot;Calculator process-owned W^X code, writable/NX mailbox, guarded stack, and distinct ProcessAddressSpace CR3&quot;,
+        &quot;Calculator CPL-3 state transition for 50 - 31 = 19&quot;,
         &quot;SURA_OS_CALCULATOR_RING3_READY&quot;,
         &quot;SURA_OS_CALCULATOR_RING3_OK&quot;,
+        &quot;SURA_OS_CALCULATOR_CR3_OK&quot;,
         &quot;CMOS RTC HH:MM taskbar clock&quot;,
         &quot;active-window keyboard routing&quot;,
         &quot;SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK&quot;,
@@ -7351,7 +7361,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;graphical desktop milestone, not a complete desktop OS&quot;,
         &quot;polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues&quot;,
         &quot;no resize, minimize, maximize, or scheduled Ring 3 application process windows&quot;,
-        &quot;Calculator CPL-3 logic still shares the kernel page-table root and returns synchronously; no per-process CR3&quot;,
+        &quot;Calculator has a separate CR3 but still returns synchronously and is not managed by UserProcessScheduler&quot;,
         &quot;fixed kernel-owned Start/taskbar entries&quot;,
         &quot;FAT32 mutation is limited to fixed-size existing-file overwrite&quot;,
         &quot;DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not&quot;,
@@ -7448,8 +7458,10 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;tools/sura_os_screenshot.ps1&quot;,
       &quot;tools/sura_os_data_disk.ps1&quot;,
       &quot;os/sura_os.sura&quot;,
+      &quot;os/user_calculator.sura&quot;,
       &quot;os/storage.sura&quot;,
       &quot;os/network.sura&quot;,
+      &quot;stdlib/freestanding/process_memory.sura&quot;,
       &quot;stdlib/freestanding/virtio_net.sura&quot;,
       &quot;stdlib/freestanding/net.sura&quot;,
       &quot;stdlib/freestanding/framebuffer.sura&quot;,
@@ -13725,10 +13737,10 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       },
       "example": "examples/os/desktop_apps_features.sura",
       "os_integration": "registered windows 3..5, desktop/Start/taskbar launch and reopen, active-app keyboard routing; Calculator rendering remains in ring 0 while its state-transition function runs at CPL 3 through a bounded one-page mailbox",
-      "executed_verification": "QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, requires app/input/result/storage and SURA_OS_CALCULATOR_RING3_READY/OK markers, and captures build/os/SuraOS-apps.ppm",
+      "executed_verification": "QEMU mounts the FAT32 data disk, opens all three apps, appends SURA NOTES and flushes it through AHCI, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies a distinct Calculator CR3 with SURA_OS_CALCULATOR_CR3_OK, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm",
       "limitations": [
         "File Explorer, Text Editor, and all window rendering remain kernel-owned",
-        "Calculator uses the kernel page-table root and synchronous CPL-3 entry rather than a separate CR3 or scheduled process",
+        "Calculator has a separate ProcessAddressSpace and CR3 but uses synchronous entry/return rather than UserProcessScheduler or timer preemption",
         "File Explorer supports bounded short-name directory traversal only",
         "Text Editor overwrites one fixed 512-byte file",
         "Calculator is unsigned integer only"
@@ -13940,10 +13952,18 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "SYSCALL kernel-stack entry",
         "ring-0 debug exit"
       ],
+      "desktop_process_gate": [
+        "Calculator uses a distinct ProcessAddressSpace CR3",
+        "shared kernel PML4 entries have U/S cleared",
+        "process-owned W^X code",
+        "writable/NX mailbox",
+        "guarded writable/NX user stack",
+        "SURA_OS_CALCULATOR_CR3_OK after handler observes process root and restores kernel root"
+      ],
       "limitations": [
         "entry primitive does not automatically select an address space or validate syscall pointers",
-        "executed gate is one fixed test context, not a scheduled desktop application process",
-        "no executed per-process CR3 switch or ELF application",
+        "standalone executed gate is one fixed test context, not a scheduled desktop application process",
+        "desktop Calculator executes CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler",
         "generic interrupt wrapper is not an NMI/MCE paranoid-entry implementation",
         "no KPTI or comprehensive speculative-entry hardening",
         "no FPU/SIMD save"
@@ -14036,7 +14056,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "no fast-syscall blocking/resume conversion",
         "no FPU/SIMD or debug-state save",
         "no signals, priorities, SMP queues, PCID, KPTI, remote TLB shootdown, or NMI-safe entry",
-        "compile and machine-code verification only; the executed Ring 3 gate does not run this scheduler or switch per-process CR3"
+        "scheduler remains compile-verified only; the desktop Calculator switches a ProcessAddressSpace CR3 synchronously without running UserProcessScheduler"
       ]
     },
     "pci_configuration_library": {
@@ -14400,9 +14420,11 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "CSS body/div/h1/a colors with background/background-color/color and #RGB/#RRGGBB",
         "TEXT BROWSER framebuffer rendering",
         "Text Editor SURA NOTES input",
-        "Calculator CPL-3 state transition for 50 - 31 = 19 through a bounded mailbox",
+        "Calculator process-owned W^X code, writable/NX mailbox, guarded stack, and distinct ProcessAddressSpace CR3",
+        "Calculator CPL-3 state transition for 50 - 31 = 19",
         "SURA_OS_CALCULATOR_RING3_READY",
         "SURA_OS_CALCULATOR_RING3_OK",
+        "SURA_OS_CALCULATOR_CR3_OK",
         "CMOS RTC HH:MM taskbar clock",
         "active-window keyboard routing",
         "SURA_OS_FILES/EDITOR/CALCULATOR_APP_OK",
@@ -14466,7 +14488,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "graphical desktop milestone, not a complete desktop OS",
         "polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues",
         "no resize, minimize, maximize, or scheduled Ring 3 application process windows",
-        "Calculator CPL-3 logic still shares the kernel page-table root and returns synchronously; no per-process CR3",
+        "Calculator has a separate CR3 but still returns synchronously and is not managed by UserProcessScheduler",
         "fixed kernel-owned Start/taskbar entries",
         "FAT32 mutation is limited to fixed-size existing-file overwrite",
         "DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not",
@@ -14563,8 +14585,10 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "tools/sura_os_screenshot.ps1",
       "tools/sura_os_data_disk.ps1",
       "os/sura_os.sura",
+      "os/user_calculator.sura",
       "os/storage.sura",
       "os/network.sura",
+      "stdlib/freestanding/process_memory.sura",
       "stdlib/freestanding/virtio_net.sura",
       "stdlib/freestanding/net.sura",
       "stdlib/freestanding/framebuffer.sura",

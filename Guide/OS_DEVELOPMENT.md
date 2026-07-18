@@ -24,16 +24,16 @@ and HTTP, and displays a bounded HTML layout from an entered `http://` URL.
 The browser distinguishes heading, paragraph, and link runs and applies a
 small CSS color subset (`body`, `div`, `h1`, `a`; `background`,
 `background-color`, and `color`; `#RGB` and `#RRGGBB`).
-Calculator state transitions execute at CPL 3 through dedicated user code,
-stack, and mailbox pages, while its window rendering and input routing remain
-in the kernel. There is no scheduled desktop application process with a
-separate CR3, general writable filesystem, IPv6, complete TCP reliability,
-TLS/HTTPS, or general HTML/CSS/JavaScript browser. Most files in `examples/os`
-remain compiler feature tests and do not form a complete user environment or
-device-driver stack. The dedicated `ring3_qemu_gate.sura` separately verifies
-one CPL-3 entry and both software-interrupt and fast-syscall paths in QEMU.
-Test generated images in a virtual machine before considering physical
-hardware.
+Calculator state transitions execute at CPL 3 in a distinct
+`ProcessAddressSpace` and CR3 through dedicated user code, stack, and mailbox
+pages, while its window rendering and input routing remain in the kernel.
+There is no scheduled or preemptive desktop application process, general
+writable filesystem, IPv6, complete TCP reliability, TLS/HTTPS, or general
+HTML/CSS/JavaScript browser. Most files in `examples/os` remain compiler
+feature tests and do not form a complete user environment or device-driver
+stack. The dedicated `ring3_qemu_gate.sura` separately verifies one CPL-3
+entry and both software-interrupt and fast-syscall paths in QEMU. Test
+generated images in a virtual machine before considering physical hardware.
 
 ## Build
 
@@ -120,12 +120,14 @@ second loopback-only QMP connection, types a browser address, verifies a second
 live HTTP navigation, and writes `build/os/SuraOS-desktop.ppm` and
 `build/os/SuraOS-browser.ppm`. It also opens Calculator, sends
 `50 - 31 = 19`, requires `SURA_OS_CALCULATOR_RING3_READY` and
-`SURA_OS_CALCULATOR_RING3_OK`, and then continues the remaining desktop
-regression. The Calculator user code is read-only/executable, its mailbox and
-stack are writable/NX, and kernel pages remain supervisor-only at the leaf
-level. It still uses the current kernel page-table root and synchronous
-entry/return; this is not a per-process CR3 or scheduled user process. Neither
-gate modifies host firmware variables or boot entries.
+`SURA_OS_CALCULATOR_RING3_OK` plus `SURA_OS_CALCULATOR_CR3_OK`, and then
+continues the remaining desktop regression. The Calculator user code is
+read-only/executable, its mailbox and guarded stack are writable/NX, and
+shared kernel PML4 entries remain supervisor-only. The interrupt handler
+checks that the active root is the Calculator root before restoring the
+distinct kernel root. Entry/return remains synchronous and is not yet a
+scheduled process. Neither gate modifies host firmware variables or boot
+entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -407,7 +409,7 @@ The desktop shell is still kernel-owned fixed UI. It has no application
 process protocol, minimize state, resize handles, notifications, settings
 store, or user-configurable launcher entries.
 
-## Kernel-owned desktop applications
+## Desktop applications and Ring 3 Calculator
 
 `stdlib/freestanding/desktop_apps.sura` supplies allocation-free state models
 for the first built-in applications:
@@ -434,11 +436,15 @@ model in `os/user_calculator.sura` is copied to dedicated read-only executable
 user pages. Each key dispatch enters selector 35 at CPL 3, reads and updates a
 single bounded mailbox page, invokes DPL-3 vector `0x80`, and returns to a clean
 kernel continuation stack. The QEMU screenshot gate requires
-`SURA_OS_CALCULATOR_RING3_READY` and `SURA_OS_CALCULATOR_RING3_OK`.
+`SURA_OS_CALCULATOR_RING3_READY`, `SURA_OS_CALCULATOR_RING3_OK`, and
+`SURA_OS_CALCULATOR_CR3_OK`. The worker has a separate physical PML4 root:
+existing kernel mappings are copied into supervisor-only PML4 entries, while a
+different lower-half slot contains process-owned W^X code, a writable/NX
+mailbox, and a four-page writable/NX stack preceded by an unmapped guard page.
 File Explorer, Text Editor, Browser, Terminal, and System Information still run
-inside the kernel. The Calculator worker shares the kernel CR3 and is not an
-ELF-loaded, scheduled `UserProcess`; separate process address spaces and timer
-preemption are not connected to the desktop yet.
+inside the kernel. The Calculator worker is not an ELF-loaded, scheduled
+`UserProcess`; timer preemption and the `UserProcessScheduler` are not
+connected to the desktop yet.
 
 ## Kernel intrinsics
 
@@ -1095,10 +1101,11 @@ remain the required checked data-transfer primitives. Both
 tests. `examples/os/ring3_qemu_gate.sura` separately executes one checked
 CPL-3 entry, DPL-3 software interrupt return, and fast SYSCALL kernel entry in
 QEMU. The desktop Calculator uses the same checked IRETQ and interrupt
-foundation for a fixed mailbox worker. Neither path executes
-`UserProcessScheduler`, switches to a per-process CR3, loads an ELF application,
-or preempts with a timer; those full user-process lifecycle paths remain
-compile-verified only.
+foundation for a fixed mailbox worker and switches to a distinct
+`ProcessAddressSpace` CR3 before IRETQ. It returns to the kernel root from the
+DPL-3 interrupt handler. Neither path executes `UserProcessScheduler`, loads
+an ELF application, or preempts with a timer; those remaining lifecycle paths
+remain compile-verified only.
 
 ## PCI configuration-space foundation
 

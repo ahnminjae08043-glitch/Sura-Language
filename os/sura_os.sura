@@ -6,6 +6,7 @@
 
 import "../stdlib/freestanding/serial.sura"
 import "../stdlib/freestanding/physical_memory.sura"
+import "../stdlib/freestanding/process_memory.sura"
 import "../stdlib/freestanding/text_terminal.sura"
 import "../stdlib/freestanding/window_manager.sura"
 import "../stdlib/freestanding/desktop_shell.sura"
@@ -66,18 +67,17 @@ os_text_editor_state is static.struct(TextEditorState)
 os_text_editor_buffer is static.zero(512, 16)
 os_calculator_state is static.struct(CalculatorState)
 os_calculator_text is static.zero(16, 16)
-os_calculator_user_code is static.zero(8192, 4096)
-os_calculator_user_mailbox_page is static.zero(4096, 4096)
-os_calculator_user_stack is static.zero(16384, 4096)
+os_calculator_process_space is static.struct(ProcessAddressSpace)
+os_calculator_process_buffers is static.struct(ProcessSpaceBuffers)
+os_calculator_process_owned_pages is static.zero(256, 16)
+os_calculator_process_mappings is static.struct(ProcessMapping, 16)
+os_calculator_process_stack is static.struct(ProcessStack)
+os_calculator_mailbox_transfer is static.struct(UserCalculatorMailbox)
 os_calculator_kernel_stack is static.zero(16384, 16)
 os_calculator_fault_stack is static.zero(16384, 16)
 os_calculator_resume_stack is static.zero(16384, 16)
 os_calculator_ring3_idt is static.zero(4096, 16)
 os_calculator_ring3_tss is static.zero(104, 16)
-os_calculator_ring3_split_pt0 is static.zero(4096, 4096)
-os_calculator_ring3_split_pt1 is static.zero(4096, 4096)
-os_calculator_ring3_split_pt2 is static.zero(4096, 4096)
-os_calculator_ring3_split_pt3 is static.zero(4096, 4096)
 os_calculator_ring3_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
 os_rtc_time_state is static.struct(RtcTime)
 os_clock_text is static.zero(8, 16)
@@ -161,6 +161,7 @@ os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
 os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
 os_calculator_result_marker is static.utf8("SURA_OS_CALCULATOR_RESULT_OK")
 os_calculator_ring3_ready_marker is static.utf8("SURA_OS_CALCULATOR_RING3_READY")
+os_calculator_cr3_marker is static.utf8("SURA_OS_CALCULATOR_CR3_OK")
 os_calculator_ring3_result_marker is static.utf8("SURA_OS_CALCULATOR_RING3_OK")
 os_calculator_ring3_fault_marker is static.utf8("SURA_OS_CALCULATOR_RING3_FAULT")
 os_storage_ready_marker is static.utf8("SURA_OS_STORAGE_READY")
@@ -293,8 +294,12 @@ os_editor_input_reported: u64 is 0
 os_calculator_result_reported: u64 is 0
 os_calculator_ring3_ready: u64 is 0
 os_calculator_ring3_sequence: u64 is 0
-os_calculator_ring3_split_count: u64 is 0
 os_calculator_ring3_result_reported: u64 is 0
+os_calculator_cr3_reported: u64 is 0
+os_kernel_page_root: u64 is 0
+os_calculator_user_code_address: u64 is u64("0x0000008000400000")
+os_calculator_user_mailbox_address: u64 is u64("0x0000008000600000")
+os_calculator_user_stack_top: u64 is u64("0x0000008000800000")
 os_terminal_scroll_reported: u64 is 0
 os_clock_second: u64 is 60
 os_storage_mounted: u64 is 0
@@ -1234,89 +1239,6 @@ func os_shell_accept(value: u64) do
   return true
 end
 
-func os_calculator_ring3_ensure_4k(address: u64) do
-  global os_calculator_ring3_split_count
-  root: ptr is paging.root()
-  if root == 0 or not paging.is_canonical48(address) then return false
-
-  pml4_entry: u64 is paging.read(root, paging.pml4_index(address))
-  if not paging.present(pml4_entry) or paging.large(pml4_entry) then return false
-  pdpt: ptr is paging.entry_address(pml4_entry)
-  pdpt_entry: u64 is paging.read(pdpt, paging.pdpt_index(address))
-  if not paging.present(pdpt_entry) or paging.large(pdpt_entry) then return false
-  pd: ptr is paging.entry_address(pdpt_entry)
-  pd_index: u64 is paging.pd_index(address)
-  pd_entry: u64 is paging.read(pd, pd_index)
-  if not paging.present(pd_entry) then return false
-
-  if paging.large(pd_entry) then
-    split_pt: ptr is 0
-    if os_calculator_ring3_split_count == 0 then
-      split_pt is os_calculator_ring3_split_pt0
-    elif os_calculator_ring3_split_count == 1 then
-      split_pt is os_calculator_ring3_split_pt1
-    elif os_calculator_ring3_split_count == 2 then
-      split_pt is os_calculator_ring3_split_pt2
-    elif os_calculator_ring3_split_count == 3 then
-      split_pt is os_calculator_ring3_split_pt3
-    else
-      return false
-    end
-
-    physical_base: u64 is pd_entry & u64("0x000fffffffe00000")
-    leaf_flags: u64 is paging.entry_flags(pd_entry) & ~128
-    index: u64 is 0
-    while index < 512 do
-      paging.write(split_pt, index, paging.entry(physical_base + index * 4096, leaf_flags))
-      index += 1
-    end
-    table_flags: u64 is (leaf_flags & 31) | 1
-    paging.write(pd, pd_index, paging.entry(split_pt, table_flags))
-    paging.flush()
-    os_calculator_ring3_split_count += 1
-  end
-  return true
-end
-
-func os_calculator_ring3_allow_page(address: u64, writable: bool, executable: bool) do
-  if not os_calculator_ring3_ensure_4k(address) then return false
-  root: ptr is paging.root()
-
-  pml4_index: u64 is paging.pml4_index(address)
-  pml4_entry: u64 is paging.read(root, pml4_index)
-  paging.write(root, pml4_index, pml4_entry | 6)
-
-  pdpt: ptr is paging.entry_address(pml4_entry)
-  pdpt_index: u64 is paging.pdpt_index(address)
-  pdpt_entry: u64 is paging.read(pdpt, pdpt_index)
-  paging.write(pdpt, pdpt_index, pdpt_entry | 6)
-
-  pd: ptr is paging.entry_address(pdpt_entry)
-  pd_index: u64 is paging.pd_index(address)
-  pd_entry: u64 is paging.read(pd, pd_index)
-  if not paging.present(pd_entry) or paging.large(pd_entry) then return false
-  paging.write(pd, pd_index, pd_entry | 6)
-
-  pt: ptr is paging.entry_address(pd_entry)
-  pt_index: u64 is paging.pt_index(address)
-  pt_entry: u64 is paging.read(pt, pt_index)
-  if not paging.present(pt_entry) then return false
-  user_entry: u64 is pt_entry | 4
-  if writable then
-    user_entry is user_entry | 2
-  else
-    user_entry is user_entry & ~2
-  end
-  if executable then
-    user_entry is user_entry & ~u64("0x8000000000000000")
-  else
-    user_entry is user_entry | u64("0x8000000000000000")
-  end
-  paging.write(pt, pt_index, user_entry)
-  paging.invalidate(address)
-  return true
-end
-
 func os_calculator_ring3_invalid(frame: ptr[OsUserInterruptFrame]) interrupt do
   os_serial_cstr_line(os_calculator_ring3_fault_marker)
   os_serial_u64(6)
@@ -1357,13 +1279,21 @@ func os_calculator_ring3_page_fault(frame: ptr[OsUserInterruptFrame]) interrupt_
 end
 
 func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt do
+  global os_calculator_cr3_reported
   if frame == 0 or frame.cs != 35 or (frame.cs & 3) != 3 then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(43)
     return
   end
 
-  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+  space: ptr[ProcessAddressSpace] is os_calculator_process_space
+  if space.root == 0 or space.root == os_kernel_page_root or paging.root() != space.root then
+    os_serial_cstr_line(os_calculator_ring3_fault_marker)
+    os_vm_exit(50)
+    return
+  end
+
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_address
   if mailbox.status != 1 or mailbox.request_sequence == 0 or mailbox.response_sequence != mailbox.request_sequence then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(44)
@@ -1379,6 +1309,17 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   calculator.has_result is mailbox.has_result
   calculator.error is mailbox.error
 
+  paging.activate(os_kernel_page_root)
+  if paging.root() != os_kernel_page_root then
+    os_serial_cstr_line(os_calculator_ring3_fault_marker)
+    os_vm_exit(51)
+    return
+  end
+  if os_calculator_cr3_reported == 0 then
+    if not os_serial_cstr_line(os_calculator_cr3_marker) then os_vm_exit(52)
+    os_calculator_cr3_reported is 1
+  end
+
   # Return to a clean kernel continuation instead of exposing the interrupted
   # kernel call stack to user mode. The interrupt epilogue sees the rewritten
   # ring-0 selector and therefore keeps the kernel GS base active.
@@ -1392,20 +1333,15 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
 end
 
 func os_calculator_ring3_start() do
-  global os_calculator_ring3_ready, os_calculator_ring3_split_count
+  global os_calculator_ring3_ready, os_kernel_page_root
   if os_calculator_ring3_ready != 0 then return true
 
-  # Copy the self-contained Sura function into its own page. All branches are
-  # internal and position-relative; the function has no global references.
-  index: u64 is 0
+  # The copied function has only internal relative branches and no global
+  # references, so it can execute from process-owned code pages.
   source: ptr is addr_of(user_calculator_program)
   source_end: ptr is addr_of(user_calculator_program_end)
   if source_end <= source or source_end - source > 8192 then return false
   code_size: u64 is source_end - source
-  while index < code_size do
-    mem.write8(ptr.add(os_calculator_user_code, index), mem.read8(ptr.add(source, index)))
-    index += 1
-  end
 
   cpu.disable_interrupts()
   io.out8(33, 255)
@@ -1430,24 +1366,68 @@ func os_calculator_ring3_start() do
   percpu.set_base(0)
   percpu.set_kernel_base(0)
 
-  os_calculator_ring3_split_count is 0
-  protected_cr0: u64 is cpu.read_cr0()
-  cpu.write_cr0(protected_cr0 & ~65536)
-  mapped: bool is os_calculator_ring3_allow_page(os_calculator_user_code, false, true)
-  if mapped and code_size > 4096 then mapped is os_calculator_ring3_allow_page(ptr.add(os_calculator_user_code, 4096), false, true)
-  if mapped then mapped is os_calculator_ring3_allow_page(os_calculator_user_mailbox_page, true, false)
-  stack_offset: u64 is 0
-  while mapped and stack_offset < 16384 do
-    mapped is os_calculator_ring3_allow_page(ptr.add(os_calculator_user_stack, stack_offset), true, false)
-    stack_offset += 4096
-  end
-  cpu.write_cr0(protected_cr0)
-  if not mapped then return false
+  os_kernel_page_root is paging.root()
+  if os_kernel_page_root == 0 or not ptr.is_aligned(os_kernel_page_root, 4096) then return false
+  if not process_enable_nx() then return false
 
-  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+  buffers: ptr[ProcessSpaceBuffers] is os_calculator_process_buffers
+  buffers.owned_pages is os_calculator_process_owned_pages
+  buffers.owned_capacity is 32
+  buffers.mappings is os_calculator_process_mappings
+  buffers.mapping_capacity is 16
+
+  space: ptr[ProcessAddressSpace] is os_calculator_process_space
+  if not process_space_init(space, os_allocator_state, os_kernel_page_root, buffers) then return false
+  if space.root == 0 or space.root == os_kernel_page_root then return false
+
+  # Share every existing lower-half kernel PML4 slot except the slot reserved
+  # for this process. Clearing U/S on each shared entry keeps all kernel and
+  # device mappings supervisor-only while the process CR3 is active.
+  user_pml4_index: u64 is paging.pml4_index(os_calculator_user_code_address)
+  if user_pml4_index == 0 or user_pml4_index >= 256 then return false
+  if paging.pml4_index(os_calculator_user_mailbox_address) != user_pml4_index then return false
+  if paging.pml4_index(os_calculator_user_stack_top - 1) != user_pml4_index then return false
+  index: u64 is 0
+  while index < 256 do
+    if index != user_pml4_index then
+      entry: u64 is paging.read(os_kernel_page_root, index)
+      if paging.present(entry) then entry is entry & ~4
+      paging.write(space.root, index, entry)
+    end
+    index += 1
+  end
+
+  if not process_space_map_page(space, os_calculator_user_code_address, true, false) then return false
+  if code_size > 4096 then
+    if not process_space_map_page(space, os_calculator_user_code_address + 4096, true, false) then return false
+  end
+  if not process_copy_to_user(space, os_calculator_user_code_address, source, code_size) then return false
+  if not process_space_protect_page(space, os_calculator_user_code_address, false, true) then return false
+  if code_size > 4096 then
+    if not process_space_protect_page(space, os_calculator_user_code_address + 4096, false, true) then return false
+  end
+
+  if not process_space_map_page(space, os_calculator_user_mailbox_address, true, false) then return false
+  stack: ptr[ProcessStack] is os_calculator_process_stack
+  if not process_space_map_stack(space, os_calculator_user_stack_top, 4, 1, stack) then return false
+
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_mailbox_transfer
+  mailbox.left is 0
+  mailbox.right is 0
+  mailbox.operation is 0
+  mailbox.entering_right is 0
+  mailbox.result is 0
+  mailbox.has_result is 0
+  mailbox.error is 0
   mailbox.request_sequence is 0
   mailbox.response_sequence is 0
+  mailbox.input is 0
   mailbox.status is 0
+  if not process_copy_to_user(space, os_calculator_user_mailbox_address, mailbox, sizeof(UserCalculatorMailbox)) then return false
+  if not process_user_access_valid(space, os_calculator_user_code_address, code_size, false) then return false
+  if not process_user_access_valid(space, os_calculator_user_mailbox_address, sizeof(UserCalculatorMailbox), true) then return false
+  if not process_user_access_valid(space, stack.initial_rsp, 8, true) then return false
+
   os_calculator_ring3_ready is 1
   return os_serial_cstr_line(os_calculator_ring3_ready_marker)
 end
@@ -1456,7 +1436,7 @@ func os_calculator_ring3_dispatch(value: u64) do
   global os_calculator_ring3_sequence
   if os_calculator_ring3_ready == 0 then return false
   calculator: ptr[CalculatorState] is os_calculator_state
-  mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_page
+  mailbox: ptr[UserCalculatorMailbox] is os_calculator_mailbox_transfer
 
   mailbox.left is calculator.left
   mailbox.right is calculator.right
@@ -1472,7 +1452,12 @@ func os_calculator_ring3_dispatch(value: u64) do
   mailbox.input is value
   mailbox.status is 0
 
-  entered: bool is user.enter(os_calculator_user_code, ptr.add(os_calculator_user_stack, 16376), os_calculator_user_mailbox_page, 35, 27)
+  space: ptr[ProcessAddressSpace] is os_calculator_process_space
+  if not process_copy_to_user(space, os_calculator_user_mailbox_address, mailbox, sizeof(UserCalculatorMailbox)) then return false
+  if not process_space_activate(space) then return false
+  stack: ptr[ProcessStack] is os_calculator_process_stack
+  entered: bool is user.enter(os_calculator_user_code_address, stack.initial_rsp, os_calculator_user_mailbox_address, 35, 27)
+  paging.activate(os_kernel_page_root)
   return false
 end
 
