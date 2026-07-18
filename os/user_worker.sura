@@ -1,0 +1,228 @@
+# Reusable synchronous Ring-3 worker host for the Sura OS desktop.
+#
+# A worker owns a distinct ProcessAddressSpace, position-independent code
+# pages, a bounded mailbox, and a guarded user stack. Kernel mappings are
+# shared only through supervisor PML4 entries. Device access, rendering, and
+# scheduling policy remain the kernel's responsibility.
+
+import "../stdlib/freestanding/process_memory.sura"
+
+struct OsUserWorkerConfig do
+  code_address: u64
+  mailbox_address: u64
+  mailbox_bytes: u64
+  stack_top: u64
+  stack_pages: u64
+  guard_pages: u64
+  max_code_bytes: u64
+end
+
+struct OsUserWorker do
+  space: ptr[ProcessAddressSpace]
+  stack: ptr[ProcessStack]
+  kernel_root: ptr
+  code_address: u64
+  code_size: u64
+  mailbox_address: u64
+  mailbox_bytes: u64
+  initialized: u64
+end
+
+struct OsUserWorkerInit do
+  space: ptr[ProcessAddressSpace]
+  buffers: ptr[ProcessSpaceBuffers]
+  stack: ptr[ProcessStack]
+  allocator: ptr[PhysicalAllocator]
+  kernel_root: ptr
+  config: ptr[OsUserWorkerConfig]
+  source: ptr
+  source_end: ptr
+end
+
+func os_user_worker_clear(worker: ptr[OsUserWorker]) do
+  if worker == 0 then return false
+  worker.space is 0
+  worker.stack is 0
+  worker.kernel_root is 0
+  worker.code_address is 0
+  worker.code_size is 0
+  worker.mailbox_address is 0
+  worker.mailbox_bytes is 0
+  worker.initialized is 0
+  return true
+end
+
+func os_user_worker_abort(worker: ptr[OsUserWorker]) do
+  if worker == 0 then return false
+  space: ptr[ProcessAddressSpace] is worker.space
+  if space != 0 and space.initialized != 0 then
+    if paging.root() == space.root and worker.kernel_root != 0 then
+      paging.activate(worker.kernel_root)
+    end
+    if paging.root() != space.root then process_space_destroy(space)
+  end
+  return os_user_worker_clear(worker)
+end
+
+func os_user_worker_mapping_permissions(space: ptr[ProcessAddressSpace], address: u64, writable: bool, executable: bool) do
+  mapping: ptr[ProcessMapping] is process_find_mapping(space, address & ~4095)
+  if mapping == 0 then return false
+  flags: u64 is mapping.flags
+  if (flags & 5) != 5 then return false
+  if writable and (flags & 2) == 0 then return false
+  if not writable and (flags & 2) != 0 then return false
+  if executable and (flags & process_nx_flag()) != 0 then return false
+  if not executable and (flags & process_nx_flag()) == 0 then return false
+  return true
+end
+
+func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]) do
+  if worker == 0 or setup == 0 then return false
+  space: ptr[ProcessAddressSpace] is setup.space
+  buffers: ptr[ProcessSpaceBuffers] is setup.buffers
+  stack: ptr[ProcessStack] is setup.stack
+  allocator: ptr[PhysicalAllocator] is setup.allocator
+  kernel_root: ptr is setup.kernel_root
+  config: ptr[OsUserWorkerConfig] is setup.config
+  source: ptr is setup.source
+  source_end: ptr is setup.source_end
+  if space == 0 or buffers == 0 or stack == 0 then return false
+  if allocator == 0 or kernel_root == 0 or config == 0 then return false
+  if worker.initialized != 0 or space.initialized != 0 then return false
+  if source == 0 or source_end <= source then return false
+  if config.max_code_bytes == 0 or source_end - source > config.max_code_bytes then return false
+  if config.mailbox_bytes == 0 or config.mailbox_bytes > 4096 then return false
+  if (config.code_address & 4095) != 0 or (config.mailbox_address & 4095) != 0 then return false
+  if (config.stack_top & 4095) != 0 or config.stack_pages == 0 then return false
+  if not process_enable_nx() then return false
+
+  code_size: u64 is source_end - source
+  code_span: u64 is ptr.align_up(code_size, 4096)
+  if not process_user_range_valid(config.code_address, code_span) then return false
+  if not process_user_range_valid(config.mailbox_address, config.mailbox_bytes) then return false
+
+  user_pml4_index: u64 is paging.pml4_index(config.code_address)
+  if user_pml4_index == 0 or user_pml4_index >= 256 then return false
+  if paging.pml4_index(config.code_address + code_span - 1) != user_pml4_index then return false
+  if paging.pml4_index(config.mailbox_address + config.mailbox_bytes - 1) != user_pml4_index then return false
+  if paging.pml4_index(config.stack_top - 1) != user_pml4_index then return false
+
+  if not os_user_worker_clear(worker) then return false
+  worker.space is space
+  worker.stack is stack
+  worker.kernel_root is kernel_root
+  worker.code_address is config.code_address
+  worker.code_size is code_size
+  worker.mailbox_address is config.mailbox_address
+  worker.mailbox_bytes is config.mailbox_bytes
+
+  if not process_space_init(space, allocator, kernel_root, buffers) then
+    os_user_worker_clear(worker)
+    return false
+  end
+  if space.root == 0 or space.root == kernel_root then
+    os_user_worker_abort(worker)
+    return false
+  end
+
+  # The process uses one lower-half PML4 slot for user pages. All other
+  # existing kernel slots remain supervisor-only while its CR3 is active.
+  index: u64 is 0
+  while index < 256 do
+    if index != user_pml4_index then
+      entry: u64 is paging.read(kernel_root, index)
+      if paging.present(entry) then entry is entry & ~4
+      paging.write(space.root, index, entry)
+    end
+    index += 1
+  end
+
+  page: u64 is config.code_address
+  while page < config.code_address + code_span do
+    if not process_space_map_page(space, page, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    page += 4096
+  end
+  if not process_copy_to_user(space, config.code_address, source, code_size) then
+    os_user_worker_abort(worker)
+    return false
+  end
+  page is config.code_address
+  while page < config.code_address + code_span do
+    if not process_space_protect_page(space, page, false, true) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    if not os_user_worker_mapping_permissions(space, page, false, true) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    page += 4096
+  end
+
+  page is config.mailbox_address
+  mailbox_span: u64 is ptr.align_up(config.mailbox_bytes, 4096)
+  while page < config.mailbox_address + mailbox_span do
+    if not process_space_map_page(space, page, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    if not os_user_worker_mapping_permissions(space, page, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    page += 4096
+  end
+
+  if not process_space_map_stack(space, config.stack_top, config.stack_pages, config.guard_pages, stack) then
+    os_user_worker_abort(worker)
+    return false
+  end
+  page is stack.stack_base
+  while page < stack.stack_top do
+    if not os_user_worker_mapping_permissions(space, page, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    page += 4096
+  end
+  if config.guard_pages != 0 and process_find_mapping(space, stack.guard_base) != 0 then
+    os_user_worker_abort(worker)
+    return false
+  end
+
+  if not process_user_access_valid(space, config.code_address, code_size, false) then
+    os_user_worker_abort(worker)
+    return false
+  end
+  if not process_user_access_valid(space, config.mailbox_address, config.mailbox_bytes, true) then
+    os_user_worker_abort(worker)
+    return false
+  end
+  if not process_user_access_valid(space, stack.initial_rsp, 8, true) then
+    os_user_worker_abort(worker)
+    return false
+  end
+
+  worker.initialized is 1
+  return true
+end
+
+func os_user_worker_copy_to_mailbox(worker: ptr[OsUserWorker], source: ptr, byte_count: u64) do
+  if worker == 0 or worker.initialized == 0 or source == 0 then return false
+  if byte_count == 0 or byte_count > worker.mailbox_bytes then return false
+  return process_copy_to_user(worker.space, worker.mailbox_address, source, byte_count)
+end
+
+func os_user_worker_copy_from_mailbox(worker: ptr[OsUserWorker], destination: ptr, byte_count: u64) do
+  if worker == 0 or worker.initialized == 0 or destination == 0 then return false
+  if byte_count == 0 or byte_count > worker.mailbox_bytes then return false
+  return process_copy_from_user(worker.space, destination, worker.mailbox_address, byte_count)
+end
+
+func os_user_worker_activate(worker: ptr[OsUserWorker]) do
+  if worker == 0 or worker.initialized == 0 then return false
+  return process_space_activate(worker.space)
+end

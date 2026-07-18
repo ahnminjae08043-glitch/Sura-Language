@@ -24,9 +24,10 @@ and HTTP, and displays a bounded HTML layout from an entered `http://` URL.
 The browser distinguishes heading, paragraph, and link runs and applies a
 small CSS color subset (`body`, `div`, `h1`, `a`; `background`,
 `background-color`, and `color`; `#RGB` and `#RRGGBB`).
-Calculator state transitions execute at CPL 3 in a distinct
-`ProcessAddressSpace` and CR3 through dedicated user code, stack, and mailbox
-pages, while its window rendering and input routing remain in the kernel.
+Text Editor and Calculator state transitions execute at CPL 3 in distinct
+`ProcessAddressSpace` roots through dedicated user code, stack, and mailbox
+pages, while window rendering, input routing, and file persistence remain in
+the kernel.
 There is no scheduled or preemptive desktop application process, general
 writable filesystem, IPv6, complete TCP reliability, TLS/HTTPS, or general
 HTML/CSS/JavaScript browser. Most files in `examples/os` remain compiler
@@ -118,16 +119,16 @@ post-self-check shell must answer `status` and `mem`, accept `shutdown`, emit
 listener is not bound to an external interface. The screenshot gate uses a
 second loopback-only QMP connection, types a browser address, verifies a second
 live HTTP navigation, and writes `build/os/SuraOS-desktop.ppm` and
-`build/os/SuraOS-browser.ppm`. It also opens Calculator, sends
+`build/os/SuraOS-browser.ppm`. It also edits Text Editor, opens Calculator, sends
 `50 - 31 = 19`, requires `SURA_OS_CALCULATOR_RING3_READY` and
-`SURA_OS_CALCULATOR_RING3_OK` plus `SURA_OS_CALCULATOR_CR3_OK`, and then
-continues the remaining desktop regression. The Calculator user code is
-read-only/executable, its mailbox and guarded stack are writable/NX, and
-shared kernel PML4 entries remain supervisor-only. The interrupt handler
-checks that the active root is the Calculator root before restoring the
-distinct kernel root. Entry/return remains synchronous and is not yet a
-scheduled process. Neither gate modifies host firmware variables or boot
-entries.
+`SURA_OS_CALCULATOR_RING3_OK` plus `SURA_OS_CALCULATOR_CR3_OK`, and requires
+the corresponding `SURA_OS_EDITOR_RING3_READY`, `RING3_OK`, and `CR3_OK`
+markers before continuing the remaining desktop regression. Each worker's
+user code is read-only/executable, mailbox and guarded stack are writable/NX,
+and shared kernel PML4 entries remain supervisor-only. The interrupt handler
+checks the active worker root before restoring the distinct kernel root.
+Entry/return remains synchronous and is not yet a scheduled process. Neither
+gate modifies host firmware variables or boot entries.
 
 The entry function is selected in this order: `efi_main`, `kernel_main`,
 `main`. If none exists, top-level statements become the EFI entry body.
@@ -430,20 +431,22 @@ calculator. The gate requires `SURA_OS_FILES_APP_OK`,
 `SURA_OS_CALCULATOR_RESULT_OK`, then captures `build/os/SuraOS-apps.ppm`.
 
 Text Editor loads and autosaves the fixed 512-byte `NOTES.TXT` record. File
-creation, deletion, rename, growth, and long names are not implemented. The
-Calculator UI and input routing remain in the kernel, but its arithmetic state
-model in `os/user_calculator.sura` is copied to dedicated read-only executable
-user pages. Each key dispatch enters selector 35 at CPL 3, reads and updates a
-single bounded mailbox page, invokes DPL-3 vector `0x80`, and returns to a clean
-kernel continuation stack. The QEMU screenshot gate requires
-`SURA_OS_CALCULATOR_RING3_READY`, `SURA_OS_CALCULATOR_RING3_OK`, and
-`SURA_OS_CALCULATOR_CR3_OK`. The worker has a separate physical PML4 root:
+creation, deletion, rename, growth, and long names are not implemented. Text
+Editor and Calculator UI and input routing remain in the kernel, but their
+state models in `os/user_text_editor.sura` and `os/user_calculator.sura` are
+copied to dedicated read-only executable user pages. Each key dispatch enters
+selector 35 at CPL 3, reads and updates one bounded mailbox, invokes DPL-3
+vector `0x80`, and returns to a clean kernel continuation stack. Only after
+Text Editor returns does ring 0 autosave NOTES.TXT.
+
+Both workers use `os/user_worker.sura` and have separate physical PML4 roots:
 existing kernel mappings are copied into supervisor-only PML4 entries, while a
 different lower-half slot contains process-owned W^X code, a writable/NX
 mailbox, and a four-page writable/NX stack preceded by an unmapped guard page.
-File Explorer, Text Editor, Browser, Terminal, and System Information still run
-inside the kernel. The Calculator worker is not an ELF-loaded, scheduled
-`UserProcess`; timer preemption and the `UserProcessScheduler` are not
+The QEMU gate requires Calculator and Editor `RING3_READY`, `RING3_OK`, and
+`CR3_OK` markers. File Explorer, Browser, Terminal, and System Information
+still run inside the kernel. The workers are not ELF-loaded, scheduled
+`UserProcess` instances; timer preemption and `UserProcessScheduler` are not
 connected to the desktop yet.
 
 ## Kernel intrinsics
@@ -1100,12 +1103,12 @@ remain the required checked data-transfer primitives. Both
 `examples/os/user_process_features.sura` are compile and machine-code feature
 tests. `examples/os/ring3_qemu_gate.sura` separately executes one checked
 CPL-3 entry, DPL-3 software interrupt return, and fast SYSCALL kernel entry in
-QEMU. The desktop Calculator uses the same checked IRETQ and interrupt
-foundation for a fixed mailbox worker and switches to a distinct
-`ProcessAddressSpace` CR3 before IRETQ. It returns to the kernel root from the
-DPL-3 interrupt handler. Neither path executes `UserProcessScheduler`, loads
-an ELF application, or preempts with a timer; those remaining lifecycle paths
-remain compile-verified only.
+QEMU. The desktop Text Editor and Calculator use the same checked IRETQ and
+interrupt foundation for fixed mailbox workers and switch to distinct
+`ProcessAddressSpace` roots before IRETQ. They return to the kernel root from
+the DPL-3 interrupt handler. Neither path executes `UserProcessScheduler`,
+loads an ELF application, or preempts with a timer; those remaining lifecycle
+paths remain compile-verified only.
 
 ## PCI configuration-space foundation
 

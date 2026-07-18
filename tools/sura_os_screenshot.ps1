@@ -303,6 +303,7 @@ try {
              -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
              -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK") -or
              -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_READY") -or
+             -not $serialText.ToString().Contains("SURA_OS_EDITOR_RING3_READY") -or
             (-not $SkipInputVerification -and
              (-not $serialText.ToString().Contains("SURA_OS_PS2_READY") -or
               -not $serialText.ToString().Contains("Sura OS shell ready"))))) {
@@ -332,7 +333,8 @@ try {
         -not $serialText.ToString().Contains("SURA_OS_HTTP_OK") -or
         -not $serialText.ToString().Contains("SURA_OS_BROWSER_APP_OK") -or
         -not $serialText.ToString().Contains("SURA_OS_BROWSER_CSS_OK") -or
-        -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_READY")) {
+        -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_READY") -or
+        -not $serialText.ToString().Contains("SURA_OS_EDITOR_RING3_READY")) {
         throw "Sura OS storage, persisted desktop state, and VirtIO network were not ready before capture"
     }
 
@@ -608,6 +610,8 @@ try {
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RESULT_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_RING3_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_CALCULATOR_CR3_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_EDITOR_RING3_OK") -or
+                -not $serialText.ToString().Contains("SURA_OS_EDITOR_CR3_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_DIRECTORY_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_STORAGE_WRITE_OK") -or
                 -not $serialText.ToString().Contains("SURA_OS_TERMINAL_SCROLL_OK") -or
@@ -641,6 +645,8 @@ try {
             "SURA_OS_CALCULATOR_RESULT_OK",
             "SURA_OS_CALCULATOR_RING3_OK",
             "SURA_OS_CALCULATOR_CR3_OK",
+            "SURA_OS_EDITOR_RING3_OK",
+            "SURA_OS_EDITOR_CR3_OK",
             "SURA_OS_BROWSER_URL_OK",
             "SURA_OS_DIRECTORY_OK",
             "SURA_OS_STORAGE_WRITE_OK",

@@ -1,0 +1,57 @@
+# Ring-3 text editor state transition used by the Sura OS desktop.
+#
+# Bytes 0..63 contain this fixed header and bytes 64..575 contain the bounded
+# text buffer. Rendering, FAT32 persistence, and input routing stay in ring 0.
+
+struct UserTextEditorMailbox do
+  length: u64
+  capacity: u64
+  dirty: u64
+  request_sequence: u64
+  response_sequence: u64
+  input: u64
+  status: u64
+  error: u64
+end
+
+func user_text_editor_program(mailbox_address: u64) do
+  mailbox: ptr[UserTextEditorMailbox] is mailbox_address
+  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    mailbox.status is 1
+    mailbox.error is 0
+    value: u64 is mailbox.input
+    buffer: ptr is ptr.add(mailbox_address, 64)
+
+    if mailbox.capacity < 2 or mailbox.capacity > 512 or mailbox.length >= mailbox.capacity or value > 255 then
+      mailbox.error is 1
+    elif value == 8 or value == 127 then
+      if mailbox.length > 0 then
+        mailbox.length -= 1
+        mem.write8(ptr.add(buffer, mailbox.length), 0)
+        mailbox.dirty is 1
+      end
+    elif value == 13 then
+      mailbox.error is 0
+    elif value == 10 or value >= 32 and value <= 126 then
+      if mailbox.length + 1 >= mailbox.capacity then
+        mailbox.error is 2
+      else
+        mem.write8(ptr.add(buffer, mailbox.length), value)
+        mailbox.length += 1
+        mem.write8(ptr.add(buffer, mailbox.length), 0)
+        mailbox.dirty is 1
+      end
+    end
+
+    mailbox.response_sequence is mailbox.request_sequence
+  end
+
+  completed: bool is interrupt.invoke(128)
+  while true do
+    cpu.pause()
+  end
+end
+
+func user_text_editor_program_end() do
+  return true
+end

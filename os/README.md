@@ -25,8 +25,8 @@ experimental freestanding x86-64 target.
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
 - runs kernel-rendered File Explorer, Text Editor, Calculator, and Text Browser
-  windows; Calculator state transitions execute at CPL 3 through a bounded
-  one-page mailbox
+  windows; Text Editor and Calculator state transitions execute at CPL 3
+  through bounded mailboxes
 - initializes QEMU's ICH9 AHCI controller after `ExitBootServices`, identifies
   the second SATA disk, reads its MBR, and mounts its FAT32 partition
 - lists FAT32 root entries, enters the generated `DOCS` subdirectory, shows
@@ -62,9 +62,9 @@ The Start menu, desktop icons, and taskbar buttons activate their matching
 windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no scheduled or preemptive application process yet. Calculator logic
-runs at CPL 3 in its own `ProcessAddressSpace` and CR3 with dedicated
-executable, mailbox, guarded-stack, and page-table pages, then returns
+There is no scheduled or preemptive application process yet. Text Editor and
+Calculator logic run at CPL 3 in separate `ProcessAddressSpace` roots with
+dedicated executable, mailbox, guarded-stack, and page-table pages, then return
 synchronously after each input.
 The current filesystem is a deliberately bounded FAT32 implementation: it
 mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
@@ -85,12 +85,13 @@ The default image includes `DOCS/README.TXT`. Text Editor edits the 512-byte
 `NOTES.TXT` record and autosaves it through AHCI. Calculator accepts keyboard
 digits, `+ - * / =`, Backspace, and `C`. QEMU verifies directory traversal,
 editor input, the disk write, and the result of `50 - 31 = 19`. File Explorer,
-Text Editor, and Text Browser logic remains in the kernel. Calculator rendering
-also remains in the kernel, while its state-transition function is copied to
-two read-only executable user pages and entered at CPL 3 for each key input.
-Only the mailbox and user stack are writable from CPL 3. The process CR3
-shares kernel mappings with U/S cleared and reserves a different lower-half
-PML4 slot for the Calculator.
+and Text Browser logic remains in the kernel. Text Editor and Calculator
+rendering also remains in the kernel, while each state-transition function is
+copied to process-owned read-only executable pages and entered at CPL 3 for
+each key input. Only each worker's mailbox and guarded stack are writable from
+CPL 3. Each process CR3 shares kernel mappings with U/S cleared and reserves a
+different lower-half PML4 slot for user pages. FAT32 autosave runs only after
+the Text Editor worker has returned to the kernel root.
 
 The freestanding libraries also contain scheduler, interrupt, user-process,
 ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe building blocks.
@@ -102,13 +103,14 @@ focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
 The separate Ring 3 QEMU gate executes an IRETQ transition to CPL 3, checks the
 saved CS through a DPL-3 `INT 0x80`, returns with IRETQ, and re-enters the kernel
 through `SYSCALL`. The desktop boot path additionally executes Calculator state
-transitions at CPL 3 and requires `SURA_OS_CALCULATOR_RING3_READY` and
-`SURA_OS_CALCULATOR_RING3_OK`. `SURA_OS_CALCULATOR_CR3_OK` is emitted only
-after the interrupt handler observes the Calculator CR3 and switches back to
-the distinct kernel root. This synchronous address-space switch does not yet
-use the compile-verified `UserProcessScheduler`; ELF64 execution, timer
-preemption, NVMe, and several interrupt foundations are not connected to the
-desktop boot path.
+and Text Editor state transitions at CPL 3. `SURA_OS_CALCULATOR_CR3_OK` and
+`SURA_OS_EDITOR_CR3_OK` are emitted only after the interrupt handler observes
+the matching worker CR3 and switches back to the distinct kernel root.
+`SURA_OS_CALCULATOR_RING3_OK` and `SURA_OS_EDITOR_RING3_OK` prove completed
+mailbox round trips. These synchronous address-space switches do not yet use
+the compile-verified `UserProcessScheduler`; ELF64 execution, timer preemption,
+NVMe, and several interrupt foundations are not connected to the desktop boot
+path.
 
 Run the executed Ring 3 and syscall gate:
 
