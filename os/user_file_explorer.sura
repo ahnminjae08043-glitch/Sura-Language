@@ -1,0 +1,44 @@
+# Ring-3 File Explorer selection transition used by the Sura OS desktop.
+#
+# Directory enumeration, FAT32 traversal, persistence, and rendering remain in
+# ring 0. The worker validates and applies one bounded selection request.
+
+struct UserFileExplorerMailbox do
+  entry_count: u64
+  selected: u64
+  requested_index: u64
+  request_sequence: u64
+  response_sequence: u64
+  action: u64
+  status: u64
+  error: u64
+end
+
+func user_file_explorer_program(mailbox_address: u64) do
+  mailbox: ptr[UserFileExplorerMailbox] is mailbox_address
+  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    mailbox.status is 1
+    mailbox.action is 0
+    mailbox.error is 0
+
+    if mailbox.entry_count == 0 or mailbox.entry_count > 32 then
+      mailbox.error is 1
+    elif mailbox.selected >= mailbox.entry_count or mailbox.requested_index >= mailbox.entry_count then
+      mailbox.error is 2
+    else
+      mailbox.selected is mailbox.requested_index
+      mailbox.action is 1
+    end
+
+    mailbox.response_sequence is mailbox.request_sequence
+  end
+
+  completed: bool is interrupt.invoke(128)
+  while true do
+    cpu.pause()
+  end
+end
+
+func user_file_explorer_program_end() do
+  return true
+end

@@ -18,6 +18,8 @@ import "storage.sura"
 import "network.sura"
 import "user_calculator.sura"
 import "user_text_editor.sura"
+import "user_file_explorer.sura"
+import "user_terminal.sura"
 
 struct OsUserInterruptFrame packed do
   r15: u64
@@ -60,10 +62,28 @@ os_ps2_keyboard_state is static.struct(Ps2KeyboardState)
 os_ps2_mouse_state is static.struct(Ps2MouseState)
 os_terminal_state is static.struct(TextTerminal)
 os_terminal_cells is static.zero(2300, 16)
+os_terminal_worker is static.struct(OsUserWorker)
+os_terminal_worker_config is static.struct(OsUserWorkerConfig)
+os_terminal_worker_init is static.struct(OsUserWorkerInit)
+os_terminal_process_space is static.struct(ProcessAddressSpace)
+os_terminal_process_buffers is static.struct(ProcessSpaceBuffers)
+os_terminal_process_owned_pages is static.zero(256, 16)
+os_terminal_process_mappings is static.struct(ProcessMapping, 16)
+os_terminal_process_stack is static.struct(ProcessStack)
+os_terminal_mailbox_transfer is static.zero(160, 16)
 os_window_manager_state is static.struct(WindowManager)
 os_window_storage is static.struct(DesktopWindow, 6)
 os_desktop_shell_state is static.struct(DesktopShell)
 os_file_explorer_state is static.struct(FileExplorerState)
+os_files_worker is static.struct(OsUserWorker)
+os_files_worker_config is static.struct(OsUserWorkerConfig)
+os_files_worker_init is static.struct(OsUserWorkerInit)
+os_files_process_space is static.struct(ProcessAddressSpace)
+os_files_process_buffers is static.struct(ProcessSpaceBuffers)
+os_files_process_owned_pages is static.zero(256, 16)
+os_files_process_mappings is static.struct(ProcessMapping, 16)
+os_files_process_stack is static.struct(ProcessStack)
+os_files_mailbox_transfer is static.zero(64, 16)
 os_text_editor_state is static.struct(TextEditorState)
 os_text_editor_buffer is static.zero(512, 16)
 os_editor_worker is static.struct(OsUserWorker)
@@ -169,6 +189,14 @@ os_window_reopen_marker is static.utf8("SURA_OS_WINDOW_REOPEN_OK")
 os_rtc_marker is static.utf8("SURA_OS_RTC_OK")
 os_desktop_shutdown_marker is static.utf8("SURA_OS_DESKTOP_SHUTDOWN_OK")
 os_files_app_marker is static.utf8("SURA_OS_FILES_APP_OK")
+os_files_ring3_ready_marker is static.utf8("SURA_OS_FILES_RING3_READY")
+os_files_ring3_result_marker is static.utf8("SURA_OS_FILES_RING3_OK")
+os_files_cr3_marker is static.utf8("SURA_OS_FILES_CR3_OK")
+os_files_ring3_fault_marker is static.utf8("SURA_OS_FILES_RING3_FAULT")
+os_terminal_ring3_ready_marker is static.utf8("SURA_OS_TERMINAL_RING3_READY")
+os_terminal_ring3_result_marker is static.utf8("SURA_OS_TERMINAL_RING3_OK")
+os_terminal_cr3_marker is static.utf8("SURA_OS_TERMINAL_CR3_OK")
+os_terminal_ring3_fault_marker is static.utf8("SURA_OS_TERMINAL_RING3_FAULT")
 os_editor_app_marker is static.utf8("SURA_OS_EDITOR_APP_OK")
 os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
 os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
@@ -307,6 +335,18 @@ os_calculator_app_reported: u64 is 0
 os_browser_app_reported: u64 is 0
 os_browser_url_reported: u64 is 0
 os_directory_reported: u64 is 0
+os_files_ring3_ready: u64 is 0
+os_files_ring3_sequence: u64 is 0
+os_files_ring3_result_reported: u64 is 0
+os_files_cr3_reported: u64 is 0
+os_files_previous_cluster: u64 is 0
+os_terminal_ring3_ready: u64 is 0
+os_terminal_ring3_sequence: u64 is 0
+os_terminal_ring3_result_reported: u64 is 0
+os_terminal_cr3_reported: u64 is 0
+os_terminal_user_action: u64 is 0
+os_terminal_user_command: u64 is 0
+os_terminal_user_input: u64 is 0
 os_editor_input_reported: u64 is 0
 os_editor_ring3_ready: u64 is 0
 os_editor_ring3_sequence: u64 is 0
@@ -318,9 +358,9 @@ os_calculator_ring3_sequence: u64 is 0
 os_calculator_ring3_result_reported: u64 is 0
 os_calculator_cr3_reported: u64 is 0
 os_kernel_page_root: u64 is 0
-os_calculator_user_code_address: u64 is u64("0x0000008000400000")
-os_calculator_user_mailbox_address: u64 is u64("0x0000008000600000")
-os_calculator_user_stack_top: u64 is u64("0x0000008000800000")
+os_user_worker_code_address: u64 is u64("0x0000008000400000")
+os_user_worker_mailbox_address: u64 is u64("0x0000008000600000")
+os_user_worker_stack_top: u64 is u64("0x0000008000800000")
 os_user_app_active_id: u64 is 0
 os_terminal_scroll_reported: u64 is 0
 os_clock_second: u64 is 60
@@ -464,22 +504,21 @@ func os_terminal_prompt() do
   return text_terminal_write_cstr(terminal, os_shell_prompt, 16)
 end
 
-func os_shell_execute(buffer: ptr, length: usize) do
+func os_shell_execute_command(command: u64) do
   global os_graphics_message
   terminal: ptr[TextTerminal] is os_terminal_state
-  if length == 0 then return true
-
-  if os_command_equals(buffer, length, os_command_help) then
+  if command == 0 then return true
+  if command == 1 then
     os_graphics_message is os_text_help_result
     if not os_terminal_cstr_line(os_shell_help, 64) then return false
     return os_serial_cstr_line(os_shell_help)
   end
-  if os_command_equals(buffer, length, os_command_status) then
+  if command == 2 then
     os_graphics_message is os_shell_status
     if not os_terminal_cstr_line(os_shell_status, 32) then return false
     return os_serial_cstr_line(os_shell_status)
   end
-  if os_command_equals(buffer, length, os_command_mem) then
+  if command == 3 then
     os_graphics_message is os_text_mem_result
     allocator: ptr[PhysicalAllocator] is os_allocator_state
     if not text_terminal_write_cstr(terminal, os_shell_memory_prefix, 32) then return false
@@ -489,17 +528,17 @@ func os_shell_execute(buffer: ptr, length: usize) do
     if not os_serial_u64(pmem_available_pages(allocator)) then return false
     return serial_write_byte(1016, 10, 1000000)
   end
-  if os_command_equals(buffer, length, os_command_about) then
+  if command == 4 then
     os_graphics_message is os_text_about_result
     if not os_terminal_cstr_line(os_shell_about, 64) then return false
     return os_serial_cstr_line(os_shell_about)
   end
-  if os_command_equals(buffer, length, os_command_clear) then
+  if command == 5 then
     os_graphics_message is 0
     if not text_terminal_clear(terminal) then return false
     return os_serial_line(os_clear_marker, 16)
   end
-  if os_command_equals(buffer, length, os_command_shutdown) then
+  if command == 6 then
     os_terminal_cstr_line(os_shutdown_marker, 32)
     os_serial_cstr_line(os_shutdown_marker)
     os_serial_drain()
@@ -510,6 +549,17 @@ func os_shell_execute(buffer: ptr, length: usize) do
   os_graphics_message is os_text_unknown_result
   if not os_terminal_cstr_line(os_shell_unknown, 64) then return false
   return os_serial_cstr_line(os_shell_unknown)
+end
+
+func os_shell_execute(buffer: ptr, length: usize) do
+  if length == 0 then return os_shell_execute_command(0)
+  if os_command_equals(buffer, length, os_command_help) then return os_shell_execute_command(1)
+  if os_command_equals(buffer, length, os_command_status) then return os_shell_execute_command(2)
+  if os_command_equals(buffer, length, os_command_mem) then return os_shell_execute_command(3)
+  if os_command_equals(buffer, length, os_command_about) then return os_shell_execute_command(4)
+  if os_command_equals(buffer, length, os_command_clear) then return os_shell_execute_command(5)
+  if os_command_equals(buffer, length, os_command_shutdown) then return os_shell_execute_command(6)
+  return os_shell_execute_command(7)
 end
 
 func os_draw_mouse_pointer(surface: ptr[FramebufferSurface]) do
@@ -944,18 +994,8 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
       if local_y >= 78 and local_y < 78 + files.entry_count * 34 then
         row: u64 is (local_y - 78) / 34
         if row < files.entry_count then
-          file_explorer_select(files, row)
-          if os_storage_mounted != 0 then
-            previous_cluster: u64 is os_storage_directory_cluster
-            if not os_storage_open_selected() then return false
-            if os_storage_directory_cluster != previous_cluster and os_directory_reported == 0 then
-              if not os_serial_cstr_line(os_storage_directory_marker) then return false
-              os_directory_reported is 1
-            end
-            if not os_storage_save_settings() then return false
-          end
-          window_manager_focus(manager, 3)
-          return true
+          if not window_manager_focus(manager, 3) then return false
+          return os_files_ring3_dispatch(row)
         end
       end
     end
@@ -1301,7 +1341,7 @@ func os_calculator_ring3_page_fault(frame: ptr[OsUserInterruptFrame]) interrupt_
 end
 
 func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt do
-  global os_calculator_cr3_reported, os_editor_cr3_reported, os_user_app_active_id
+  global os_calculator_cr3_reported, os_editor_cr3_reported, os_files_cr3_reported, os_terminal_cr3_reported, os_user_app_active_id, os_shell_length, os_terminal_user_action, os_terminal_user_command, os_terminal_user_input
   if frame == 0 or frame.cs != 35 or (frame.cs & 3) != 3 then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(43)
@@ -1309,7 +1349,7 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   end
 
   active_id: u64 is os_user_app_active_id
-  if active_id != 1 and active_id != 2 then
+  if active_id != 1 and active_id != 2 and active_id != 3 and active_id != 4 then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(56)
     return
@@ -1317,6 +1357,8 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   space: ptr[ProcessAddressSpace] is 0
   if active_id == 1 then space is os_calculator_process_space
   if active_id == 2 then space is os_editor_process_space
+  if active_id == 3 then space is os_files_process_space
+  if active_id == 4 then space is os_terminal_process_space
   if space == 0 or space.root == 0 or space.root == os_kernel_page_root or paging.root() != space.root then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(50)
@@ -1325,7 +1367,7 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
 
   return_target: ptr is 0
   if active_id == 1 then
-    mailbox: ptr[UserCalculatorMailbox] is os_calculator_user_mailbox_address
+    mailbox: ptr[UserCalculatorMailbox] is os_user_worker_mailbox_address
     if mailbox.status != 1 or mailbox.request_sequence == 0 or mailbox.response_sequence != mailbox.request_sequence then
       os_serial_cstr_line(os_calculator_ring3_fault_marker)
       os_vm_exit(44)
@@ -1341,7 +1383,7 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
     calculator.error is mailbox.error
     return_target is addr_of(os_calculator_user_return)
   elif active_id == 2 then
-    editor_mailbox: ptr[UserTextEditorMailbox] is os_calculator_user_mailbox_address
+    editor_mailbox: ptr[UserTextEditorMailbox] is os_user_worker_mailbox_address
     editor: ptr[TextEditorState] is os_text_editor_state
     if editor_mailbox.status != 1 or editor_mailbox.error > 2 then
       os_serial_cstr_line(os_editor_ring3_fault_marker)
@@ -1362,10 +1404,57 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
     editor.dirty is editor_mailbox.dirty
     copy_index: u64 is 0
     while copy_index < editor.capacity do
-      mem.write8(ptr.add(editor.buffer, copy_index), mem.read8(ptr.add(os_calculator_user_mailbox_address, 64 + copy_index)))
+      mem.write8(ptr.add(editor.buffer, copy_index), mem.read8(ptr.add(os_user_worker_mailbox_address, 64 + copy_index)))
       copy_index += 1
     end
     return_target is addr_of(os_editor_user_return)
+  elif active_id == 3 then
+    files_mailbox: ptr[UserFileExplorerMailbox] is os_user_worker_mailbox_address
+    files: ptr[FileExplorerState] is os_file_explorer_state
+    if files_mailbox.status != 1 or files_mailbox.error != 0 or files_mailbox.action != 1 then
+      os_serial_cstr_line(os_files_ring3_fault_marker)
+      os_vm_exit(65)
+      return
+    end
+    if files_mailbox.request_sequence == 0 or files_mailbox.response_sequence != files_mailbox.request_sequence then
+      os_serial_cstr_line(os_files_ring3_fault_marker)
+      os_vm_exit(66)
+      return
+    end
+    if files_mailbox.entry_count != files.entry_count or files_mailbox.selected >= files.entry_count then
+      os_serial_cstr_line(os_files_ring3_fault_marker)
+      os_vm_exit(67)
+      return
+    end
+    files.selected is files_mailbox.selected
+    return_target is addr_of(os_files_user_return)
+  elif active_id == 4 then
+    terminal_mailbox: ptr[UserTerminalMailbox] is os_user_worker_mailbox_address
+    if terminal_mailbox.status != 1 or terminal_mailbox.error > 2 then
+      os_serial_cstr_line(os_terminal_ring3_fault_marker)
+      os_vm_exit(76)
+      return
+    end
+    if terminal_mailbox.request_sequence == 0 or terminal_mailbox.response_sequence != terminal_mailbox.request_sequence then
+      os_serial_cstr_line(os_terminal_ring3_fault_marker)
+      os_vm_exit(77)
+      return
+    end
+    if terminal_mailbox.capacity != 64 or terminal_mailbox.length >= terminal_mailbox.capacity or terminal_mailbox.action > 3 or terminal_mailbox.command > 7 then
+      os_serial_cstr_line(os_terminal_ring3_fault_marker)
+      os_vm_exit(78)
+      return
+    end
+    os_shell_length is terminal_mailbox.length
+    os_terminal_user_action is terminal_mailbox.action
+    os_terminal_user_command is terminal_mailbox.command
+    os_terminal_user_input is terminal_mailbox.input
+    terminal_copy_index: u64 is 0
+    while terminal_copy_index < 64 do
+      mem.write8(ptr.add(os_shell_input, terminal_copy_index), mem.read8(ptr.add(os_user_worker_mailbox_address, 80 + terminal_copy_index)))
+      terminal_copy_index += 1
+    end
+    return_target is addr_of(os_terminal_user_return)
   end
 
   paging.activate(os_kernel_page_root)
@@ -1381,6 +1470,14 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   if active_id == 2 and os_editor_cr3_reported == 0 then
     if not os_serial_cstr_line(os_editor_cr3_marker) then os_vm_exit(57)
     os_editor_cr3_reported is 1
+  end
+  if active_id == 3 and os_files_cr3_reported == 0 then
+    if not os_serial_cstr_line(os_files_cr3_marker) then os_vm_exit(68)
+    os_files_cr3_reported is 1
+  end
+  if active_id == 4 and os_terminal_cr3_reported == 0 then
+    if not os_serial_cstr_line(os_terminal_cr3_marker) then os_vm_exit(79)
+    os_terminal_cr3_reported is 1
   end
   os_user_app_active_id is 0
 
@@ -1440,10 +1537,10 @@ func os_calculator_ring3_start() do
   buffers.mapping_capacity is 16
 
   config: ptr[OsUserWorkerConfig] is os_calculator_worker_config
-  config.code_address is os_calculator_user_code_address
-  config.mailbox_address is os_calculator_user_mailbox_address
+  config.code_address is os_user_worker_code_address
+  config.mailbox_address is os_user_worker_mailbox_address
   config.mailbox_bytes is sizeof(UserCalculatorMailbox)
-  config.stack_top is os_calculator_user_stack_top
+  config.stack_top is os_user_worker_stack_top
   config.stack_pages is 4
   config.guard_pages is 1
   config.max_code_bytes is 8192
@@ -1530,10 +1627,10 @@ func os_editor_ring3_start() do
   buffers.mapping_capacity is 16
 
   config: ptr[OsUserWorkerConfig] is os_editor_worker_config
-  config.code_address is os_calculator_user_code_address
-  config.mailbox_address is os_calculator_user_mailbox_address
+  config.code_address is os_user_worker_code_address
+  config.mailbox_address is os_user_worker_mailbox_address
   config.mailbox_bytes is 576
-  config.stack_top is os_calculator_user_stack_top
+  config.stack_top is os_user_worker_stack_top
   config.stack_pages is 4
   config.guard_pages is 1
   config.max_code_bytes is 8192
@@ -1606,6 +1703,91 @@ func os_editor_ring3_dispatch(value: u64) do
   return false
 end
 
+func os_files_ring3_start() do
+  global os_files_ring3_ready
+  if os_files_ring3_ready != 0 then return true
+  if os_calculator_ring3_ready == 0 or os_kernel_page_root == 0 then return false
+
+  source: ptr is addr_of(user_file_explorer_program)
+  source_end: ptr is addr_of(user_file_explorer_program_end)
+  if source_end <= source or source_end - source > 8192 then return false
+
+  buffers: ptr[ProcessSpaceBuffers] is os_files_process_buffers
+  buffers.owned_pages is os_files_process_owned_pages
+  buffers.owned_capacity is 32
+  buffers.mappings is os_files_process_mappings
+  buffers.mapping_capacity is 16
+
+  config: ptr[OsUserWorkerConfig] is os_files_worker_config
+  config.code_address is os_user_worker_code_address
+  config.mailbox_address is os_user_worker_mailbox_address
+  config.mailbox_bytes is sizeof(UserFileExplorerMailbox)
+  config.stack_top is os_user_worker_stack_top
+  config.stack_pages is 4
+  config.guard_pages is 1
+  config.max_code_bytes is 8192
+
+  worker: ptr[OsUserWorker] is os_files_worker
+  setup: ptr[OsUserWorkerInit] is os_files_worker_init
+  setup.space is os_files_process_space
+  setup.buffers is buffers
+  setup.stack is os_files_process_stack
+  setup.allocator is os_allocator_state
+  setup.kernel_root is os_kernel_page_root
+  setup.config is config
+  setup.source is source
+  setup.source_end is source_end
+  if not os_user_worker_init(worker, setup) then return false
+
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  mailbox: ptr[UserFileExplorerMailbox] is os_files_mailbox_transfer
+  mailbox.entry_count is files.entry_count
+  mailbox.selected is files.selected
+  mailbox.requested_index is files.selected
+  mailbox.request_sequence is 0
+  mailbox.response_sequence is 0
+  mailbox.action is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  if not os_user_worker_copy_to_mailbox(worker, mailbox, sizeof(UserFileExplorerMailbox)) then return false
+
+  os_files_ring3_ready is 1
+  return os_serial_cstr_line(os_files_ring3_ready_marker)
+end
+
+func os_files_ring3_dispatch(index: u64) do
+  global os_files_ring3_sequence, os_files_previous_cluster, os_user_app_active_id
+  if os_files_ring3_ready == 0 or os_user_app_active_id != 0 then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.entry_count == 0 or index >= files.entry_count then return false
+
+  mailbox: ptr[UserFileExplorerMailbox] is os_files_mailbox_transfer
+  mailbox.entry_count is files.entry_count
+  mailbox.selected is files.selected
+  mailbox.requested_index is index
+  os_files_ring3_sequence += 1
+  if os_files_ring3_sequence == 0 then os_files_ring3_sequence is 1
+  mailbox.request_sequence is os_files_ring3_sequence
+  mailbox.response_sequence is 0
+  mailbox.action is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  os_files_previous_cluster is os_storage_directory_cluster
+
+  worker: ptr[OsUserWorker] is os_files_worker
+  if not os_user_worker_copy_to_mailbox(worker, mailbox, sizeof(UserFileExplorerMailbox)) then return false
+  os_user_app_active_id is 3
+  if not os_user_worker_activate(worker) then
+    os_user_app_active_id is 0
+    return false
+  end
+  stack: ptr[ProcessStack] is worker.stack
+  entered: bool is user.enter(worker.code_address, stack.initial_rsp, worker.mailbox_address, 35, 27)
+  paging.activate(os_kernel_page_root)
+  os_user_app_active_id is 0
+  return false
+end
+
 func os_shell_loop() do
   global os_rtc_reported
   keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
@@ -1637,6 +1819,26 @@ func os_shell_loop() do
     cpu.pause()
   end
   return true
+end
+
+func os_files_user_return() do
+  global os_directory_reported, os_files_ring3_result_reported
+  if os_files_ring3_result_reported == 0 then
+    if not os_serial_cstr_line(os_files_ring3_result_marker) then os_vm_exit(69)
+    os_files_ring3_result_reported is 1
+  end
+  if os_storage_mounted != 0 then
+    if not os_storage_open_selected() then os_vm_exit(70)
+    if os_storage_directory_cluster != os_files_previous_cluster and os_directory_reported == 0 then
+      if not os_serial_cstr_line(os_storage_directory_marker) then os_vm_exit(71)
+      os_directory_reported is 1
+    end
+    if not os_storage_save_settings() then os_vm_exit(72)
+  end
+  if not os_redraw_desktop() then os_vm_exit(73)
+  if not os_shell_loop() then os_vm_exit(74)
+  os_vm_exit(75)
+  return
 end
 
 func os_editor_user_return() do
@@ -2048,6 +2250,10 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not os_editor_ring3_start() then
     os_vm_exit(64)
     return 64
+  end
+  if not os_files_ring3_start() then
+    os_vm_exit(76)
+    return 76
   end
   if not os_serial_line(os_ready_marker, 20) then
     os_vm_exit(6)

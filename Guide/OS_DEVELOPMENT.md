@@ -24,10 +24,10 @@ and HTTP, and displays a bounded HTML layout from an entered `http://` URL.
 The browser distinguishes heading, paragraph, and link runs and applies a
 small CSS color subset (`body`, `div`, `h1`, `a`; `background`,
 `background-color`, and `color`; `#RGB` and `#RRGGBB`).
-Text Editor and Calculator state transitions execute at CPL 3 in distinct
-`ProcessAddressSpace` roots through dedicated user code, stack, and mailbox
-pages, while window rendering, input routing, and file persistence remain in
-the kernel.
+File Explorer, Text Editor, and Calculator state transitions execute at CPL 3
+in distinct `ProcessAddressSpace` roots through dedicated user code, stack, and
+mailbox pages, while window rendering, input routing, FAT32 traversal, and file
+persistence remain in the kernel.
 There is no scheduled or preemptive desktop application process, general
 writable filesystem, IPv6, complete TCP reliability, TLS/HTTPS, or general
 HTML/CSS/JavaScript browser. Most files in `examples/os` remain compiler
@@ -123,7 +123,8 @@ live HTTP navigation, and writes `build/os/SuraOS-desktop.ppm` and
 `50 - 31 = 19`, requires `SURA_OS_CALCULATOR_RING3_READY` and
 `SURA_OS_CALCULATOR_RING3_OK` plus `SURA_OS_CALCULATOR_CR3_OK`, and requires
 the corresponding `SURA_OS_EDITOR_RING3_READY`, `RING3_OK`, and `CR3_OK`
-markers before continuing the remaining desktop regression. Each worker's
+markers plus the File Explorer `RING3_READY`, `RING3_OK`, and `CR3_OK` markers
+before continuing the remaining desktop regression. Each worker's
 user code is read-only/executable, mailbox and guarded stack are writable/NX,
 and shared kernel PML4 entries remain supervisor-only. The interrupt handler
 checks the active worker root before restoring the distinct kernel root.
@@ -410,7 +411,7 @@ The desktop shell is still kernel-owned fixed UI. It has no application
 process protocol, minimize state, resize handles, notifications, settings
 store, or user-configurable launcher entries.
 
-## Desktop applications and Ring 3 Calculator
+## Desktop applications and Ring 3 workers
 
 `stdlib/freestanding/desktop_apps.sura` supplies allocation-free state models
 for the first built-in applications:
@@ -431,21 +432,23 @@ calculator. The gate requires `SURA_OS_FILES_APP_OK`,
 `SURA_OS_CALCULATOR_RESULT_OK`, then captures `build/os/SuraOS-apps.ppm`.
 
 Text Editor loads and autosaves the fixed 512-byte `NOTES.TXT` record. File
-creation, deletion, rename, growth, and long names are not implemented. Text
-Editor and Calculator UI and input routing remain in the kernel, but their
-state models in `os/user_text_editor.sura` and `os/user_calculator.sura` are
-copied to dedicated read-only executable user pages. Each key dispatch enters
-selector 35 at CPL 3, reads and updates one bounded mailbox, invokes DPL-3
-vector `0x80`, and returns to a clean kernel continuation stack. Only after
-Text Editor returns does ring 0 autosave NOTES.TXT.
+creation, deletion, rename, growth, and long names are not implemented. File
+Explorer, Text Editor, and Calculator UI and input routing remain in the
+kernel, but their state models in `os/user_file_explorer.sura`,
+`os/user_text_editor.sura`, and `os/user_calculator.sura` are copied to
+dedicated read-only executable user pages. Each dispatch enters selector 35 at
+CPL 3, reads and updates one bounded mailbox, invokes DPL-3 vector `0x80`, and
+returns to a clean kernel continuation stack. Only after File Explorer returns
+does ring 0 perform FAT32 traversal and settings persistence. Only after Text
+Editor returns does ring 0 autosave NOTES.TXT.
 
-Both workers use `os/user_worker.sura` and have separate physical PML4 roots:
+All three workers use `os/user_worker.sura` and have separate physical PML4 roots:
 existing kernel mappings are copied into supervisor-only PML4 entries, while a
 different lower-half slot contains process-owned W^X code, a writable/NX
 mailbox, and a four-page writable/NX stack preceded by an unmapped guard page.
-The QEMU gate requires Calculator and Editor `RING3_READY`, `RING3_OK`, and
-`CR3_OK` markers. File Explorer, Browser, Terminal, and System Information
-still run inside the kernel. The workers are not ELF-loaded, scheduled
+The QEMU gate requires File Explorer, Calculator, and Editor `RING3_READY`,
+`RING3_OK`, and `CR3_OK` markers. Browser, Terminal, and System Information
+logic still runs inside the kernel. The workers are not ELF-loaded, scheduled
 `UserProcess` instances; timer preemption and `UserProcessScheduler` are not
 connected to the desktop yet.
 
@@ -1103,10 +1106,10 @@ remain the required checked data-transfer primitives. Both
 `examples/os/user_process_features.sura` are compile and machine-code feature
 tests. `examples/os/ring3_qemu_gate.sura` separately executes one checked
 CPL-3 entry, DPL-3 software interrupt return, and fast SYSCALL kernel entry in
-QEMU. The desktop Text Editor and Calculator use the same checked IRETQ and
-interrupt foundation for fixed mailbox workers and switch to distinct
-`ProcessAddressSpace` roots before IRETQ. They return to the kernel root from
-the DPL-3 interrupt handler. Neither path executes `UserProcessScheduler`,
+QEMU. The desktop File Explorer, Text Editor, and Calculator use the same
+checked IRETQ and interrupt foundation for fixed mailbox workers and switch to
+distinct `ProcessAddressSpace` roots before IRETQ. They return to the kernel
+root from the DPL-3 interrupt handler. None executes `UserProcessScheduler`,
 loads an ELF application, or preempts with a timer; those remaining lifecycle
 paths remain compile-verified only.
 
