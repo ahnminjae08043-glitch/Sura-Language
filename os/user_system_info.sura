@@ -1,0 +1,51 @@
+# Ring-3 System Information snapshot validation for the Sura OS desktop.
+#
+# Ring 0 gathers hardware and kernel counters. This worker validates the
+# bounded snapshot and derives display-safe summary values without device or
+# framebuffer access.
+
+struct UserSystemInfoMailbox do
+  width: u64
+  height: u64
+  free_pages: u64
+  storage_ready: u64
+  network_ready: u64
+  request_sequence: u64
+  response_sequence: u64
+  action: u64
+  status: u64
+  error: u64
+  memory_mib: u64
+  pixel_count: u64
+end
+
+func user_system_info_program(mailbox_address: u64) do
+  mailbox: ptr[UserSystemInfoMailbox] is mailbox_address
+  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    mailbox.action is 0
+    mailbox.status is 1
+    mailbox.error is 0
+    mailbox.memory_mib is 0
+    mailbox.pixel_count is 0
+
+    if mailbox.width < 640 or mailbox.width > 8192 or mailbox.height < 400 or mailbox.height > 8192 then
+      mailbox.error is 1
+    elif mailbox.free_pages == 0 or mailbox.storage_ready > 1 or mailbox.network_ready > 1 then
+      mailbox.error is 2
+    else
+      mailbox.memory_mib is mailbox.free_pages / 256
+      mailbox.pixel_count is mailbox.width * mailbox.height
+      mailbox.action is 1
+    end
+    mailbox.response_sequence is mailbox.request_sequence
+  end
+
+  completed: bool is interrupt.invoke(128)
+  while true do
+    cpu.pause()
+  end
+end
+
+func user_system_info_program_end() do
+  return true
+end

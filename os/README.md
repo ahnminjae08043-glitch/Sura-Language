@@ -25,8 +25,9 @@ experimental freestanding x86-64 target.
 - opens a Start menu and reopens closed windows from persistent taskbar buttons
 - reads the CMOS RTC and renders an `HH:MM` taskbar clock
 - runs kernel-rendered File Explorer, Text Editor, Calculator, and Text Browser
-  windows; File Explorer, Text Editor, and Calculator state transitions execute at CPL 3
-  through bounded mailboxes
+  windows; System Information snapshot validation, Terminal command-line
+  editing and command recognition, and File Explorer, Text Editor, and
+  Calculator state transitions execute at CPL 3 through bounded mailboxes
 - initializes QEMU's ICH9 AHCI controller after `ExitBootServices`, identifies
   the second SATA disk, reads its MBR, and mounts its FAT32 partition
 - lists FAT32 root entries, enters the generated `DOCS` subdirectory, shows
@@ -62,10 +63,11 @@ The Start menu, desktop icons, and taskbar buttons activate their matching
 windows. Resize,
 minimize, and maximize are not available. The Start menu also exposes the
 QEMU shutdown action.
-There is no scheduled or preemptive application process yet. File Explorer,
-Text Editor, and Calculator logic run at CPL 3 in separate
-`ProcessAddressSpace` roots with dedicated executable, mailbox, guarded-stack,
-and page-table pages, then return synchronously after each input.
+There is no scheduled or preemptive application process yet. System
+Information, Terminal, File Explorer, Text Editor, and Calculator logic run at
+CPL 3 in separate `ProcessAddressSpace` roots with dedicated executable,
+mailbox, guarded-stack, and page-table pages, then return synchronously after
+each request.
 The current filesystem is a deliberately bounded FAT32 implementation: it
 mounts one fixed QEMU data disk, reads short 8.3 names, and overwrites existing
 fixed-length files. Creating, deleting, growing, renaming, or allocating files
@@ -85,15 +87,16 @@ The default image includes `DOCS/README.TXT`. Text Editor edits the 512-byte
 `NOTES.TXT` record and autosaves it through AHCI. Calculator accepts keyboard
 digits, `+ - * / =`, Backspace, and `C`. QEMU verifies directory traversal,
 editor input, the disk write, and the result of `50 - 31 = 19`. File Explorer,
-Text Editor, and Calculator rendering remains in the kernel, and FAT32
-enumeration and traversal remain kernel operations. Their selection, editing,
-and calculator state-transition functions are copied to process-owned read-only
-executable pages and entered at CPL 3 for each request. Only each worker's
-mailbox and guarded stack are writable from CPL 3. Each process CR3 shares
-kernel mappings with U/S cleared and reserves a different lower-half PML4 slot
-for user pages. FAT32 navigation and autosave run only after the matching
-worker has returned to the kernel root. Text Browser logic remains in the
-kernel.
+Text Editor, Calculator, Terminal, and System Information rendering remains in
+the kernel, and FAT32 enumeration and traversal remain kernel operations.
+Their selection, editing, calculator, command-line, and system-snapshot
+state-transition functions are copied to process-owned read-only executable
+pages and entered at CPL 3 for each request.
+Only each worker's mailbox and guarded stack are writable from CPL 3. Each
+process CR3 shares kernel mappings with U/S cleared and reserves a different
+lower-half PML4 slot for user pages. FAT32 navigation, autosave, terminal
+rendering, memory inspection, clear, and shutdown run only after the matching
+worker has returned to the kernel root. Text Browser logic remains in the kernel.
 
 The freestanding libraries also contain scheduler, interrupt, user-process,
 ELF64, PCI/PCIe, ACPI, block, partition, FAT32, AHCI, and NVMe building blocks.
@@ -104,9 +107,11 @@ fixed-capacity window-manager foundation also implements
 focus, z-order, hit testing, title-bar drag, close, and desktop-bound clamping.
 The separate Ring 3 QEMU gate executes an IRETQ transition to CPL 3, checks the
 saved CS through a DPL-3 `INT 0x80`, returns with IRETQ, and re-enters the kernel
-through `SYSCALL`. The desktop boot path additionally executes File Explorer,
-Calculator, and Text Editor state transitions at CPL 3.
-`SURA_OS_FILES_CR3_OK`, `SURA_OS_CALCULATOR_CR3_OK`, and
+through `SYSCALL`. The desktop boot path additionally executes System
+Information, Terminal, File Explorer, Calculator, and Text Editor state
+transitions at CPL 3. `SURA_OS_SYSTEM_CR3_OK`,
+`SURA_OS_TERMINAL_CR3_OK`, `SURA_OS_FILES_CR3_OK`,
+`SURA_OS_CALCULATOR_CR3_OK`, and
 `SURA_OS_EDITOR_CR3_OK` are emitted only after the interrupt handler observes
 the matching worker CR3 and switches back to the distinct kernel root. Their
 `RING3_OK` markers prove completed mailbox round trips. These synchronous

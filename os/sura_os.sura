@@ -20,6 +20,7 @@ import "user_calculator.sura"
 import "user_text_editor.sura"
 import "user_file_explorer.sura"
 import "user_terminal.sura"
+import "user_system_info.sura"
 
 struct OsUserInterruptFrame packed do
   r15: u64
@@ -71,6 +72,15 @@ os_terminal_process_owned_pages is static.zero(256, 16)
 os_terminal_process_mappings is static.struct(ProcessMapping, 16)
 os_terminal_process_stack is static.struct(ProcessStack)
 os_terminal_mailbox_transfer is static.zero(160, 16)
+os_system_worker is static.struct(OsUserWorker)
+os_system_worker_config is static.struct(OsUserWorkerConfig)
+os_system_worker_init is static.struct(OsUserWorkerInit)
+os_system_process_space is static.struct(ProcessAddressSpace)
+os_system_process_buffers is static.struct(ProcessSpaceBuffers)
+os_system_process_owned_pages is static.zero(256, 16)
+os_system_process_mappings is static.struct(ProcessMapping, 16)
+os_system_process_stack is static.struct(ProcessStack)
+os_system_mailbox_transfer is static.struct(UserSystemInfoMailbox)
 os_window_manager_state is static.struct(WindowManager)
 os_window_storage is static.struct(DesktopWindow, 6)
 os_desktop_shell_state is static.struct(DesktopShell)
@@ -189,6 +199,7 @@ os_window_reopen_marker is static.utf8("SURA_OS_WINDOW_REOPEN_OK")
 os_rtc_marker is static.utf8("SURA_OS_RTC_OK")
 os_desktop_shutdown_marker is static.utf8("SURA_OS_DESKTOP_SHUTDOWN_OK")
 os_files_app_marker is static.utf8("SURA_OS_FILES_APP_OK")
+os_system_app_marker is static.utf8("SURA_OS_SYSTEM_APP_OK")
 os_files_ring3_ready_marker is static.utf8("SURA_OS_FILES_RING3_READY")
 os_files_ring3_result_marker is static.utf8("SURA_OS_FILES_RING3_OK")
 os_files_cr3_marker is static.utf8("SURA_OS_FILES_CR3_OK")
@@ -197,6 +208,10 @@ os_terminal_ring3_ready_marker is static.utf8("SURA_OS_TERMINAL_RING3_READY")
 os_terminal_ring3_result_marker is static.utf8("SURA_OS_TERMINAL_RING3_OK")
 os_terminal_cr3_marker is static.utf8("SURA_OS_TERMINAL_CR3_OK")
 os_terminal_ring3_fault_marker is static.utf8("SURA_OS_TERMINAL_RING3_FAULT")
+os_system_ring3_ready_marker is static.utf8("SURA_OS_SYSTEM_RING3_READY")
+os_system_ring3_result_marker is static.utf8("SURA_OS_SYSTEM_RING3_OK")
+os_system_cr3_marker is static.utf8("SURA_OS_SYSTEM_CR3_OK")
+os_system_ring3_fault_marker is static.utf8("SURA_OS_SYSTEM_RING3_FAULT")
 os_editor_app_marker is static.utf8("SURA_OS_EDITOR_APP_OK")
 os_calculator_app_marker is static.utf8("SURA_OS_CALCULATOR_APP_OK")
 os_editor_input_marker is static.utf8("SURA_OS_EDITOR_INPUT_OK")
@@ -265,7 +280,7 @@ os_text_terminal is static.utf8("TERMINAL")
 os_text_system_info is static.utf8("SYSTEM INFORMATION")
 os_text_system_version is static.utf8("SURA OS 0.1")
 os_text_system_target is static.utf8("UEFI X86-64")
-os_text_system_memory is static.utf8("MEMORY READY")
+os_text_system_memory is static.utf8("FREE MEMORY MIB:")
 os_text_system_machine is static.utf8("QEMU VIRTUAL MACHINE")
 os_text_system_short is static.utf8("SYSTEM INFO")
 os_text_applications is static.utf8("APPLICATIONS")
@@ -330,6 +345,7 @@ os_start_menu_reported: u64 is 0
 os_window_reopen_reported: u64 is 0
 os_rtc_reported: u64 is 0
 os_files_app_reported: u64 is 0
+os_system_app_reported: u64 is 0
 os_editor_app_reported: u64 is 0
 os_calculator_app_reported: u64 is 0
 os_browser_app_reported: u64 is 0
@@ -347,6 +363,12 @@ os_terminal_cr3_reported: u64 is 0
 os_terminal_user_action: u64 is 0
 os_terminal_user_command: u64 is 0
 os_terminal_user_input: u64 is 0
+os_system_ring3_ready: u64 is 0
+os_system_ring3_sequence: u64 is 0
+os_system_ring3_result_reported: u64 is 0
+os_system_cr3_reported: u64 is 0
+os_system_memory_mib: u64 is 0
+os_system_pixel_count: u64 is 0
 os_editor_input_reported: u64 is 0
 os_editor_ring3_ready: u64 is 0
 os_editor_ring3_sequence: u64 is 0
@@ -721,6 +743,30 @@ func os_draw_terminal_window(surface: ptr[FramebufferSurface], window: ptr[Deskt
   return true
 end
 
+func os_draw_u64(surface: ptr[FramebufferSurface], x: u64, y: u64, value: u64, style: ptr[BitmapFontStyle]) do
+  if surface == 0 or style == 0 then return false
+  digits: ptr is os_number_buffer
+  count: u64 is 0
+  if value == 0 then
+    mem.write8(digits, 48)
+    count is 1
+  else
+    while value != 0 and count < 20 do
+      mem.write8(ptr.add(digits, count), 48 + value % 10)
+      value is value / 10
+      count += 1
+    end
+  end
+  index: u64 is 0
+  cell_width: u64 is 6 * style.scale
+  while index < count do
+    character: u64 is mem.read8(ptr.add(digits, count - index - 1))
+    if not font5x7_draw_char(surface, x + index * cell_width, y, character, style) then return false
+    index += 1
+  end
+  return true
+end
+
 func os_draw_about_window(surface: ptr[FramebufferSurface], window: ptr[DesktopWindow]) do
   if not os_draw_window_frame(surface, window, os_text_system_info) then return false
   x: u64 is window.x
@@ -732,6 +778,9 @@ func os_draw_about_window(surface: ptr[FramebufferSurface], window: ptr[DesktopW
   font5x7_draw_text(surface, x + 22, y + 58, os_text_system_version, 32, orange_large)
   font5x7_draw_text(surface, x + 22, y + 94, os_text_system_target, 32, white_large)
   font5x7_draw_text(surface, x + 22, y + 128, os_text_system_memory, 32, green_large)
+  if os_system_memory_mib != 0 then
+    os_draw_u64(surface, x + 202, y + 128, os_system_memory_mib, green_large)
+  end
   font5x7_draw_text(surface, x + 22, y + 168, os_text_system_machine, 32, white_small)
   return true
 end
@@ -1032,6 +1081,7 @@ func os_desktop_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
   if action == desktop_action_editor_icon or action == desktop_action_editor_taskbar or action == desktop_action_editor_menu then target_id is 4
   if action == desktop_action_calculator_icon or action == desktop_action_calculator_taskbar or action == desktop_action_calculator_menu then target_id is 5
   if target_id == 0 then return true
+  if target_id == 2 then return os_system_ring3_dispatch()
   reopened: u64 is os_activate_window(manager, target_id)
   if reopened == 0 then return false
   if reopened == 2 and os_window_reopen_reported == 0 then
@@ -1266,6 +1316,7 @@ end
 
 func os_shell_accept(value: u64) do
   global os_shell_length, os_terminal_scroll_reported
+  if os_terminal_ring3_ready != 0 then return os_terminal_ring3_dispatch(value)
   terminal: ptr[TextTerminal] is os_terminal_state
   if value == 13 then return true
   if value == 10 then
@@ -1341,7 +1392,7 @@ func os_calculator_ring3_page_fault(frame: ptr[OsUserInterruptFrame]) interrupt_
 end
 
 func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt do
-  global os_calculator_cr3_reported, os_editor_cr3_reported, os_files_cr3_reported, os_terminal_cr3_reported, os_user_app_active_id, os_shell_length, os_terminal_user_action, os_terminal_user_command, os_terminal_user_input
+  global os_calculator_cr3_reported, os_editor_cr3_reported, os_files_cr3_reported, os_terminal_cr3_reported, os_system_cr3_reported, os_user_app_active_id, os_shell_length, os_terminal_user_action, os_terminal_user_command, os_terminal_user_input, os_system_memory_mib, os_system_pixel_count
   if frame == 0 or frame.cs != 35 or (frame.cs & 3) != 3 then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(43)
@@ -1349,7 +1400,7 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   end
 
   active_id: u64 is os_user_app_active_id
-  if active_id != 1 and active_id != 2 and active_id != 3 and active_id != 4 then
+  if active_id != 1 and active_id != 2 and active_id != 3 and active_id != 4 and active_id != 5 then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(56)
     return
@@ -1359,6 +1410,7 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   if active_id == 2 then space is os_editor_process_space
   if active_id == 3 then space is os_files_process_space
   if active_id == 4 then space is os_terminal_process_space
+  if active_id == 5 then space is os_system_process_space
   if space == 0 or space.root == 0 or space.root == os_kernel_page_root or paging.root() != space.root then
     os_serial_cstr_line(os_calculator_ring3_fault_marker)
     os_vm_exit(50)
@@ -1455,6 +1507,26 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
       terminal_copy_index += 1
     end
     return_target is addr_of(os_terminal_user_return)
+  elif active_id == 5 then
+    system_mailbox: ptr[UserSystemInfoMailbox] is os_user_worker_mailbox_address
+    if system_mailbox.status != 1 or system_mailbox.error != 0 or system_mailbox.action != 1 then
+      os_serial_cstr_line(os_system_ring3_fault_marker)
+      os_vm_exit(95)
+      return
+    end
+    if system_mailbox.request_sequence == 0 or system_mailbox.response_sequence != system_mailbox.request_sequence then
+      os_serial_cstr_line(os_system_ring3_fault_marker)
+      os_vm_exit(96)
+      return
+    end
+    if system_mailbox.width < 640 or system_mailbox.height < 400 or system_mailbox.free_pages == 0 then
+      os_serial_cstr_line(os_system_ring3_fault_marker)
+      os_vm_exit(97)
+      return
+    end
+    os_system_memory_mib is system_mailbox.memory_mib
+    os_system_pixel_count is system_mailbox.pixel_count
+    return_target is addr_of(os_system_user_return)
   end
 
   paging.activate(os_kernel_page_root)
@@ -1478,6 +1550,10 @@ func os_calculator_ring3_interrupt(frame: ptr[OsUserInterruptFrame]) interrupt d
   if active_id == 4 and os_terminal_cr3_reported == 0 then
     if not os_serial_cstr_line(os_terminal_cr3_marker) then os_vm_exit(79)
     os_terminal_cr3_reported is 1
+  end
+  if active_id == 5 and os_system_cr3_reported == 0 then
+    if not os_serial_cstr_line(os_system_cr3_marker) then os_vm_exit(98)
+    os_system_cr3_reported is 1
   end
   os_user_app_active_id is 0
 
@@ -1788,6 +1864,195 @@ func os_files_ring3_dispatch(index: u64) do
   return false
 end
 
+func os_terminal_ring3_start() do
+  global os_terminal_ring3_ready
+  if os_terminal_ring3_ready != 0 then return true
+  if os_calculator_ring3_ready == 0 or os_kernel_page_root == 0 then return false
+
+  source: ptr is addr_of(user_terminal_program)
+  source_end: ptr is addr_of(user_terminal_program_end)
+  if source_end <= source or source_end - source > 8192 then return false
+
+  buffers: ptr[ProcessSpaceBuffers] is os_terminal_process_buffers
+  buffers.owned_pages is os_terminal_process_owned_pages
+  buffers.owned_capacity is 32
+  buffers.mappings is os_terminal_process_mappings
+  buffers.mapping_capacity is 16
+
+  config: ptr[OsUserWorkerConfig] is os_terminal_worker_config
+  config.code_address is os_user_worker_code_address
+  config.mailbox_address is os_user_worker_mailbox_address
+  config.mailbox_bytes is 144
+  config.stack_top is os_user_worker_stack_top
+  config.stack_pages is 4
+  config.guard_pages is 1
+  config.max_code_bytes is 8192
+
+  worker: ptr[OsUserWorker] is os_terminal_worker
+  setup: ptr[OsUserWorkerInit] is os_terminal_worker_init
+  setup.space is os_terminal_process_space
+  setup.buffers is buffers
+  setup.stack is os_terminal_process_stack
+  setup.allocator is os_allocator_state
+  setup.kernel_root is os_kernel_page_root
+  setup.config is config
+  setup.source is source
+  setup.source_end is source_end
+  if not os_user_worker_init(worker, setup) then return false
+
+  mailbox: ptr[UserTerminalMailbox] is os_terminal_mailbox_transfer
+  mailbox.length is 0
+  mailbox.capacity is 64
+  mailbox.request_sequence is 0
+  mailbox.response_sequence is 0
+  mailbox.input is 0
+  mailbox.action is 0
+  mailbox.command is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  mailbox.reserved is 0
+  index: u64 is 0
+  while index < 64 do
+    mem.write8(ptr.add(os_terminal_mailbox_transfer, 80 + index), 0)
+    index += 1
+  end
+  if not os_user_worker_copy_to_mailbox(worker, os_terminal_mailbox_transfer, 144) then return false
+
+  os_terminal_ring3_ready is 1
+  return os_serial_cstr_line(os_terminal_ring3_ready_marker)
+end
+
+func os_terminal_ring3_dispatch(value: u64) do
+  global os_terminal_ring3_sequence, os_user_app_active_id
+  if os_terminal_ring3_ready == 0 or os_user_app_active_id != 0 then return false
+  if os_shell_length >= 64 or value > 255 then return false
+  mailbox: ptr[UserTerminalMailbox] is os_terminal_mailbox_transfer
+  mailbox.length is os_shell_length
+  mailbox.capacity is 64
+  os_terminal_ring3_sequence += 1
+  if os_terminal_ring3_sequence == 0 then os_terminal_ring3_sequence is 1
+  mailbox.request_sequence is os_terminal_ring3_sequence
+  mailbox.response_sequence is 0
+  mailbox.input is value
+  mailbox.action is 0
+  mailbox.command is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  index: u64 is 0
+  while index < 64 do
+    mem.write8(ptr.add(os_terminal_mailbox_transfer, 80 + index), mem.read8(ptr.add(os_shell_input, index)))
+    index += 1
+  end
+
+  worker: ptr[OsUserWorker] is os_terminal_worker
+  if not os_user_worker_copy_to_mailbox(worker, os_terminal_mailbox_transfer, 144) then return false
+  os_user_app_active_id is 4
+  if not os_user_worker_activate(worker) then
+    os_user_app_active_id is 0
+    return false
+  end
+  stack: ptr[ProcessStack] is worker.stack
+  entered: bool is user.enter(worker.code_address, stack.initial_rsp, worker.mailbox_address, 35, 27)
+  paging.activate(os_kernel_page_root)
+  os_user_app_active_id is 0
+  return false
+end
+
+func os_system_mailbox_snapshot(mailbox: ptr[UserSystemInfoMailbox]) do
+  if mailbox == 0 then return false
+  front: ptr[FramebufferSurface] is os_front_surface_state
+  allocator: ptr[PhysicalAllocator] is os_allocator_state
+  if front.width < 640 or front.height < 400 then return false
+  mailbox.width is front.width
+  mailbox.height is front.height
+  mailbox.free_pages is pmem_available_pages(allocator)
+  mailbox.storage_ready is 0
+  if os_storage_mounted != 0 then mailbox.storage_ready is 1
+  mailbox.network_ready is 0
+  if os_network_status == 0 and os_network_resolved_ip != 0 then mailbox.network_ready is 1
+  return mailbox.free_pages != 0
+end
+
+func os_system_ring3_start() do
+  global os_system_ring3_ready
+  if os_system_ring3_ready != 0 then return true
+  if os_calculator_ring3_ready == 0 or os_kernel_page_root == 0 then return false
+
+  source: ptr is addr_of(user_system_info_program)
+  source_end: ptr is addr_of(user_system_info_program_end)
+  if source_end <= source or source_end - source > 8192 then return false
+
+  buffers: ptr[ProcessSpaceBuffers] is os_system_process_buffers
+  buffers.owned_pages is os_system_process_owned_pages
+  buffers.owned_capacity is 32
+  buffers.mappings is os_system_process_mappings
+  buffers.mapping_capacity is 16
+
+  config: ptr[OsUserWorkerConfig] is os_system_worker_config
+  config.code_address is os_user_worker_code_address
+  config.mailbox_address is os_user_worker_mailbox_address
+  config.mailbox_bytes is sizeof(UserSystemInfoMailbox)
+  config.stack_top is os_user_worker_stack_top
+  config.stack_pages is 4
+  config.guard_pages is 1
+  config.max_code_bytes is 8192
+
+  worker: ptr[OsUserWorker] is os_system_worker
+  setup: ptr[OsUserWorkerInit] is os_system_worker_init
+  setup.space is os_system_process_space
+  setup.buffers is buffers
+  setup.stack is os_system_process_stack
+  setup.allocator is os_allocator_state
+  setup.kernel_root is os_kernel_page_root
+  setup.config is config
+  setup.source is source
+  setup.source_end is source_end
+  if not os_user_worker_init(worker, setup) then return false
+
+  mailbox: ptr[UserSystemInfoMailbox] is os_system_mailbox_transfer
+  if not os_system_mailbox_snapshot(mailbox) then return false
+  mailbox.request_sequence is 0
+  mailbox.response_sequence is 0
+  mailbox.action is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  mailbox.memory_mib is 0
+  mailbox.pixel_count is 0
+  if not os_user_worker_copy_to_mailbox(worker, mailbox, sizeof(UserSystemInfoMailbox)) then return false
+
+  os_system_ring3_ready is 1
+  return os_serial_cstr_line(os_system_ring3_ready_marker)
+end
+
+func os_system_ring3_dispatch() do
+  global os_system_ring3_sequence, os_user_app_active_id
+  if os_system_ring3_ready == 0 or os_user_app_active_id != 0 then return false
+  mailbox: ptr[UserSystemInfoMailbox] is os_system_mailbox_transfer
+  if not os_system_mailbox_snapshot(mailbox) then return false
+  os_system_ring3_sequence += 1
+  if os_system_ring3_sequence == 0 then os_system_ring3_sequence is 1
+  mailbox.request_sequence is os_system_ring3_sequence
+  mailbox.response_sequence is 0
+  mailbox.action is 0
+  mailbox.status is 0
+  mailbox.error is 0
+  mailbox.memory_mib is 0
+  mailbox.pixel_count is 0
+
+  worker: ptr[OsUserWorker] is os_system_worker
+  if not os_user_worker_copy_to_mailbox(worker, mailbox, sizeof(UserSystemInfoMailbox)) then return false
+  os_user_app_active_id is 5
+  if not os_user_worker_activate(worker) then
+    os_user_app_active_id is 0
+    return false
+  end
+  stack: ptr[ProcessStack] is worker.stack
+  entered: bool is user.enter(worker.code_address, stack.initial_rsp, worker.mailbox_address, 35, 27)
+  paging.activate(os_kernel_page_root)
+  os_user_app_active_id is 0
+  return false
+end
+
 func os_shell_loop() do
   global os_rtc_reported
   keyboard: ptr[Ps2KeyboardState] is os_ps2_keyboard_state
@@ -1838,6 +2103,62 @@ func os_files_user_return() do
   if not os_redraw_desktop() then os_vm_exit(73)
   if not os_shell_loop() then os_vm_exit(74)
   os_vm_exit(75)
+  return
+end
+
+func os_system_user_return() do
+  global os_system_ring3_result_reported, os_system_app_reported, os_window_reopen_reported
+  if os_system_ring3_result_reported == 0 then
+    if not os_serial_cstr_line(os_system_ring3_result_marker) then os_vm_exit(99)
+    os_system_ring3_result_reported is 1
+  end
+  if os_system_memory_mib == 0 or os_system_pixel_count == 0 then os_vm_exit(100)
+  manager: ptr[WindowManager] is os_window_manager_state
+  reopened: u64 is os_activate_window(manager, 2)
+  if reopened == 0 then os_vm_exit(101)
+  if reopened == 2 and os_window_reopen_reported == 0 then
+    if not os_serial_cstr_line(os_window_reopen_marker) then os_vm_exit(102)
+    os_window_reopen_reported is 1
+  end
+  if os_system_app_reported == 0 then
+    if not os_serial_cstr_line(os_system_app_marker) then os_vm_exit(103)
+    os_system_app_reported is 1
+  end
+  if not os_redraw_desktop() then os_vm_exit(104)
+  if not os_shell_loop() then os_vm_exit(105)
+  os_vm_exit(106)
+  return
+end
+
+func os_terminal_user_return() do
+  global os_terminal_ring3_result_reported, os_terminal_scroll_reported, os_terminal_user_action
+  terminal: ptr[TextTerminal] is os_terminal_state
+  if os_terminal_ring3_result_reported == 0 then
+    if not os_serial_cstr_line(os_terminal_ring3_result_marker) then os_vm_exit(80)
+    os_terminal_ring3_result_reported is 1
+  end
+  action: u64 is os_terminal_user_action
+  os_terminal_user_action is 0
+  if action == 1 then
+    if not text_terminal_put(terminal, os_terminal_user_input) then os_vm_exit(81)
+    if not os_redraw_terminal() then os_vm_exit(82)
+  elif action == 2 then
+    if not text_terminal_put(terminal, 8) then os_vm_exit(83)
+    if not os_redraw_terminal() then os_vm_exit(84)
+  elif action == 3 then
+    if not serial_write_byte(1016, 10, 1000000) then os_vm_exit(85)
+    if not text_terminal_newline(terminal) then os_vm_exit(86)
+    if not os_shell_execute_command(os_terminal_user_command) then os_vm_exit(87)
+    if terminal.scroll_count > 0 and os_terminal_scroll_reported == 0 then
+      if not os_serial_line(os_terminal_scroll_marker, 26) then os_vm_exit(88)
+      os_terminal_scroll_reported is 1
+    end
+    if not os_serial_text(os_shell_prompt) then os_vm_exit(89)
+    if not os_terminal_prompt() then os_vm_exit(90)
+    if not os_redraw_terminal() then os_vm_exit(91)
+  end
+  if not os_shell_loop() then os_vm_exit(92)
+  os_vm_exit(93)
   return
 end
 
@@ -2254,6 +2575,14 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if not os_files_ring3_start() then
     os_vm_exit(76)
     return 76
+  end
+  if not os_terminal_ring3_start() then
+    os_vm_exit(94)
+    return 94
+  end
+  if not os_system_ring3_start() then
+    os_vm_exit(107)
+    return 107
   end
   if not os_serial_line(os_ready_marker, 20) then
     os_vm_exit(6)

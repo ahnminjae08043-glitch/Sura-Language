@@ -1,0 +1,76 @@
+# Ring-3 command-line editing and command recognition for the Sura OS terminal.
+#
+# The worker owns only a bounded ASCII line. Ring 0 still renders terminal
+# cells and performs privileged commands such as memory inspection and QEMU
+# shutdown.
+
+struct UserTerminalMailbox do
+  length: u64
+  capacity: u64
+  request_sequence: u64
+  response_sequence: u64
+  input: u64
+  action: u64
+  command: u64
+  status: u64
+  error: u64
+  reserved: u64
+end
+
+func user_terminal_program(mailbox_address: u64) do
+  mailbox: ptr[UserTerminalMailbox] is mailbox_address
+  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    mailbox.action is 0
+    mailbox.command is 0
+    mailbox.status is 1
+    mailbox.error is 0
+    buffer: ptr is ptr.add(mailbox_address, 80)
+    value: u64 is mailbox.input
+
+    if mailbox.capacity < 2 or mailbox.capacity > 64 or mailbox.length >= mailbox.capacity or value > 255 then
+      mailbox.error is 1
+    elif value == 8 or value == 127 then
+      if mailbox.length > 0 then
+        mailbox.length -= 1
+        mem.write8(ptr.add(buffer, mailbox.length), 0)
+        mailbox.action is 2
+      end
+    elif value == 13 then
+      mailbox.action is 0
+    elif value == 10 then
+      length: u64 is mailbox.length
+      command: u64 is 7
+      if length == 0 then command is 0
+      if length == 4 and mem.read8(buffer) == 104 and mem.read8(ptr.add(buffer, 1)) == 101 and mem.read8(ptr.add(buffer, 2)) == 108 and mem.read8(ptr.add(buffer, 3)) == 112 then command is 1
+      if length == 6 and mem.read8(buffer) == 115 and mem.read8(ptr.add(buffer, 1)) == 116 and mem.read8(ptr.add(buffer, 2)) == 97 and mem.read8(ptr.add(buffer, 3)) == 116 and mem.read8(ptr.add(buffer, 4)) == 117 and mem.read8(ptr.add(buffer, 5)) == 115 then command is 2
+      if length == 3 and mem.read8(buffer) == 109 and mem.read8(ptr.add(buffer, 1)) == 101 and mem.read8(ptr.add(buffer, 2)) == 109 then command is 3
+      if length == 5 and mem.read8(buffer) == 97 and mem.read8(ptr.add(buffer, 1)) == 98 and mem.read8(ptr.add(buffer, 2)) == 111 and mem.read8(ptr.add(buffer, 3)) == 117 and mem.read8(ptr.add(buffer, 4)) == 116 then command is 4
+      if length == 5 and mem.read8(buffer) == 99 and mem.read8(ptr.add(buffer, 1)) == 108 and mem.read8(ptr.add(buffer, 2)) == 101 and mem.read8(ptr.add(buffer, 3)) == 97 and mem.read8(ptr.add(buffer, 4)) == 114 then command is 5
+      if length == 8 and mem.read8(buffer) == 115 and mem.read8(ptr.add(buffer, 1)) == 104 and mem.read8(ptr.add(buffer, 2)) == 117 and mem.read8(ptr.add(buffer, 3)) == 116 and mem.read8(ptr.add(buffer, 4)) == 100 and mem.read8(ptr.add(buffer, 5)) == 111 and mem.read8(ptr.add(buffer, 6)) == 119 and mem.read8(ptr.add(buffer, 7)) == 110 then command is 6
+      mailbox.command is command
+      mailbox.length is 0
+      mem.write8(buffer, 0)
+      mailbox.action is 3
+    elif value >= 32 and value <= 126 then
+      if mailbox.length + 1 >= mailbox.capacity then
+        mailbox.error is 2
+      else
+        mem.write8(ptr.add(buffer, mailbox.length), value)
+        mailbox.length += 1
+        mem.write8(ptr.add(buffer, mailbox.length), 0)
+        mailbox.action is 1
+      end
+    end
+
+    mailbox.response_sequence is mailbox.request_sequence
+  end
+
+  completed: bool is interrupt.invoke(128)
+  while true do
+    cpu.pause()
+  end
+end
+
+func user_terminal_program_end() do
+  return true
+end

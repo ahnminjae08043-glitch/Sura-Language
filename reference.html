@@ -694,7 +694,7 @@ Usage:
   surapkg info &lt;name&gt; [--json] Show package metadata, benchmark evidence, and exported symbols
   surapkg restore [--json report.json]  Install manifest and transitive dependencies locally</code></pre></section>
 <section id='targets'><h2>JavaScript·WebAssembly 타깃</h2><div class='table-wrap'><table><thead><tr><th>타깃</th><th>2026-07-17 AST lowering 분류</th></tr></thead><tbody><tr><td>Native VM/JIT</td><td>register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline</td></tr><tr><td>JavaScript</td><td>43개 node 중 full 41, ignored 2, partial 0</td></tr><tr><td>WebAssembly</td><td>43개 node 중 full 27, partial 14, ignored 2</td></tr></tbody></table></div><p>AST JSON은 type annotation의 원래 표기를 source_name에 보존합니다. WASM에서 매개변수와 반환 타입을 모두 float 또는 double로 명시한 최상위 함수는 이 표기를 기준으로 기존 Sura Value ABI export와 함께 함수명__f64 동반 export를 생성합니다. 동반 export는 WebAssembly 호스트가 f64 매개변수와 f64 결과를 직접 사용하며, 원래 함수 이름의 export 계약은 바꾸지 않습니다.</p><p>JavaScript의 full 41·ignored 2는 43개 AST node의 lowering 분류입니다. JavaScript의 Python·FFI·plugin·async.cmd는 stub 또는 미지원 경로이며, autograd·media·nn·dataset·tokenizer 등 일부 module은 JavaScript runtime object 목록에 없습니다.</p><p>WASM target은 AST JSON frontend와 WAT output을 사용합니다. numeric subset, 일부 tagged Value, array/dict/function/class/exception hint lowering을 포함하며 general dynamic Value/function/class/exception semantics 14개 node가 partial 상태입니다. 전체 audit status는 <code>INCOMPLETE</code>입니다.</p></section>
-<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI·FAT32 데이터 디스크, VirtIO-net을 실행합니다. File Explorer 하위 디렉터리, NOTES.TXT 자동 저장, 설정·여섯 창 상태 복원, DHCP·ARP·IPv4·UDP·DNS·TCP·HTTP와 입력 가능한 주소창, 제한된 HTML/CSS 그래픽 레이아웃까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·VirtIO TCP/IP/HTTP·memory self-check와 COM1 shell 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/full present/cursor damage copy와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 46x14·2x font OS instance 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state; QEMU에서 각각 별도 CR3를 사용하는 CPL 3 폴더 선택, editor 입력·저장, 계산 경로 50-31=19 실행 검증</td></tr><tr><td>영속 데이터 디스크</td><td><code>ahci.sura</code>·<code>partition.sura</code>·<code>fat32.sura</code>로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증</td></tr><tr><td>VirtIO 네트워크·브라우저</td><td><code>virtio_net.sura</code>·<code>net.sura</code>·<code>os/network.sura</code>로 split queue, DHCP, ARP, IPv4, UDP DNS, TCP, HTTP/1.0, 주소 입력, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합을 실행 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
+<section id='freestanding'><h2>OS 개발용 freestanding 기능</h2><p><code>uefi-x86_64</code>는 Sura VM, GC, Windows API, C runtime, 외부 assembler·linker 없이 PE32+ EFI application을 직접 만드는 실험 타깃입니다. <code>os/sura_os.sura</code>는 QEMU/OVMF에서 UEFI 진입, GOP framebuffer와 backbuffer 준비, COM1 초기화, ExitBootServices, 픽셀·도형·아이콘·5x7 글꼴 렌더링, double-buffer present, physical-page self-check, polling PS/2 keyboard·mouse, 46x14 graphical terminal, ICH9 AHCI·FAT32 데이터 디스크, VirtIO-net을 실행합니다. File Explorer 하위 디렉터리, NOTES.TXT 자동 저장, 설정·여섯 창 상태 복원, DHCP·ARP·IPv4·UDP·DNS·TCP·HTTP와 입력 가능한 주소창, 제한된 HTML/CSS 그래픽 레이아웃까지 실제 QEMU에서 검증됐지만 완성 OS는 아닙니다.</p><pre><code>.\SuraLanguage.exe --target uefi-x86_64 --out FEATURES.EFI examples\os\freestanding_features.sura</code></pre><div class='table-wrap'><table><thead><tr><th>영역</th><th>현재 구현</th></tr></thead><tbody><tr><td>정수·포인터</td><td><code>i8/u8/i16/u16/i32/u32/i64/u64/isize/usize/ptr</code>, <code>ptr[StructName]</code></td></tr><tr><td>정적 데이터</td><td><code>static.zero/bytes/u8/u16/u32/u64/utf8/utf16/struct</code></td></tr><tr><td>모듈</td><td>importing-file 기준 nested relative import, normalized-path 중복 제거, cycle 검사</td></tr><tr><td>메모리 레이아웃</td><td>typed struct field, natural 또는 packed layout, <code>sizeof/alignof/offset_of</code></td></tr><tr><td>포인터</td><td><code>ptr.add/index/field/align_up/align_down/is_aligned</code>와 width-correct field load/store</td></tr><tr><td>저수준 CPU</td><td>raw memory, port I/O, CR0/2/3/4, MSR, GDT, IDT, INVLPG, CPUID, RDTSC/RDTSCP, XGETBV/XSETBV</td></tr><tr><td>원자 연산</td><td>8/16/32/64-bit load, store, exchange, compare-exchange, fetch-add/sub, fence</td></tr><tr><td>인터럽트 ABI</td><td><code>interrupt/interrupt_error</code> 함수, general-purpose register frame, error-code normalization, saved-CS conditional SWAPGS/LFENCE, checked IDT gate, <code>iretq</code></td></tr><tr><td>CPU별 상태</td><td>TSS RSP/IST, checked TSS descriptor, LGDT/LIDT, segment reload, LTR/STR, FXSAVE/XSAVE, XSETBV, SWAPGS</td></tr><tr><td>SMP primitive</td><td>GS-relative per-CPU storage, runtime xAPIC/x2APIC access, EOI, ICR, IPI, INIT, SIPI</td></tr><tr><td>페이징 primitive</td><td>4-level page-table index, entry read/write/map/clear, CR3 root activation, INVLPG, local TLB flush</td></tr><tr><td>메모리 라이브러리</td><td>UEFI memory-map bitmap physical allocator, aligned contiguous allocation, conflict-checked 4-level walk/map/unmap/protect/translate</td></tr><tr><td>Context primitive</td><td>72-byte aligned task frame, nonvolatile GP register/RSP switch, entry(argument), exit_handler(result)</td></tr><tr><td>스케줄러 라이브러리</td><td>single-CPU cooperative round-robin, create/yield/sleep/block/wake/join/reap</td></tr><tr><td>선점형 스케줄러·타이머</td><td>checked 152-byte ring-0 interrupt frames, CLI/IRETQ resume, APIC periodic/one-shot timer, bounded PIT calibration, TSC deadline</td></tr><tr><td>소프트웨어 인터럽트 syscall</td><td>indirect Win64 calls, INT vector invocation, fixed handler table and five-argument dispatch</td></tr><tr><td>Ring 3·빠른 syscall</td><td>checked IRETQ user entry/resume, 168-byte user frame, SYSCALL/SYSRETQ, STAR/LSTAR/FMASK, GS-relative kernel stack, validated return address and sanitized RFLAGS</td></tr><tr><td>사용자 프로세스</td><td>fixed-capacity single-CPU round-robin, per-process CR3/TSS RSP0/user GS, timer/yield, exit, page-fault termination, reap</td></tr><tr><td>PCI 기반 라이브러리</td><td>legacy 0xCF8/0xCFC config access, BDF search, capability traversal, BAR decode, command flags</td></tr><tr><td>블록 장치 기반</td><td>checked synchronous block ABI, RAM disk, boot-stage UEFI Block I/O adapter and media snapshot</td></tr><tr><td>ACPI MADT</td><td>checked RSDP/XSDT/RSDT discovery, processor and I/O APIC records, interrupt overrides</td></tr><tr><td>AP 시작</td><td>16-bit real-mode to 64-bit trampoline, bounded INIT/SIPI sequence, atomic ready handshake</td></tr><tr><td>직렬/VM 부팅 게이트</td><td>16550 bounded polling, post-ExitBootServices COM1 marker, QEMU/OVMF gate and compile-only mode</td></tr><tr><td>그래픽 OS 통합</td><td><code>os/sura_os.sura</code>와 <code>tools/sura_os_vm.ps1</code>; QEMU TCG에서 double-buffer desktop·AHCI/FAT32 영속 저장·VirtIO TCP/IP/HTTP·memory self-check와 COM1 shell 검증</td></tr><tr><td>Framebuffer·글꼴</td><td><code>framebuffer.sura</code>의 pixel/line/rectangle/full present/cursor damage copy와 <code>font5x7.sura</code>의 bitmap text; QMP screenshot gate로 실제 픽셀 캡처</td></tr><tr><td>그래픽 터미널</td><td><code>text_terminal.sura</code>의 fixed ASCII cells, wrap, scroll, clear, number output와 framebuffer draw; 별도 CR3의 CPL 3 줄 편집·명령 인식과 ring 0 특권 명령 실행 검증</td></tr><tr><td>창 관리자·데스크톱 셸</td><td><code>window_manager.sura</code>의 focus, z-order, hit test, drag, close/show, bounds와 Start·taskbar activation; QEMU PS/2 입력으로 실행 검증</td></tr><tr><td>기본 데스크톱 앱</td><td><code>desktop_apps.sura</code>의 File Explorer·Text Editor·Calculator state와 System Information snapshot; QEMU에서 각각 별도 CR3를 사용하는 CPL 3 시스템 정보 검증, 폴더 선택, editor 입력·저장, 계산 경로 50-31=19 실행 검증</td></tr><tr><td>영속 데이터 디스크</td><td><code>ahci.sura</code>·<code>partition.sura</code>·<code>fat32.sura</code>로 MBR/FAT32 mount, 8.3 root list, fixed-size read/write/flush와 두 번째 부팅 복원 검증</td></tr><tr><td>VirtIO 네트워크·브라우저</td><td><code>virtio_net.sura</code>·<code>net.sura</code>·<code>os/network.sura</code>로 split queue, DHCP, ARP, IPv4, UDP DNS, TCP, HTTP/1.0, 주소 입력, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합을 실행 검증</td></tr><tr><td>RTC·작업 표시줄 시계</td><td><code>rtc.sura</code>의 CMOS 안정 샘플·BCD/12시간 변환과 HH:MM 표시; QEMU에서 <code>SURA_OS_RTC_OK</code> 실행 검증</td></tr><tr><td>PS/2 데스크톱 입력</td><td><code>ps2.sura</code>의 translated Set-1 keyboard와 three-byte mouse packet polling; QMP로 status 입력·pointer 이동 실행 검증</td></tr><tr><td>부팅 디스크</td><td><code>--disk-image</code>로 protective MBR, GPT, FAT32 ESP와 <code>EFI/BOOT/BOOTX64.EFI</code> 생성</td></tr><tr><td>UEFI</td><td>console, memory services, protocol lookup, ExitBootServices, GOP framebuffer</td></tr></tbody></table></div><p>top-level <code>name is value</code>는 freestanding 정적 선언입니다. 함수에서 mutable scalar global을 바꾸려면 기존 <code>global name</code> 문법을 사용합니다. <code>struct Name packed do</code>는 padding 없는 하드웨어 레이아웃을 만들고, 일반 typed struct는 필드 폭에 맞춰 자연 정렬합니다.</p><pre><code>struct Device packed do
   vendor: u16
   command: u16
 end
@@ -708,7 +708,7 @@ func probe() -&gt; u64 do
   device.command is 7
   previous is atomic.fetch_add64(addr_of(count), 1)
   return device.vendor
-end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·VirtIO-net·Ethernet/DHCP/ARP/IPv4/UDP/DNS/TCP/HTTP·framebuffer·bitmap font·text terminal·window manager·desktop shell·File Explorer·Text Editor·Calculator·Text Browser·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 여섯 개의 kernel-rendered 창, FAT32 하위 디렉터리와 자동 저장·재부팅 복원, DHCP 주소 임대, DNS와 HTTP 응답, 키보드로 입력한 HTTP 주소의 두 번째 탐색, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합, 각각 별도 ProcessAddressSpace CR3와 bounded mailbox를 사용하는 File Explorer·Text Editor·Calculator CPL 3 상태 전이, Start·taskbar activation, HH:MM clock과 active-window routing까지 실행 검증합니다. 세 작업자는 독립 CR3를 사용하지만 현재 요청마다 동기식으로 진입·복귀하며 UserProcessScheduler나 timer preemption으로 관리되지는 않습니다. FAT32 탐색·저장과 모든 창 렌더링은 ring 0에 남아 있습니다. 아직 없는 핵심 기능은 interrupt-driven input/network queue, resize/minimize/maximize와 scheduled Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, IPv6·완전한 TCP 재전송/혼잡 제어·TLS, 중첩 DOM box layout·이미지·폼·일반 CSS cascade/box/flex/grid·JavaScript 브라우저, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
+end</code></pre><p><code>func timer(frame: ptr[Frame]) interrupt do</code>는 error code가 없는 vector용이고 <code>interrupt_error</code>는 CPU가 error code를 푸시하는 vector용입니다. <code>cpu.idt_set_gate</code>는 direct handler address와 vector의 error-code ABI를 컴파일 때 검사합니다. 생성된 wrapper는 saved CS가 ring 3일 때 SWAPGS를 실행하고 LFENCE로 결정을 직렬화합니다. TSS RSP/IST와 descriptor 생성, LTR, FXSAVE/XSAVE, XSETBV도 지원하지만 실제 per-CPU 할당, FPU/SIMD 저장, NMI-safe entry 정책은 kernel이 정해야 합니다.</p><p>Sura freestanding 기반에는 메모리·페이지 테이블·프로세스·스케줄러·syscall·PCI/PCIe·ACPI·블록 장치·AHCI·NVMe·GPT/MBR·FAT32·VFS·VirtIO-net·Ethernet/DHCP/ARP/IPv4/UDP/DNS/TCP/HTTP·framebuffer·bitmap font·text terminal·window manager·desktop shell·File Explorer·Text Editor·Calculator·Text Browser·CMOS RTC·polling PS/2·serial·QEMU boot gate가 구현되어 있습니다. 현재 QEMU 실행 이미지는 여섯 개의 kernel-rendered 창, FAT32 하위 디렉터리와 자동 저장·재부팅 복원, DHCP 주소 임대, DNS와 HTTP 응답, 키보드로 입력한 HTTP 주소의 두 번째 탐색, h1/p/a HTML 레이아웃과 CSS 색상 하위 집합, 각각 별도 ProcessAddressSpace CR3와 bounded mailbox를 사용하는 System Information·Terminal·File Explorer·Text Editor·Calculator CPL 3 상태 전이, Start·taskbar activation, HH:MM clock과 active-window routing까지 실행 검증합니다. 다섯 작업자는 독립 CR3를 사용하지만 현재 요청마다 동기식으로 진입·복귀하며 UserProcessScheduler나 timer preemption으로 관리되지는 않습니다. 하드웨어 스냅샷 수집, 터미널 렌더링·특권 명령, FAT32 탐색·저장과 모든 창 렌더링은 ring 0에 남아 있습니다. 아직 없는 핵심 기능은 interrupt-driven input/network queue, resize/minimize/maximize와 scheduled Ring 3 application process를 포함한 완전한 interactive window system, FAT32 파일 생성·삭제·크기 변경·긴 이름, IPv6·완전한 TCP 재전송/혼잡 제어·TLS, 중첩 DOM box layout·이미지·폼·일반 CSS cascade/box/flex/grid·JavaScript 브라우저, USB HID, audio, accelerated GPU driver, SMP load balancing, complete per-AP lifecycle, FPU/SIMD process state, ARM64 freestanding backend입니다. 자세한 범위와 각 기능의 compile-only 또는 executed 검증 구분은 <code>Guide/OS_DEVELOPMENT.md</code>와 이 문서의 machine-readable data에 있습니다.</p></section>
 <section id='release'><h2>빌드와 배포</h2><div class='table-wrap'><table><thead><tr><th>출력</th><th>내용</th></tr></thead><tbody><tr><td><code>.sura.bc</code></td><td><code>--compile</code>이 만드는 SURB v3 register bytecode; 1.11.1 runtime은 v2와 v3를 읽음</td></tr><tr><td><code>.sura.srp</code></td><td>release container v5: register bytecode·literal·constant payload, randomized nonce, integrity seal</td></tr><tr><td>protected metadata</td><td>line/local/function/parameter debug name 제거; optional release id·expiry</td></tr><tr><td>runtime symbol</td><td>class name, method map key, global name, constant은 실행에 필요한 형태로 package에 남음</td></tr><tr><td>접근 값</td><td><code>--release-key</code>, <code>--release-license</code>와 실행 시 대응 load option 또는 environment value</td></tr><tr><td>launcher</td><td><code>surapkg protect --exe</code>가 embedded package와 engine locator를 포함한 Windows launcher 생성; 실행 시 옆의 Sura engine 또는 <code>SURA_ENGINE</code> 경로 사용</td></tr><tr><td>검사</td><td>package/launcher에서 source text, source line, string literal, key/license byte pattern scan</td></tr></tbody></table></div><p>payload transform과 seal은 Sura release container의 자체 형식입니다. 동일 source도 randomized nonce 때문에 package byte가 달라지고 seal 검사는 변조된 payload를 실행 전에 거부합니다.</p><p>leak scan은 16..65536 byte source 전체, 16 byte 이상 non-comment source line, 4 byte 이상 string literal, 4 byte 이상 key/license byte를 package와 launcher에서 검색합니다. <code>protect-verify</code>가 report target과 hash를 재검증합니다.</p><pre><code>sura --compile app.sura --out app.sura.bc
 sura --release app.sura --out app.sura.srp
 sura --load-release app.sura.srp
@@ -6582,10 +6582,17 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     &quot;desktop_applications&quot;: {
       &quot;library&quot;: &quot;stdlib/freestanding/desktop_apps.sura&quot;,
       &quot;ring3_worker_source&quot;: &quot;os/user_worker.sura&quot;,
+      &quot;ring3_system_info_source&quot;: &quot;os/user_system_info.sura&quot;,
+      &quot;ring3_terminal_source&quot;: &quot;os/user_terminal.sura&quot;,
       &quot;ring3_file_explorer_source&quot;: &quot;os/user_file_explorer.sura&quot;,
       &quot;ring3_editor_source&quot;: &quot;os/user_text_editor.sura&quot;,
       &quot;ring3_calculator_source&quot;: &quot;os/user_calculator.sura&quot;,
       &quot;applications&quot;: {
+        &quot;system_information&quot;: [
+          &quot;kernel-gathered bounded framebuffer, free-page, storage, and network snapshot&quot;,
+          &quot;fixed CPL-3 snapshot validation and derived free-memory MiB/pixel count worker with a bounded mailbox&quot;,
+          &quot;ring-0 activation and rendering after return&quot;
+        ],
         &quot;file_explorer&quot;: [
           &quot;bounded entry count and selection&quot;,
           &quot;fixed CPL-3 selection worker with a bounded mailbox&quot;,
@@ -6614,12 +6621,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         ]
       },
       &quot;example&quot;: &quot;examples/os/desktop_apps_features.sura&quot;,
-      &quot;os_integration&quot;: &quot;registered windows 3..5, desktop/Start/taskbar launch and reopen, and active-app input routing; File Explorer, Text Editor, and Calculator rendering remains in ring 0 while their state-transition functions run at CPL 3 through bounded mailboxes&quot;,
-      &quot;executed_verification&quot;: &quot;QEMU mounts the FAT32 data disk, selects and opens DOCS through the File Explorer CPL-3 path before ring-0 FAT32 traversal, appends SURA NOTES through the Text Editor CPL-3 path and flushes it through AHCI after returning to ring 0, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies three distinct worker CR3 roots, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm&quot;,
+      &quot;os_integration&quot;: &quot;registered windows 2..5, desktop/Start/taskbar launch and reopen, and active-app input routing; System Information, Terminal, File Explorer, Text Editor, and Calculator rendering remains in ring 0 while their state-transition functions run at CPL 3 through bounded mailboxes&quot;,
+      &quot;executed_verification&quot;: &quot;QEMU validates a System Information snapshot through its CPL-3 path before ring-0 rendering, edits and recognizes Terminal commands through the Terminal CPL-3 path before ring-0 rendering and privileged execution, mounts the FAT32 data disk, selects and opens DOCS through the File Explorer CPL-3 path before ring-0 FAT32 traversal, appends SURA NOTES through the Text Editor CPL-3 path and flushes it through AHCI after returning to ring 0, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies five distinct worker CR3 roots, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm&quot;,
       &quot;limitations&quot;: [
         &quot;all window rendering remains kernel-owned&quot;,
-        &quot;File Explorer, Text Editor, and Calculator each have a separate ProcessAddressSpace and CR3 but use synchronous entry/return rather than UserProcessScheduler or timer preemption&quot;,
-        &quot;FAT32 traversal and Text Editor persistence remain ring-0 operations after their workers return&quot;,
+        &quot;System Information, Terminal, File Explorer, Text Editor, and Calculator each have a separate ProcessAddressSpace and CR3 but use synchronous entry/return rather than UserProcessScheduler or timer preemption&quot;,
+        &quot;hardware snapshot gathering, terminal rendering and privileged commands, FAT32 traversal, and Text Editor persistence remain ring-0 operations after their workers return&quot;,
         &quot;File Explorer supports bounded short-name directory traversal only&quot;,
         &quot;Text Editor overwrites one fixed 512-byte file&quot;,
         &quot;Calculator is unsigned integer only&quot;
@@ -6832,17 +6839,17 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;ring-0 debug exit&quot;
       ],
       &quot;desktop_process_gate&quot;: [
-        &quot;File Explorer, Text Editor, and Calculator use distinct ProcessAddressSpace CR3 roots&quot;,
+        &quot;System Information, Terminal, File Explorer, Text Editor, and Calculator use distinct ProcessAddressSpace CR3 roots&quot;,
         &quot;shared kernel PML4 entries have U/S cleared&quot;,
         &quot;process-owned W^X code&quot;,
         &quot;writable/NX mailboxes&quot;,
         &quot;guarded writable/NX user stacks&quot;,
-        &quot;SURA_OS_FILES_CR3_OK, SURA_OS_EDITOR_CR3_OK, and SURA_OS_CALCULATOR_CR3_OK after the interrupt handler observes each process root and restores the kernel root&quot;
+        &quot;SURA_OS_SYSTEM_CR3_OK, SURA_OS_TERMINAL_CR3_OK, SURA_OS_FILES_CR3_OK, SURA_OS_EDITOR_CR3_OK, and SURA_OS_CALCULATOR_CR3_OK after the interrupt handler observes each process root and restores the kernel root&quot;
       ],
       &quot;limitations&quot;: [
         &quot;entry primitive does not automatically select an address space or validate syscall pointers&quot;,
         &quot;standalone executed gate is one fixed test context, not a scheduled desktop application process&quot;,
-        &quot;desktop File Explorer, Text Editor, and Calculator execute CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler&quot;,
+        &quot;desktop System Information, Terminal, File Explorer, Text Editor, and Calculator execute CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler&quot;,
         &quot;generic interrupt wrapper is not an NMI/MCE paranoid-entry implementation&quot;,
         &quot;no KPTI or comprehensive speculative-entry hardening&quot;,
         &quot;no FPU/SIMD save&quot;
@@ -6935,7 +6942,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;no fast-syscall blocking/resume conversion&quot;,
         &quot;no FPU/SIMD or debug-state save&quot;,
         &quot;no signals, priorities, SMP queues, PCID, KPTI, remote TLB shootdown, or NMI-safe entry&quot;,
-        &quot;scheduler remains compile-verified only; the desktop File Explorer, Text Editor, and Calculator switch distinct ProcessAddressSpace CR3 roots synchronously without running UserProcessScheduler&quot;
+        &quot;scheduler remains compile-verified only; the desktop System Information, Terminal, File Explorer, Text Editor, and Calculator switch distinct ProcessAddressSpace CR3 roots synchronously without running UserProcessScheduler&quot;
       ]
     },
     &quot;pci_configuration_library&quot;: {
@@ -7351,6 +7358,29 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;QEMU isa-debug-exit&quot;
       ],
       &quot;desktop_ring3_workers&quot;: {
+        &quot;system_information&quot;: [
+          &quot;process-owned W^X code&quot;,
+          &quot;writable/NX mailbox&quot;,
+          &quot;guarded stack&quot;,
+          &quot;distinct ProcessAddressSpace CR3&quot;,
+          &quot;CPL-3 bounded framebuffer/free-page/storage/network snapshot validation&quot;,
+          &quot;display-safe memory and pixel derivation&quot;,
+          &quot;ring-0 hardware gathering and rendering&quot;,
+          &quot;SURA_OS_SYSTEM_RING3_READY&quot;,
+          &quot;SURA_OS_SYSTEM_RING3_OK&quot;,
+          &quot;SURA_OS_SYSTEM_CR3_OK&quot;
+        ],
+        &quot;terminal&quot;: [
+          &quot;process-owned W^X code&quot;,
+          &quot;writable/NX mailbox&quot;,
+          &quot;guarded stack&quot;,
+          &quot;distinct ProcessAddressSpace CR3&quot;,
+          &quot;CPL-3 bounded line editing and command recognition&quot;,
+          &quot;ring-0 rendering and privileged command execution after return&quot;,
+          &quot;SURA_OS_TERMINAL_RING3_READY&quot;,
+          &quot;SURA_OS_TERMINAL_RING3_OK&quot;,
+          &quot;SURA_OS_TERMINAL_CR3_OK&quot;
+        ],
         &quot;file_explorer&quot;: [
           &quot;process-owned W^X code&quot;,
           &quot;writable/NX mailbox&quot;,
@@ -7406,8 +7436,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         &quot;graphical desktop milestone, not a complete desktop OS&quot;,
         &quot;polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues&quot;,
         &quot;no resize, minimize, maximize, or scheduled Ring 3 application process windows&quot;,
-        &quot;File Explorer, Text Editor, and Calculator have distinct CR3 roots but still return synchronously and are not managed by UserProcessScheduler&quot;,
-        &quot;Terminal, System Information, Browser logic, window rendering, FAT32 traversal, and storage persistence remain kernel-owned&quot;,
+        &quot;System Information, Terminal, File Explorer, Text Editor, and Calculator have distinct CR3 roots but still return synchronously and are not managed by UserProcessScheduler&quot;,
+        &quot;Browser logic, window rendering, hardware snapshot gathering, privileged terminal actions, FAT32 traversal, and storage persistence remain kernel-owned&quot;,
         &quot;fixed kernel-owned Start/taskbar entries&quot;,
         &quot;FAT32 mutation is limited to fixed-size existing-file overwrite&quot;,
         &quot;DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not&quot;,
@@ -7505,6 +7535,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       &quot;tools/sura_os_data_disk.ps1&quot;,
       &quot;os/sura_os.sura&quot;,
       &quot;os/user_worker.sura&quot;,
+      &quot;os/user_system_info.sura&quot;,
+      &quot;os/user_terminal.sura&quot;,
       &quot;os/user_file_explorer.sura&quot;,
       &quot;os/user_text_editor.sura&quot;,
       &quot;os/user_calculator.sura&quot;,
@@ -13758,10 +13790,17 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
     "desktop_applications": {
       "library": "stdlib/freestanding/desktop_apps.sura",
       "ring3_worker_source": "os/user_worker.sura",
+      "ring3_system_info_source": "os/user_system_info.sura",
+      "ring3_terminal_source": "os/user_terminal.sura",
       "ring3_file_explorer_source": "os/user_file_explorer.sura",
       "ring3_editor_source": "os/user_text_editor.sura",
       "ring3_calculator_source": "os/user_calculator.sura",
       "applications": {
+        "system_information": [
+          "kernel-gathered bounded framebuffer, free-page, storage, and network snapshot",
+          "fixed CPL-3 snapshot validation and derived free-memory MiB/pixel count worker with a bounded mailbox",
+          "ring-0 activation and rendering after return"
+        ],
         "file_explorer": [
           "bounded entry count and selection",
           "fixed CPL-3 selection worker with a bounded mailbox",
@@ -13790,12 +13829,12 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         ]
       },
       "example": "examples/os/desktop_apps_features.sura",
-      "os_integration": "registered windows 3..5, desktop/Start/taskbar launch and reopen, and active-app input routing; File Explorer, Text Editor, and Calculator rendering remains in ring 0 while their state-transition functions run at CPL 3 through bounded mailboxes",
-      "executed_verification": "QEMU mounts the FAT32 data disk, selects and opens DOCS through the File Explorer CPL-3 path before ring-0 FAT32 traversal, appends SURA NOTES through the Text Editor CPL-3 path and flushes it through AHCI after returning to ring 0, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies three distinct worker CR3 roots, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm",
+      "os_integration": "registered windows 2..5, desktop/Start/taskbar launch and reopen, and active-app input routing; System Information, Terminal, File Explorer, Text Editor, and Calculator rendering remains in ring 0 while their state-transition functions run at CPL 3 through bounded mailboxes",
+      "executed_verification": "QEMU validates a System Information snapshot through its CPL-3 path before ring-0 rendering, edits and recognizes Terminal commands through the Terminal CPL-3 path before ring-0 rendering and privileged execution, mounts the FAT32 data disk, selects and opens DOCS through the File Explorer CPL-3 path before ring-0 FAT32 traversal, appends SURA NOTES through the Text Editor CPL-3 path and flushes it through AHCI after returning to ring 0, evaluates 50 - 31 = 19 through the Calculator CPL-3 path, verifies five distinct worker CR3 roots, requires app/input/result/storage and Ring-3 markers, and captures build/os/SuraOS-apps.ppm",
       "limitations": [
         "all window rendering remains kernel-owned",
-        "File Explorer, Text Editor, and Calculator each have a separate ProcessAddressSpace and CR3 but use synchronous entry/return rather than UserProcessScheduler or timer preemption",
-        "FAT32 traversal and Text Editor persistence remain ring-0 operations after their workers return",
+        "System Information, Terminal, File Explorer, Text Editor, and Calculator each have a separate ProcessAddressSpace and CR3 but use synchronous entry/return rather than UserProcessScheduler or timer preemption",
+        "hardware snapshot gathering, terminal rendering and privileged commands, FAT32 traversal, and Text Editor persistence remain ring-0 operations after their workers return",
         "File Explorer supports bounded short-name directory traversal only",
         "Text Editor overwrites one fixed 512-byte file",
         "Calculator is unsigned integer only"
@@ -14008,17 +14047,17 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "ring-0 debug exit"
       ],
       "desktop_process_gate": [
-        "File Explorer, Text Editor, and Calculator use distinct ProcessAddressSpace CR3 roots",
+        "System Information, Terminal, File Explorer, Text Editor, and Calculator use distinct ProcessAddressSpace CR3 roots",
         "shared kernel PML4 entries have U/S cleared",
         "process-owned W^X code",
         "writable/NX mailboxes",
         "guarded writable/NX user stacks",
-        "SURA_OS_FILES_CR3_OK, SURA_OS_EDITOR_CR3_OK, and SURA_OS_CALCULATOR_CR3_OK after the interrupt handler observes each process root and restores the kernel root"
+        "SURA_OS_SYSTEM_CR3_OK, SURA_OS_TERMINAL_CR3_OK, SURA_OS_FILES_CR3_OK, SURA_OS_EDITOR_CR3_OK, and SURA_OS_CALCULATOR_CR3_OK after the interrupt handler observes each process root and restores the kernel root"
       ],
       "limitations": [
         "entry primitive does not automatically select an address space or validate syscall pointers",
         "standalone executed gate is one fixed test context, not a scheduled desktop application process",
-        "desktop File Explorer, Text Editor, and Calculator execute CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler",
+        "desktop System Information, Terminal, File Explorer, Text Editor, and Calculator execute CR3 switching but not ELF loading, timer preemption, or UserProcessScheduler",
         "generic interrupt wrapper is not an NMI/MCE paranoid-entry implementation",
         "no KPTI or comprehensive speculative-entry hardening",
         "no FPU/SIMD save"
@@ -14111,7 +14150,7 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "no fast-syscall blocking/resume conversion",
         "no FPU/SIMD or debug-state save",
         "no signals, priorities, SMP queues, PCID, KPTI, remote TLB shootdown, or NMI-safe entry",
-        "scheduler remains compile-verified only; the desktop File Explorer, Text Editor, and Calculator switch distinct ProcessAddressSpace CR3 roots synchronously without running UserProcessScheduler"
+        "scheduler remains compile-verified only; the desktop System Information, Terminal, File Explorer, Text Editor, and Calculator switch distinct ProcessAddressSpace CR3 roots synchronously without running UserProcessScheduler"
       ]
     },
     "pci_configuration_library": {
@@ -14527,6 +14566,29 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "QEMU isa-debug-exit"
       ],
       "desktop_ring3_workers": {
+        "system_information": [
+          "process-owned W^X code",
+          "writable/NX mailbox",
+          "guarded stack",
+          "distinct ProcessAddressSpace CR3",
+          "CPL-3 bounded framebuffer/free-page/storage/network snapshot validation",
+          "display-safe memory and pixel derivation",
+          "ring-0 hardware gathering and rendering",
+          "SURA_OS_SYSTEM_RING3_READY",
+          "SURA_OS_SYSTEM_RING3_OK",
+          "SURA_OS_SYSTEM_CR3_OK"
+        ],
+        "terminal": [
+          "process-owned W^X code",
+          "writable/NX mailbox",
+          "guarded stack",
+          "distinct ProcessAddressSpace CR3",
+          "CPL-3 bounded line editing and command recognition",
+          "ring-0 rendering and privileged command execution after return",
+          "SURA_OS_TERMINAL_RING3_READY",
+          "SURA_OS_TERMINAL_RING3_OK",
+          "SURA_OS_TERMINAL_CR3_OK"
+        ],
         "file_explorer": [
           "process-owned W^X code",
           "writable/NX mailbox",
@@ -14582,8 +14644,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
         "graphical desktop milestone, not a complete desktop OS",
         "polling PS/2, AHCI, VirtIO-net, and COM1 rather than interrupt-driven queues",
         "no resize, minimize, maximize, or scheduled Ring 3 application process windows",
-        "File Explorer, Text Editor, and Calculator have distinct CR3 roots but still return synchronously and are not managed by UserProcessScheduler",
-        "Terminal, System Information, Browser logic, window rendering, FAT32 traversal, and storage persistence remain kernel-owned",
+        "System Information, Terminal, File Explorer, Text Editor, and Calculator have distinct CR3 roots but still return synchronously and are not managed by UserProcessScheduler",
+        "Browser logic, window rendering, hardware snapshot gathering, privileged terminal actions, FAT32 traversal, and storage persistence remain kernel-owned",
         "fixed kernel-owned Start/taskbar entries",
         "FAT32 mutation is limited to fixed-size existing-file overwrite",
         "DHCP and HTTP are implemented but IPv6, TLS, TCP retransmission, congestion control, and out-of-order reassembly are not",
@@ -14681,6 +14743,8 @@ surapkg protect-verify dist/protect-report.json --json verify.json</code></pre><
       "tools/sura_os_data_disk.ps1",
       "os/sura_os.sura",
       "os/user_worker.sura",
+      "os/user_system_info.sura",
+      "os/user_terminal.sura",
       "os/user_file_explorer.sura",
       "os/user_text_editor.sura",
       "os/user_calculator.sura",
