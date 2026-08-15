@@ -1134,21 +1134,34 @@ public:
             auto* is = static_cast<const ImportStmt*>(s);
             namespace fs = std::filesystem;
 
-            // Non-ASCII paths on Windows can throw inside fs::path itself,
-            // so the entire path manipulation is wrapped in try/catch with
-            // graceful string-level fallbacks.
+            // Source text is UTF-8, so every path here is a UTF-8 byte string.
+            // fs::path's narrow constructor interprets those bytes in the
+            // active ANSI codepage on Windows, which turns any non-ASCII
+            // directory into a path that does not exist - `import "b.sura"`
+            // failed for every user whose project lived under a non-ASCII
+            // directory, this repository's own `문서\` included. fs::u8path
+            // and u8string() are the conversions that round-trip UTF-8, so
+            // they are used on every boundary below; open_fs carries the
+            // native (wide, on Windows) path through to the actual open, since
+            // converting back to a narrow string would reintroduce the bug.
+            //
+            // Non-ASCII paths can still throw inside fs::path, so the whole
+            // block keeps its try/catch with string-level fallbacks.
             std::string key = is->path;
             std::string open_path = is->path;
             std::string parent_dir;
+            fs::path open_fs;
             try {
-                fs::path target(is->path);
+                fs::path target = fs::u8path(is->path);
                 if (target.is_relative() && !base_dir_stack.empty())
-                    target = fs::path(base_dir_stack.back()) / target;
-                open_path = target.string();
+                    target = fs::u8path(base_dir_stack.back()) / target;
+                open_fs = target;
+                open_path = target.u8string();
                 std::error_code ec;
                 fs::path canonical = fs::weakly_canonical(target, ec);
-                key = (canonical.empty() || ec) ? target.string() : canonical.string();
-                parent_dir = fs::path(key).parent_path().string();
+                if (!(canonical.empty() || ec)) open_fs = canonical;
+                key = (canonical.empty() || ec) ? target.u8string() : canonical.u8string();
+                parent_dir = open_fs.parent_path().u8string();
             } catch (...) {
                 // Pure string-level resolution
                 std::string combined = is->path;
@@ -1160,6 +1173,7 @@ public:
                 }
                 key = combined;
                 open_path = combined;
+                open_fs = fs::path();
                 size_t slash = combined.find_last_of("/\\");
                 parent_dir = (slash == std::string::npos) ? "." : combined.substr(0, slash);
             }
@@ -1169,10 +1183,14 @@ public:
             // Circular import check.
             if (importing_now.count(key)) throw std::runtime_error("순환 import 감지: " + key);
 
-            // Open the file. std::ifstream on Windows+MinGW doesn't handle
-            // non-ASCII paths well, so try a cascade: canonical → raw → basename.
-            std::ifstream f(open_path);
-            if (!f && open_path != is->path) { f.clear(); f.open(is->path); }
+            // Open through the fs::path when the resolution above produced one:
+            // it already holds the native encoding, so no narrow round-trip can
+            // corrupt it. The string cascade stays as the fallback for the
+            // catch branch, where only byte strings are available.
+            std::ifstream f;
+            if (!open_fs.empty()) f.open(open_fs);
+            if (!f) { f.clear(); f.open(fs::u8path(open_path)); }
+            if (!f && open_path != is->path) { f.clear(); f.open(fs::u8path(is->path)); }
             if (!f) throw std::runtime_error("import 실패 - 파일 없음: " + key);
             std::string src((std::istreambuf_iterator<char>(f)), {});
             f.close();

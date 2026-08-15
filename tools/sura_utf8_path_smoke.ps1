@@ -60,6 +60,37 @@ print "utf8_path_smoke: PASS"
         throw "expected UTF-8 path smoke to pass"
     }
 
+    # Second scenario: `import` from inside a non-ASCII directory. The block
+    # above passed for the entire time `import` was broken there, because it
+    # only exercises the stdlib file APIs - the compiler resolves import paths
+    # on its own and used fs::path's ANSI narrow constructor, so any project
+    # under a directory like 문서\ could not import at all. Keep this covered
+    # separately from the stdlib case; they fail independently.
+    $importDir = Join-Path $temp (-join ([char[]](0xD55C, 0xAE00, 0xD3F4, 0xB354)))
+    $libPath = Join-Path $importDir "lib.sura"
+    $mainPath = Join-Path $importDir "main.sura"
+    Write-Text $libPath @"
+func lib_value() do
+  return 7
+end
+"@
+    Write-Text $mainPath @"
+import "lib.sura"
+
+assert_eq(lib_value(), 7)
+print "utf8_import_smoke: PASS"
+"@
+
+    $ErrorActionPreference = "Continue"
+    $importOut = & $Engine $mainPath 2>&1 | ForEach-Object { "$_" }
+    $importCode = $LASTEXITCODE
+    $ErrorActionPreference = $old
+    $importText = $importOut -join "`n"
+    if ($importCode -ne 0 -or $importText -notmatch "utf8_import_smoke: PASS") {
+        Write-Output $importText
+        throw "expected import from a non-ASCII directory to resolve"
+    }
+
     "utf8_path_smoke: PASS"
 }
 finally {
@@ -67,3 +98,6 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0
