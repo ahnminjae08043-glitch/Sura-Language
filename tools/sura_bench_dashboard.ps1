@@ -31,7 +31,15 @@ $benches = @(
     "bench_physics.sura",
     "bench_physics_inplace.sura",
     "bench_physics3d.sura",
-    "bench_market.sura"
+    "bench_market.sura",
+    # Emitter-coverage benchmarks. Each exists because a single opcode with no
+    # native emitter disqualified its whole enclosing body, so these measure
+    # "did that opcode keep its emitter" rather than a micro-optimisation.
+    # Losing one shows up here as a 3-6x regression, which is why they are
+    # tracked rather than left as one-off measurements.
+    "bench_division.sura",       # DIV      - 6.0x when emitted
+    "bench_use_toplevel.sura",   # USE_LIB  - 5.8x, whole top level
+    "bench_index_get.sura"       # INDEX_GET- 3.2x
 )
 $rows = New-Object System.Collections.Generic.List[string]
 $pythonRows = New-Object System.Collections.Generic.List[string]
@@ -127,6 +135,24 @@ function Average-Value {
     }
     if ($count -eq 0) { return $null }
     return $sum / $count
+}
+
+# The mean of a speedup set is dominated by whichever benchmark happens to
+# vectorize best - one 400x result pulls a suite of 2-5x results up past 29x,
+# and a reader who sees only the mean draws the wrong conclusion about the
+# language. The median is reported alongside it so the typical case is visible
+# next to the best case.
+function Median-Value {
+    param($Items, [string]$Field)
+    $values = New-Object System.Collections.Generic.List[double]
+    foreach ($item in (As-Array $Items)) {
+        if ($null -ne $item.$Field) { $values.Add([double]$item.$Field) }
+    }
+    if ($values.Count -eq 0) { return $null }
+    $sorted = $values | Sort-Object
+    $mid = [int]([math]::Floor($sorted.Count / 2))
+    if ($sorted.Count % 2 -eq 1) { return $sorted[$mid] }
+    return ($sorted[$mid - 1] + $sorted[$mid]) / 2.0
 }
 
 function Html-Escape {
@@ -452,6 +478,8 @@ foreach ($candidate in $nativePerfCandidates) {
 $generatedUtc = [DateTime]::UtcNow.ToString("o")
 $avgJitSpeedup = Average-Value $benchRecords "speedup"
 $avgPythonRatio = Average-Value $pythonRecords "sura_faster_by"
+$medJitSpeedup = Median-Value $benchRecords "speedup"
+$medPythonRatio = Median-Value $pythonRecords "sura_faster_by"
 $fasterThanPythonCount = 0
 $bestPythonComparison = $null
 foreach ($record in (As-Array $pythonRecords)) {
@@ -468,6 +496,8 @@ $summary = [pscustomobject]@{
     faster_than_python_count = $fasterThanPythonCount
     average_jit_speedup = $avgJitSpeedup
     average_sura_python_ratio = $avgPythonRatio
+    median_jit_speedup = $medJitSpeedup
+    median_sura_python_ratio = $medPythonRatio
     best_python_comparison = $bestPythonComparison
     native_performance_available = ($null -ne $nativePerfRecord)
     native_performance = $nativePerfRecord
@@ -565,9 +595,11 @@ $summarySection = @"
 <table>
 <tr><th>Metric</th><th>Value</th></tr>
 <tr><td>Benchmarks</td><td>$($summary.benchmark_count)</td></tr>
+<tr><td>Median JIT speedup</td><td>$(Format-Ratio $summary.median_jit_speedup)</td></tr>
 <tr><td>Average JIT speedup</td><td>$(Format-Ratio $summary.average_jit_speedup)</td></tr>
 <tr><td>Python comparison cases</td><td>$($summary.python_comparison_count)</td></tr>
 <tr><td>Cases faster than Python</td><td>$($summary.faster_than_python_count)</td></tr>
+<tr><td>Median Sura/Python ratio</td><td>$(Format-Ratio $summary.median_sura_python_ratio)</td></tr>
 <tr><td>Average Sura/Python ratio</td><td>$(Format-Ratio $summary.average_sura_python_ratio)</td></tr>
 <tr><td>Best Python comparison</td><td>$bestPythonText</td></tr>
 $nativeSummaryRow
@@ -690,8 +722,21 @@ if ($SummaryOut) {
     $pythonName = if ($python) { $python } else { "not available" }
     $summaryLines.Add("# Sura Benchmark Summary")
     $summaryLines.Add("")
+    $summaryLines.Add("> These are repository-owned historical measurements for regression tracking. They are not independent validation or a general language-performance claim. Reproduce the exact workload, versions, hashes, hardware, and raw samples before citing a ratio.")
+    $summaryLines.Add("")
     $summaryLines.Add("- Generated UTC: " + (Markdown-Escape $generatedUtc))
     $summaryLines.Add("- Engine: " + (Markdown-Escape $Engine))
+    # A path alone cannot be checked later - the July report pointed at a
+    # SuraFinal.exe that no longer exists, which made every number in it
+    # unverifiable. The hash is what ties a result to an artifact.
+    $engineHashText = "unavailable"
+    try {
+        if (Test-Path -LiteralPath $Engine) {
+            $engineHashText = (Get-FileHash -Algorithm SHA256 -LiteralPath $Engine).Hash.ToLower() +
+                              " (" + (Get-Item -LiteralPath $Engine).Length + " bytes)"
+        }
+    } catch { $engineHashText = "unavailable" }
+    $summaryLines.Add("- Engine SHA-256: " + $engineHashText)
     $summaryLines.Add("- Python: " + (Markdown-Escape $pythonName))
     $summaryLines.Add("")
     $summaryLines.Add("## Summary")
@@ -699,9 +744,11 @@ if ($SummaryOut) {
     $summaryLines.Add("| Metric | Value |")
     $summaryLines.Add("| --- | ---: |")
     $summaryLines.Add("| Benchmarks | $($summary.benchmark_count) |")
+    $summaryLines.Add("| Median JIT speedup | $(Format-Ratio $summary.median_jit_speedup) |")
     $summaryLines.Add("| Average JIT speedup | $(Format-Ratio $summary.average_jit_speedup) |")
     $summaryLines.Add("| Python comparison cases | $($summary.python_comparison_count) |")
     $summaryLines.Add("| Cases faster than Python | $($summary.faster_than_python_count) |")
+    $summaryLines.Add("| Median Sura/Python ratio | $(Format-Ratio $summary.median_sura_python_ratio) |")
     $summaryLines.Add("| Average Sura/Python ratio | $(Format-Ratio $summary.average_sura_python_ratio) |")
     $summaryLines.Add("| Best Python comparison | $bestPythonMarkdownText |")
     if ($nativePerfRecord) {
@@ -753,6 +800,8 @@ if ($ReleaseNotesOut) {
     $releaseLines = New-Object System.Collections.Generic.List[string]
     $pythonName = if ($python) { $python } else { "not available" }
     $releaseLines.Add("# Sura Benchmark Release Notes")
+    $releaseLines.Add("")
+    $releaseLines.Add("> These are repository-owned historical measurements, not independent validation. Ratios apply only to the recorded workloads and environment.")
     $releaseLines.Add("")
     $releaseLines.Add("## Evidence")
     $releaseLines.Add("")

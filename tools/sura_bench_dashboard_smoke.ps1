@@ -140,7 +140,7 @@ try {
 
     $report = Get-Content -Raw -Path $json | ConvertFrom-Json
     if ($report.benchmark_contract -ne "sura.semantic-jit.v3" -or
-        -not $report.generated_utc -or -not $report.benchmarks -or $report.benchmarks.Count -ne 20 -or
+        -not $report.generated_utc -or -not $report.benchmarks -or $report.benchmarks.Count -ne 23 -or
         -not $report.summary -or $report.summary.benchmark_count -lt 1 -or
         -not $report.release_notes -or -not $report.release_notes.headline -or
         -not $report.native_performance -or [double]$report.native_performance.sura_native_ratio -le 0 -or
@@ -279,3 +279,6 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+# A gate that prints PASS must also exit 0 rather than inheriting
+# whatever the last command happened to return.
+exit 0
