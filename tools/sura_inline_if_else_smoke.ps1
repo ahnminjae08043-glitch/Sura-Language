@@ -94,3 +94,6 @@ print "inline_if_else_smoke: PASS"
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0

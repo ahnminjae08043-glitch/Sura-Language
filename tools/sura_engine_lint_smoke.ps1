@@ -91,3 +91,7 @@ end
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# The last check above is a negative test, so this script printed PASS while
+# inheriting its nonzero exit code. State the verdict explicitly.
+exit 0

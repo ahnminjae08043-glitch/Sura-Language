@@ -654,3 +654,6 @@ Write-Host ("sura_guide_syntax_smoke: PASS ({0} Markdown documents, {1} Sura fen
     $script:SyntaxStats.website_sura_examples,
     $script:SyntaxStats.published_example_files,
     $script:SyntaxStats.mirrored_files)
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0

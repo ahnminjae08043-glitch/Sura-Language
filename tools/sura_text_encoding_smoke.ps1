@@ -90,3 +90,6 @@ if ($failures.Count -gt 0) {
 }
 
 Write-Host "sura_text_encoding_smoke: PASS"
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0

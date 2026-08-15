@@ -126,3 +126,6 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0

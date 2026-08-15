@@ -50,3 +50,6 @@ end
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0

@@ -107,7 +107,7 @@ try {
     $psJUnit = Join-Path $temp "ps-junit.xml"
     $psResult = Run-Native { powershell -NoProfile -ExecutionPolicy Bypass -File $testScript -Path $good -Engine $EnginePath -Report $psJson -JUnit $psJUnit }
     if ($psResult.Code -ne 0 -or
-        $psResult.Output -notmatch "Sura tests: 1 passed, 0 failed" -or
+        $psResult.Output -notmatch "Sura tests: 1 passed, 0 skipped, 0 failed" -or
         -not (Test-Path -LiteralPath $psJson) -or
         -not (Test-Path -LiteralPath $psJUnit)) {
         Write-Output $psResult.Output
@@ -167,9 +167,52 @@ try {
     }
     if ($stableTimeoutResult.Code -eq 0 -or
         $stableTimeoutResult.Output -notmatch '\[TIMEOUT\].*exceeded 1s' -or
-        $stableTimeoutResult.Output -notmatch 'Stable tests \(VM\): 0 passed, 1 failed') {
+        $stableTimeoutResult.Output -notmatch 'Stable tests \(VM\): 0 passed, 0 skipped, 1 failed') {
         Write-Output $stableTimeoutResult.Output
         throw "expected stable test runner to stop and report a timed-out test"
+    }
+
+    $skipFixture = Join-Path $temp "hardware_skip.sura"
+    Write-Text $skipFixture "print `"hardware_skip: SKIP (CUDA device unavailable)`"`n"
+    $skipJson = Join-Path $temp "skip-report.json"
+    $skipJUnit = Join-Path $temp "skip-junit.xml"
+    $skipResult = Run-Native {
+        powershell -NoProfile -ExecutionPolicy Bypass -File $testScript `
+            -Path $skipFixture -Engine $EnginePath -Report $skipJson `
+            -JUnit $skipJUnit -NoJit
+    }
+    if ($skipResult.Code -ne 0 -or
+        $skipResult.Output -notmatch '\[SKIP\].*CUDA device unavailable' -or
+        $skipResult.Output -notmatch 'Sura tests: 0 passed, 1 skipped, 0 failed') {
+        Write-Output $skipResult.Output
+        throw "expected sura_test.ps1 to classify a runtime capability skip separately from pass"
+    }
+    $skipJsonText = [System.IO.File]::ReadAllText($skipJson, [System.Text.Encoding]::UTF8)
+    $skipJUnitText = [System.IO.File]::ReadAllText($skipJUnit, [System.Text.Encoding]::UTF8)
+    if ($skipJsonText -notmatch '"status"\s*:\s*"skip"' -or
+        $skipJsonText -notmatch '"skipped"\s*:\s*1' -or
+        $skipJsonText -notmatch '"skipReason"\s*:\s*"CUDA device unavailable"' -or
+        $skipJUnitText -notmatch '<testsuite[^>]+skipped="1"' -or
+        $skipJUnitText -notmatch '<skipped message="CUDA device unavailable"') {
+        throw "expected JSON/JUnit reports to preserve runtime skip evidence"
+    }
+    $strictSkipResult = Run-Native {
+        powershell -NoProfile -ExecutionPolicy Bypass -File $testScript `
+            -Path $skipFixture -Engine $EnginePath -Report (Join-Path $temp "strict-skip.json") `
+            -NoJit -FailOnSkip
+    }
+    if ($strictSkipResult.Code -eq 0) {
+        throw "expected -FailOnSkip to reject an unverified hardware test"
+    }
+    $stableSkipResult = Run-Native {
+        powershell -NoProfile -ExecutionPolicy Bypass -File $stableTestScript `
+            -Engine $EnginePath -TestPath $skipFixture -NoJit
+    }
+    if ($stableSkipResult.Code -ne 0 -or
+        $stableSkipResult.Output -notmatch '\[SKIP\].*CUDA device unavailable' -or
+        $stableSkipResult.Output -notmatch 'Stable tests \(VM\): 0 passed, 1 skipped, 0 failed') {
+        Write-Output $stableSkipResult.Output
+        throw "expected stable tests to classify a runtime capability skip separately from pass"
     }
 
     $bad = Join-Path $temp "bad_pkg"
@@ -215,3 +258,6 @@ finally {
     }
 }
 $global:LASTEXITCODE = 0
+
+# Verified passing; state the exit code rather than inheriting it.
+exit 0
