@@ -11854,15 +11854,37 @@ inline bool async_append_bounded(std::string& output, const char* data, size_t s
     return accepted == size;
 }
 
+// std::filesystem::is_regular_file() returns false for two different
+// situations: the path is not a regular file, and the query itself failed.
+// Reporting the first when the second happened sends the reader looking for a
+// missing file that is actually present but momentarily unreadable - a sharing
+// violation, an antivirus or indexer holding it open, or a cloud-sync recall on
+// a OneDrive-backed checkout. Keep the two claims apart.
+inline void async_require_regular_file(const std::filesystem::path& path,
+                                       const char* what, const char* fn, int line) {
+    std::error_code status_error;
+    if (std::filesystem::is_regular_file(path, status_error)) return;
+    // "It is definitively not there" is an answer, not a failure to answer, so
+    // it keeps the plain wording. libstdc++ on Windows reports a missing path
+    // through the error_code rather than returning a not_found status, which
+    // would otherwise route the most common case into the message meant for
+    // genuine inspection failures.
+    const bool absent = status_error == std::errc::no_such_file_or_directory ||
+                        status_error == std::errc::not_a_directory;
+    if (status_error && !absent) {
+        throw JitThrow{std::string(fn) + "(): cannot inspect " + what + " (" +
+                           status_error.message() + ")",
+                       line};
+    }
+    throw JitThrow{std::string(fn) + "(): " + what + " must name a regular file", line};
+}
+
 inline std::string async_read_text_file_cancellable(
         const std::string& path, int line, const char* fn,
         const AsyncCancellationToken& token) {
     token.throw_if_cancelled();
     const std::filesystem::path native_path = fs_path_from_utf8(path);
-    std::error_code status_error;
-    if (!std::filesystem::is_regular_file(native_path, status_error)) {
-        throw JitThrow{std::string(fn) + "(): file URL must name a regular file", line};
-    }
+    async_require_regular_file(native_path, "file URL", fn, line);
     std::error_code size_error;
     const uintmax_t initial_size = std::filesystem::file_size(native_path, size_error);
     if (!size_error && initial_size > ASYNC_MAX_CAPTURE_BYTES) {
@@ -13014,13 +13036,18 @@ inline std::filesystem::path async_write_snapshot_temp(
 
 inline std::string async_read_program_snapshot(
         const std::filesystem::path& path, int line) {
-    std::error_code status_error;
-    if (!std::filesystem::is_regular_file(path, status_error)) {
-        throw JitThrow{"async_sura(): program must name a regular file", line};
-    }
+    async_require_regular_file(path, "program", "async_sura", line);
     std::error_code size_error;
     const uintmax_t size = std::filesystem::file_size(path, size_error);
-    if (size_error || size > ASYNC_SURA_MAX_PROGRAM_BYTES) {
+    // A failed size query is not the same as an oversized program. Saying
+    // "exceeds 64 MiB" when the file could not be measured sends the reader
+    // looking for a huge file that may be perfectly small.
+    if (size_error) {
+        throw JitThrow{"async_sura(): cannot measure program (" +
+                           size_error.message() + ")",
+                       line};
+    }
+    if (size > ASYNC_SURA_MAX_PROGRAM_BYTES) {
         throw JitThrow{"async_sura(): program exceeds 64 MiB snapshot limit", line};
     }
     std::ifstream input(path, std::ios::binary);
@@ -13309,10 +13336,7 @@ inline std::filesystem::path async_sura_regular_absolute_path(
     std::filesystem::path absolute = std::filesystem::absolute(path, absolute_error);
     if (absolute_error) throw JitThrow{std::string(fn) + "(): cannot resolve path", line};
     absolute = absolute.lexically_normal();
-    std::error_code status_error;
-    if (!std::filesystem::is_regular_file(absolute, status_error)) {
-        throw JitThrow{std::string(fn) + "(): path must name a regular file", line};
-    }
+    async_require_regular_file(absolute, "path", fn, line);
     return absolute;
 }
 
