@@ -13,6 +13,10 @@ endif
 ifeq ($(OS),Windows_NT)
     EXEEXT = .exe
     PLATFORM_LIBS = -lgdi32
+    # Zero the PE header timestamp. Without this, two builds of identical
+    # source differ in exactly the 4 timestamp bytes, so a recorded release
+    # SHA-256 cannot be reproduced by anyone rebuilding the tree.
+    LDFLAGS += -Wl,--no-insert-timestamp
 else
     EXEEXT =
     UNAME_S := $(shell uname -s)
