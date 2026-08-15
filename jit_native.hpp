@@ -28,13 +28,28 @@
 //      R12 = consts
 //  Register file is accessed as [RBX + idx*8].  Constants as [R12 + idx*8].
 //
-//  Supported opcodes (everything else causes compile() to bail & return null):
-//      LOAD_CONST, MOVE, LOAD_NIL, LOAD_BOOL,
-//      ADD, SUB, MUL, MOD,
-//      CMP_EQ, CMP_NEQ, CMP_LT, CMP_LTE, CMP_GT, CMP_GTE,
-//      NEG, LOGICAL_NOT, bitwise integer ops,
-//      JUMP, JUMP_IF_FALSE, JUMP_IF_TRUE,
-//      RETURN_VAL, RETURN_NONE, NOP.
+//  Supported opcodes: the switch in emit_op() is the authoritative list, and
+//  anything it does not handle makes compile() bail and return null. Do not
+//  treat this comment as the contract — many cases carry additional guards and
+//  return false when those are not met, so "has a case" and "is compiled" are
+//  not the same thing. Two facts worth knowing before reading further:
+//
+//    * DIV does not use the inline SSE path ADD/SUB/MUL take, because dividing
+//      by zero must raise [E202] rather than yield an infinity. It goes through
+//      the guarded sura_jit_checked_div helper, the same shape MOD uses.
+//    * Coverage is wider than plain arithmetic. Calls, method calls, field
+//      reads, closure creation and instance creation all have emitters, so a
+//      hot object-shaped callee can go native too.
+//
+//  The three backends do not accept the same set. NativeCompiler (Win64) is
+//  the broad one; SysVBaselineCompiler and Arm64BaselineCompiler are
+//  deliberately narrow, and jit_target.hpp is the single source of truth for
+//  which one a platform gets.
+//
+//  To find out what a given program actually reached, do not read this header
+//  — run tools/sura_jit_differential.ps1, which reports the number of
+//  callables that were compiled natively and diffs their output against the
+//  register VM.
 //
 //  JUMP_IF_FALSE/TRUE only emits code that understands bool results
 //  (NBFALSE/NBTRUE/NBNIL).  Numeric-truthiness is not handled in native;
@@ -101,6 +116,13 @@ extern "C" uint64_t sura_jit_eq(uint64_t a, uint64_t b, int neq);
 // Phase 10: top-level JIT helpers
 extern "C" uint64_t sura_jit_make_lambda(JitVM* vm, struct Value* R, const JitInst* ins);
 extern "C" void     sura_jit_def_class(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" void     sura_jit_use_lib(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_jit_index_get(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" void     sura_jit_index_set(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" void     sura_jit_new_instance(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" void     sura_jit_op_in(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" void     sura_jit_dict_keys(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" int      sura_jit_foreach_next(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" void     sura_jit_print(JitVM* vm, struct Value* R, const JitInst* ins, int newline);
 extern "C" uint64_t sura_jit_add(uint64_t a, uint64_t b);  // Phase 10 safe ADD
 
@@ -230,6 +252,25 @@ extern "C" inline uint64_t sura_jit_checked_mod(uint64_t lhs_bits,
     return lhs.mod(rhs).raw_bits();
 }
 
+// Division cannot use the inline SSE path that ADD/SUB/MUL take: dividing by
+// zero has to raise [E202] rather than produce an infinity, so it needs the
+// same guarded helper shape as MOD. The two error strings below must stay
+// identical to the DIV case in JitVM::execute_frame - the differential lane
+// compares native and interpreter output byte for byte.
+extern "C" inline uint64_t sura_jit_checked_div(uint64_t lhs_bits,
+                                                 uint64_t rhs_bits,
+                                                 int line) {
+    const Value lhs = Value::from_bits(lhs_bits);
+    const Value rhs = Value::from_bits(rhs_bits);
+    if (!lhs.is_num() || !rhs.is_num()) {
+        sura_jit_numeric_error("[E200] type mismatch", line);
+    }
+    if (rhs.as_num() == 0.0) {
+        sura_jit_numeric_error("[E202] division by zero", line);
+    }
+    return (lhs / rhs).raw_bits();
+}
+
 // Win64 ABI:
 //   RCX = vm     (caller)
 //   RDX = R      (register file base)
@@ -248,7 +289,14 @@ struct NativeFunc {
     std::vector<std::unique_ptr<JitInst>> inline_insts;
     // Heap-stable strict-loop descriptors referenced by the generated code.
     std::vector<std::unique_ptr<JitStrictCountedLoop>> strict_loops;
+    // Bit i set means opcode i was actually emitted into this body. Answers
+    // "which emitters has anything ever exercised", which is the question a
+    // differential lane needs - a suite can be green while most emitters were
+    // never reached. JitOp has 56 members, so one word is enough.
+    uint64_t     emitted_ops = 0;
 };
+static_assert((int)JitOp::NOP < 64,
+              "NativeFunc::emitted_ops is a 64-bit mask; JitOp outgrew it");
 
 // Linux x86-64 starts with a deliberately small, exception-free System V
 // tier. It emits no helper calls, so C++ exceptions never need to unwind
@@ -1072,6 +1120,18 @@ class NativeCompiler {
     std::vector<uint8_t> buf;
     X64Emitter           em;
     bool                 is_top_level = false;  // Phase 10: main chunk compile flag
+    // Opcodes actually emitted by this compile; copied into NativeFunc on
+    // success. Recorded at the emit_op call sites rather than inside emit_op,
+    // which has many early-return paths.
+    uint64_t             emitted_ops = 0;
+    // The opcode that made compile() give up, for diagnostics. A bail is
+    // all-or-nothing - one rejected opcode disqualifies the whole callable -
+    // so knowing which one it was is the difference between "this program does
+    // not use the JIT" and an actionable "this opcode is disqualifying it",
+    // which is how the DIV and USE_LIB bails were found.
+    bool                 bailed = false;
+    JitOp                bail_op = JitOp::NOP;
+    size_t               bail_ip = 0;
 
     // Pending jumps to resolve after full body is emitted.
     // (disp_field_pos, bytecode_target_ip)
@@ -1165,6 +1225,14 @@ public:
           native_frame_regs(m.native_scratch_regs ? m.native_scratch_base :
                             (m.max_regs > 0 ? m.max_regs : 32)),
           callable_param_count(m.params.size()), callable_is_method(true) {}
+
+    // Set when compile() returned null because emit_op rejected an opcode.
+    // Other bail paths (target unsupported, bad ip range, unresolvable jump)
+    // leave this false, so a false here means "did not compile, but not
+    // because of an unsupported opcode".
+    bool     did_bail_on_opcode() const { return bailed; }
+    JitOp    bailed_opcode() const      { return bail_op; }
+    size_t   bailed_ip() const          { return bail_ip; }
 
     size_t strict_counted_loop_count() const {
         return strict_counted_loops.size();
@@ -1416,7 +1484,11 @@ public:
                     auto runtime_inst = std::make_unique<JitInst>(planned.inst);
                     const JitInst* stable = runtime_inst.get();
                     inline_inst_storage.push_back(std::move(runtime_inst));
-                    if (!emit_op(*stable, planned.source_ip, stable)) return nullptr;
+                    if (!emit_op(*stable, planned.source_ip, stable)) {
+                        bailed = true; bail_op = stable->op; bail_ip = planned.source_ip;
+                        return nullptr;
+                    }
+                    emitted_ops |= (uint64_t)1 << (int)stable->op;
                 }
                 active_scalar_guard_jumps = nullptr;
                 emit_epilogue_with_reg(scalar_plan.result.real_reg);
@@ -1443,7 +1515,11 @@ public:
                         em.jcc_rel32_placeholder(CC::E);
                     pending.push_back({fast_exit, spec->exit_ip});
                 }
-                if (!emit_op(chunk.code[ip], ip)) return nullptr;
+                if (!emit_op(chunk.code[ip], ip)) {
+                    bailed = true; bail_op = chunk.code[ip].op; bail_ip = ip;
+                    return nullptr;
+                }
+                emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
             }
             // Safety net: if control falls off the end, return nil.
             emit_epilogue_nil();
@@ -1470,6 +1546,7 @@ public:
             nf->frame_regs = native_frame_regs;
             nf->inline_insts = std::move(inline_inst_storage);
             nf->strict_loops = std::move(strict_loop_storage);
+            nf->emitted_ops = emitted_ops;
             return nf;
         } catch (...) {
             return nullptr;
@@ -2423,8 +2500,20 @@ private:
                 em.mov_mem_r(XR::RBX, oa, XR::RAX);
                 return true;
 
-            case O::ADD: case O::SUB: case O::MUL: case O::DIV: {
-                if (inst.op == O::DIV) return false;
+            // Guarded helper, same shape as MOD: division by zero must raise
+            // [E202] instead of yielding an infinity, so the inline SSE path
+            // below is not usable here.
+            case O::DIV: {
+                em.mov_r_mem(XR::RCX, XR::RBX, ob);
+                em.mov_r_mem(XR::RDX, XR::RBX, oc);
+                em.mov_ri64(XR::R8, (uint64_t)(uint32_t)inst.line);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_div);
+                em.call_rax();
+                em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                return true;
+            }
+
+            case O::ADD: case O::SUB: case O::MUL: {
                 if (inst.ic_numeric_fast) {
                     em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
                     if (inst.op == O::ADD) em.addsd_x_mem(XR::XMM0, XR::RBX, oc);
@@ -3332,8 +3421,105 @@ private:
             // DEF_FUNC and USE_LIB are no-ops in the interpreter.
             case O::DEF_FUNC:
                 return true;
-            case O::USE_LIB:
-                return false;
+            // DICT_KEYS — sura_jit_dict_keys(vm, R, &inst); writes R[a] itself.
+            // Builds the iteration keys a `for ... in` over a dict walks.
+            case O::DICT_KEYS: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_dict_keys);
+                em.call_rax();
+                return true;
+            }
+
+            // OP_IN — sura_jit_op_in(vm, R, &inst); writes R[a] itself.
+            case O::OP_IN: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_op_in);
+                em.call_rax();
+                return true;
+            }
+
+            // FOREACH_NEXT — the interpreter ends the loop by assigning
+            // `lip = operand`, which is a jump inside this same body. So the
+            // helper advances the iterator and returns 1 to continue / 0 to
+            // exit, and the branch is emitted here in the same shape
+            // JUMP_IF_FALSE uses.
+            case O::FOREACH_NEXT: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_foreach_next);
+                em.call_rax();
+                em.emit8(0x85); em.emit8(0xC0);   // test eax, eax
+                size_t p = em.jcc_rel32_placeholder(CC::E);
+                pending.push_back({p, (size_t)inst.operand});
+                return true;
+            }
+
+            // NEW_INSTANCE — sura_jit_new_instance(vm, R, &inst); writes R[a]
+            // itself. The constructor runs to completion inside the helper via
+            // execute_frame, which is safe because this opcode's control
+            // transfer is a call that returns - unlike TRY_BEGIN, there is no
+            // non-local jump back into generated code to reconstruct.
+            case O::NEW_INSTANCE: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_new_instance);
+                em.call_rax();
+                return true;
+            }
+
+            // INDEX_SET — sura_jit_index_set(vm, R, &inst); no result. Unlike
+            // INDEX_GET, register a is the container being written to.
+            case O::INDEX_SET: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_set);
+                em.call_rax();
+                return true;
+            }
+
+            // INDEX_GET — sura_jit_index_get(vm, R, &inst); R[a] = result.
+            // Indexing is polymorphic (array / dict / string / nil) and raises
+            // on two of those paths, so it goes through a guarded helper rather
+            // than inline code. Previously it had no case at all and fell to
+            // the default bail, which disqualified 53 of the 136 programs in
+            // tests/ from native compilation - the largest single blocker.
+            case O::INDEX_GET: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_get);
+                em.call_rax();
+                em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                return true;
+            }
+
+            // USE_LIB — sura_jit_use_lib(vm, R, &inst); binds a stdlib module
+            // into its global slot. Previously an unconditional bail, which
+            // disqualified the entire top-level chunk: main compiles
+            // all-or-nothing, so one `use` sent the whole program back to the
+            // interpreter.
+            case O::USE_LIB: {
+                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                em.mov_rr(XR::RCX, XR::R13);
+                em.mov_rr(XR::RDX, XR::RBX);
+                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_use_lib);
+                em.call_rax();
+                return true;
+            }
 
             // MAKE_LAMBDA — sura_jit_make_lambda(vm, R, &inst); R[a] = result
             case O::MAKE_LAMBDA: {

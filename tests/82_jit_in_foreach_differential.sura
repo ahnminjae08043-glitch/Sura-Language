@@ -1,0 +1,105 @@
+# Native emitter coverage for OP_IN and FOREACH_NEXT.
+#
+# OP_IN is an ordinary value computation across array / dict / string, with nil
+# for anything else.
+#
+# FOREACH_NEXT is the more interesting one. The interpreter ends the loop by
+# assigning `lip = operand` - a jump - which is the same shape of thing that
+# made TRY_BEGIN untenable. The difference is that this jump is *local to the
+# same body*, so it is expressible with the emitter's existing pending/patch
+# machinery: the helper advances the iterator and reports continue/exit, and the
+# generated code does the branching. That split is what this file checks, by
+# driving loops to their natural end rather than only partway.
+#
+# Run under tools/sura_jit_differential.ps1: native and VM output must match.
+
+nums is [10, 20, 30]
+words is ["alpha", "beta"]
+lookup is {name: "sura", kind: "lang"}
+text is "hello"
+
+# ── OP_IN over each container kind ──
+assert_eq(20 in nums, true)
+assert_eq(99 in nums, false)
+assert_eq("beta" in words, true)
+assert_eq("gamma" in words, false)
+assert_eq("name" in lookup, true)
+assert_eq("absent" in lookup, false)
+assert_eq("ell" in text, true)
+assert_eq("zzz" in text, false)
+
+# Anything that is not a container yields nil rather than false.
+plain is 5
+assert_eq(1 in plain, nil)
+
+# ── FOREACH_NEXT over an array: the loop must terminate on its own ──
+total is 0
+for n in nums do
+  total is total + n
+end
+assert_eq(total, 60)
+
+# Empty collection: the exit branch is taken immediately, without ever
+# producing a value.
+empties is []
+ran is 0
+for e in empties do
+  ran is ran + 1
+end
+assert_eq(ran, 0)
+
+# Single element, so the continue and exit branches are both taken exactly once.
+singles is [42]
+seen is 0
+for s in singles do
+  seen is seen + s
+end
+assert_eq(seen, 42)
+
+# ── FOREACH_NEXT over a string yields one-character strings ──
+joined is ""
+for ch in text do
+  joined is joined + ch
+end
+assert_eq(joined, "hello")
+
+# ── Nested loops, so the iterator registers of an inner loop do not disturb
+#    the outer one ──
+pairs is 0
+for a in nums do
+  for b in words do
+    pairs is pairs + 1
+  end
+end
+assert_eq(pairs, 6)
+
+# ── Repeated traversal in a hot loop, so the opcode runs far past warm-up and
+#    the iterator is reset correctly each time ──
+runs is 0
+i is 0
+while i < 100 do
+  for n in nums do
+    runs is runs + n
+  end
+  i is i + 1
+end
+assert_eq(runs, 6000)
+
+# Iterating inside a callee, so the function-level emitter path is covered too.
+func sum_all(arr) do
+  s is 0
+  for v in arr do
+    s is s + v
+  end
+  return s
+end
+
+acc is 0
+j is 0
+while j < 40 do
+  acc is acc + sum_all(nums)
+  j is j + 1
+end
+assert_eq(acc, 2400)
+
+print "82_jit_in_foreach_differential: PASS"

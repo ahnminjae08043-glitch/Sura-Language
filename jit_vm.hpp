@@ -171,7 +171,79 @@ class JitVM {
     // Methods warm one call earlier so caller functions can bake their ICs.
     static constexpr int METHOD_LAZY_JIT_THRESHOLD = 5;
     static constexpr int FUNC_LAZY_JIT_THRESHOLD = METHOD_LAZY_JIT_THRESHOLD + 1;
-    std::unordered_map<int, int> func_warm_count;              // func_idx -> interpreter call count
+    // Flat per-func_idx JIT state. func_idx is a dense index into
+    // chunk.func_table, so a vector lookup replaces the native_funcs /
+    // jit_failed / func_warm_count hash probes that CALL_FUNC previously did
+    // on every call. The warm counter lives in the slot, which is what
+    // retired the separate func_warm_count map. native_funcs stays the owner and is never cleared, so
+    // the cached pointer below cannot dangle.
+    struct JitFuncSlot {
+        NativeFunc* native = nullptr;   // non-owning; owned by native_funcs
+        int32_t     warm   = 0;
+        bool        failed = false;
+    };
+    std::vector<JitFuncSlot> jit_slots;
+
+    // The top-level main chunk is compiled into a local NativeFunc that is
+    // never stored in native_funcs, so its opcode mask has to be captured
+    // separately or emitter coverage silently omits everything that only
+    // appears at top level - DEF_CLASS, DEF_FUNC, USE_LIB and HALT among them.
+    uint64_t main_emitted_ops = 0;
+    // When the top-level compile gives up on an opcode, remember which one.
+    // Because main compiles all-or-nothing, a single rejected opcode costs the
+    // whole program its native code - so naming it turns "this program did not
+    // use the JIT" into something actionable.
+    bool     main_bailed = false;
+    JitOp    main_bail_op = JitOp::NOP;
+    size_t   main_bail_ip = 0;
+
+    JitFuncSlot& jit_slot(int fidx) {
+        if ((size_t)fidx >= jit_slots.size()) jit_slots.resize((size_t)fidx + 1);
+        return jit_slots[fidx];
+    }
+
+    // Warm-up and compilation. Kept out of line so that resolve_native() stays
+    // small enough to inline at the call sites: this body pulls in
+    // NativeCompiler and a try/catch, and inlining all of that into CALL_FUNC
+    // costs more than the hash lookups it was introduced to remove.
+#ifdef __GNUC__
+    __attribute__((noinline))
+#endif
+    NativeFunc* resolve_native_slow(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+        JitFuncSlot& slot = jit_slot(fidx);
+        if (slot.native) return slot.native;
+        if (slot.failed) return nullptr;
+        if (++slot.warm < FUNC_LAZY_JIT_THRESHOLD) return nullptr;
+        try {
+            NativeCompiler nc(chunk, fi);
+            auto compiled = nc.compile();
+            if (compiled) {
+                NativeFunc* raw = compiled.get();
+                native_funcs.emplace(fidx, std::move(compiled));
+                slot.native = raw;
+                return raw;
+            }
+        } catch (...) {
+            // fall through to the failure bookkeeping below
+        }
+        slot.failed = true;
+        jit_failed.insert(fidx);   // keep the legacy set in sync for reporting
+        return nullptr;
+    }
+
+    // Resolve the native body for fidx. Once a function has settled into either
+    // "compiled" or "never compilable" - which is where a hot call site spends
+    // essentially all of its calls - this is a bounds check and a load.
+    inline NativeFunc* resolve_native(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+        if (fidx < 0) return nullptr;
+        if (__builtin_expect((size_t)fidx < jit_slots.size(), 1)) {
+            JitFuncSlot& slot = jit_slots[(size_t)fidx];
+            if (slot.native) return slot.native;
+            if (__builtin_expect(slot.failed, 1)) return nullptr;
+        }
+        return resolve_native_slow(chunk, fi, fidx);
+    }
+
     std::unordered_map<const void*, int> method_warm_count;    // JitMethodInfo* -> call count
     // Chunk currently executing — used by JIT'd native code via C helpers
     // (sura_jit_call / sura_jit_load_global / sura_jit_store_global).
@@ -1046,6 +1118,32 @@ public:
     const SuraGcStats& garbage_collection_stats() const { return gc_stats; }
     size_t native_funcs_count() const { return native_funcs.size(); }
     size_t native_methods_count() const { return native_methods.size(); }
+
+    // Union of the opcodes that reached a native emitter in this run. A green
+    // test suite says nothing about codegen if most emitters were never
+    // reached, so this reports which ones actually were.
+    uint64_t native_emitted_ops() const {
+        uint64_t mask = main_emitted_ops;
+        for (const auto& entry : native_funcs)   if (entry.second) mask |= entry.second->emitted_ops;
+        for (const auto& entry : native_methods) if (entry.second) mask |= entry.second->emitted_ops;
+        return mask;
+    }
+
+    // Empty when the top level compiled, or when it failed for a reason other
+    // than an unsupported opcode. Otherwise names the opcode that blocked it.
+    std::string native_main_bail_reason() const {
+        if (!main_bailed) return "";
+        return op_to_str(main_bail_op) + " at ip=" + std::to_string(main_bail_ip);
+    }
+
+    // Names of the emitted opcodes, in enum order, for CLI reporting.
+    std::vector<std::string> native_emitted_op_names() const {
+        std::vector<std::string> names;
+        uint64_t mask = native_emitted_ops();
+        for (int i = 0; i < 64; ++i)
+            if (mask & ((uint64_t)1 << i)) names.push_back(op_to_str((JitOp)i));
+        return names;
+    }
     size_t native_scalarized_count() const {
         size_t count = 0;
         for (const auto& entry : native_funcs) {
@@ -2319,6 +2417,13 @@ public:
     uint64_t jit_make_lambda(Value* R, const JitInst* ins);
     void     jit_def_class(Value* R, const JitInst* ins);
     void     jit_print(Value* R, const JitInst* ins, int newline);
+    void     jit_use_lib(const JitInst* ins);
+    uint64_t jit_index_get(Value* R, const JitInst* ins);
+    void     jit_index_set(Value* R, const JitInst* ins);
+    void     jit_new_instance(Value* R, const JitInst* ins);
+    void     jit_op_in(Value* R, const JitInst* ins);
+    void     jit_dict_keys(Value* R, const JitInst* ins);
+    int      jit_foreach_next(Value* R, const JitInst* ins);
     // Global load/store helpers used by LOAD_GLOBAL / STORE_GLOBAL in JIT.
     uint64_t jit_load_global(int idx) {
         if (idx < 0 || (size_t)idx >= globals.size()) return Value::nil().raw_bits();
@@ -2654,11 +2759,17 @@ public:
             try {
                 NativeCompiler nc(main_chunk, main_fi, /*top_level=*/true);
                 compiled = nc.compile();
+                if (!compiled && nc.did_bail_on_opcode()) {
+                    main_bailed  = true;
+                    main_bail_op = nc.bailed_opcode();
+                    main_bail_ip = nc.bailed_ip();
+                }
             } catch (...) {
                 compiled.reset();
                 /* fall back to interpreter */
             }
             if (compiled) {
+                main_emitted_ops |= compiled->emitted_ops;
                 Value* NR = &value_stack[base];
                 active_chunk = &main_chunk;
                 // Runtime exceptions are not compilation failures. Let the
@@ -3218,6 +3329,23 @@ private:
         return false;
     }
 
+    // Cold-path instrumentation. Kept out of line so each _NEXT() site is a
+    // single predicted-not-taken test rather than an inlined trace/hook block.
+#ifdef __GNUC__
+    __attribute__((noinline))
+#endif
+    void vm_instrument_step(const JitChunk& chunk, const JitInst& ins, size_t ip,
+                            const CallFrame& fp, Value* R) {
+        if (trace_enabled) {
+            std::cerr << "[trace] ip=" << ip
+                      << " line=" << ins.line
+                      << " op=" << op_to_str(ins.op)
+                      << " a=" << (int)ins.a << " b=" << (int)ins.b << " c=" << (int)ins.c
+                      << " operand=" << ins.operand << "\n";
+        }
+        if (debug_hook) debug_before_instruction(chunk, ins, ip, fp, R);
+    }
+
     // ── Iterative VM entry point ──────────────────────────────────────
     // Pushes initial_frame onto call_stack and dispatches iteratively.
     // CALL_FUNC/METHOD_CALL push new frames; RETURN_VAL/NONE pop them.
@@ -3236,6 +3364,9 @@ private:
         const auto& chunk = *fp->chunk;        // all frames share one chunk
         const JitInst* code = chunk.code.data();
         int gc_tick = 0;
+        // Attached before execution via set_profiler(); hoisted so the hot
+        // arithmetic and branch opcodes test a register, not a member load.
+        Profiler* const _prof = prof;
 
         // ── Local ip cache: avoids heap pointer deref on every instruction ──
         size_t lip  = fp->ip;
@@ -3250,18 +3381,15 @@ private:
         const JitInst* cur = nullptr;
         uint16_t a = 0, b = 0, c = 0;
         #define inst (*cur)
+        // Trace and debug hooks are configured before execution (enable_trace /
+        // set_debug_hook) and never toggle mid-run, so both collapse into one
+        // register-resident flag instead of two member loads per instruction.
+        const bool _instr = trace_enabled || (bool)debug_hook;
         // Hot dispatch: no gc_tick here — checked only at call/jump sites
         #define _NEXT() do { \
             if (__builtin_expect(lip >= lend, 0)) goto _dispatch_exit; \
             cur = code + lip++; a = cur->a; b = cur->b; c = cur->c; \
-            if (__builtin_expect(trace_enabled, 0)) { \
-                std::cerr << "[trace] ip=" << (lip - 1) \
-                          << " line=" << cur->line \
-                          << " op=" << op_to_str(cur->op) \
-                          << " a=" << (int)a << " b=" << (int)b << " c=" << (int)c \
-                          << " operand=" << cur->operand << "\n"; \
-            } \
-            if (__builtin_expect((bool)debug_hook, 0)) debug_before_instruction(chunk, *cur, lip - 1, *fp, R); \
+            if (__builtin_expect(_instr, 0)) vm_instrument_step(chunk, *cur, lip - 1, *fp, R); \
             goto *_dt[(uint8_t)cur->op]; \
         } while(0)
         // GC tick: checked only at CALL/JUMP sites (not every instruction)
@@ -3361,10 +3489,10 @@ _reenter:
             _END_CASE
 
             // ── Arithmetic ────────────────────────────────────────────
-            _CASE(ADD) if (__builtin_expect(prof != nullptr, 0)) prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); R[a] = R[b] + R[c]; _END_CASE
-            _CASE(SUB) if (__builtin_expect(prof != nullptr, 0)) prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] 타입 불일치", inst.line}; R[a] = R[b] - R[c]; _END_CASE
-            _CASE(MUL) if (__builtin_expect(prof != nullptr, 0)) prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] 타입 불일치", inst.line}; R[a] = R[b] * R[c]; _END_CASE
-            _CASE(DIV) if (__builtin_expect(prof != nullptr, 0)) prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] type mismatch", inst.line}; if (R[c].as_num() == 0.0) { if (fp->in_try) { R[fp->catch_var_reg] = Value(std::string("[E202] division by zero")); lip = fp->catch_ip; fp->in_try = false; } else throw JitThrow{"[E202] division by zero", inst.line}; } else R[a] = R[b] / R[c]; _END_CASE
+            _CASE(ADD) if (__builtin_expect(_prof != nullptr, 0)) _prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); R[a] = R[b] + R[c]; _END_CASE
+            _CASE(SUB) if (__builtin_expect(_prof != nullptr, 0)) _prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] 타입 불일치", inst.line}; R[a] = R[b] - R[c]; _END_CASE
+            _CASE(MUL) if (__builtin_expect(_prof != nullptr, 0)) _prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] 타입 불일치", inst.line}; R[a] = R[b] * R[c]; _END_CASE
+            _CASE(DIV) if (__builtin_expect(_prof != nullptr, 0)) _prof->record_arith(lip-1, R[b].is_num() && R[c].is_num()); if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] type mismatch", inst.line}; if (R[c].as_num() == 0.0) { if (fp->in_try) { R[fp->catch_var_reg] = Value(std::string("[E202] division by zero")); lip = fp->catch_ip; fp->in_try = false; } else throw JitThrow{"[E202] division by zero", inst.line}; } else R[a] = R[b] / R[c]; _END_CASE
             _CASE(MOD) if (!R[b].is_num() || !R[c].is_num()) throw JitThrow{"[E200] type mismatch", inst.line}; if (R[c].as_num() == 0.0) { if (fp->in_try) { R[fp->catch_var_reg] = Value(std::string("[E202] modulo by zero")); lip = fp->catch_ip; fp->in_try = false; } else throw JitThrow{"[E202] modulo by zero", inst.line}; } else R[a] = R[b].mod(R[c]); _END_CASE
             _CASE(NEG) if (!R[b].is_num()) throw JitThrow{"[E200] 타입 불일치", inst.line}; R[a] = R[b].negate();  _END_CASE
 
@@ -3387,8 +3515,8 @@ _reenter:
 
             // ── Control flow ──────────────────────────────────────────
             _CASE(JUMP)           lip = (size_t)inst.operand; _GC_TICK();             _END_CASE
-            _CASE(JUMP_IF_FALSE)  { bool _t = R[a].truthy(); if (__builtin_expect(prof != nullptr, 0)) prof->record_branch(lip-1, !_t); if (!_t) { lip = (size_t)inst.operand; _GC_TICK(); } } _END_CASE
-            _CASE(JUMP_IF_TRUE)   { bool _t = R[a].truthy(); if (__builtin_expect(prof != nullptr, 0)) prof->record_branch(lip-1,  _t); if  (_t) { lip = (size_t)inst.operand; _GC_TICK(); } } _END_CASE
+            _CASE(JUMP_IF_FALSE)  { bool _t = R[a].truthy(); if (__builtin_expect(_prof != nullptr, 0)) _prof->record_branch(lip-1, !_t); if (!_t) { lip = (size_t)inst.operand; _GC_TICK(); } } _END_CASE
+            _CASE(JUMP_IF_TRUE)   { bool _t = R[a].truthy(); if (__builtin_expect(_prof != nullptr, 0)) _prof->record_branch(lip-1,  _t); if  (_t) { lip = (size_t)inst.operand; _GC_TICK(); } } _END_CASE
             
             _CASE(MAKE_LAMBDA) {
                 if (inst.operand < 0 || (size_t)inst.operand >= chunk.func_table.size())
@@ -3615,7 +3743,7 @@ _reenter:
                     const auto& fi = chunk.func_table[closure->func_idx];
                     if ((size_t)inst.operand > fi.params.size())
                         throw JitThrow{"[E300] 잘못된 인자 개수", inst.line};
-                    if (__builtin_expect(prof != nullptr, 0)) prof->record_call(lip-1, fi.name);
+                    if (__builtin_expect(_prof != nullptr, 0)) _prof->record_call(lip-1, fi.name);
 
                     size_t new_count = function_frame_regs(chunk, fi);
                     size_t new_base  = alloc_frame_regs(new_count, inst.line);
@@ -3627,26 +3755,7 @@ _reenter:
                     // Lazy compile: wait until interpreter runs warm ICs so
                     // ic_cache slots are warm before we bake them into native code.
                     NativeFunc* native = nullptr;
-                    if (jit_enabled) {
-                        int fidx = closure->func_idx;
-                        auto it = native_funcs.find(fidx);
-                        if (it == native_funcs.end() && jit_failed.find(fidx) == jit_failed.end()) {
-                            if (++func_warm_count[fidx] >= FUNC_LAZY_JIT_THRESHOLD) {
-                                try {
-                                    NativeCompiler nc(chunk, fi);
-                                    auto compiled = nc.compile();
-                                    if (compiled) {
-                                        it = native_funcs.emplace(fidx, std::move(compiled)).first;
-                                    } else {
-                                        jit_failed.insert(fidx);
-                                    }
-                                } catch (...) {
-                                    jit_failed.insert(fidx);
-                                }
-                            }
-                        }
-                        if (it != native_funcs.end()) native = it->second.get();
-                    }
+                    if (jit_enabled) native = resolve_native(chunk, fi, closure->func_idx);
 
                     if (native) {
                         uint64_t bits = native->fn(this, NR, chunk.constants.data());
@@ -3705,11 +3814,11 @@ _reenter:
                 _GC_TICK();
                 const std::string& meth = chunk.get_string(inst.str_idx);
                 int nargs = inst.operand;
-                if (__builtin_expect(prof != nullptr, 0)) {
+                if (__builtin_expect(_prof != nullptr, 0)) {
                     std::string receiver = R[b].is_inst()
                         ? R[b].as_inst()->type_name() + "." + meth
                         : (R[b].is_arr() ? "[array]." : R[b].is_dict() ? "[dict]." : "[?].") + meth;
-                    prof->record_call(lip-1, receiver);
+                    _prof->record_call(lip-1, receiver);
                 }
                 // Built-in array methods
                 Value builtin_method_result;
@@ -4346,28 +4455,20 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
         // path is bypassed for its callees. Mirror that path here so functions
         // called only from JIT'd main (e.g. `step` in bench_physics) still
         // get native-compiled after the callee ICs have warmed.
-        if (jit_enabled && !jit_failed.count(cl->func_idx) &&
-            native_funcs.find(cl->func_idx) == native_funcs.end()) {
-            if (++func_warm_count[cl->func_idx] >= FUNC_LAZY_JIT_THRESHOLD) {
-                try {
-                    NativeCompiler nc(chunk, fi);
-                    auto compiled = nc.compile();
-                    if (compiled) native_funcs.emplace(cl->func_idx, std::move(compiled));
-                    else           jit_failed.insert(cl->func_idx);
-                } catch (...) { jit_failed.insert(cl->func_idx); }
-            }
+        NativeFunc* callee_native = nullptr;
+        if (jit_enabled) {
+            callee_native = resolve_native(chunk, fi, cl->func_idx);
         }
 
         // Recursive JIT-in-JIT: if callee has native code, invoke it directly.
-        auto it = native_funcs.find(cl->func_idx);
-        if (it != native_funcs.end()) {
+        if (callee_native) {
             // ── Phase 7: populate closure IC for monomorphic fast path ──
             // ic_method must remain nullptr to disambiguate from ctor IC.
             ins->ic_cache     = cl->func_idx;
-            ins->ic_native_fn = (void*)it->second->fn;
-            ins->ic_native_frame_regs = it->second->frame_regs;
+            ins->ic_native_fn = (void*)callee_native->fn;
+            ins->ic_native_frame_regs = callee_native->frame_regs;
             ins->ic_method    = nullptr;
-            uint64_t bits = it->second->fn(this, NR, chunk.constants.data());
+            uint64_t bits = callee_native->fn(this, NR, chunk.constants.data());
             stack_top = base;
             return bits;
         }
@@ -4689,6 +4790,180 @@ inline uint64_t JitVM::jit_make_lambda(Value* R, const JitInst* ins) {
     return Value((GCObject*)clos).raw_bits();
 }
 
+// Mirrors the USE_LIB case in execute_frame exactly, including the order the
+// module value is built and bound. USE_LIB has a side effect - it binds a
+// stdlib module into a global - so native and interpreted runs have to perform
+// the same binding, or a program's observable state depends on whether the top
+// level happened to compile.
+inline void JitVM::jit_use_lib(const JitInst* ins) {
+    if (!active_chunk) return;
+    const JitChunk& chunk = *active_chunk;
+    std::string lib = chunk.get_string(ins->str_idx);
+    if (!is_stdlib_module(lib)) return;
+    Value mod = make_stdlib_module(lib);
+    for (size_t gi = 0; gi < chunk.global_names.size(); ++gi) {
+        if (chunk.global_names[gi] == lib) {
+            if (globals.size() <= gi) globals.resize(gi + 1, Value::nil());
+            if (global_initialized.size() <= gi) global_initialized.resize(gi + 1, false);
+            globals[gi] = mod;
+            global_initialized[gi] = true;
+            break;
+        }
+    }
+}
+
+// Mirrors the INDEX_GET case in execute_frame. Indexing is polymorphic across
+// array, dict, string and nil and raises on two of those paths, so it takes a
+// guarded helper rather than inline code - the same shape DIV and MOD use.
+// Every branch and error string below has to match the interpreter's, since the
+// differential lane compares their output byte for byte.
+inline uint64_t JitVM::jit_index_get(Value* R, const JitInst* ins) {
+    const Value& target = R[ins->b];
+    const Value& key    = R[ins->c];
+    if (target.is_arr()) {
+        int idx = (int)key.to_num();
+        auto* arr = target.as_arr();
+        if (idx < 0) idx += (int)arr->elements.size();
+        if (idx >= 0 && idx < (int)arr->elements.size())
+            return arr->elements[idx].raw_bits();
+        throw JitThrow{"[E202] 배열 범위 초과", ins->line};
+    }
+    if (target.is_dict()) return target.dict_get(key.to_str()).raw_bits();
+    if (target.is_str()) {
+        int i = (int)key.to_num();
+        const std::string& s = target.as_str_ref();
+        if (i < 0) i += (int)s.size();
+        return ((i >= 0 && i < (int)s.size()) ? Value(std::string(1, s[i]))
+                                              : Value::nil()).raw_bits();
+    }
+    if (target.is_nil()) throw JitThrow{"[E201] nil 역참조", ins->line};
+    return Value::nil().raw_bits();
+}
+
+// Mirrors the INDEX_SET case in execute_frame. Note the register roles differ
+// from INDEX_GET: here `a` is the container being written to, not a
+// destination, and there is no result. Anything that is neither array nor dict
+// is silently ignored, which is the interpreter's behaviour and so has to be
+// this helper's too.
+inline void JitVM::jit_index_set(Value* R, const JitInst* ins) {
+    Value& target = R[ins->a];
+    if      (target.is_arr())  target.arr_set((int)R[ins->b].to_num(), R[ins->c]);
+    else if (target.is_dict()) target.dict_set(R[ins->b].to_str(), R[ins->c]);
+}
+
+// Mirrors the NEW_INSTANCE case in execute_frame.
+//
+// Unlike TRY_BEGIN, this opcode's control transfer is a *call*: the constructor
+// runs and comes back, so it can be expressed as a helper that drives the
+// constructor to completion with execute_frame() and returns - the same thing
+// dispatch_method_call_from_jit already does for user-defined methods. There is
+// no non-local jump to reconstruct.
+//
+// Two orderings from the interpreter have to be preserved exactly. The instance
+// is written into its destination register *before* the constructor runs, which
+// is what makes the constructor's return value discarded rather than
+// overwriting it. And the frame registers are released afterwards, as
+// dispatch_method_call_from_jit does.
+inline void JitVM::jit_new_instance(Value* R, const JitInst* ins) {
+    if (!active_chunk) return;
+    const JitChunk& chunk = *active_chunk;
+    const std::string cls = chunk.get_string(ins->str_idx);
+
+    auto class_found = rt_classes.find(cls);
+    Value inst_val = class_found == rt_classes.end()
+        ? Value::make_inst(cls)
+        : make_initialized_instance(&class_found->second, ins->line);
+    R[ins->a] = inst_val;
+
+    const JitMethodInfo* ctor = find_method(cls, "생성자");
+    if (!ctor) ctor = find_method(cls, "init");
+    if (!ctor) return;
+
+    size_t ctor_count = method_frame_regs(chunk, *ctor);
+    size_t ctor_base  = alloc_frame_regs(ctor_count, ins->line);
+    Value* CR = &value_stack[ctor_base];
+    bind_method_args(chunk, *ctor, CR, inst_val, &R[ins->b],
+                     static_cast<size_t>(std::max(0, ins->operand)));
+
+    CallFrame cf;
+    cf.reg_base  = ctor_base;
+    cf.reg_count = ctor_count;
+    cf.chunk     = &chunk;
+    cf.closure   = nullptr;
+    cf.method    = ctor;
+    cf.ip        = ctor->entry_ip;
+    cf.end_ip    = ctor->end_ip;
+    cf.ret_reg   = (uint16_t)-1;
+    cf.in_try    = false;
+    execute_frame(cf);   // return value intentionally discarded
+    stack_top = ctor_base;
+}
+
+// Mirrors the OP_IN case in execute_frame. A pure value computation over
+// array / dict / string, with nil for anything else.
+inline void JitVM::jit_op_in(Value* R, const JitInst* ins) {
+    const Value& needle = R[ins->b];
+    const Value& hay    = R[ins->c];
+    if (hay.is_arr()) {
+        bool found = false;
+        for (auto& el : hay.as_arr()->elements) if (needle.eq(el)) { found = true; break; }
+        R[ins->a] = Value(found);
+    } else if (hay.is_dict()) {
+        R[ins->a] = Value(hay.dict_has(needle.to_str()));
+    } else if (hay.is_str()) {
+        R[ins->a] = Value(hay.as_str_ref().find(needle.to_str()) != std::string::npos);
+    } else {
+        R[ins->a] = Value::nil();
+    }
+}
+
+// Mirrors the DICT_KEYS case in execute_frame. Builds the iteration keys for a
+// collection: a dict yields its keys, an array or string yields its indices,
+// and anything else yields an empty array rather than nil.
+inline void JitVM::jit_dict_keys(Value* R, const JitInst* ins) {
+    Value keys = Value::make_array();
+    const Value& coll = R[ins->b];
+    if (coll.is_dict()) {
+        for (auto& [k, v] : coll.as_dict()->elements)
+            keys.as_arr()->elements.push_back(Value(k));
+    } else if (coll.is_arr()) {
+        int n = (int)coll.as_arr()->elements.size();
+        for (int i = 0; i < n; ++i) keys.as_arr()->elements.push_back(Value((double)i));
+    } else if (coll.is_str()) {
+        int n = (int)coll.as_str_ref().size();
+        for (int i = 0; i < n; ++i) keys.as_arr()->elements.push_back(Value((double)i));
+    }
+    R[ins->a] = keys;
+}
+
+// Mirrors the FOREACH_NEXT case in execute_frame, minus the jump.
+//
+// The interpreter ends the loop by assigning `lip = operand`. That is a jump
+// within the same body, which the emitter already knows how to express, so the
+// split is: this helper advances the iterator and reports whether there was an
+// element, and the generated code does the branching. Returns 1 to continue
+// (value and index registers updated) and 0 to exit the loop.
+inline int JitVM::jit_foreach_next(Value* R, const JitInst* ins) {
+    const Value& coll = R[ins->c];
+    if (coll.is_arr()) {
+        int idx = (int)R[ins->b].to_num();
+        auto* arr = coll.as_arr();
+        if (idx >= (int)arr->elements.size()) return 0;
+        R[ins->a] = arr->elements[idx];
+        R[ins->b] = Value((double)(idx + 1));
+        return 1;
+    }
+    if (coll.is_str()) {
+        int idx = (int)R[ins->b].to_num();
+        const std::string& s = coll.as_str();
+        if (idx >= (int)s.size()) return 0;
+        R[ins->a] = Value(std::string(1, s[idx]));
+        R[ins->b] = Value((double)(idx + 1));
+        return 1;
+    }
+    return 0;
+}
+
 inline void JitVM::jit_def_class(Value* R, const JitInst* ins) {
     if (!active_chunk) return;
     const JitChunk& chunk = *active_chunk;
@@ -4778,6 +5053,28 @@ extern "C" inline uint64_t sura_jit_make_lambda(JitVM* vm, Value* R, const JitIn
 }
 extern "C" inline void sura_jit_def_class(JitVM* vm, Value* R, const JitInst* ins) {
     vm->jit_def_class(R, ins);
+}
+extern "C" inline void sura_jit_use_lib(JitVM* vm, Value* R, const JitInst* ins) {
+    (void)R;
+    vm->jit_use_lib(ins);
+}
+extern "C" inline uint64_t sura_jit_index_get(JitVM* vm, Value* R, const JitInst* ins) {
+    return vm->jit_index_get(R, ins);
+}
+extern "C" inline void sura_jit_index_set(JitVM* vm, Value* R, const JitInst* ins) {
+    vm->jit_index_set(R, ins);
+}
+extern "C" inline void sura_jit_new_instance(JitVM* vm, Value* R, const JitInst* ins) {
+    vm->jit_new_instance(R, ins);
+}
+extern "C" inline void sura_jit_op_in(JitVM* vm, Value* R, const JitInst* ins) {
+    vm->jit_op_in(R, ins);
+}
+extern "C" inline void sura_jit_dict_keys(JitVM* vm, Value* R, const JitInst* ins) {
+    vm->jit_dict_keys(R, ins);
+}
+extern "C" inline int sura_jit_foreach_next(JitVM* vm, Value* R, const JitInst* ins) {
+    return vm->jit_foreach_next(R, ins);
 }
 extern "C" inline void sura_jit_print(JitVM* vm, Value* R, const JitInst* ins, int newline) {
     vm->jit_print(R, ins, newline);

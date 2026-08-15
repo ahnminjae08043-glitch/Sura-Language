@@ -5727,6 +5727,23 @@ int main(int argc, char* argv[]) {
                       << " guarded no-alias record reuse site(s), "
                       << vm.generic_record_loop_runs_count()
                       << " generic numeric record loop execution(s)\n";
+
+            // Which emitters this run actually reached. Printed on its own
+            // line so tools can parse it without re-parsing the summary above.
+            std::vector<std::string> emitted = vm.native_emitted_op_names();
+            std::cout << "[JIT-OPS] " << emitted.size() << " opcode(s) emitted:";
+            if (emitted.empty()) {
+                std::cout << " (none)";
+            } else {
+                for (const std::string& name : emitted) std::cout << " " << name;
+            }
+            std::cout << "\n";
+
+            // main compiles all-or-nothing, so when it does not, the single
+            // opcode responsible is the actionable detail.
+            std::string bail = vm.native_main_bail_reason();
+            if (!bail.empty())
+                std::cout << "[JIT-BAIL] top level not compiled: " << bail << "\n";
         }
 
         // [Benchmark]

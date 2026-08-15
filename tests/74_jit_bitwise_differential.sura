@@ -1,0 +1,91 @@
+# Native emitter coverage for the bitwise, logical-not and nil opcodes.
+#
+# The aggregate [JIT-OPS] report across tests/ showed BIT_NOT, BIT_XOR,
+# LOGICAL_NOT and LOAD_NIL had emitters in jit_native.hpp that nothing in the
+# suite ever reached: BIT_AND/BIT_OR/LSHIFT/RSHIFT were covered incidentally,
+# but their siblings were not. This file closes that gap deliberately.
+#
+# Run under tools/sura_jit_differential.ps1 so the native results are compared
+# against the register VM's.
+
+func jit_bit_and(a, b) do
+  return a & b
+end
+
+func jit_bit_or(a, b) do
+  return a | b
+end
+
+func jit_bit_xor(a, b) do
+  return a ^ b
+end
+
+func jit_bit_not(a) do
+  return ~a
+end
+
+func jit_lshift(a, b) do
+  return a << b
+end
+
+func jit_rshift(a, b) do
+  return a >> b
+end
+
+# LOGICAL_NOT is a distinct opcode from BIT_NOT and has its own emitter.
+func jit_logical_not(a) do
+  return not a
+end
+
+# LOAD_NIL: a callee whose result is an explicit nil.
+func jit_nil_when_small(n) do
+  if n < 10 then
+    return nil
+  end
+  return n
+end
+
+# Combined expression so the bitwise ops feed each other's registers.
+func jit_bit_mix(a, b) do
+  return (a & b) | (a ^ b)
+end
+
+i is 0
+while i < 40 do
+  # 12 = 0b1100, 10 = 0b1010
+  assert_eq(jit_bit_and(12, 10), 8)    # 0b1000
+  assert_eq(jit_bit_or(12, 10), 14)    # 0b1110
+  assert_eq(jit_bit_xor(12, 10), 6)    # 0b0110
+  assert_eq(jit_bit_not(0), -1)
+  assert_eq(jit_bit_not(5), -6)
+  assert_eq(jit_lshift(1, 4), 16)
+  assert_eq(jit_rshift(64, 3), 8)
+
+  # a|b equals (a&b)|(a^b) for all a, b — a cheap invariant that catches an
+  # emitter mixing up which operand register it read.
+  assert_eq(jit_bit_mix(12, 10), 14)
+  assert_eq(jit_bit_mix(255, 0), 255)
+
+  assert_eq(jit_logical_not(true), false)
+  assert_eq(jit_logical_not(false), true)
+  assert_eq(jit_logical_not(0), true)
+  assert_eq(jit_logical_not(1), false)
+
+  assert_eq(jit_nil_when_small(3), nil)
+  assert_eq(jit_nil_when_small(20), 20)
+  i is i + 1
+end
+
+# Boundaries and negatives, once the bodies are already native.
+assert_eq(jit_bit_and(0, 0), 0)
+assert_eq(jit_bit_or(0, 0), 0)
+assert_eq(jit_bit_xor(7, 7), 0)
+assert_eq(jit_bit_xor(0, 9), 9)
+assert_eq(jit_bit_not(-1), 0)
+assert_eq(jit_lshift(3, 0), 3)
+assert_eq(jit_rshift(1, 1), 0)
+assert_eq(jit_bit_mix(0, 0), 0)
+assert_eq(jit_nil_when_small(9), nil)
+assert_eq(jit_nil_when_small(10), 10)
+
+print "74_jit_bitwise_differential: PASS"

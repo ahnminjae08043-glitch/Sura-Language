@@ -1,0 +1,54 @@
+# async_sura() must say which of two different things went wrong.
+#
+# std::filesystem::is_regular_file() reports false both when a path is not a
+# regular file and when the query itself failed. The engine used to collapse
+# those into one message, so a file that was present but momentarily locked -
+# by an antivirus scan, an indexer, or a cloud-sync recall - was reported as
+# "must name a regular file", sending the reader to look for a missing file
+# that was actually there. See async_require_regular_file in stdlib.hpp.
+#
+# The transient case cannot be triggered deterministically, so this pins the
+# side that can be: a path that genuinely is not a regular file must keep the
+# "must name a regular file" wording, and must not be reported as an inspection
+# failure.
+
+use async
+
+# A directory is not a regular file.
+dir_error is ""
+try
+  dir_task is async.sura({program: "tests", input: {mode: "value", value: 1}, timeout_ms: 5000})
+  async.await(dir_task)
+catch e
+  dir_error is e
+end
+assert(contains(dir_error, "must name a regular file"))
+assert(not contains(dir_error, "cannot inspect"))
+
+# A path that does not exist must also keep the plain wording. This one is
+# easy to get wrong: libstdc++ on Windows reports a missing path through the
+# error_code rather than as a not_found status, so a naive "any error code
+# means the query failed" check routes the most common case of all into the
+# message reserved for genuine inspection failures.
+missing_error is ""
+try
+  missing_task is async.sura({program: "tests/definitely_not_here_9c3f.sura", input: {mode: "value", value: 1}, timeout_ms: 5000})
+  async.await(missing_task)
+catch e
+  missing_error is e
+end
+assert(contains(missing_error, "must name a regular file"))
+assert(not contains(missing_error, "cannot inspect"))
+
+# The empty path is rejected earlier, with its own message, and must not be
+# folded into the regular-file wording.
+empty_error is ""
+try
+  empty_task is async.sura({program: "", input: {mode: "value", value: 1}, timeout_ms: 5000})
+  async.await(empty_task)
+catch e
+  empty_error is e
+end
+assert(contains(empty_error, "empty"))
+
+print "75_async_path_error_messages: PASS"

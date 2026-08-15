@@ -1,0 +1,126 @@
+# A guard for the TRY_BEGIN bail, not a coverage test.
+#
+# TRY_BEGIN is deliberately left as an unconditional bail in emit_op, and that
+# is a correctness decision rather than an unwritten emitter. The opcode itself
+# is trivial - the interpreter case just sets in_try / catch_ip / catch_var_reg -
+# so it is tempting to give it a helper and move on. Doing that would break this
+# file.
+#
+# The reason is that nothing native consumes that state. Runtime errors reach
+# the handler as a C++ JitThrow propagating out of the compiled body; they never
+# pass through OP_THROW's frame walk, and there is no way to re-enter generated
+# code at catch_ip. So a natively compiled `try` would simply fail to catch, and
+# the failure mode is a behavioural difference - an uncaught error where the
+# interpreter caught one - not a crash or a slowdown.
+#
+# Every assertion below therefore checks that an error raised inside a `try` is
+# still caught after the enclosing callable has warmed past the JIT threshold.
+# If TRY_BEGIN is ever emitted without the re-entry machinery described in
+# REMAINING_ISSUES.md, these stop passing.
+
+# Division by zero inside a hot callee. sura_jit_checked_div raises from inside
+# generated code once this function goes native, which is exactly the path that
+# would escape a naively compiled try.
+func guarded_div(a, b) do
+  out is "none"
+  try
+    ignored is a / b
+  catch e
+    out is e
+  end
+  return out
+end
+
+# Warm well past FUNC_LAZY_JIT_THRESHOLD, so the enclosing function is a JIT
+# candidate on every later call rather than only interpreted.
+i is 0
+while i < 40 do
+  assert_eq(guarded_div(10, 2), "none")
+  i is i + 1
+end
+assert(contains(guarded_div(1, 0), "E202"))
+
+# Type errors raise from the same helper and must also stay catchable.
+func guarded_type(a, b) do
+  out is "none"
+  try
+    ignored is a / b
+  catch e
+    out is e
+  end
+  return out
+end
+
+j is 0
+while j < 40 do
+  assert_eq(guarded_type(8, 4), "none")
+  j is j + 1
+end
+assert(contains(guarded_type("nope", 2), "E200"))
+
+# Array bounds raise from sura_jit_index_get, which does have a native emitter -
+# so this is the case where a compiled body really is raising into a try.
+func guarded_index(arr, idx) do
+  out is "none"
+  try
+    ignored is arr[idx]
+  catch e
+    out is e
+  end
+  return out
+end
+
+nums is [1, 2, 3]
+k is 0
+while k < 40 do
+  assert_eq(guarded_index(nums, 1), "none")
+  k is k + 1
+end
+assert(contains(guarded_index(nums, 99), "E202"))
+
+# An explicit throw must cross a function boundary and still be caught, which is
+# the cross-frame propagation path.
+func thrower(n) do
+  if n > 5 then
+    throw "too big"
+  end
+  return n
+end
+
+func catcher(n) do
+  out is "none"
+  try
+    ignored is thrower(n)
+  catch e
+    out is e
+  end
+  return out
+end
+
+m is 0
+while m < 40 do
+  assert_eq(catcher(1), "none")
+  m is m + 1
+end
+assert_eq(catcher(9), "too big")
+
+# Control must resume after the try rather than skipping the rest of the body.
+func after_catch(b) do
+  seen is 0
+  try
+    ignored is 1 / b
+  catch e
+    seen is 1
+  end
+  seen is seen + 10
+  return seen
+end
+
+n is 0
+while n < 40 do
+  assert_eq(after_catch(2), 10)
+  n is n + 1
+end
+assert_eq(after_catch(0), 11)
+
+print "84_jit_try_catch_semantics: PASS"
