@@ -197,6 +197,19 @@ class JitVM {
     JitOp    main_bail_op = JitOp::NOP;
     size_t   main_bail_ip = 0;
 
+    // Native code is invisible to the profiler: every counter is incremented
+    // from the interpreter's dispatch, so whatever runs natively contributes
+    // nothing to the report. Profiling with the JIT on does not yield a faster
+    // profile, it yields a wrong one - on the loop in
+    // tools/sura_pkg_profile_smoke.ps1 (one call, one branch, three arithmetic
+    // sites) the interpreter reports 3/2/1 and the JIT'd run reports 1/0/0.
+    // Zero branch sites is indistinguishable from a program with no branches,
+    // which is the failure mode that matters: the report is silently wrong
+    // rather than visibly incomplete. So profiling suppresses native
+    // compilation. Widening emitter coverage makes this worse, not better,
+    // which is how it surfaced.
+    bool native_allowed() const { return jit_enabled && prof == nullptr; }
+
     JitFuncSlot& jit_slot(int fidx) {
         if ((size_t)fidx >= jit_slots.size()) jit_slots.resize((size_t)fidx + 1);
         return jit_slots[fidx];
@@ -210,6 +223,7 @@ class JitVM {
     __attribute__((noinline))
 #endif
     NativeFunc* resolve_native_slow(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+        if (__builtin_expect(prof != nullptr, 0)) return nullptr;
         JitFuncSlot& slot = jit_slot(fidx);
         if (slot.native) return slot.native;
         if (slot.failed) return nullptr;
@@ -2749,7 +2763,7 @@ public:
         // ── Phase 10: try to JIT-compile the entire main chunk as one fn ──
         // If compilation succeeds, run native; else fall through to interpreter.
         // Compile-time cost is amortized over the main loop's many iterations.
-        if (jit_enabled) {
+        if (native_allowed()) {
             JitFuncInfo main_fi;
             main_fi.name     = "__main__";
             main_fi.entry_ip = 0;
@@ -3993,7 +4007,7 @@ _reenter:
                         // caller is JIT-compiled later, inst.ic_native_fn is
                         // already set and the inline METHOD_CALL fast path
                         // (Phase 3) can be emitted.
-                        if (jit_enabled && R[b].as_inst()->jit_info &&
+                        if (native_allowed() && R[b].as_inst()->jit_info &&
                             inst.ic_native_fn == nullptr) {
                             auto nit = native_methods.find(mi);
                             if (nit == native_methods.end() && !jit_method_failed.count(mi)) {
@@ -4391,7 +4405,7 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
             // The auto-generated ctor for `struct` types is just MOVE+DOT_SET
             // — fully JIT-compileable. Compile it lazily and call native_fn
             // directly to skip the interpreter dispatch loop entirely.
-            if (jit_enabled) {
+            if (native_allowed()) {
                 auto nit = native_methods.find(ctor);
                 if (nit == native_methods.end() && !jit_method_failed.count(ctor)) {
                     if (++method_warm_count[ctor] >= METHOD_LAZY_JIT_THRESHOLD) {
@@ -4678,7 +4692,7 @@ inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* in
                          static_cast<size_t>(std::max(0, nargs)));
 
         // JIT-in-JIT: compile method lazily so ic_cache is warm at compile time.
-        if (jit_enabled) {
+        if (native_allowed()) {
             auto nit = native_methods.find(mi);
             if (nit == native_methods.end() && !jit_method_failed.count(mi)) {
                 if (++method_warm_count[mi] >= METHOD_LAZY_JIT_THRESHOLD) {
