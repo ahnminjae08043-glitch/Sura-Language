@@ -1,5 +1,7 @@
 # Sura Language
 
+**English**: [README.en.md](README.en.md)
+
 Sura는 C++로 구현된 독립 프로그래밍 언어입니다. `.sura` 소스를 register bytecode로 변환해 register VM에서 실행하며, Windows x64·Linux x86-64와 little-endian Windows/Linux/macOS ARM64에서는 지원 범위가 서로 다른 자체 JIT를 선택적으로 적용합니다.
 
 ## 빠른 시작
