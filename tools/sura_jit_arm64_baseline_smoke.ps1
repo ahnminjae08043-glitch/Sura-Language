@@ -29,9 +29,9 @@ try {
         "-I.", "tests/jit_arm64_baseline_test.cpp", "platform.cpp", "gc.cpp",
         "-o", $binary
     )
-    $isLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $onLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Linux)
-    if ($isLinux) { $compileArgs += "-ldl" }
+    if ($onLinux) { $compileArgs += "-ldl" }
 
     Push-Location $root
     try {

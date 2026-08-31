@@ -30,10 +30,10 @@ foreach ($candidate in $candidates | Select-Object -Unique) {
 }
 if (-not $compiler) { throw "C++ compiler not found for untrusted-input smoke" }
 
-$isWindows = $env:OS -eq "Windows_NT"
-$isLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+$onWindows = $env:OS -eq "Windows_NT"
+$onLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [System.Runtime.InteropServices.OSPlatform]::Linux)
-$suffix = if ($isWindows) { ".exe" } else { "" }
+$suffix = if ($onWindows) { ".exe" } else { "" }
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_untrusted_input_" + [Guid]::NewGuid().ToString("N"))
 
 try {
@@ -53,7 +53,7 @@ try {
         }
         $compileArgs += @($test.Source, "platform.cpp", "gc.cpp", "-o", $binary)
         if ($Sanitize) { $compileArgs += "-fsanitize=address,undefined" }
-        if ($isLinux) { $compileArgs += "-ldl" }
+        if ($onLinux) { $compileArgs += "-ldl" }
 
         Push-Location $root
         try {

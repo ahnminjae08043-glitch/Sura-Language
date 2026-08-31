@@ -31,8 +31,8 @@ function Resolve-Cxx {
 
 $compiler = Resolve-Cxx $Cxx
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_typechecker_test_" + [System.Guid]::NewGuid().ToString("N"))
-$isWindows = $env:OS -eq "Windows_NT"
-$binaryName = if ($isWindows) { "typechecker_hardening_test.exe" } else { "typechecker_hardening_test" }
+$onWindows = $env:OS -eq "Windows_NT"
+$binaryName = if ($onWindows) { "typechecker_hardening_test.exe" } else { "typechecker_hardening_test" }
 $binary = Join-Path $temp $binaryName
 
 try {
@@ -49,7 +49,7 @@ try {
         "-o",
         $binary
     )
-    if (-not $isWindows -and [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    if (-not $onWindows -and [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
             [System.Runtime.InteropServices.OSPlatform]::Linux)) {
         $compileArgs += "-ldl"
     }

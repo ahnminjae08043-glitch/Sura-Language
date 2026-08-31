@@ -29,14 +29,14 @@ try {
         Set-Content -Path $sourcePath -Encoding UTF8
     Copy-Item (Join-Path $repo "sura_plugin.h") (Join-Path $temp "sura_plugin.h")
 
-    $isWindows = $env:OS -eq "Windows_NT"
-    $libName = if ($isWindows) { "sura_sample_plugin.dll" } elseif ($IsMacOS) { "libsura_sample_plugin.dylib" } else { "libsura_sample_plugin.so" }
+    $onWindows = $env:OS -eq "Windows_NT"
+    $libName = if ($onWindows) { "sura_sample_plugin.dll" } elseif ($IsMacOS) { "libsura_sample_plugin.dylib" } else { "libsura_sample_plugin.so" }
     $pluginPath = Join-Path $temp $libName
 
     $compileArgs = @("-shared", "-O2", "-I", $temp, "-o", $pluginPath, $sourcePath)
     if ($IsMacOS) {
         $compileArgs = @("-dynamiclib", "-fPIC", "-O2", "-I", $temp, "-o", $pluginPath, $sourcePath)
-    } elseif (-not $isWindows) {
+    } elseif (-not $onWindows) {
         $compileArgs = @("-shared", "-fPIC", "-O2", "-I", $temp, "-o", $pluginPath, $sourcePath)
     }
     & $compiler @compileArgs

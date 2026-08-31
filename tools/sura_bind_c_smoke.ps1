@@ -34,8 +34,8 @@ New-Item -ItemType Directory -Force -Path $temp | Out-Null
 try {
     $header = Join-Path $temp "native.h"
     $out = Join-Path $temp "native.ffi.sura"
-    $isWindows = $env:OS -eq "Windows_NT"
-    $libName = if ($isWindows) { "native.dll" } elseif ($IsMacOS) { "libnative.dylib" } else { "libnative.so" }
+    $onWindows = $env:OS -eq "Windows_NT"
+    $libName = if ($onWindows) { "native.dll" } elseif ($IsMacOS) { "libnative.dylib" } else { "libnative.so" }
     $lib = Join-Path $temp $libName
     $suraLib = $lib -replace "\\", "/"
     $source = Join-Path $temp "native.c"
@@ -144,7 +144,7 @@ EXPORT int needs_string(const char* text) { return (int)strlen(text); }
     )
 
     $compileArgs = @("-shared", "-O2", "-o", $lib, $source)
-    if (-not $isWindows) {
+    if (-not $onWindows) {
         $compileArgs = @("-shared", "-fPIC", "-O2", "-o", $lib, $source)
     }
     & $compiler @compileArgs

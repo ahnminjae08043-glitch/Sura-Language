@@ -31,20 +31,20 @@ try {
     }
 
     $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-    $isLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $onLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::Linux)
-    $isMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+    $onMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
         [System.Runtime.InteropServices.OSPlatform]::OSX)
     if ($env:OS -eq "Windows_NT" -and $architecture -eq "X64") {
         if (-not $info.native_supported -or $info.backend -ne "x64-win64") {
             throw "Windows x86-64 engine did not report its native backend"
         }
-    } elseif ($isLinux -and $architecture -eq "X64") {
+    } elseif ($onLinux -and $architecture -eq "X64") {
         if (-not $info.native_supported -or $info.backend -ne "x64-sysv-baseline") {
             throw "Linux x86-64 engine did not report its System V baseline backend"
         }
     } elseif ($architecture -eq "Arm64" -and
-              ($env:OS -eq "Windows_NT" -or $isLinux -or $isMacOS)) {
+              ($env:OS -eq "Windows_NT" -or $onLinux -or $onMacOS)) {
         if (-not $info.native_supported -or $info.backend -ne "arm64-aapcs-baseline") {
             throw "ARM64 engine did not report its AAPCS64 baseline backend"
         }
