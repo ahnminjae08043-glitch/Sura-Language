@@ -277,7 +277,9 @@ int main() {
                 "constant offsets outside the scaled-immediate range must fall back");
 
 #if SURA_JIT_ARM64_BASELINE
-        std::cout << "jit arm64 baseline: PASS (native division/comparisons and guarded fallbacks)\n";
+        // The smoke gate distinguishes real ARM64 runs by the literal phrase
+        // "native execution"; keep it in this branch's summary.
+        std::cout << "jit arm64 baseline: PASS (native execution of division/comparisons and guarded fallbacks)\n";
 #else
         std::cout << "jit arm64 baseline: PASS (division/comparison encoder and guarded fallbacks)\n";
 #endif
