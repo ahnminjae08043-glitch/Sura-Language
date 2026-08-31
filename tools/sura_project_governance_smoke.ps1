@@ -46,3 +46,6 @@ if ($bug -notmatch "Minimal reproduction" -or $package -notmatch "publish --dry-
 }
 
 Write-Host "sura_project_governance_smoke: PASS"
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

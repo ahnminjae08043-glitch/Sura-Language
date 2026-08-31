@@ -542,3 +542,6 @@ if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
 $historicalFixtureCount = 0
 foreach ($probeReport in @($historicalProbeReports | ForEach-Object { $_ })) { $historicalFixtureCount += @($probeReport.current_runtime.fixtures).Count }
 Write-Host "sura_compatibility_gate: PASS ($($fixtureReports.Count) guaranteed source fixtures, $historicalFixtureCount historical source fixtures, $stableModuleCount stable API modules/$stableSymbolCount signatures, bytecode v$bytecodeLegacy/v$bytecodeCurrent, plugin ABI $pluginAbi, FFI ABI $ffiAbi)"
+# A gate that prints PASS must also exit 0 rather than inheriting
+# whatever the last command happened to return.
+exit 0

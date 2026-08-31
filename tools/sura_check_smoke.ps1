@@ -131,3 +131,6 @@ assert_eq(score, 1)
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 }
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

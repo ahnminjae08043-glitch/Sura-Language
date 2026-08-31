@@ -144,3 +144,8 @@ if ($env:OS -eq "Windows_NT") {
 }
 
 Write-Host "sura_build_contract_smoke: PASS"
+# A gate that prints PASS must also exit 0. Without this the script
+# inherits whatever the last command returned - this one deliberately
+# runs build.bat with an invalid mode as its final check, so it was
+# reporting PASS while exiting 2, which CI reads as failure.
+exit 0

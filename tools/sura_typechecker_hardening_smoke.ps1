@@ -87,3 +87,6 @@ finally {
 }
 
 Write-Host "sura_typechecker_hardening_smoke: PASS"
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

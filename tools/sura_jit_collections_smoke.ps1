@@ -39,3 +39,6 @@ if ($jit[1] -notmatch "1 function\(s\).*compiled") {
 }
 
 "sura_jit_collections_smoke: PASS"
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

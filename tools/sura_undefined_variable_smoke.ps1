@@ -91,3 +91,6 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

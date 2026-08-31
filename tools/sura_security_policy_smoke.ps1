@@ -82,3 +82,6 @@ foreach ($needle in @("This issue is public", "Do not include exploit details", 
 }
 
 Write-Host ("sura_security_policy_smoke: PASS (version {0}, active series {1}, maintenance not before {2})" -f $version.version, $active[0].series, $active[0].maintenance_not_before)
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0

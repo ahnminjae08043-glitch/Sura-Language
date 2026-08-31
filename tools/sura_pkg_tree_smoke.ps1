@@ -170,3 +170,8 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+# This gate printed PASS while exiting 1: its last native command was a
+# negative check that correctly failed, and the script inherited that
+# code. CI reads the exit code, so a passing gate looked like a failure.
+# Only reached on the success path - a throw terminates before here.
+exit 0

@@ -133,3 +133,7 @@ try {
         Remove-Item -LiteralPath $resolvedTemp -Recurse -Force
     }
 }
+# This gate printed PASS while exiting nonzero: its last native command
+# was a negative check that correctly failed, and the script inherited
+# that code. CI reads the exit code, so a passing gate reported failure.
+exit 0

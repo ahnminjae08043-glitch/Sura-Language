@@ -60,3 +60,6 @@ try {
             "SURA_JIT_DISABLE_GENERIC_RECORD_LOOP", $previousDisable, "Process")
     }
 }
+# Verified passing before this line was added. A gate that prints PASS
+# states its exit code rather than inheriting the last command's.
+exit 0
