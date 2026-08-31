@@ -52,11 +52,13 @@ if ($ThreadSanitize) {
         "-fsanitize=thread"
     )
 }
+# Forward slashes: g++ accepts them on Windows, and backslash relative paths
+# are not path separators for Unix compilers, so this is the portable spelling.
 $arguments += @(
-    ".\tests\async_runtime_concurrency_test.cpp",
-    ".\gc.cpp",
+    "tests/async_runtime_concurrency_test.cpp",
+    "gc.cpp",
     "-o",
-    ".\build\$exeName"
+    "build/$exeName"
 )
 Push-Location $root
 try {
@@ -67,7 +69,7 @@ try {
 
     for ($round = 1; $round -le $Repeat; $round++) {
         Write-Host "async concurrency round $round/$Repeat"
-        & ".\build\$exeName"
+        & $output
         if ($LASTEXITCODE -ne 0) {
             throw "Async runtime concurrency harness failed in round $round with exit code $LASTEXITCODE"
         }

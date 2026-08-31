@@ -108,7 +108,19 @@ $outDirFull = Resolve-FromRoot $OutDir
 $zipFull = Resolve-FromRoot $ZipOut
 $reportFull = Resolve-FromRoot $ReportOut
 $summaryFull = Resolve-FromRoot $SummaryOut
-if ($outDirFull -eq $root -or $outDirFull.Length -lt ($root.Length + 8)) {
+# The guard must block targets that -Force would recursively delete with
+# catastrophic scope: the repo root itself, any ancestor of it, and any
+# filesystem root. A path length heuristic cannot express that for absolute
+# out-of-tree directories such as a CI runner's $RUNNER_TEMP.
+$sep = [System.IO.Path]::DirectorySeparatorChar
+$rootTrimmed = $root.TrimEnd('\', '/')
+$outTrimmed = $outDirFull.TrimEnd('\', '/')
+$fsRoot = [System.IO.Path]::GetPathRoot($outDirFull)
+$fsRootTrimmed = if ($null -ne $fsRoot) { $fsRoot.TrimEnd('\', '/') } else { "" }
+if ($outTrimmed.Length -eq 0 -or
+    [string]::Equals($outTrimmed, $rootTrimmed, [System.StringComparison]::OrdinalIgnoreCase) -or
+    $rootTrimmed.StartsWith($outTrimmed + $sep, [System.StringComparison]::OrdinalIgnoreCase) -or
+    [string]::Equals($outTrimmed, $fsRootTrimmed, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "unsafe audit output directory: $outDirFull"
 }
 foreach ($target in @($outDirFull, $zipFull, $reportFull, $summaryFull)) {
