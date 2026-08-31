@@ -1,0 +1,198 @@
+# USB HID boot-keyboard and boot-mouse report conversion.
+#
+# xHCI owns transport and DMA. This module converts completed HID reports into
+# the same KeyEvent and PointerEvent contracts used by other input drivers.
+
+import "key_event.sura"
+import "pointer_event.sura"
+
+func usb_hid_usage_to_physical_key(usage: u64) do
+  if usage == 4 then return 30
+  if usage == 5 then return 48
+  if usage == 6 then return 46
+  if usage == 7 then return 32
+  if usage == 8 then return 18
+  if usage == 9 then return 33
+  if usage == 10 then return 34
+  if usage == 11 then return 35
+  if usage == 12 then return 23
+  if usage == 13 then return 36
+  if usage == 14 then return 37
+  if usage == 15 then return 38
+  if usage == 16 then return 50
+  if usage == 17 then return 49
+  if usage == 18 then return 24
+  if usage == 19 then return 25
+  if usage == 20 then return 16
+  if usage == 21 then return 19
+  if usage == 22 then return 31
+  if usage == 23 then return 20
+  if usage == 24 then return 22
+  if usage == 25 then return 47
+  if usage == 26 then return 17
+  if usage == 27 then return 45
+  if usage == 28 then return 21
+  if usage == 29 then return 44
+  if usage >= 30 and usage <= 39 then
+    if usage == 39 then return 11
+    return usage - 28
+  end
+  if usage == 40 then return 28
+  if usage == 41 then return 1
+  if usage == 42 then return 14
+  if usage == 43 then return 15
+  if usage == 44 then return 57
+  if usage == 45 then return 12
+  if usage == 46 then return 13
+  if usage == 47 then return 26
+  if usage == 48 then return 27
+  if usage == 49 or usage == 50 then return 43
+  if usage == 51 then return 39
+  if usage == 52 then return 40
+  if usage == 53 then return 41
+  if usage == 54 then return 51
+  if usage == 55 then return 52
+  if usage == 56 then return 53
+  if usage == 57 then return 58
+  if usage >= 58 and usage <= 67 then return usage + 1
+  if usage == 68 then return 87
+  if usage == 69 then return 88
+  if usage == 70 then return 311
+  if usage == 71 then return 70
+  if usage == 72 then return 325
+  if usage == 73 then return 338
+  if usage == 74 then return 327
+  if usage == 75 then return 329
+  if usage == 76 then return 339
+  if usage == 77 then return 335
+  if usage == 78 then return 337
+  if usage == 79 then return 333
+  if usage == 80 then return 331
+  if usage == 81 then return 336
+  if usage == 82 then return 328
+  if usage == 83 then return 69
+  if usage == 84 then return 309
+  if usage == 85 then return 55
+  if usage == 86 then return 74
+  if usage == 87 then return 78
+  if usage == 88 then return 284
+  if usage == 89 then return 79
+  if usage == 90 then return 80
+  if usage == 91 then return 81
+  if usage == 92 then return 75
+  if usage == 93 then return 76
+  if usage == 94 then return 77
+  if usage == 95 then return 71
+  if usage == 96 then return 72
+  if usage == 97 then return 73
+  if usage == 98 then return 82
+  if usage == 99 then return 83
+  if usage == 100 then return 86
+  if usage == 101 then return 349
+  if usage == 103 then return 141
+  if usage == 144 then return key_event_key_hangul()
+  if usage == 145 then return key_event_key_hanja()
+  if usage == 224 then return 29
+  if usage == 225 then return 42
+  if usage == 226 then return 56
+  if usage == 227 then return 347
+  if usage == 228 then return 285
+  if usage == 229 then return 54
+  if usage == 230 then return 312
+  if usage == 231 then return 348
+  return 0
+end
+
+func usb_hid_keyboard_report_contains(report: ptr, length: u64, usage: u64) do
+  if report == 0 or length < 8 or usage < 4 then return false
+  index: u64 is 2
+  while index < 8 do
+    if mem.read8(ptr.add(report, index)) == usage then return true
+    index += 1
+  end
+  return false
+end
+
+func usb_hid_keyboard_report_first_slot(report: ptr, length: u64, usage: u64) do
+  if report == 0 or length < 8 or usage < 4 then return 8
+  index: u64 is 2
+  while index < 8 do
+    if mem.read8(ptr.add(report, index)) == usage then return index
+    index += 1
+  end
+  return 8
+end
+
+func usb_hid_keyboard_candidate(previous: ptr, current: ptr, cursor: u64) do
+  if previous == 0 or current == 0 or cursor >= 28 then return 0
+  if cursor < 8 then
+    mask: u64 is 1 << cursor
+    if (mem.read8(previous) & mask) != 0 and (mem.read8(current) & mask) == 0 then
+      return 224 + cursor
+    end
+    return 0
+  end
+  if cursor < 14 then
+    slot: u64 is cursor - 6
+    usage: u64 is mem.read8(ptr.add(previous, slot))
+    if usage >= 4 and usb_hid_keyboard_report_first_slot(previous, 8, usage) == slot and not usb_hid_keyboard_report_contains(current, 8, usage) then return usage
+    return 0
+  end
+  if cursor < 22 then
+    modifier_index: u64 is cursor - 14
+    mask: u64 is 1 << modifier_index
+    if (mem.read8(current) & mask) != 0 and (mem.read8(previous) & mask) == 0 then
+      return 224 + modifier_index
+    end
+    return 0
+  end
+  slot: u64 is cursor - 20
+  usage: u64 is mem.read8(ptr.add(current, slot))
+  if usage >= 4 and usb_hid_keyboard_report_first_slot(current, 8, usage) == slot and not usb_hid_keyboard_report_contains(previous, 8, usage) then return usage
+  return 0
+end
+
+func usb_hid_keyboard_next_event(decoder: ptr[KeyEventDecoder], previous: ptr, current: ptr, length: u64, cursor: ptr, event: ptr[KeyEvent]) do
+  if decoder == 0 or previous == 0 or current == 0 or cursor == 0 or event == 0 then return false
+  if length < 8 then return false
+  position: u64 is mem.read64(cursor)
+  while position < 28 do
+    usage: u64 is usb_hid_keyboard_candidate(previous, current, position)
+    pressed: bool is position >= 14
+    position += 1
+    mem.write64(cursor, position)
+    if usage != 0 then
+      physical_key: u64 is usb_hid_usage_to_physical_key(usage)
+      if physical_key != 0 then
+        if key_event_decoder_feed(decoder, physical_key, usage, pressed, event) then return true
+      end
+    end
+  end
+  return false
+end
+
+func usb_hid_keyboard_report_copy(destination: ptr, source: ptr, length: u64) do
+  if destination == 0 or source == 0 or length < 8 then return false
+  index: u64 is 0
+  while index < 8 do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func usb_hid_signed_byte(value: u64) do
+  signed: i64 is value & 255
+  if signed >= 128 then signed -= 256
+  return signed
+end
+
+func usb_hid_mouse_feed_report(state: ptr[PointerEventDecoder], report: ptr, length: u64, event: ptr[PointerEvent]) do
+  if state == 0 or report == 0 or event == 0 or length < 3 then return false
+  buttons: u64 is mem.read8(report) & 7
+  delta_x: i64 is usb_hid_signed_byte(mem.read8(ptr.add(report, 1)))
+  delta_y: i64 is usb_hid_signed_byte(mem.read8(ptr.add(report, 2)))
+  wheel: i64 is 0
+  if length >= 4 then wheel is usb_hid_signed_byte(mem.read8(ptr.add(report, 3)))
+  return pointer_event_decoder_feed_relative(state, delta_x, delta_y, wheel, buttons, event)
+end

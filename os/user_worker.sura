@@ -11,6 +11,7 @@ struct OsUserWorkerConfig do
   code_address: u64
   mailbox_address: u64
   mailbox_bytes: u64
+  event_address: u64
   stack_top: u64
   stack_pages: u64
   guard_pages: u64
@@ -25,6 +26,7 @@ struct OsUserWorker do
   code_size: u64
   mailbox_address: u64
   mailbox_bytes: u64
+  event_address: u64
   initialized: u64
 end
 
@@ -48,6 +50,7 @@ func os_user_worker_clear(worker: ptr[OsUserWorker]) do
   worker.code_size is 0
   worker.mailbox_address is 0
   worker.mailbox_bytes is 0
+  worker.event_address is 0
   worker.initialized is 0
   return true
 end
@@ -91,8 +94,11 @@ func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]
   if worker.initialized != 0 or space.initialized != 0 then return false
   if source == 0 or source_end <= source then return false
   if config.max_code_bytes == 0 or source_end - source > config.max_code_bytes then return false
-  if config.mailbox_bytes == 0 or config.mailbox_bytes > 4096 then return false
+  # Mailboxes may span multiple 4 KiB pages. Keep a defensive upper bound,
+  # while allowing the 64-byte editor header plus its 4096-byte text buffer.
+  if config.mailbox_bytes == 0 or config.mailbox_bytes > 65536 then return false
   if (config.code_address & 4095) != 0 or (config.mailbox_address & 4095) != 0 then return false
+  if config.event_address != 0 and (config.event_address & 4095) != 0 then return false
   if (config.stack_top & 4095) != 0 or config.stack_pages == 0 then return false
   if not process_enable_nx() then return false
 
@@ -100,11 +106,13 @@ func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]
   code_span: u64 is ptr.align_up(code_size, 4096)
   if not process_user_range_valid(config.code_address, code_span) then return false
   if not process_user_range_valid(config.mailbox_address, config.mailbox_bytes) then return false
+  if config.event_address != 0 and not process_user_range_valid(config.event_address, 4096) then return false
 
   user_pml4_index: u64 is paging.pml4_index(config.code_address)
   if user_pml4_index == 0 or user_pml4_index >= 256 then return false
   if paging.pml4_index(config.code_address + code_span - 1) != user_pml4_index then return false
   if paging.pml4_index(config.mailbox_address + config.mailbox_bytes - 1) != user_pml4_index then return false
+  if config.event_address != 0 and paging.pml4_index(config.event_address) != user_pml4_index then return false
   if paging.pml4_index(config.stack_top - 1) != user_pml4_index then return false
 
   if not os_user_worker_clear(worker) then return false
@@ -115,6 +123,7 @@ func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]
   worker.code_size is code_size
   worker.mailbox_address is config.mailbox_address
   worker.mailbox_bytes is config.mailbox_bytes
+  worker.event_address is config.event_address
 
   if not process_space_init(space, allocator, kernel_root, buffers) then
     os_user_worker_clear(worker)
@@ -176,6 +185,21 @@ func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]
     page += 4096
   end
 
+  if config.event_address != 0 then
+    if process_find_mapping(space, config.event_address) != 0 then
+      os_user_worker_abort(worker)
+      return false
+    end
+    if not process_space_map_page(space, config.event_address, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+    if not os_user_worker_mapping_permissions(space, config.event_address, true, false) then
+      os_user_worker_abort(worker)
+      return false
+    end
+  end
+
   if not process_space_map_stack(space, config.stack_top, config.stack_pages, config.guard_pages, stack) then
     os_user_worker_abort(worker)
     return false
@@ -198,6 +222,10 @@ func os_user_worker_init(worker: ptr[OsUserWorker], setup: ptr[OsUserWorkerInit]
     return false
   end
   if not process_user_access_valid(space, config.mailbox_address, config.mailbox_bytes, true) then
+    os_user_worker_abort(worker)
+    return false
+  end
+  if config.event_address != 0 and not process_user_access_valid(space, config.event_address, 4096, true) then
     os_user_worker_abort(worker)
     return false
   end

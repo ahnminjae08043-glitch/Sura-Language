@@ -151,15 +151,27 @@ end
 func fb_present(backbuffer: ptr[FramebufferSurface], target_pixels: ptr) do
   if backbuffer == 0 or target_pixels == 0 then return false
   if backbuffer.pixels == 0 then return false
-  count: u64 is backbuffer.stride * backbuffer.height
-  index: u64 is 0
-  while index + 1 < count do
-    offset: u64 is index * 4
+  byte_count: u64 is backbuffer.stride * backbuffer.height * 4
+  offset: u64 is 0
+  # Eight 64-bit moves per loop materially reduce branch overhead under TCG
+  # for full 1280x800 desktop presents.
+  while offset + 63 < byte_count do
     mem.write64(ptr.add(target_pixels, offset), mem.read64(ptr.add(backbuffer.pixels, offset)))
-    index += 2
+    mem.write64(ptr.add(target_pixels, offset + 8), mem.read64(ptr.add(backbuffer.pixels, offset + 8)))
+    mem.write64(ptr.add(target_pixels, offset + 16), mem.read64(ptr.add(backbuffer.pixels, offset + 16)))
+    mem.write64(ptr.add(target_pixels, offset + 24), mem.read64(ptr.add(backbuffer.pixels, offset + 24)))
+    mem.write64(ptr.add(target_pixels, offset + 32), mem.read64(ptr.add(backbuffer.pixels, offset + 32)))
+    mem.write64(ptr.add(target_pixels, offset + 40), mem.read64(ptr.add(backbuffer.pixels, offset + 40)))
+    mem.write64(ptr.add(target_pixels, offset + 48), mem.read64(ptr.add(backbuffer.pixels, offset + 48)))
+    mem.write64(ptr.add(target_pixels, offset + 56), mem.read64(ptr.add(backbuffer.pixels, offset + 56)))
+    offset += 64
   end
-  if index < count then
-    mem.write32(ptr.add(target_pixels, index * 4), mem.read32(ptr.add(backbuffer.pixels, index * 4)))
+  while offset + 7 < byte_count do
+    mem.write64(ptr.add(target_pixels, offset), mem.read64(ptr.add(backbuffer.pixels, offset)))
+    offset += 8
+  end
+  if offset < byte_count then
+    mem.write32(ptr.add(target_pixels, offset), mem.read32(ptr.add(backbuffer.pixels, offset)))
   end
   return true
 end

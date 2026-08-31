@@ -1,10 +1,14 @@
 # Ring-3 calculator model used by the Sura OS desktop.
 #
 # The kernel owns rendering and input routing. A single page mailbox is the
-# complete ABI: the user program may read and update only this bounded state,
-# then returns control through interrupt vector 0x80. This function deliberately
-# uses no global data and calls no other Sura function so its position-independent
-# machine code can be copied into a dedicated user-executable page.
+# complete ABI: the user program may read and update only this bounded state.
+# A plain mailbox address performs one legacy request and returns through
+# interrupt vector 0x80. Setting argument bit 0 enables persistent mode: the
+# worker masks that bit, waits through process syscall 5, consumes one event
+# through syscall 2 into the writable page at mailbox+4096, handles the request,
+# and waits again. This function deliberately uses no global data and calls no
+# other Sura function so its position-independent machine code can be copied
+# into dedicated user-executable pages.
 
 struct UserCalculatorMailbox do
   left: u64
@@ -20,12 +24,38 @@ struct UserCalculatorMailbox do
   status: u64
 end
 
-func user_calculator_program(mailbox_address: u64) do
-  mailbox: ptr[UserCalculatorMailbox] is mailbox_address
-  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+func user_calculator_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 90, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 4096, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 91, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+    end
+
+    mailbox: ptr[UserCalculatorMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
     value: u64 is mailbox.input
 
-    if value == 99 or value == 67 then
+    # Kernel-only graphical watchdog diagnostic. Normal keyboard and keypad
+    # routing cannot produce this value.
+    if value == u64("0xf17b") then
+      while true do
+        cpu.pause()
+      end
+    elif value == 99 or value == 67 then
       mailbox.left is 0
       mailbox.right is 0
       mailbox.operation is 0
@@ -118,11 +148,14 @@ func user_calculator_program(mailbox_address: u64) do
 
     mailbox.response_sequence is mailbox.request_sequence
     mailbox.status is 1
-  end
+    end
 
-  completed: bool is interrupt.invoke(128)
-  while true do
-    cpu.pause()
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
   end
 end
 

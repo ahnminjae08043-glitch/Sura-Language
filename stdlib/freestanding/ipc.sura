@@ -1,0 +1,160 @@
+# Fixed-capacity kernel-owned IPC and event queues for freestanding targets.
+#
+# Queue storage is supplied by the caller. Operations are non-blocking and
+# must be serialized by the kernel on SMP systems. A full queue rejects the
+# message and records a dropped count; it never overwrites unread events.
+
+struct IpcMessage do
+  sequence: u64
+  kind: u64
+  source: u64
+  target: u64
+  flags: u64
+  value0: u64
+  value1: u64
+  value2: u64
+  value3: u64
+end
+
+struct IpcQueue do
+  messages: ptr
+  capacity: u64
+  head: u64
+  tail: u64
+  count: u64
+  next_sequence: u64
+  dropped: u64
+  initialized: u64
+end
+
+struct IpcEndpoint do
+  owner_process_id: u64
+  queue: ptr[IpcQueue]
+  initialized: u64
+end
+
+func ipc_message_clear(message: ptr[IpcMessage]) do
+  if message == 0 then return false
+  message.sequence is 0
+  message.kind is 0
+  message.source is 0
+  message.target is 0
+  message.flags is 0
+  message.value0 is 0
+  message.value1 is 0
+  message.value2 is 0
+  message.value3 is 0
+  return true
+end
+
+func ipc_message_copy(destination: ptr[IpcMessage], source: ptr[IpcMessage]) do
+  if destination == 0 or source == 0 then return false
+  destination.sequence is source.sequence
+  destination.kind is source.kind
+  destination.source is source.source
+  destination.target is source.target
+  destination.flags is source.flags
+  destination.value0 is source.value0
+  destination.value1 is source.value1
+  destination.value2 is source.value2
+  destination.value3 is source.value3
+  return true
+end
+
+func ipc_queue_at(queue: ptr[IpcQueue], index: u64) do
+  if queue == 0 or queue.initialized == 0 then return 0
+  if index >= queue.capacity then return 0
+  return ptr.index(queue.messages, index, sizeof(IpcMessage))
+end
+
+func ipc_queue_init(queue: ptr[IpcQueue], messages: ptr, capacity: u64) do
+  if queue == 0 or messages == 0 or capacity == 0 or capacity > 4096 then return false
+  if not ptr.is_aligned(messages, 8) then return false
+
+  index: u64 is 0
+  while index < capacity do
+    ipc_message_clear(ptr.index(messages, index, sizeof(IpcMessage)))
+    index += 1
+  end
+
+  queue.messages is messages
+  queue.capacity is capacity
+  queue.head is 0
+  queue.tail is 0
+  queue.count is 0
+  queue.next_sequence is 1
+  queue.dropped is 0
+  queue.initialized is 1
+  return true
+end
+
+func ipc_queue_push(queue: ptr[IpcQueue], message: ptr[IpcMessage]) do
+  if queue == 0 or message == 0 or queue.initialized == 0 then return false
+  if message.kind == 0 or queue.count >= queue.capacity then
+    if queue.dropped != u64("0xffffffffffffffff") then queue.dropped += 1
+    return false
+  end
+
+  slot: ptr[IpcMessage] is ipc_queue_at(queue, queue.tail)
+  if slot == 0 then return false
+  ipc_message_copy(slot, message)
+  slot.sequence is queue.next_sequence
+  if queue.next_sequence == u64("0xffffffffffffffff") then
+    queue.next_sequence is 1
+  else
+    queue.next_sequence += 1
+  end
+  queue.tail += 1
+  if queue.tail >= queue.capacity then queue.tail is 0
+  queue.count += 1
+  return true
+end
+
+func ipc_queue_pop(queue: ptr[IpcQueue], output: ptr[IpcMessage]) do
+  if queue == 0 or output == 0 or queue.initialized == 0 or queue.count == 0 then return false
+  slot: ptr[IpcMessage] is ipc_queue_at(queue, queue.head)
+  if slot == 0 or not ipc_message_copy(output, slot) then return false
+  ipc_message_clear(slot)
+  queue.head += 1
+  if queue.head >= queue.capacity then queue.head is 0
+  queue.count -= 1
+  return true
+end
+
+func ipc_queue_peek(queue: ptr[IpcQueue], output: ptr[IpcMessage]) do
+  if queue == 0 or output == 0 or queue.initialized == 0 or queue.count == 0 then return false
+  slot: ptr[IpcMessage] is ipc_queue_at(queue, queue.head)
+  return ipc_message_copy(output, slot)
+end
+
+func ipc_endpoint_init(endpoint: ptr[IpcEndpoint], owner_process_id: u64, queue: ptr[IpcQueue]) do
+  if endpoint == 0 or owner_process_id == 0 or queue == 0 or queue.initialized == 0 then return false
+  endpoint.owner_process_id is owner_process_id
+  endpoint.queue is queue
+  endpoint.initialized is 1
+  return true
+end
+
+# The kernel supplies the authenticated sender identity. The message cannot
+# spoof source or target fields because this function overwrites both.
+func ipc_endpoint_send(endpoint: ptr[IpcEndpoint], sender_process_id: u64, message: ptr[IpcMessage]) do
+  if endpoint == 0 or endpoint.initialized == 0 or message == 0 then return false
+  if sender_process_id == 0 or message.kind == 0 then return false
+  message.source is sender_process_id
+  message.target is endpoint.owner_process_id
+  return ipc_queue_push(endpoint.queue, message)
+end
+
+func ipc_endpoint_post_kernel(endpoint: ptr[IpcEndpoint], message: ptr[IpcMessage]) do
+  if endpoint == 0 or endpoint.initialized == 0 or message == 0 then return false
+  if message.kind == 0 then return false
+  message.source is 0
+  message.target is endpoint.owner_process_id
+  return ipc_queue_push(endpoint.queue, message)
+end
+
+func ipc_endpoint_receive(endpoint: ptr[IpcEndpoint], receiver_process_id: u64, output: ptr[IpcMessage]) do
+  if endpoint == 0 or endpoint.initialized == 0 or output == 0 then return false
+  if receiver_process_id == 0 or receiver_process_id != endpoint.owner_process_id then return false
+  return ipc_queue_pop(endpoint.queue, output)
+end

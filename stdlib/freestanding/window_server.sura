@@ -1,0 +1,878 @@
+# User-space-compatible window composition foundation.
+#
+# The server owns an output buffer and combines caller-owned application
+# surfaces according to WindowManager visibility and z-order. It has no port
+# I/O, framebuffer, allocator, or kernel dependency, so the same code can run
+# in a Ring-3 address space while ring 0 only presents the completed buffer.
+
+import "window_manager.sura"
+
+struct WindowServerDamage do
+  x: i64
+  y: i64
+  width: u64
+  height: u64
+end
+
+struct WindowServerSurface do
+  window_id: u64
+  owner_pid: u64
+  pixels: ptr
+  width: u64
+  height: u64
+  stride: u64
+  pending_pixels: ptr
+  pending_width: u64
+  pending_height: u64
+  pending_stride: u64
+  opacity_percent: u64
+  generation: u64
+  active: u64
+end
+
+struct WindowServerMonitor do
+  id: u64
+  x: i64
+  y: i64
+  width: u64
+  height: u64
+  scale_percent: u64
+  primary: u64
+  active: u64
+end
+
+struct WindowServerAnimation do
+  window_id: u64
+  kind: u64
+  elapsed_ms: u64
+  duration_ms: u64
+  from_x: i64
+  from_y: i64
+  from_width: u64
+  from_height: u64
+  from_opacity: u64
+  to_x: i64
+  to_y: i64
+  to_width: u64
+  to_height: u64
+  to_opacity: u64
+  active: u64
+end
+
+struct WindowServerAnimationConfig do
+  window_id: u64
+  kind: u64
+  duration_ms: u64
+  to_x: i64
+  to_y: i64
+  to_width: u64
+  to_height: u64
+  to_opacity: u64
+end
+
+struct WindowServerConfig do
+  manager: ptr[WindowManager]
+  surfaces: ptr
+  surface_capacity: u64
+  damages: ptr
+  damage_capacity: u64
+  output_pixels: ptr
+  output_width: u64
+  output_height: u64
+  output_stride: u64
+  clipboard: ptr
+  clipboard_capacity: u64
+  monitors: ptr
+  monitor_capacity: u64
+  animations: ptr
+  animation_capacity: u64
+  drag_payload: ptr
+  drag_capacity: u64
+  output_origin_x: i64
+  output_origin_y: i64
+end
+
+struct WindowServerSurfaceConfig do
+  owner_pid: u64
+  window_id: u64
+  pixels: ptr
+  width: u64
+  height: u64
+  stride: u64
+end
+
+struct WindowServer do
+  manager: ptr[WindowManager]
+  surfaces: ptr
+  surface_capacity: u64
+  surface_count: u64
+  damages: ptr
+  damage_capacity: u64
+  damage_count: u64
+  output_pixels: ptr
+  output_width: u64
+  output_height: u64
+  output_stride: u64
+  clipboard: ptr
+  clipboard_capacity: u64
+  clipboard_length: u64
+  clipboard_owner: u64
+  monitors: ptr
+  monitor_capacity: u64
+  monitor_count: u64
+  animations: ptr
+  animation_capacity: u64
+  animation_count: u64
+  drag_payload: ptr
+  drag_capacity: u64
+  drag_length: u64
+  drag_source_owner: u64
+  drag_source_window: u64
+  drag_target_owner: u64
+  drag_target_window: u64
+  drag_x: i64
+  drag_y: i64
+  drag_active: u64
+  output_origin_x: i64
+  output_origin_y: i64
+  background_color: u64
+  theme: u64
+  scale_percent: u64
+  generation: u64
+  last_error: u64
+  active: u64
+end
+
+func window_animation_move() -> u64 do
+  return 1
+end
+
+func window_animation_resize() -> u64 do
+  return 2
+end
+
+func window_animation_opacity() -> u64 do
+  return 3
+end
+
+func window_animation_move_resize() -> u64 do
+  return 4
+end
+
+func window_server_surface_at(server: ptr[WindowServer], index: u64) do
+  if server == 0 or server.surfaces == 0 or index >= server.surface_capacity then return 0
+  return ptr.index(server.surfaces, index, sizeof(WindowServerSurface))
+end
+
+func window_server_damage_at(server: ptr[WindowServer], index: u64) do
+  if server == 0 or server.damages == 0 or index >= server.damage_capacity then return 0
+  return ptr.index(server.damages, index, sizeof(WindowServerDamage))
+end
+
+func window_server_monitor_at(server: ptr[WindowServer], index: u64) do
+  if server == 0 or server.monitors == 0 or index >= server.monitor_capacity then return 0
+  return ptr.index(server.monitors, index, sizeof(WindowServerMonitor))
+end
+
+func window_server_animation_at(server: ptr[WindowServer], index: u64) do
+  if server == 0 or server.animations == 0 or index >= server.animation_capacity then return 0
+  return ptr.index(server.animations, index, sizeof(WindowServerAnimation))
+end
+
+func window_server_surface_reset(surface: ptr[WindowServerSurface]) do
+  if surface == 0 then return false
+  surface.window_id is 0
+  surface.owner_pid is 0
+  surface.pixels is 0
+  surface.width is 0
+  surface.height is 0
+  surface.stride is 0
+  surface.pending_pixels is 0
+  surface.pending_width is 0
+  surface.pending_height is 0
+  surface.pending_stride is 0
+  surface.opacity_percent is 100
+  surface.generation is 0
+  surface.active is 0
+  return true
+end
+
+func window_server_animation_reset(animation: ptr[WindowServerAnimation]) do
+  if animation == 0 then return false
+  animation.window_id is 0
+  animation.kind is 0
+  animation.elapsed_ms is 0
+  animation.duration_ms is 0
+  animation.from_x is 0
+  animation.from_y is 0
+  animation.from_width is 0
+  animation.from_height is 0
+  animation.from_opacity is 0
+  animation.to_x is 0
+  animation.to_y is 0
+  animation.to_width is 0
+  animation.to_height is 0
+  animation.to_opacity is 0
+  animation.active is 0
+  return true
+end
+
+func window_server_init(server: ptr[WindowServer], config: ptr[WindowServerConfig]) do
+  if server == 0 or config == 0 or config.manager == 0 then return false
+  if config.surfaces == 0 or config.surface_capacity == 0 or config.surface_capacity > 64 then return false
+  if config.damages == 0 or config.damage_capacity == 0 or config.damage_capacity > 128 then return false
+  if config.output_pixels == 0 or config.output_width == 0 or config.output_height == 0 then return false
+  if config.output_stride < config.output_width then return false
+  if config.clipboard == 0 or config.clipboard_capacity == 0 then return false
+  if config.monitors == 0 or config.monitor_capacity == 0 or config.monitor_capacity > 16 then return false
+  if (config.animations == 0 and config.animation_capacity != 0) or (config.animations != 0 and (config.animation_capacity == 0 or config.animation_capacity > 64)) then return false
+  if (config.drag_payload == 0 and config.drag_capacity != 0) or (config.drag_payload != 0 and config.drag_capacity == 0) then return false
+  server.manager is config.manager
+  server.surfaces is config.surfaces
+  server.surface_capacity is config.surface_capacity
+  server.surface_count is 0
+  server.damages is config.damages
+  server.damage_capacity is config.damage_capacity
+  server.damage_count is 0
+  server.output_pixels is config.output_pixels
+  server.output_width is config.output_width
+  server.output_height is config.output_height
+  server.output_stride is config.output_stride
+  server.clipboard is config.clipboard
+  server.clipboard_capacity is config.clipboard_capacity
+  server.clipboard_length is 0
+  server.clipboard_owner is 0
+  server.monitors is config.monitors
+  server.monitor_capacity is config.monitor_capacity
+  server.monitor_count is 0
+  server.animations is config.animations
+  server.animation_capacity is config.animation_capacity
+  server.animation_count is 0
+  server.drag_payload is config.drag_payload
+  server.drag_capacity is config.drag_capacity
+  server.drag_length is 0
+  server.drag_source_owner is 0
+  server.drag_source_window is 0
+  server.drag_target_owner is 0
+  server.drag_target_window is 0
+  server.drag_x is 0
+  server.drag_y is 0
+  server.drag_active is 0
+  server.output_origin_x is config.output_origin_x
+  server.output_origin_y is config.output_origin_y
+  server.background_color is 0
+  server.theme is 0
+  server.scale_percent is 100
+  server.generation is 1
+  server.last_error is 0
+  server.active is 1
+  index: u64 is 0
+  while index < server.surface_capacity do
+    if not window_server_surface_reset(window_server_surface_at(server, index)) then return false
+    index += 1
+  end
+  index is 0
+  while index < server.damage_capacity do
+    damage: ptr[WindowServerDamage] is window_server_damage_at(server, index)
+    damage.x is 0
+    damage.y is 0
+    damage.width is 0
+    damage.height is 0
+    index += 1
+  end
+  index is 0
+  while index < server.clipboard_capacity do
+    mem.write8(ptr.add(server.clipboard, index), 0)
+    index += 1
+  end
+  index is 0
+  while index < server.monitor_capacity do
+    monitor: ptr[WindowServerMonitor] is window_server_monitor_at(server, index)
+    monitor.id is 0
+    monitor.x is 0
+    monitor.y is 0
+    monitor.width is 0
+    monitor.height is 0
+    monitor.scale_percent is 100
+    monitor.primary is 0
+    monitor.active is 0
+    index += 1
+  end
+  index is 0
+  while index < server.animation_capacity do
+    animation: ptr[WindowServerAnimation] is window_server_animation_at(server, index)
+    if not window_server_animation_reset(animation) then return false
+    index += 1
+  end
+  index is 0
+  while index < server.drag_capacity do
+    mem.write8(ptr.add(server.drag_payload, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func window_server_find_monitor(server: ptr[WindowServer], id: u64) do
+  if server == 0 or id == 0 then return 0
+  index: u64 is 0
+  while index < server.monitor_capacity do
+    monitor: ptr[WindowServerMonitor] is window_server_monitor_at(server, index)
+    if monitor.active != 0 and monitor.id == id then return monitor
+    index += 1
+  end
+  return 0
+end
+
+func window_server_add_monitor(server: ptr[WindowServer], monitor: ptr[WindowServerMonitor]) do
+  if server == 0 or monitor == 0 or monitor.id == 0 then return false
+  if monitor.width == 0 or monitor.height == 0 then return false
+  if monitor.scale_percent < 100 or monitor.scale_percent > 300 or monitor.scale_percent % 25 != 0 then return false
+  if monitor.x < server.output_origin_x or monitor.y < server.output_origin_y then return false
+  if monitor.x + monitor.width > server.output_origin_x + server.output_width then return false
+  if monitor.y + monitor.height > server.output_origin_y + server.output_height then return false
+  if window_server_find_monitor(server, monitor.id) != 0 or server.monitor_count >= server.monitor_capacity then return false
+  slot: ptr[WindowServerMonitor] is 0
+  index: u64 is 0
+  primary_count: u64 is 0
+  while index < server.monitor_capacity do
+    candidate: ptr[WindowServerMonitor] is window_server_monitor_at(server, index)
+    if candidate.active != 0 and candidate.primary != 0 then primary_count += 1
+    if candidate.active == 0 and slot == 0 then slot is candidate
+    index += 1
+  end
+  if slot == 0 then return false
+  if monitor.primary != 0 and primary_count != 0 then return false
+  slot.id is monitor.id
+  slot.x is monitor.x
+  slot.y is monitor.y
+  slot.width is monitor.width
+  slot.height is monitor.height
+  slot.scale_percent is monitor.scale_percent
+  slot.primary is monitor.primary
+  slot.active is 1
+  server.monitor_count += 1
+  return true
+end
+
+func window_server_find_surface(server: ptr[WindowServer], window_id: u64) do
+  if server == 0 or window_id == 0 then return 0
+  index: u64 is 0
+  while index < server.surface_capacity do
+    surface: ptr[WindowServerSurface] is window_server_surface_at(server, index)
+    if surface.active != 0 and surface.window_id == window_id then return surface
+    index += 1
+  end
+  return 0
+end
+
+func window_server_register_surface(server: ptr[WindowServer], config: ptr[WindowServerSurfaceConfig]) do
+  if server == 0 or server.active == 0 or config == 0 then return false
+  if config.owner_pid == 0 or config.window_id == 0 or config.pixels == 0 then return false
+  if config.width == 0 or config.height == 0 or config.stride < config.width then return false
+  window: ptr[DesktopWindow] is window_manager_find(server.manager, config.window_id)
+  if window == 0 then return false
+  existing: ptr[WindowServerSurface] is window_server_find_surface(server, config.window_id)
+  if existing != 0 and existing.owner_pid != config.owner_pid then return false
+  surface: ptr[WindowServerSurface] is existing
+  if surface == 0 then
+    index: u64 is 0
+    while index < server.surface_capacity do
+      candidate: ptr[WindowServerSurface] is window_server_surface_at(server, index)
+      if candidate.active == 0 and surface == 0 then surface is candidate
+      index += 1
+    end
+    if surface == 0 then return false
+    server.surface_count += 1
+  end
+  surface.window_id is config.window_id
+  surface.owner_pid is config.owner_pid
+  surface.pixels is config.pixels
+  surface.width is config.width
+  surface.height is config.height
+  surface.stride is config.stride
+  surface.pending_pixels is config.pixels
+  surface.pending_width is config.width
+  surface.pending_height is config.height
+  surface.pending_stride is config.stride
+  surface.opacity_percent is 100
+  surface.generation is server.generation
+  surface.active is 1
+  server.generation += 1
+  return true
+end
+
+func window_server_stage_surface(server: ptr[WindowServer], config: ptr[WindowServerSurfaceConfig]) do
+  if server == 0 or config == 0 or config.owner_pid == 0 or config.window_id == 0 then return false
+  if config.pixels == 0 or config.width == 0 or config.height == 0 or config.stride < config.width then return false
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, config.window_id)
+  if surface == 0 or surface.owner_pid != config.owner_pid then return false
+  surface.pending_pixels is config.pixels
+  surface.pending_width is config.width
+  surface.pending_height is config.height
+  surface.pending_stride is config.stride
+  return true
+end
+
+func window_server_commit_surface(server: ptr[WindowServer], owner_pid: u64, window_id: u64, damage: ptr[WindowServerDamage]) do
+  if server == 0 or owner_pid == 0 or window_id == 0 then return false
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, window_id)
+  if surface == 0 or surface.owner_pid != owner_pid or surface.pending_pixels == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(server.manager, window_id)
+  if window == 0 then return false
+  surface.pixels is surface.pending_pixels
+  surface.width is surface.pending_width
+  surface.height is surface.pending_height
+  surface.stride is surface.pending_stride
+  surface.generation is server.generation
+  server.generation += 1
+  if damage == 0 then return window_server_damage_window(server, window_id)
+  if damage.width == 0 or damage.height == 0 then return false
+  if damage.x < 0 or damage.y < 0 then return false
+  if damage.x + damage.width > surface.width or damage.y + damage.height > surface.height then return false
+  return window_server_damage_add(server, window.x + damage.x, window.y + damage.y, damage.width, damage.height)
+end
+
+func window_server_set_surface_opacity(server: ptr[WindowServer], owner_pid: u64, window_id: u64, opacity_percent: u64) do
+  if server == 0 or owner_pid == 0 or window_id == 0 or opacity_percent > 100 then return false
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, window_id)
+  if surface == 0 or surface.owner_pid != owner_pid then return false
+  if surface.opacity_percent == opacity_percent then return true
+  surface.opacity_percent is opacity_percent
+  surface.generation is server.generation
+  server.generation += 1
+  return window_server_damage_window(server, window_id)
+end
+
+func window_server_damage_reset(server: ptr[WindowServer]) do
+  if server == 0 then return false
+  server.damage_count is 0
+  return true
+end
+
+func window_server_damage_add(server: ptr[WindowServer], x: i64, y: i64, width: u64, height: u64) do
+  if server == 0 or server.active == 0 or width == 0 or height == 0 then return false
+  if x < server.output_origin_x then
+    clipped_x: u64 is server.output_origin_x - x
+    if clipped_x >= width then return true
+    width -= clipped_x
+    x is server.output_origin_x
+  end
+  if y < server.output_origin_y then
+    clipped_y: u64 is server.output_origin_y - y
+    if clipped_y >= height then return true
+    height -= clipped_y
+    y is server.output_origin_y
+  end
+  if x >= server.output_origin_x + server.output_width or y >= server.output_origin_y + server.output_height then return true
+  if x + width > server.output_origin_x + server.output_width then width is server.output_origin_x + server.output_width - x
+  if y + height > server.output_origin_y + server.output_height then height is server.output_origin_y + server.output_height - y
+  if width == 0 or height == 0 then return true
+  if server.damage_count >= server.damage_capacity then
+    whole: ptr[WindowServerDamage] is window_server_damage_at(server, 0)
+    whole.x is server.output_origin_x
+    whole.y is server.output_origin_y
+    whole.width is server.output_width
+    whole.height is server.output_height
+    server.damage_count is 1
+    return true
+  end
+  damage: ptr[WindowServerDamage] is window_server_damage_at(server, server.damage_count)
+  damage.x is x
+  damage.y is y
+  damage.width is width
+  damage.height is height
+  server.damage_count += 1
+  return true
+end
+
+func window_server_damage_window(server: ptr[WindowServer], window_id: u64) do
+  if server == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(server.manager, window_id)
+  if window == 0 then return false
+  return window_server_damage_add(server, window.x, window.y, window.width, window.height)
+end
+
+func window_server_set_background(server: ptr[WindowServer], color: u64) do
+  if server == 0 then return false
+  server.background_color is color & 4294967295
+  return true
+end
+
+func window_server_set_theme(server: ptr[WindowServer], theme: u64) do
+  if server == 0 or theme > 1 then return false
+  server.theme is theme
+  return true
+end
+
+func window_server_set_scale(server: ptr[WindowServer], percent: u64) do
+  if server == 0 or percent < 100 or percent > 300 or percent % 25 != 0 then return false
+  server.scale_percent is percent
+  return true
+end
+
+func window_server_clipboard_set(server: ptr[WindowServer], owner_pid: u64, data: ptr, length: u64) do
+  if server == 0 or owner_pid == 0 or data == 0 or length > server.clipboard_capacity then return false
+  index: u64 is 0
+  while index < length do
+    mem.write8(ptr.add(server.clipboard, index), mem.read8(ptr.add(data, index)))
+    index += 1
+  end
+  while index < server.clipboard_capacity do
+    mem.write8(ptr.add(server.clipboard, index), 0)
+    index += 1
+  end
+  server.clipboard_length is length
+  server.clipboard_owner is owner_pid
+  return true
+end
+
+func window_server_clipboard_copy(server: ptr[WindowServer], output: ptr, capacity: u64) do
+  if server == 0 or output == 0 or capacity < server.clipboard_length then return 0
+  index: u64 is 0
+  while index < server.clipboard_length do
+    mem.write8(ptr.add(output, index), mem.read8(ptr.add(server.clipboard, index)))
+    index += 1
+  end
+  return server.clipboard_length
+end
+
+func window_server_drag_begin(server: ptr[WindowServer], owner_pid: u64, window_id: u64, data: ptr, length: u64) do
+  if server == 0 or owner_pid == 0 or window_id == 0 or data == 0 then return false
+  if server.drag_payload == 0 or length == 0 or length > server.drag_capacity or server.drag_active != 0 then return false
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, window_id)
+  if surface == 0 or surface.owner_pid != owner_pid then return false
+  index: u64 is 0
+  while index < length do
+    mem.write8(ptr.add(server.drag_payload, index), mem.read8(ptr.add(data, index)))
+    index += 1
+  end
+  server.drag_length is length
+  server.drag_source_owner is owner_pid
+  server.drag_source_window is window_id
+  server.drag_target_owner is 0
+  server.drag_target_window is 0
+  server.drag_active is 1
+  return true
+end
+
+func window_server_drag_update(server: ptr[WindowServer], x: i64, y: i64) do
+  if server == 0 or server.drag_active == 0 then return false
+  server.drag_x is x
+  server.drag_y is y
+  server.drag_target_owner is 0
+  server.drag_target_window is 0
+  target: ptr[DesktopWindow] is window_manager_top_at(server.manager, x, y)
+  if target == 0 or target.id == server.drag_source_window then return true
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, target.id)
+  if surface == 0 or surface.owner_pid == server.drag_source_owner then return true
+  server.drag_target_owner is surface.owner_pid
+  server.drag_target_window is target.id
+  return true
+end
+
+func window_server_drag_copy(server: ptr[WindowServer], target_owner: u64, output: ptr, capacity: u64) do
+  if server == 0 or server.drag_active == 0 or output == 0 then return 0
+  if target_owner == 0 or target_owner != server.drag_target_owner or capacity < server.drag_length then return 0
+  index: u64 is 0
+  while index < server.drag_length do
+    mem.write8(ptr.add(output, index), mem.read8(ptr.add(server.drag_payload, index)))
+    index += 1
+  end
+  return server.drag_length
+end
+
+func window_server_drag_finish(server: ptr[WindowServer], target_owner: u64, accepted: bool) do
+  if server == 0 or server.drag_active == 0 then return false
+  delivered: bool is accepted and target_owner != 0 and target_owner == server.drag_target_owner
+  server.drag_length is 0
+  server.drag_source_owner is 0
+  server.drag_source_window is 0
+  server.drag_target_owner is 0
+  server.drag_target_window is 0
+  server.drag_active is 0
+  return delivered
+end
+
+func window_server_unregister_owner(server: ptr[WindowServer], owner_pid: u64) do
+  if server == 0 or owner_pid == 0 then return false
+  index: u64 is 0
+  removed: u64 is 0
+  while index < server.surface_capacity do
+    surface: ptr[WindowServerSurface] is window_server_surface_at(server, index)
+    if surface.active != 0 and surface.owner_pid == owner_pid then
+      window: ptr[DesktopWindow] is window_manager_find(server.manager, surface.window_id)
+      if window != 0 and window.visible != 0 then
+        if not window_server_damage_window(server, surface.window_id) then return false
+        window_manager_close(server.manager, surface.window_id)
+      end
+      if not window_server_surface_reset(surface) then return false
+      if server.surface_count > 0 then server.surface_count -= 1
+      removed += 1
+    end
+    index += 1
+  end
+  if server.clipboard_owner == owner_pid then
+    server.clipboard_owner is 0
+  end
+  if server.drag_source_owner == owner_pid or server.drag_target_owner == owner_pid then
+    server.drag_length is 0
+    server.drag_source_owner is 0
+    server.drag_source_window is 0
+    server.drag_target_owner is 0
+    server.drag_target_window is 0
+    server.drag_active is 0
+  end
+  server.generation += 1
+  return removed
+end
+
+func window_server_output_set(server: ptr[WindowServer], x: i64, y: i64, color: u64) do
+  if server == 0 then return false
+  if x < server.output_origin_x or y < server.output_origin_y then return false
+  local_x: u64 is x - server.output_origin_x
+  local_y: u64 is y - server.output_origin_y
+  if local_x >= server.output_width or local_y >= server.output_height then return false
+  offset: u64 is (local_y * server.output_stride + local_x) * 4
+  mem.write32(ptr.add(server.output_pixels, offset), color)
+  return true
+end
+
+func window_server_output_get(server: ptr[WindowServer], x: i64, y: i64) do
+  if server == 0 then return 0
+  if x < server.output_origin_x or y < server.output_origin_y then return 0
+  local_x: u64 is x - server.output_origin_x
+  local_y: u64 is y - server.output_origin_y
+  if local_x >= server.output_width or local_y >= server.output_height then return 0
+  offset: u64 is (local_y * server.output_stride + local_x) * 4
+  return mem.read32(ptr.add(server.output_pixels, offset))
+end
+
+func window_server_blend(source: u64, destination: u64, opacity_percent: u64) do
+  if opacity_percent >= 100 then return source
+  if opacity_percent == 0 then return destination
+  inverse: u64 is 100 - opacity_percent
+  source_red: u64 is (source >> 16) & 255
+  source_green: u64 is (source >> 8) & 255
+  source_blue: u64 is source & 255
+  destination_red: u64 is (destination >> 16) & 255
+  destination_green: u64 is (destination >> 8) & 255
+  destination_blue: u64 is destination & 255
+  red: u64 is (source_red * opacity_percent + destination_red * inverse + 50) / 100
+  green: u64 is (source_green * opacity_percent + destination_green * inverse + 50) / 100
+  blue: u64 is (source_blue * opacity_percent + destination_blue * inverse + 50) / 100
+  return (red << 16) | (green << 8) | blue
+end
+
+func window_server_present_monitor(server: ptr[WindowServer], monitor_id: u64, destination: ptr, destination_stride: u64) do
+  if server == 0 or destination == 0 then return false
+  monitor: ptr[WindowServerMonitor] is window_server_find_monitor(server, monitor_id)
+  if monitor == 0 or destination_stride < monitor.width then return false
+  row: u64 is 0
+  while row < monitor.height do
+    column: u64 is 0
+    while column < monitor.width do
+      color: u64 is window_server_output_get(server, monitor.x + column, monitor.y + row)
+      mem.write32(ptr.add(destination, (row * destination_stride + column) * 4), color)
+      column += 1
+    end
+    row += 1
+  end
+  return true
+end
+
+func window_server_animation_start(server: ptr[WindowServer], config: ptr[WindowServerAnimationConfig]) do
+  if server == 0 then return false
+  server.last_error is 0
+  if config == 0 or server.animations == 0 then
+    server.last_error is 1
+    return false
+  end
+  if config.window_id == 0 or config.duration_ms == 0 or config.duration_ms > 10000 then
+    server.last_error is 2
+    return false
+  end
+  if config.kind < window_animation_move() or config.kind > window_animation_move_resize() then
+    server.last_error is 3
+    return false
+  end
+  window: ptr[DesktopWindow] is window_manager_find(server.manager, config.window_id)
+  if window == 0 or window.visible == 0 or window.state != window_state_normal() then
+    server.last_error is 4
+    return false
+  end
+  surface: ptr[WindowServerSurface] is window_server_find_surface(server, config.window_id)
+  if (config.kind == window_animation_resize() or config.kind == window_animation_move_resize()) and (config.to_width < window.min_width or config.to_height < window.min_height) then
+    server.last_error is 5
+    return false
+  end
+  if config.kind == window_animation_opacity() then
+    if surface == 0 or config.to_opacity > 100 then
+      server.last_error is 6
+      return false
+    end
+  end
+  slot: ptr[WindowServerAnimation] is 0
+  index: u64 is 0
+  while index < server.animation_capacity do
+    candidate: ptr[WindowServerAnimation] is window_server_animation_at(server, index)
+    if candidate.active != 0 and candidate.window_id == config.window_id then
+      server.last_error is 7
+      return false
+    end
+    if candidate.active == 0 and slot == 0 then slot is candidate
+    index += 1
+  end
+  if slot == 0 then
+    server.last_error is 8
+    return false
+  end
+  slot.window_id is config.window_id
+  slot.kind is config.kind
+  slot.elapsed_ms is 0
+  slot.duration_ms is config.duration_ms
+  slot.from_x is window.x
+  slot.from_y is window.y
+  slot.from_width is window.width
+  slot.from_height is window.height
+  slot.from_opacity is 100
+  if surface != 0 then slot.from_opacity is surface.opacity_percent
+  slot.to_x is config.to_x
+  slot.to_y is config.to_y
+  slot.to_width is config.to_width
+  slot.to_height is config.to_height
+  slot.to_opacity is config.to_opacity
+  slot.active is 1
+  server.animation_count += 1
+  return true
+end
+
+func window_server_animation_tick(server: ptr[WindowServer], elapsed_ms: u64) do
+  if server == 0 or elapsed_ms == 0 then return false
+  index: u64 is 0
+  while index < server.animation_capacity do
+    animation: ptr[WindowServerAnimation] is window_server_animation_at(server, index)
+    if animation.active != 0 then
+      window: ptr[DesktopWindow] is window_manager_find(server.manager, animation.window_id)
+      if window == 0 or window.visible == 0 then
+        if not window_server_animation_reset(animation) then return false
+        if server.animation_count > 0 then
+          server.animation_count -= 1
+        end
+      else
+        if not window_server_damage_window(server, window.id) then return false
+        animation.elapsed_ms += elapsed_ms
+        if animation.elapsed_ms > animation.duration_ms then animation.elapsed_ms is animation.duration_ms
+        progress: u64 is animation.elapsed_ms
+        duration: u64 is animation.duration_ms
+        if animation.kind == window_animation_move() or animation.kind == window_animation_move_resize() then
+          delta_x: i64 is animation.to_x - animation.from_x
+          delta_y: i64 is animation.to_y - animation.from_y
+          window.x is animation.from_x + (delta_x * progress) / duration
+          window.y is animation.from_y + (delta_y * progress) / duration
+          if not window_manager_clamp(server.manager, window) then return false
+        end
+        if animation.kind == window_animation_resize() or animation.kind == window_animation_move_resize() then
+          width: u64 is animation.from_width
+          height: u64 is animation.from_height
+          if animation.to_width >= animation.from_width then
+            width += ((animation.to_width - animation.from_width) * progress) / duration
+          else
+            width -= ((animation.from_width - animation.to_width) * progress) / duration
+          end
+          if animation.to_height >= animation.from_height then
+            height += ((animation.to_height - animation.from_height) * progress) / duration
+          else
+            height -= ((animation.from_height - animation.to_height) * progress) / duration
+          end
+          if not window_manager_resize(server.manager, window.id, width, height) then return false
+        end
+        if animation.kind == window_animation_opacity() then
+          surface: ptr[WindowServerSurface] is window_server_find_surface(server, window.id)
+          if surface == 0 then return false
+          if animation.to_opacity >= animation.from_opacity then
+            surface.opacity_percent is animation.from_opacity + ((animation.to_opacity - animation.from_opacity) * progress) / duration
+          else
+            surface.opacity_percent is animation.from_opacity - ((animation.from_opacity - animation.to_opacity) * progress) / duration
+          end
+        end
+        if not window_server_damage_window(server, window.id) then return false
+        if animation.elapsed_ms == animation.duration_ms then
+          if not window_server_animation_reset(animation) then return false
+          if server.animation_count > 0 then server.animation_count -= 1
+        end
+      end
+    end
+    index += 1
+  end
+  return true
+end
+
+func window_server_compose_damage(server: ptr[WindowServer], damage: ptr[WindowServerDamage]) do
+  if server == 0 or damage == 0 then return false
+  row: u64 is 0
+  while row < damage.height do
+    column: u64 is 0
+    while column < damage.width do
+      if not window_server_output_set(server, damage.x + column, damage.y + row, server.background_color) then return false
+      column += 1
+    end
+    row += 1
+  end
+
+  manager: ptr[WindowManager] is server.manager
+  drawn: u64 is 0
+  last_z: u64 is 0
+  while drawn < manager.count do
+    selected: ptr[DesktopWindow] is 0
+    selected_z: u64 is 0
+    index: u64 is 0
+    while index < manager.capacity do
+      candidate: ptr[DesktopWindow] is window_manager_at(manager, index)
+      if candidate.visible != 0 and candidate.z_order > last_z and (selected == 0 or candidate.z_order < selected_z) then
+        selected is candidate
+        selected_z is candidate.z_order
+      end
+      index += 1
+    end
+    if selected == 0 then return false
+    surface: ptr[WindowServerSurface] is window_server_find_surface(server, selected.id)
+    if surface != 0 then
+      row is 0
+      while row < surface.height and row < selected.height do
+        destination_y: i64 is selected.y + row
+        if destination_y >= damage.y and destination_y < damage.y + damage.height then
+          column: u64 is 0
+          while column < surface.width and column < selected.width do
+            destination_x: i64 is selected.x + column
+            if destination_x >= damage.x and destination_x < damage.x + damage.width then
+              source_offset: u64 is (row * surface.stride + column) * 4
+              color: u64 is mem.read32(ptr.add(surface.pixels, source_offset))
+              if surface.opacity_percent < 100 then
+                destination_color: u64 is window_server_output_get(server, destination_x, destination_y)
+                color is window_server_blend(color, destination_color, surface.opacity_percent)
+              end
+              if not window_server_output_set(server, destination_x, destination_y, color) then return false
+            end
+            column += 1
+          end
+        end
+        row += 1
+      end
+    end
+    last_z is selected_z
+    drawn += 1
+  end
+  return true
+end
+
+func window_server_compose(server: ptr[WindowServer]) do
+  if server == 0 or server.active == 0 then return false
+  index: u64 is 0
+  while index < server.damage_count do
+    if not window_server_compose_damage(server, window_server_damage_at(server, index)) then return false
+    index += 1
+  end
+  server.damage_count is 0
+  server.generation += 1
+  return true
+end

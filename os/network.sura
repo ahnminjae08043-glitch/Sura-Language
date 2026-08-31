@@ -2,6 +2,288 @@
 
 import "../stdlib/freestanding/virtio_net.sura"
 import "../stdlib/freestanding/net.sura"
+import "../stdlib/freestanding/http_content.sura"
+import "../stdlib/freestanding/css_box.sura"
+import "../stdlib/freestanding/browser_image.sura"
+import "../stdlib/freestanding/browser_form.sura"
+import "../stdlib/freestanding/browser_js_source.sura"
+import "../stdlib/freestanding/browser_js_dom.sura"
+import "../stdlib/freestanding/browser_wasm.sura"
+
+os_http_response_info is static.struct(Http1ResponseInfo)
+os_http_response_length_state is static.zero(8, 8)
+os_http_content_workspace: ptr is 0
+os_browser_dom_nodes is static.zero(81920, 16)
+os_browser_dom_attributes is static.zero(32768, 16)
+os_browser_dom_document is static.struct(HtmlDomDocument)
+os_browser_dom_html is static.zero(65536, 16)
+os_browser_dom_css_source is static.zero(32768, 16)
+os_browser_dom_css_variables is static.zero(1024, 16)
+os_browser_dom_css_rules is static.zero(24576, 16)
+os_browser_dom_rule_styles is static.zero(147456, 16)
+os_browser_dom_stylesheet is static.struct(CssStylesheet)
+os_browser_dom_computed is static.zero(294912, 16)
+os_browser_dom_boxes is static.zero(147456, 16)
+os_browser_dom_scratch is static.zero(640, 16)
+os_browser_dom_css_length: u64 is 0
+os_browser_dom_css_variable_count: u64 is 0
+os_browser_dom_box_count: u64 is 0
+os_browser_dom_viewport_width: u64 is 0
+os_browser_dom_viewport_height: u64 is 0
+os_browser_dom_ready: u64 is 0
+os_browser_dom_external_css_loaded: u64 is 0
+os_browser_dom_render_reported: u64 is 0
+os_browser_dom_render_error: u64 is 0
+os_browser_stylesheet_value is static.utf8("stylesheet")
+os_browser_images is static.zero(128, 16)
+os_browser_image_sources is static.zero(32, 16)
+os_browser_image_node_map is static.zero(8192, 16)
+os_browser_image_pixel_memory: ptr is 0
+os_browser_image_workspace: ptr is 0
+os_browser_image_count: u64 is 0
+os_browser_image_render_reported: u64 is 0
+os_browser_image_error: u64 is 0
+os_browser_form_controls is static.zero(1792, 16)
+os_browser_form_values is static.zero(4096, 16)
+os_browser_form_state is static.struct(BrowserFormState)
+os_browser_form_editing: u64 is 0
+os_browser_form_focus_reported: u64 is 0
+os_browser_form_input_reported: u64 is 0
+os_browser_form_submit_reported: u64 is 0
+os_browser_form_payload is static.zero(768, 16)
+os_browser_form_decimal is static.zero(32, 16)
+os_browser_form_method_post_value is static.utf8("post")
+os_browser_http_post_prefix is static.utf8("POST ")
+os_browser_http_form_headers is static.utf8("\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: ")
+os_browser_internal_form_address is static.utf8("sura.local/forms")
+os_browser_internal_js_address is static.utf8("sura.local/javascript")
+os_browser_internal_wasm_address is static.utf8("sura.local/webassembly")
+os_browser_internal_submitted_address is static.utf8("sura.local/submitted")
+os_browser_internal_form_response is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 609\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>body{background:#f3efe5;color:#17201f;padding:18px}form{display:block;width:360px}label{display:block}input{display:block;width:320px;height:32px;margin:8px 0}button{display:block;width:120px;height:32px;color:#ffffff}</style></head><body><h1>Form test</h1><form action=\"/login\" method=\"post\"><label for=\"user\">User</label><input type=\"text\" name=\"user\" value=\"su\"><label for=\"pass\">Password</label><input type=\"password\" name=\"pass\"><label>Remember</label><input type=\"checkbox\" name=\"keep\" checked><button type=\"submit\">Sign in</button></form><script>let x=4;x=x+6;</script></body></html>")
+os_browser_internal_js_response is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 377\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>body{background:#f3efe5;color:#17201f;padding:18px}button{display:block;width:180px;height:40px}#status{display:block;padding:12px;background:#ffffff}</style></head><body><h1>JavaScript test</h1><div id=\"status\">Before click</div><button type=\"button\" onclick=\"document.getElementById('status').textContent = 'After click';\">Run script</button></body></html>")
+os_browser_internal_submit_prefix is static.utf8("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>body{background:#f3efe5;color:#17201f;padding:18px}code{display:block;background:#ffffff;padding:12px}</style></head><body><h1>Form submitted</h1><p>POST /login</p><code>")
+os_browser_internal_submit_suffix is static.utf8("</code></body></html>")
+os_browser_internal_post_line is static.utf8("POST /login")
+os_browser_js_source is static.zero(16384, 16)
+os_browser_js_code is static.struct(BrowserJsInstruction, 512)
+os_browser_js_constants is static.struct(BrowserJsValue, 128)
+os_browser_js_bindings is static.struct(BrowserJsBinding, 128)
+os_browser_js_stack is static.struct(BrowserJsValue, 64)
+os_browser_js_globals is static.struct(BrowserJsValue, 128)
+os_browser_js_scratch is static.struct(BrowserJsValue)
+os_browser_js_program is static.struct(BrowserJsProgram)
+os_browser_js_compiler is static.struct(BrowserJsSourceCompiler)
+os_browser_js_vm is static.struct(BrowserJsVm)
+os_browser_js_dom_mutations is static.struct(BrowserJsDomMutation, 32)
+os_browser_js_dom_host is static.struct(BrowserJsDomHost)
+os_browser_js_dom_override is static.struct(BrowserJsValue)
+os_browser_js_source_length: u64 is 0
+os_browser_js_executed: u64 is 0
+os_browser_js_error: u64 is 0
+os_browser_js_click_reported: u64 is 0
+os_browser_js_marker is static.utf8("SURA_OS_BROWSER_JS_OK")
+os_browser_js_page_marker is static.utf8("SURA_OS_BROWSER_JS_PAGE_OK")
+os_browser_js_click_marker is static.utf8("SURA_OS_BROWSER_JS_CLICK_OK")
+os_browser_js_page_failure_prefix is static.utf8("browser JavaScript page failure: ")
+os_browser_wasm_fixture is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 127, 3, 2, 1, 0, 7, 7, 1, 3, 114, 117, 110, 0, 0, 10, 6, 1, 4, 0, 65, 42, 11], 16)
+os_browser_wasm_reader is static.struct(BrowserWasmReader)
+os_browser_wasm_vm_reader is static.struct(BrowserWasmReader)
+os_browser_wasm_types is static.struct(BrowserWasmType, 16)
+os_browser_wasm_param_types is static.zero(512, 16)
+os_browser_wasm_functions is static.struct(BrowserWasmFunction, 16)
+os_browser_wasm_local_types is static.zero(512, 16)
+os_browser_wasm_exports is static.struct(BrowserWasmExport, 16)
+os_browser_wasm_validation is static.zero(512, 16)
+os_browser_wasm_module is static.struct(BrowserWasmModule)
+os_browser_wasm_stack is static.struct(BrowserWasmValue, 128)
+os_browser_wasm_locals is static.struct(BrowserWasmValue, 128)
+os_browser_wasm_controls is static.struct(BrowserWasmControl, 64)
+os_browser_wasm_vm is static.struct(BrowserWasmVm)
+os_browser_wasm_arguments is static.struct(BrowserWasmValue, 8)
+os_browser_wasm_result is static.struct(BrowserWasmValue)
+os_browser_wasm_run_name is static.utf8("run")
+os_browser_wasm_page_prefix is static.utf8("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>body{background:#f3efe5;color:#17201f;padding:18px}code{display:block;background:#ffffff;padding:12px}</style></head><body><h1>WebAssembly</h1><p>Export run() completed.</p><code>Result: ")
+os_browser_wasm_page_suffix is static.utf8("</code></body></html>")
+os_browser_wasm_decimal is static.zero(32, 16)
+os_browser_wasm_marker is static.utf8("SURA_OS_BROWSER_WASM_OK")
+os_browser_wasm_page_marker is static.utf8("SURA_OS_BROWSER_WASM_PAGE_OK")
+os_browser_wasm_failure_prefix is static.utf8("browser WebAssembly failure: ")
+os_browser_navigation_address is static.zero(256, 16)
+os_browser_navigation_address_length: u64 is 0
+# 0 idle, 1 waiting for DNS, 2 ready to start TCP, 3 waiting for SYN-ACK,
+# 4 ready for the remaining synchronous HTTP/TLS fetch.
+os_browser_navigation_state: u64 is 0
+os_browser_navigation_started_async: u64 is 0
+# The HTTP/TLS stack is still synchronous, but its polling loops yield to the
+# desktop input path while this flag is set.  Public navigation entry points
+# also use it to reject a nested request from an input event.
+os_browser_navigation_fetch_active: u64 is 0
+os_browser_navigation_fetch_cancel_requested: u64 is 0
+os_browser_navigation_fetch_cancelled: u64 is 0
+os_network_dns_async_deadline: u64 is 0
+os_network_dns_async_active: u64 is 0
+os_network_tcp_async_deadline: u64 is 0
+os_network_tcp_async_initial_sequence: u64 is 0
+os_network_tcp_async_port: u64 is 0
+os_network_tcp_async_active: u64 is 0
+os_network_tcp_preconnected_port: u64 is 0
+os_browser_navigation_tcp_begin_marker is static.utf8("SURA_OS_BROWSER_NAV_TCP_BEGIN")
+os_browser_navigation_tcp_done_marker is static.utf8("SURA_OS_BROWSER_NAV_TCP_DONE")
+os_browser_navigation_tls_begin_marker is static.utf8("SURA_OS_BROWSER_NAV_TLS_BEGIN")
+os_browser_navigation_tls_done_marker is static.utf8("SURA_OS_BROWSER_NAV_TLS_DONE")
+
+func os_browser_js_page_fail(stage: u64) do
+  global os_browser_last_error
+  os_browser_last_error is stage
+  if not os_serial_text(os_browser_js_page_failure_prefix) then return false
+  if not os_serial_u64(stage) then return false
+  if not serial_write_byte(1016, 10, 1000000) then return false
+  return false
+end
+
+func os_browser_image_at(index: u64) do
+  if index >= 2 then return 0
+  return ptr.add(os_browser_images, index * 64)
+end
+
+func os_browser_image_source_equal(document: ptr[HtmlDomDocument], attribute: ptr[HtmlDomAttribute], resource_index: u64) do
+  if document == 0 or attribute == 0 or resource_index >= os_browser_image_count then return false
+  source: ptr is ptr.add(os_browser_image_sources, resource_index * 16)
+  source_start: u64 is mem.read64(source)
+  source_bytes: u64 is mem.read64(ptr.add(source, 8))
+  if attribute.source_bytes != source_bytes then return false
+  cursor: u64 is 0
+  while cursor < source_bytes do
+    if mem.read8(ptr.add(document.input, attribute.source_start + cursor)) != mem.read8(ptr.add(document.input, source_start + cursor)) then return false
+    cursor += 1
+  end
+  return true
+end
+
+func os_browser_image_find(document: ptr[HtmlDomDocument], attribute: ptr[HtmlDomAttribute]) do
+  index: u64 is 0
+  while index < os_browser_image_count do
+    if os_browser_image_source_equal(document, attribute, index) then return index
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func os_browser_fetch_dom_image(document: ptr[HtmlDomDocument], attribute: ptr[HtmlDomAttribute], resource_index: u64) do
+  global os_browser_image_count, os_browser_image_error
+  os_browser_image_error is 0
+  if document == 0 or attribute == 0 or resource_index >= 2 then
+    os_browser_image_error is 1
+    return false
+  end
+  if attribute.has_value == 0 or attribute.source_bytes == 0 or attribute.source_bytes > 900 then
+    os_browser_image_error is 2
+    return false
+  end
+  if mem.read8(ptr.add(document.input, attribute.source_start)) != 47 then
+    os_browser_image_error is 3
+    return false
+  end
+  if os_browser_image_pixel_memory == 0 or os_browser_image_workspace == 0 then
+    os_browser_image_error is 4
+    return false
+  end
+  if not os_browser_build_resource_request(ptr.add(document.input, attribute.source_start), attribute.source_bytes) then
+    os_browser_image_error is 5
+    return false
+  end
+  request_ok: bool is false
+  if os_browser_use_https != 0 then request_ok is os_network_https_get(os_network_context, os_browser_hostname_buffer, os_browser_hostname_length, os_network_http_request, os_browser_http_request_length)
+  if os_browser_use_https == 0 then request_ok is os_network_http_get(os_network_context, os_network_http_request, os_browser_http_request_length)
+  if not request_ok then
+    os_browser_image_error is 600 + os_https_last_error * 32 + os_https_receive_error
+    return false
+  end
+  status_code: u64 is os_browser_http_status_code()
+  if status_code < 200 or status_code >= 300 then
+    os_browser_image_error is 7
+    return false
+  end
+  body_start: u64 is os_browser_response_body_start()
+  if body_start == 0 or body_start >= os_browser_length then
+    os_browser_image_error is 8
+    return false
+  end
+  body_bytes: u64 is os_browser_length - body_start
+
+  image: ptr[BrowserImage] is os_browser_image_at(resource_index)
+  image.pixels is ptr.add(os_browser_image_pixel_memory, resource_index * 16777216)
+  image.pixel_capacity is 16777216
+  if not browser_image_decode(ptr.add(os_browser_buffer, body_start), body_bytes, image, os_browser_image_workspace, 20971520) then
+    os_browser_image_error is 9
+    return false
+  end
+
+  source: ptr is ptr.add(os_browser_image_sources, resource_index * 16)
+  mem.write64(source, attribute.source_start)
+  mem.write64(ptr.add(source, 8), attribute.source_bytes)
+  os_browser_image_count is resource_index + 1
+  if image.format == 1 then
+    if not os_serial_cstr_line(os_browser_image_png_marker) then return false
+  end
+  if image.format == 2 then
+    if not os_serial_cstr_line(os_browser_image_jpeg_marker) then return false
+  end
+  return true
+end
+
+func os_browser_prepare_dom_images(document: ptr[HtmlDomDocument], viewport_width: u64) do
+  global os_browser_image_count, os_browser_image_render_reported
+  os_browser_image_count is 0
+  os_browser_image_render_reported is 0
+  if document == 0 or viewport_width == 0 then return false
+  node_index: u64 is 0
+  while node_index < 1024 do
+    mem.write64(ptr.add(os_browser_image_node_map, node_index * 8), u64("0xffffffffffffffff"))
+    node_index += 1
+  end
+
+  node_index is 0
+  while node_index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+    if node.kind == 1 and node.tag == 15 then
+      if not os_serial_cstr_line(os_browser_image_discovered_marker) then return false
+      source_attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 4)
+      if source_attribute != 0 and source_attribute.has_value != 0 and source_attribute.source_bytes != 0 then
+        resource_index: u64 is os_browser_image_find(document, source_attribute)
+        if resource_index == u64("0xffffffffffffffff") and os_browser_image_count < 2 then
+          candidate: u64 is os_browser_image_count
+          if os_browser_fetch_dom_image(document, source_attribute, candidate) then
+            resource_index is candidate
+          else
+            if not os_serial_text(os_browser_image_error_prefix) then return false
+            if not os_serial_u64(os_browser_image_error) then return false
+            if not serial_write_byte(1016, 10, 1000000) then return false
+            if os_https_last_error == 6 and os_https_receive_error == 5 then
+              if not os_serial_text(os_browser_tls_sequence_prefix) then return false
+              if not os_serial_u64(os_https_decrypt_failure_sequence) then return false
+              if not serial_write_byte(1016, 10, 1000000) then return false
+              if not os_serial_text(os_browser_tls_record_bytes_prefix) then return false
+              if not os_serial_u64(os_https_decrypt_failure_record_bytes) then return false
+              if not serial_write_byte(1016, 10, 1000000) then return false
+            end
+          end
+        end
+        if resource_index != u64("0xffffffffffffffff") then
+          image: ptr[BrowserImage] is os_browser_image_at(resource_index)
+          if browser_image_fit(image, viewport_width, 240) then
+            style: ptr[CssComputedStyle] is ptr.add(os_browser_dom_computed, node_index * 288)
+            if style.width == u64("0xffffffffffffffff") then style.width is image.display_width
+            if style.height == u64("0xffffffffffffffff") then style.height is image.display_height
+            mem.write64(ptr.add(os_browser_image_node_map, node_index * 8), resource_index)
+          end
+        end
+      end
+    end
+    node_index += 1
+  end
+  return true
+end
 
 func os_network_build_arp_request(frame: ptr, context: ptr[VirtioNetContext], target_ip: u64) do
   if frame == 0 or context == 0 or target_ip == 0 or target_ip > u64("0xffffffff") then return false
@@ -160,10 +442,102 @@ func os_browser_reset_address() do
   return true
 end
 
+func os_browser_begin_edit() do
+  global os_browser_address_length, os_browser_edit_started, os_browser_navigation_state, os_network_dns_async_active
+  global os_network_tcp_async_active, os_network_tcp_preconnected_port, os_network_tcp_closed
+  if os_browser_edit_started != 0 then return true
+  if not os_https_handshake_cancel(os_network_context) then return false
+  os_browser_navigation_state is 0
+  os_network_dns_async_active is 0
+  if os_network_tcp_preconnected_port != 0 then os_network_tcp_close(os_network_context)
+  os_network_tcp_async_active is 0
+  os_network_tcp_preconnected_port is 0
+  os_network_tcp_closed is 1
+  if not net_zero(os_browser_address_buffer, 256) then return false
+  os_browser_address_length is 0
+  os_browser_edit_started is 1
+  return true
+end
+
+func os_browser_backspace_codepoint() do
+  global os_browser_address_length, os_browser_edit_started, os_browser_status_text
+  os_browser_edit_started is 1
+  if os_browser_address_length == 0 then return true
+  os_browser_address_length -= 1
+  while os_browser_address_length > 0 and (mem.read8(ptr.add(os_browser_address_buffer, os_browser_address_length)) & 192) == 128 do
+    os_browser_address_length -= 1
+  end
+  mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), 0)
+  os_browser_status_text is os_text_browser_status_ready
+  return true
+end
+
+func os_browser_accept_packed(value: u64) do
+  global os_browser_address_length, os_browser_status_text
+  count: u64 is (value >> 56) & 7
+  if count == 0 or count > 7 then return false
+  if not os_browser_begin_edit() then return false
+  if os_browser_address_length + count > 95 then return true
+  index: u64 is 0
+  while index < count do
+    byte: u64 is (value >> (index * 8)) & 255
+    if byte == 0 then return false
+    index += 1
+  end
+  index is 0
+  while index < count do
+    mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), (value >> (index * 8)) & 255)
+    os_browser_address_length += 1
+    index += 1
+  end
+  mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), 0)
+  os_browser_status_text is os_text_browser_status_ready
+  return true
+end
+
+func os_browser_hex_digit(value: u64) do
+  if value < 10 then return 48 + value
+  return 65 + value - 10
+end
+
+func os_browser_path_started() do
+  if os_browser_address_length == 0 then return false
+  cursor: u64 is 0
+  if os_browser_address_length >= 8 then
+    has_https: bool is os_network_ascii_lower(mem.read8(os_browser_address_buffer)) == 104
+    if has_https then has_https is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 1))) == 116
+    if has_https then has_https is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 2))) == 116
+    if has_https then has_https is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 3))) == 112
+    if has_https then has_https is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 4))) == 115
+    if has_https then has_https is mem.read8(ptr.add(os_browser_address_buffer, 5)) == 58
+    if has_https then has_https is mem.read8(ptr.add(os_browser_address_buffer, 6)) == 47
+    if has_https then has_https is mem.read8(ptr.add(os_browser_address_buffer, 7)) == 47
+    if has_https then cursor is 8
+  end
+  if os_browser_address_length >= 7 then
+    has_http: bool is os_network_ascii_lower(mem.read8(os_browser_address_buffer)) == 104
+    if has_http then has_http is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 1))) == 116
+    if has_http then has_http is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 2))) == 116
+    if has_http then has_http is os_network_ascii_lower(mem.read8(ptr.add(os_browser_address_buffer, 3))) == 112
+    if has_http then has_http is mem.read8(ptr.add(os_browser_address_buffer, 4)) == 58
+    if has_http then has_http is mem.read8(ptr.add(os_browser_address_buffer, 5)) == 47
+    if has_http then has_http is mem.read8(ptr.add(os_browser_address_buffer, 6)) == 47
+    if has_http then cursor is 7
+  end
+  while cursor < os_browser_address_length do
+    if mem.read8(ptr.add(os_browser_address_buffer, cursor)) == 47 then return true
+    cursor += 1
+  end
+  return false
+end
+
 func os_browser_parse_url() do
-  global os_browser_hostname_length, os_browser_path_length, os_browser_status_text
+  global os_browser_hostname_length, os_browser_path_length, os_browser_status_text, os_browser_use_https
   os_browser_hostname_length is 0
   os_browser_path_length is 0
+  # Scheme-less addresses use HTTPS by default. Plain HTTP remains available
+  # only when the user explicitly types http://.
+  os_browser_use_https is 1
   if not net_zero(os_browser_hostname_buffer, 256) then return false
   if not net_zero(os_browser_path_buffer, 512) then return false
   if os_browser_address_length == 0 then
@@ -182,11 +556,6 @@ func os_browser_parse_url() do
     if is_https then is_https is mem.read8(ptr.add(os_browser_address_buffer, 6)) == 47
     if is_https then is_https is mem.read8(ptr.add(os_browser_address_buffer, 7)) == 47
   end
-  if is_https then
-    os_browser_status_text is os_text_browser_status_https
-    return false
-  end
-
   cursor: u64 is 0
   has_http: bool is false
   if os_browser_address_length >= 7 then
@@ -198,7 +567,14 @@ func os_browser_parse_url() do
     if has_http then has_http is mem.read8(ptr.add(os_browser_address_buffer, 5)) == 47
     if has_http then has_http is mem.read8(ptr.add(os_browser_address_buffer, 6)) == 47
   end
-  if has_http then cursor is 7
+  if is_https then
+    cursor is 8
+    os_browser_use_https is 1
+  end
+  if has_http then
+    cursor is 7
+    os_browser_use_https is 0
+  end
   host_start: u64 is cursor
   while cursor < os_browser_address_length and mem.read8(ptr.add(os_browser_address_buffer, cursor)) != 47 do
     value: u64 is mem.read8(ptr.add(os_browser_address_buffer, cursor))
@@ -227,19 +603,29 @@ func os_browser_parse_url() do
     os_browser_path_length is 1
     return true
   end
-  os_browser_path_length is os_browser_address_length - cursor
-  if os_browser_path_length == 0 or os_browser_path_length > 500 then
+  source_path_length: u64 is os_browser_address_length - cursor
+  if source_path_length == 0 or source_path_length > 250 then
     os_browser_status_text is os_text_browser_status_invalid
     return false
   end
+  os_browser_path_length is 0
   index is 0
-  while index < os_browser_path_length do
+  while index < source_path_length do
     value: u64 is mem.read8(ptr.add(os_browser_address_buffer, cursor + index))
-    if value <= 32 or value >= 127 then
-      os_browser_status_text is os_text_browser_status_invalid
-      return false
+    encode: bool is value <= 32 or value >= 127
+    if encode then
+      if os_browser_path_length + 3 > 500 then
+        os_browser_status_text is os_text_browser_status_invalid
+        return false
+      end
+      mem.write8(ptr.add(os_browser_path_buffer, os_browser_path_length), 37)
+      mem.write8(ptr.add(os_browser_path_buffer, os_browser_path_length + 1), os_browser_hex_digit((value >> 4) & 15))
+      mem.write8(ptr.add(os_browser_path_buffer, os_browser_path_length + 2), os_browser_hex_digit(value & 15))
+      os_browser_path_length += 3
+    else
+      mem.write8(ptr.add(os_browser_path_buffer, os_browser_path_length), value)
+      os_browser_path_length += 1
     end
-    mem.write8(ptr.add(os_browser_path_buffer, index), value)
     index += 1
   end
   mem.write8(ptr.add(os_browser_path_buffer, os_browser_path_length), 0)
@@ -250,7 +636,7 @@ func os_browser_build_http_request() do
   global os_browser_http_request_length
   os_browser_http_request_length is 0
   if os_browser_hostname_length == 0 or os_browser_path_length == 0 then return false
-  required: u64 is 4 + os_browser_path_length + 17 + os_browser_hostname_length + 23
+  required: u64 is 4 + os_browser_path_length + 17 + os_browser_hostname_length + 56
   if required > 1023 then return false
   if not net_zero(os_network_http_request, 1024) then return false
   cursor: u64 is 0
@@ -262,8 +648,8 @@ func os_browser_build_http_request() do
   cursor += 17
   if not net_copy(ptr.add(os_network_http_request, cursor), os_browser_hostname_buffer, os_browser_hostname_length) then return false
   cursor += os_browser_hostname_length
-  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_close_suffix, 23) then return false
-  cursor += 23
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_close_suffix, 56) then return false
+  cursor += 56
   mem.write8(ptr.add(os_network_http_request, cursor), 0)
   os_browser_http_request_length is cursor
   return true
@@ -288,8 +674,22 @@ func os_network_is_dns_udp(frame: ptr, frame_bytes: u64) do
 end
 
 func os_network_dns_query(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
-  global os_network_resolved_ip, os_network_dns_transaction_id
+  if not os_network_dns_begin(context, hostname, hostname_bytes) then return false
+  while true do
+    status: u64 is os_network_dns_poll(context, 256)
+    if status == 1 then return true
+    if status == 2 then return false
+    if not os_browser_cooperative_yield() then return false
+    cpu.pause()
+  end
+  return false
+end
+
+func os_network_dns_begin(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  global os_network_resolved_ip, os_network_dns_transaction_id, os_network_dns_async_deadline, os_network_dns_async_active
   if context == 0 or hostname == 0 or hostname_bytes == 0 then return false
+  os_network_dns_async_active is 0
+  os_network_resolved_ip is 0
   os_network_dns_transaction_id is (os_network_dns_transaction_id + 1) & 65535
   if os_network_dns_transaction_id == 0 then os_network_dns_transaction_id is 1
   query_bytes: u64 is net_dns_build_query(os_network_dns_query_buffer, 512, os_network_dns_transaction_id, hostname, hostname_bytes)
@@ -304,9 +704,21 @@ func os_network_dns_query(context: ptr[VirtioNetContext], hostname: ptr, hostnam
   frame_bytes: u64 is net_build_ipv4_udp(os_network_tx_frame, 2048, spec, os_network_dns_query_buffer, query_bytes, 1)
   if frame_bytes == 0 then return false
   if not virtio_net_send(context, os_network_tx_frame, frame_bytes, 5000000) then return false
+  base_mhz: u64 is 0
+  if cpu.cpuid_eax(0, 0) >= 22 then base_mhz is cpu.cpuid_eax(22, 0) & 65535
+  if base_mhz < 100 or base_mhz > 10000 then base_mhz is 2000
+  now: u64 is cpu.rdtsc()
+  os_network_dns_async_deadline is now + base_mhz * 1000 * 5000
+  if os_network_dns_async_deadline < now then os_network_dns_async_deadline is u64("0xffffffffffffffff")
+  os_network_dns_async_active is 1
+  return true
+end
 
+func os_network_dns_poll(context: ptr[VirtioNetContext], receive_budget: u64) do
+  global os_network_resolved_ip, os_network_dns_async_active
+  if context == 0 or os_network_dns_async_active == 0 or receive_budget == 0 then return 2
   spins: u64 is 0
-  while spins < 30000000 do
+  while spins < receive_budget do
     received: u64 is virtio_net_receive(context, os_network_rx_frame, 2048)
     if received != 0 and os_network_is_dns_udp(os_network_rx_frame, received) then
       ip: ptr is ptr.add(os_network_rx_frame, 14)
@@ -315,13 +727,74 @@ func os_network_dns_query(context: ptr[VirtioNetContext], hostname: ptr, hostnam
       dns: ptr is ptr.add(udp, 8)
       dns_bytes: u64 is net_read_u16_be(udp, 4) - 8
       os_network_resolved_ip is net_dns_first_a(dns, dns_bytes, os_network_dns_transaction_id)
-      if os_network_resolved_ip != 0 then return true
+      if os_network_resolved_ip != 0 then
+        os_network_dns_async_active is 0
+        return 1
+      end
     end
     io.in8(context.io_base + 19)
     cpu.pause()
     spins += 1
   end
-  return false
+  if cpu.rdtsc() >= os_network_dns_async_deadline then
+    os_network_dns_async_active is 0
+    return 2
+  end
+  return 0
+end
+
+func os_network_dns_cache_load(hostname: ptr, hostname_bytes: u64) do
+  if hostname == 0 or hostname_bytes == 0 then return 0
+  if os_network_dns_cache_ip == 0 or hostname_bytes != os_network_dns_cache_name_length then return 0
+  index: u64 is 0
+  while index < hostname_bytes do
+    current: u64 is os_network_ascii_lower(mem.read8(ptr.add(hostname, index)))
+    cached: u64 is os_network_ascii_lower(mem.read8(ptr.add(os_network_dns_cache_name, index)))
+    if current != cached then return 0
+    index += 1
+  end
+  return os_network_dns_cache_ip
+end
+
+func os_network_dns_cache_store(hostname: ptr, hostname_bytes: u64, address: u64) do
+  global os_network_dns_cache_ip, os_network_dns_cache_name_length
+  if hostname == 0 or hostname_bytes == 0 or hostname_bytes > 253 then return false
+  if address == 0 or address > u64("0xffffffff") then return false
+  if not net_zero(os_network_dns_cache_name, 256) then return false
+  if not net_copy(os_network_dns_cache_name, hostname, hostname_bytes) then return false
+  os_network_dns_cache_name_length is hostname_bytes
+  os_network_dns_cache_ip is address
+  return true
+end
+
+func os_network_ipv4_literal(input: ptr, input_bytes: u64) do
+  if input == 0 or input_bytes < 7 or input_bytes > 15 then return 0
+  address: u64 is 0
+  part_count: u64 is 0
+  part_value: u64 is 0
+  part_digits: u64 is 0
+  cursor: u64 is 0
+  while cursor <= input_bytes do
+    value: u64 is 46
+    if cursor < input_bytes then value is mem.read8(ptr.add(input, cursor))
+    if value >= 48 and value <= 57 then
+      if part_digits >= 3 then return 0
+      part_value is part_value * 10 + value - 48
+      if part_value > 255 then return 0
+      part_digits += 1
+    elif value == 46 then
+      if part_digits == 0 or part_count >= 4 then return 0
+      address is (address << 8) | part_value
+      part_count += 1
+      part_value is 0
+      part_digits is 0
+    else
+      return 0
+    end
+    cursor += 1
+  end
+  if part_count != 4 or address == 0 then return 0
+  return address
 end
 
 func os_network_is_http_tcp(frame: ptr, frame_bytes: u64) do
@@ -352,6 +825,92 @@ func os_network_send_tcp(context: ptr[VirtioNetContext], payload: ptr, payload_b
   return virtio_net_send(context, os_network_tx_frame, frame_bytes, 5000000)
 end
 
+func os_network_tcp_begin(context: ptr[VirtioNetContext], destination_port: u64) do
+  global os_network_local_sequence, os_network_request_counter
+  global os_network_tcp_packet_id, os_network_tcp_closed
+  global os_network_tcp_async_deadline, os_network_tcp_async_initial_sequence
+  global os_network_tcp_async_port, os_network_tcp_async_active, os_network_tcp_preconnected_port
+  os_network_tcp_async_active is 0
+  os_network_tcp_preconnected_port is 0
+  if context == 0 or destination_port == 0 or destination_port > 65535 then return false
+  if os_network_resolved_ip == 0 or os_network_gateway_mac == 0 then return false
+  spec: ptr[NetTcpSpec] is os_network_tcp_spec
+  spec.destination_mac is os_network_gateway_mac
+  spec.source_mac is os_network_source_mac
+  spec.source_ip is os_network_local_ip
+  spec.destination_ip is os_network_resolved_ip
+  os_network_request_counter is (os_network_request_counter + 1) & 1023
+  spec.source_port is 49153 + os_network_request_counter
+  spec.destination_port is destination_port
+  spec.window is 64240
+  os_network_tcp_async_initial_sequence is (u64("0x53555241") + os_network_request_counter * 4096) & u64("0xffffffff")
+  spec.sequence is os_network_tcp_async_initial_sequence
+  spec.acknowledgement is 0
+  spec.flags is 2
+  os_network_tcp_packet_id is 2
+  os_network_tcp_closed is 0
+  if not os_network_send_tcp(context, 0, 0, os_network_tcp_packet_id) then return false
+  os_network_tcp_packet_id += 1
+  base_mhz: u64 is 0
+  if cpu.cpuid_eax(0, 0) >= 22 then base_mhz is cpu.cpuid_eax(22, 0) & 65535
+  if base_mhz < 100 or base_mhz > 10000 then base_mhz is 2000
+  now: u64 is cpu.rdtsc()
+  os_network_tcp_async_deadline is now + base_mhz * 1000 * 5000
+  if os_network_tcp_async_deadline < now then os_network_tcp_async_deadline is u64("0xffffffffffffffff")
+  os_network_tcp_async_port is destination_port
+  os_network_tcp_async_active is 1
+  return true
+end
+
+func os_network_tcp_poll(context: ptr[VirtioNetContext], receive_budget: u64) do
+  global os_network_remote_sequence, os_network_local_sequence
+  global os_network_tcp_packet_id, os_network_tcp_closed
+  global os_network_tcp_async_deadline, os_network_tcp_async_initial_sequence
+  global os_network_tcp_async_port, os_network_tcp_async_active, os_network_tcp_preconnected_port
+  if context == 0 or os_network_tcp_async_active == 0 or receive_budget == 0 then return 2
+  spins: u64 is 0
+  while spins < receive_budget do
+    received: u64 is virtio_net_receive(context, os_network_rx_frame, 2048)
+    if received != 0 and os_network_is_http_tcp(os_network_rx_frame, received) then
+      ip: ptr is ptr.add(os_network_rx_frame, 14)
+      ip_header_bytes: u64 is (mem.read8(ip) & 15) * 4
+      tcp: ptr is ptr.add(ip, ip_header_bytes)
+      flags: u64 is mem.read8(ptr.add(tcp, 13))
+      if (flags & 4) != 0 then
+        os_network_tcp_async_active is 0
+        os_network_tcp_closed is 1
+        return 2
+      end
+      expected_ack: u64 is (os_network_tcp_async_initial_sequence + 1) & u64("0xffffffff")
+      if (flags & 18) == 18 and net_read_u32_be(tcp, 8) == expected_ack then
+        os_network_remote_sequence is (net_read_u32_be(tcp, 4) + 1) & u64("0xffffffff")
+        os_network_local_sequence is expected_ack
+        spec: ptr[NetTcpSpec] is os_network_tcp_spec
+        spec.sequence is os_network_local_sequence
+        spec.acknowledgement is os_network_remote_sequence
+        spec.flags is 16
+        if not os_network_send_tcp(context, 0, 0, os_network_tcp_packet_id) then
+          os_network_tcp_async_active is 0
+          return 2
+        end
+        os_network_tcp_packet_id += 1
+        os_network_tcp_preconnected_port is os_network_tcp_async_port
+        os_network_tcp_async_active is 0
+        return 1
+      end
+    end
+    io.in8(context.io_base + 19)
+    cpu.pause()
+    spins += 1
+  end
+  if cpu.rdtsc() >= os_network_tcp_async_deadline then
+    os_network_tcp_async_active is 0
+    os_network_tcp_closed is 1
+    return 2
+  end
+  return 0
+end
+
 func os_network_wait_syn_ack(context: ptr[VirtioNetContext], initial_sequence: u64) do
   global os_network_remote_sequence
   spins: u64 is 0
@@ -369,20 +928,71 @@ func os_network_wait_syn_ack(context: ptr[VirtioNetContext], initial_sequence: u
       end
     end
     io.in8(context.io_base + 19)
+    if (spins & 4095) == 0 and not os_browser_cooperative_yield() then return false
     cpu.pause()
     spins += 1
   end
   return false
 end
 
-func os_network_http_receive(context: ptr[VirtioNetContext]) do
-  global os_network_remote_sequence, os_network_local_sequence, os_browser_length
-  os_browser_length is 0
-  mem.write8(os_browser_buffer, 0)
+func os_network_tcp_open(context: ptr[VirtioNetContext], destination_port: u64) do
+  global os_network_tcp_preconnected_port
+  if context == 0 or destination_port == 0 or destination_port > 65535 then return false
+  if os_network_tcp_preconnected_port != 0 then
+    if os_network_tcp_preconnected_port != destination_port then return false
+    os_network_tcp_preconnected_port is 0
+    return true
+  end
+  if not os_network_tcp_begin(context, destination_port) then return false
+  while true do
+    status: u64 is os_network_tcp_poll(context, 256)
+    if status == 1 then
+      os_network_tcp_preconnected_port is 0
+      return true
+    end
+    if status == 2 then return false
+    if not os_browser_cooperative_yield() then return false
+  end
+  return false
+end
+
+func os_network_tcp_send_stream(context: ptr[VirtioNetContext], payload: ptr, payload_bytes: u64) do
+  global os_network_local_sequence, os_network_tcp_packet_id
+  if context == 0 or payload == 0 or payload_bytes == 0 then return false
+  if os_network_tcp_closed != 0 then return false
   spec: ptr[NetTcpSpec] is os_network_tcp_spec
-  packet_id: u64 is 5
+  cursor: u64 is 0
+  while cursor < payload_bytes do
+    chunk: u64 is payload_bytes - cursor
+    if chunk > 1400 then chunk is 1400
+    spec.sequence is os_network_local_sequence
+    spec.acknowledgement is os_network_remote_sequence
+    spec.flags is 24
+    if not os_network_send_tcp(context, ptr.add(payload, cursor), chunk, os_network_tcp_packet_id) then return false
+    os_network_tcp_packet_id += 1
+    os_network_local_sequence is (os_network_local_sequence + chunk) & u64("0xffffffff")
+    cursor is cursor + chunk
+  end
+  return true
+end
+
+func os_network_tcp_ack(context: ptr[VirtioNetContext]) do
+  global os_network_tcp_packet_id
+  if context == 0 then return false
+  spec: ptr[NetTcpSpec] is os_network_tcp_spec
+  spec.sequence is os_network_local_sequence
+  spec.acknowledgement is os_network_remote_sequence
+  spec.flags is 16
+  if not os_network_send_tcp(context, 0, 0, os_network_tcp_packet_id) then return false
+  os_network_tcp_packet_id += 1
+  return true
+end
+
+func os_network_tcp_receive_some(context: ptr[VirtioNetContext], output: ptr, output_capacity: u64, spin_limit: u64) do
+  global os_network_remote_sequence, os_network_tcp_closed
+  if context == 0 or output == 0 or output_capacity == 0 or spin_limit == 0 then return 0
   spins: u64 is 0
-  while spins < 80000000 do
+  while spins < spin_limit do
     received: u64 is virtio_net_receive(context, os_network_rx_frame, 2048)
     if received != 0 and os_network_is_http_tcp(os_network_rx_frame, received) then
       ip: ptr is ptr.add(os_network_rx_frame, 14)
@@ -391,77 +1001,126 @@ func os_network_http_receive(context: ptr[VirtioNetContext]) do
       tcp: ptr is ptr.add(ip, ip_header_bytes)
       tcp_header_bytes: u64 is (mem.read8(ptr.add(tcp, 12)) >> 4) * 4
       tcp_bytes: u64 is total_bytes - ip_header_bytes
+      if tcp_header_bytes > tcp_bytes then return 0
       data_bytes: u64 is tcp_bytes - tcp_header_bytes
       flags: u64 is mem.read8(ptr.add(tcp, 13))
       sequence: u64 is net_read_u32_be(tcp, 4)
-      if (flags & 4) != 0 then return false
-      accepted: u64 is 0
+      if (flags & 4) != 0 then
+        os_network_tcp_closed is 1
+        return 0
+      end
       if sequence == os_network_remote_sequence then
+        if data_bytes > output_capacity then return 0
         if data_bytes != 0 then
-          if os_browser_length + data_bytes + 1 > 8192 then return false
-          if not net_copy(ptr.add(os_browser_buffer, os_browser_length), ptr.add(tcp, tcp_header_bytes), data_bytes) then return false
-          os_browser_length += data_bytes
+          if not net_copy(output, ptr.add(tcp, tcp_header_bytes), data_bytes) then return 0
           os_network_remote_sequence is (os_network_remote_sequence + data_bytes) & u64("0xffffffff")
-          accepted is 1
         end
         if (flags & 1) != 0 then
           os_network_remote_sequence is (os_network_remote_sequence + 1) & u64("0xffffffff")
-          accepted is 1
+          os_network_tcp_closed is 1
         end
-      end
-      if accepted != 0 then
-        mem.write8(ptr.add(os_browser_buffer, os_browser_length), 0)
-        spec.sequence is os_network_local_sequence
-        spec.acknowledgement is os_network_remote_sequence
-        spec.flags is 16
-        if not os_network_send_tcp(context, 0, 0, packet_id) then return false
-        packet_id += 1
-      end
-      if (flags & 1) != 0 and os_browser_length >= 8 then
-        spec.sequence is os_network_local_sequence
-        spec.acknowledgement is os_network_remote_sequence
-        spec.flags is 17
-        if not os_network_send_tcp(context, 0, 0, packet_id) then return false
-        os_network_local_sequence is (os_network_local_sequence + 1) & u64("0xffffffff")
-        if mem.read8(os_browser_buffer) != 72 or mem.read8(ptr.add(os_browser_buffer, 1)) != 84 then return false
-        if mem.read8(ptr.add(os_browser_buffer, 2)) != 84 or mem.read8(ptr.add(os_browser_buffer, 3)) != 80 then return false
-        return true
+        if data_bytes != 0 or (flags & 1) != 0 then
+          if not os_network_tcp_ack(context) then return 0
+        end
+        if data_bytes != 0 then return data_bytes
+        if os_network_tcp_closed != 0 then
+          return 0
+        end
+      else
+        if data_bytes != 0 or (flags & 1) != 0 then
+          if not os_network_tcp_ack(context) then return 0
+        end
       end
     end
     io.in8(context.io_base + 19)
+    if (spins & 4095) == 0 and not os_browser_cooperative_yield() then return 0
     cpu.pause()
     spins += 1
   end
+  return 0
+end
+
+func os_network_tcp_receive_poll(context: ptr[VirtioNetContext], output: ptr, output_capacity: u64, receive_budget: u64) do
+  # A deliberately small receive budget lets the desktop loop regain control
+  # between packets. Packet validation, ACK handling, and sequence tracking
+  # remain centralized in the normal TCP receive path.
+  return os_network_tcp_receive_some(context, output, output_capacity, receive_budget)
+end
+
+func os_network_tcp_close(context: ptr[VirtioNetContext]) do
+  global os_network_local_sequence, os_network_tcp_packet_id, os_network_tcp_closed
+  if context == 0 then return false
+  if os_network_tcp_closed != 0 then return true
+  spec: ptr[NetTcpSpec] is os_network_tcp_spec
+  spec.sequence is os_network_local_sequence
+  spec.acknowledgement is os_network_remote_sequence
+  spec.flags is 17
+  if not os_network_send_tcp(context, 0, 0, os_network_tcp_packet_id) then return false
+  os_network_tcp_packet_id += 1
+  os_network_local_sequence is (os_network_local_sequence + 1) & u64("0xffffffff")
+  os_network_tcp_closed is 1
+  return true
+end
+
+func os_network_http_finish(connection_closed: bool) do
+  global os_browser_length
+  info: ptr[Http1ResponseInfo] is os_http_response_info
+  state: u64 is http1_response_inspect(os_browser_buffer, os_browser_length, connection_closed, info)
+  if state != 1 then return false
+  mem.write64(os_http_response_length_state, os_browser_length)
+  if not http1_response_decode_content(os_browser_buffer, os_http_response_length_state, 2097152, info, os_http_content_workspace, 2101248) then return false
+  os_browser_length is mem.read64(os_http_response_length_state)
+  if os_browser_length >= 2097152 then return false
+  mem.write8(ptr.add(os_browser_buffer, os_browser_length), 0)
+  return true
+end
+
+func os_network_http_receive(context: ptr[VirtioNetContext]) do
+  global os_browser_length
+  if context == 0 then return false
+  os_browser_length is 0
+  mem.write8(os_browser_buffer, 0)
+  attempts: u64 is 0
+  while attempts < 64 do
+    if os_browser_length >= 2097151 then
+      os_network_tcp_close(context)
+      return false
+    end
+    received: u64 is os_network_tcp_receive_some(context, ptr.add(os_browser_buffer, os_browser_length), 2097151 - os_browser_length, 2000000)
+    if received != 0 then
+      os_browser_length += received
+      mem.write8(ptr.add(os_browser_buffer, os_browser_length), 0)
+      state: u64 is http1_response_inspect(os_browser_buffer, os_browser_length, false, os_http_response_info)
+      if state == 2 then
+        os_network_tcp_close(context)
+        return false
+      end
+      if state == 1 then
+        if not os_network_http_finish(false) then
+          os_network_tcp_close(context)
+          return false
+        end
+        os_network_tcp_close(context)
+        return true
+      end
+    else
+      if os_network_tcp_closed != 0 then
+        return os_network_http_finish(true)
+      end
+    end
+    attempts += 1
+  end
+  os_network_tcp_close(context)
   return false
 end
 
 func os_network_http_get(context: ptr[VirtioNetContext], request: ptr, request_bytes: u64) do
-  global os_network_local_sequence, os_network_request_counter
   if context == 0 or request == 0 or request_bytes == 0 or request_bytes > 1460 then return false
-  spec: ptr[NetTcpSpec] is os_network_tcp_spec
-  spec.destination_mac is os_network_gateway_mac
-  spec.source_mac is os_network_source_mac
-  spec.source_ip is os_network_local_ip
-  spec.destination_ip is os_network_resolved_ip
-  os_network_request_counter is (os_network_request_counter + 1) & 1023
-  spec.source_port is 49153 + os_network_request_counter
-  spec.destination_port is 80
-  spec.window is 64240
-  initial_sequence: u64 is (u64("0x53555241") + os_network_request_counter * 4096) & u64("0xffffffff")
-  spec.sequence is initial_sequence
-  spec.acknowledgement is 0
-  spec.flags is 2
-  if not os_network_send_tcp(context, 0, 0, 2) then return false
-  if not os_network_wait_syn_ack(context, initial_sequence) then return false
-
-  os_network_local_sequence is (initial_sequence + 1) & u64("0xffffffff")
-  spec.sequence is os_network_local_sequence
-  spec.acknowledgement is os_network_remote_sequence
-  spec.flags is 16
-  if not os_network_send_tcp(context, 0, 0, 3) then return false
-  spec.flags is 24
-  if not os_network_send_tcp(context, request, request_bytes, 4) then return false
-  os_network_local_sequence is (os_network_local_sequence + request_bytes) & u64("0xffffffff")
+  if not os_network_tcp_open(context, 80) then return false
+  if not os_network_tcp_send_stream(context, request, request_bytes) then
+    os_network_tcp_close(context)
+    return false
+  end
   return os_network_http_receive(context)
 end
 
@@ -676,7 +1335,13 @@ func os_browser_prepare_text() do
           if value == 9 or value == 10 or value == 13 or value == 32 then
             pending_space is 1
           else
-            if value >= 33 and value <= 126 then
+            codepoint: u64 is font_utf8_next(os_browser_buffer, os_browser_length, input, addr_of(font_utf8_consumed))
+            consumed: u64 is font_utf8_consumed
+            if consumed == 0 or consumed > os_browser_length - input then return false
+            if codepoint == 160 then pending_space is 1
+            if codepoint >= 33 and codepoint != 160 then
+              advance: u64 is 1
+              if codepoint >= 44032 and codepoint <= 55203 then advance is 2
               if pending_space != 0 and os_browser_text_length != 0 then
                 if column >= 96 then
                   mem.write8(ptr.add(os_browser_text_buffer, os_browser_text_length), 10)
@@ -689,15 +1354,17 @@ func os_browser_prepare_text() do
                 end
               end
               pending_space is 0
-              mem.write8(ptr.add(os_browser_text_buffer, os_browser_text_length), value)
-              os_browser_text_length += 1
-              column += 1
+              if os_browser_text_length + consumed + 1 >= 4096 then return os_browser_text_length != 0
+              if not net_copy(ptr.add(os_browser_text_buffer, os_browser_text_length), ptr.add(os_browser_buffer, input), consumed) then return false
+              os_browser_text_length += consumed
+              column += advance
               if column >= 104 and os_browser_text_length + 1 < 4096 then
                 mem.write8(ptr.add(os_browser_text_buffer, os_browser_text_length), 10)
                 os_browser_text_length += 1
                 column is 0
               end
             end
+            input is input + consumed - 1
           end
         end
       end
@@ -709,7 +1376,8 @@ func os_browser_prepare_text() do
 end
 
 func os_browser_layout_break(next_style: u64) do
-  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_style, os_browser_layout_pending_space
+  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_bytes
+  global os_browser_layout_style, os_browser_layout_pending_space
   if next_style > 2 then return false
   if os_browser_layout_line_count == 0 then
     os_browser_layout_line_count is 1
@@ -724,22 +1392,29 @@ func os_browser_layout_break(next_style: u64) do
     end
   end
   os_browser_layout_column is 0
+  os_browser_layout_bytes is 0
   os_browser_layout_style is next_style
   os_browser_layout_pending_space is 0
   mem.write8(ptr.add(os_browser_layout_styles, os_browser_layout_line), next_style)
+  mem.write8(ptr.add(os_browser_layout_lines, os_browser_layout_line * 256), 0)
   return true
 end
 
-func os_browser_layout_put(value: u64) do
-  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_style, os_browser_layout_pending_space
-  if value < 33 or value > 126 then return false
-  max_columns: u64 is 92
-  offset: u64 is 0
-  if os_browser_layout_style == 1 then max_columns is 52
+func os_browser_layout_put(input: ptr, input_bytes: u64, codepoint: u64) do
+  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_bytes
+  global os_browser_layout_style, os_browser_layout_pending_space
+  if input == 0 or input_bytes == 0 or input_bytes > 4 then return false
+  if codepoint < 33 then return false
+  max_columns: u64 is 90
+  if os_browser_layout_style == 1 then max_columns is 56
+  advance: u64 is 1
+  if codepoint >= 44032 and codepoint <= 55203 then advance is 2
   if os_browser_layout_pending_space != 0 and os_browser_layout_column != 0 then
     if os_browser_layout_column < max_columns then
-      offset is os_browser_layout_line * 97 + os_browser_layout_column
+      if os_browser_layout_bytes + 1 >= 256 then return false
+      offset: u64 is os_browser_layout_line * 256 + os_browser_layout_bytes
       mem.write8(ptr.add(os_browser_layout_lines, offset), 32)
+      os_browser_layout_bytes += 1
       os_browser_layout_column += 1
     end
     if os_browser_layout_column >= max_columns then
@@ -747,13 +1422,17 @@ func os_browser_layout_put(value: u64) do
     end
   end
   os_browser_layout_pending_space is 0
-  if os_browser_layout_column >= max_columns then
+  if os_browser_layout_column + advance > max_columns then
     if not os_browser_layout_break(os_browser_layout_style) then return false
   end
-  offset is os_browser_layout_line * 97 + os_browser_layout_column
-  mem.write8(ptr.add(os_browser_layout_lines, offset), value)
-  os_browser_layout_column += 1
-  mem.write8(ptr.add(os_browser_layout_lines, os_browser_layout_line * 97 + os_browser_layout_column), 0)
+  if os_browser_layout_bytes + input_bytes >= 256 then
+    if not os_browser_layout_break(os_browser_layout_style) then return false
+  end
+  offset: u64 is os_browser_layout_line * 256 + os_browser_layout_bytes
+  if not net_copy(ptr.add(os_browser_layout_lines, offset), input, input_bytes) then return false
+  os_browser_layout_bytes += input_bytes
+  os_browser_layout_column += advance
+  mem.write8(ptr.add(os_browser_layout_lines, os_browser_layout_line * 256 + os_browser_layout_bytes), 0)
   if os_browser_layout_line_count < os_browser_layout_line + 1 then
     os_browser_layout_line_count is os_browser_layout_line + 1
   end
@@ -785,6 +1464,7 @@ end
 
 func os_browser_layout_tag(input: u64) do
   if input >= os_browser_length or mem.read8(ptr.add(os_browser_buffer, input)) != 60 then return os_browser_length
+  global os_browser_layout_skip_element
   tag: u64 is input + 1
   closing: bool is false
   if tag < os_browser_length and mem.read8(ptr.add(os_browser_buffer, tag)) == 47 then
@@ -795,12 +1475,42 @@ func os_browser_layout_tag(input: u64) do
   second: u64 is 0
   if tag < os_browser_length then first is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag)))
   if tag + 1 < os_browser_length then second is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 1)))
-  if first == 104 and second == 49 and not closing then os_browser_layout_break(1)
-  if first == 104 and second == 49 and closing then os_browser_layout_break(0)
-  if first == 112 then os_browser_layout_break(0)
-  if first == 97 and not closing then os_browser_layout_break(2)
-  if first == 97 and closing then os_browser_layout_break(0)
-  if first == 98 and second == 114 and not closing then os_browser_layout_break(os_browser_layout_style)
+  script_tag: bool is tag + 6 <= os_browser_length
+  if script_tag then script_tag is first == 115
+  if script_tag then script_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 1))) == 99
+  if script_tag then script_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 2))) == 114
+  if script_tag then script_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 3))) == 105
+  if script_tag then script_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 4))) == 112
+  if script_tag then script_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 5))) == 116
+  style_tag: bool is tag + 5 <= os_browser_length
+  if style_tag then style_tag is first == 115
+  if style_tag then style_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 1))) == 116
+  if style_tag then style_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 2))) == 121
+  if style_tag then style_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 3))) == 108
+  if style_tag then style_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 4))) == 101
+  noscript_tag: bool is tag + 8 <= os_browser_length
+  if noscript_tag then noscript_tag is first == 110
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 1))) == 111
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 2))) == 115
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 3))) == 99
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 4))) == 114
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 5))) == 105
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 6))) == 112
+  if noscript_tag then noscript_tag is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, tag + 7))) == 116
+  if script_tag and not closing then os_browser_layout_skip_element is 1
+  if script_tag and closing and os_browser_layout_skip_element == 1 then os_browser_layout_skip_element is 0
+  if style_tag and not closing then os_browser_layout_skip_element is 2
+  if style_tag and closing and os_browser_layout_skip_element == 2 then os_browser_layout_skip_element is 0
+  if noscript_tag and not closing then os_browser_layout_skip_element is 3
+  if noscript_tag and closing and os_browser_layout_skip_element == 3 then os_browser_layout_skip_element is 0
+  if os_browser_layout_skip_element == 0 then
+    if first == 104 and second == 49 and not closing then os_browser_layout_break(1)
+    if first == 104 and second == 49 and closing then os_browser_layout_break(0)
+    if first == 112 then os_browser_layout_break(0)
+    if first == 97 and not closing then os_browser_layout_break(2)
+    if first == 97 and closing then os_browser_layout_break(0)
+    if first == 98 and second == 114 and not closing then os_browser_layout_break(os_browser_layout_style)
+  end
   while input < os_browser_length and mem.read8(ptr.add(os_browser_buffer, input)) != 62 do
     input += 1
   end
@@ -808,56 +1518,622 @@ func os_browser_layout_tag(input: u64) do
 end
 
 func os_browser_prepare_layout() do
-  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_style, os_browser_layout_pending_space
-  if not net_zero(os_browser_layout_lines, 4096) then return false
+  global os_browser_layout_line_count, os_browser_layout_line, os_browser_layout_column, os_browser_layout_bytes
+  global os_browser_layout_style, os_browser_layout_pending_space, os_browser_layout_skip_element
+  if not net_zero(os_browser_layout_lines, 8192) then return false
   if not net_zero(os_browser_layout_styles, 32) then return false
   os_browser_layout_line_count is 0
   os_browser_layout_line is 0
   os_browser_layout_column is 0
+  os_browser_layout_bytes is 0
   os_browser_layout_style is 0
   os_browser_layout_pending_space is 0
+  os_browser_layout_skip_element is 0
   input: u64 is os_browser_body_start()
   if input == 0 then return false
   if not os_browser_layout_break(0) then return false
   while input < os_browser_length and os_browser_layout_line < 32 do
     value: u64 is mem.read8(ptr.add(os_browser_buffer, input))
-    if value == 60 then input is os_browser_layout_tag(input)
-    if value == 9 or value == 10 or value == 13 or value == 32 then os_browser_layout_pending_space is 1
-    if value >= 33 and value <= 126 and value != 60 then
-      if not os_browser_layout_put(value) then return os_browser_layout_line_count != 0
+    if value == 60 then
+      input is os_browser_layout_tag(input)
+    else
+      if os_browser_layout_skip_element == 0 then
+        if value == 9 or value == 10 or value == 13 or value == 32 then
+          os_browser_layout_pending_space is 1
+        else
+          codepoint: u64 is font_utf8_next(os_browser_buffer, os_browser_length, input, addr_of(font_utf8_consumed))
+          consumed: u64 is font_utf8_consumed
+          if consumed == 0 or consumed > os_browser_length - input then return false
+          if codepoint >= 33 then
+            if not os_browser_layout_put(ptr.add(os_browser_buffer, input), consumed, codepoint) then return os_browser_layout_line_count != 0
+          end
+          input is input + consumed - 1
+        end
+      end
     end
     input += 1
   end
   return os_browser_layout_line_count != 0
 end
 
-func os_browser_navigate(context: ptr[VirtioNetContext]) do
-  global os_browser_status_text, os_network_resolved_ip, os_browser_edit_started, os_browser_last_error
-  os_browser_last_error is 0
-  if context == 0 then
-    os_browser_last_error is 1
-    return false
+func os_browser_response_body_start() do
+  if os_browser_length < 4 then return 0
+  cursor: u64 is 0
+  while cursor + 3 < os_browser_length do
+    if mem.read8(ptr.add(os_browser_buffer, cursor)) == 13 and mem.read8(ptr.add(os_browser_buffer, cursor + 1)) == 10 and mem.read8(ptr.add(os_browser_buffer, cursor + 2)) == 13 and mem.read8(ptr.add(os_browser_buffer, cursor + 3)) == 10 then
+      return cursor + 4
+    end
+    cursor += 1
   end
-  if not os_browser_parse_url() then
-    os_browser_last_error is 2
-    return false
+  return 0
+end
+
+func os_browser_collect_dom_css(document: ptr[HtmlDomDocument]) do
+  global os_browser_dom_css_length
+  os_browser_dom_css_length is 0
+  if document == 0 or not net_zero(os_browser_dom_css_source, 32768) then return false
+  node_index: u64 is 0
+  while node_index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+    if node.kind == 1 and node.tag == 16 then
+      child_index: u64 is node.first_child
+      while child_index != u64("0xffffffffffffffff") do
+        child: ptr[HtmlDomNode] is html_dom_node(document, child_index)
+        if child == 0 then return false
+        if child.kind == 2 and child.source_bytes != 0 then
+          if os_browser_dom_css_length != 0 then
+            if os_browser_dom_css_length + 1 >= 32768 then return false
+            mem.write8(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), 32)
+            os_browser_dom_css_length += 1
+          end
+          if child.source_bytes > 32767 - os_browser_dom_css_length then return false
+          if not net_copy(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), ptr.add(document.input, child.source_start), child.source_bytes) then return false
+          os_browser_dom_css_length += child.source_bytes
+        end
+        child_index is child.next_sibling
+      end
+    end
+    node_index += 1
   end
-  if not os_browser_build_http_request() then
-    os_browser_last_error is 3
-    os_browser_status_text is os_text_browser_status_invalid
-    return false
+  mem.write8(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), 0)
+  return true
+end
+
+func os_browser_build_resource_request(path: ptr, path_bytes: u64) do
+  global os_browser_http_request_length
+  os_browser_http_request_length is 0
+  if path == 0 or path_bytes == 0 or path_bytes > 900 or os_browser_hostname_length == 0 then return false
+  required: u64 is 4 + path_bytes + 17 + os_browser_hostname_length + 56
+  if required > 1023 then return false
+  if not net_zero(os_network_http_request, 1024) then return false
+  cursor: u64 is 0
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_get_prefix, 4) then return false
+  cursor += 4
+  if not net_copy(ptr.add(os_network_http_request, cursor), path, path_bytes) then return false
+  cursor += path_bytes
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_host_prefix, 17) then return false
+  cursor += 17
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_browser_hostname_buffer, os_browser_hostname_length) then return false
+  cursor += os_browser_hostname_length
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_close_suffix, 56) then return false
+  cursor += 56
+  mem.write8(ptr.add(os_network_http_request, cursor), 0)
+  os_browser_http_request_length is cursor
+  return true
+end
+
+func os_browser_fetch_dom_stylesheet(document: ptr[HtmlDomDocument]) do
+  global os_browser_dom_css_length, os_browser_dom_external_css_loaded
+  os_browser_dom_external_css_loaded is 0
+  if document == 0 then return false
+  node_index: u64 is 0
+  while node_index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+    if node.kind == 1 and node.tag == 20 then
+      relationship: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 12)
+      href: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 3)
+      stylesheet_link: bool is relationship != 0 and relationship.has_value != 0
+      if stylesheet_link then stylesheet_link is html_dom_token_equal(document.input, relationship.source_start, relationship.source_bytes, os_browser_stylesheet_value, 10)
+      if stylesheet_link and href != 0 and href.has_value != 0 and href.source_bytes != 0 then
+        if mem.read8(ptr.add(document.input, href.source_start)) != 47 then return true
+        if not os_browser_build_resource_request(ptr.add(document.input, href.source_start), href.source_bytes) then return true
+        request_ok: bool is false
+        if os_browser_use_https != 0 then request_ok is os_network_https_get(os_network_context, os_browser_hostname_buffer, os_browser_hostname_length, os_network_http_request, os_browser_http_request_length)
+        if os_browser_use_https == 0 then request_ok is os_network_http_get(os_network_context, os_network_http_request, os_browser_http_request_length)
+        if not request_ok then return true
+        status_code: u64 is os_browser_http_status_code()
+        if status_code < 200 or status_code >= 300 then return true
+        css_start: u64 is os_browser_response_body_start()
+        if css_start == 0 or css_start >= os_browser_length then return true
+        css_bytes: u64 is os_browser_length - css_start
+        if css_bytes > 32767 - os_browser_dom_css_length then return true
+        if os_browser_dom_css_length != 0 then
+          mem.write8(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), 32)
+          os_browser_dom_css_length += 1
+        end
+        if not net_copy(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), ptr.add(os_browser_buffer, css_start), css_bytes) then return true
+        os_browser_dom_css_length += css_bytes
+        mem.write8(ptr.add(os_browser_dom_css_source, os_browser_dom_css_length), 0)
+        os_browser_dom_external_css_loaded is 1
+        if not os_serial_cstr_line(os_browser_external_css_marker) then return false
+        return true
+      end
+    end
+    node_index += 1
   end
-  os_browser_status_text is os_text_browser_status_loading
-  os_network_resolved_ip is 0
-  if not os_network_dns_query(context, os_browser_hostname_buffer, os_browser_hostname_length) then
-    os_browser_last_error is 4
-    os_browser_status_text is os_text_browser_status_network
-    return false
+  return true
+end
+
+func os_browser_dom_legacy_colors(document: ptr[HtmlDomDocument]) do
+  if document == 0 then return false
+  index: u64 is 0
+  while index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, index)
+    style: ptr[CssComputedStyle] is ptr.add(os_browser_dom_computed, index * 288)
+    if node.kind == 1 then
+      if node.tag == 3 then
+        style.color is os_browser_css_text_rgb
+        style.background is os_browser_css_page_rgb
+      end
+      if node.tag == 4 then style.background is os_browser_css_card_rgb
+      if node.tag >= 6 and node.tag <= 11 then style.color is os_browser_css_heading_rgb
+      if node.tag == 12 then style.color is os_browser_css_link_rgb
+    end
+    index += 1
   end
-  if not os_network_http_get(context, os_network_http_request, os_browser_http_request_length) then
-    os_browser_last_error is 5
-    os_browser_status_text is os_text_browser_status_network
-    return false
+  return true
+end
+
+func os_browser_collect_inline_scripts(document: ptr[HtmlDomDocument]) do
+  global os_browser_js_source_length
+  os_browser_js_source_length is 0
+  if document == 0 or not net_zero(os_browser_js_source, 16384) then return false
+  node_index: u64 is 0
+  while node_index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+    if node != 0 and node.kind == 1 and node.tag == 17 and html_dom_find_attribute(document, node_index, 4) == 0 then
+      child_index: u64 is node.first_child
+      while child_index != u64("0xffffffffffffffff") do
+        child: ptr[HtmlDomNode] is html_dom_node(document, child_index)
+        if child == 0 then return false
+        if child.kind == 2 and child.source_bytes != 0 then
+          if child.source_bytes > 16382 - os_browser_js_source_length then return false
+          if not net_copy(ptr.add(os_browser_js_source, os_browser_js_source_length), ptr.add(document.input, child.source_start), child.source_bytes) then return false
+          os_browser_js_source_length += child.source_bytes
+          mem.write8(ptr.add(os_browser_js_source, os_browser_js_source_length), 10)
+          os_browser_js_source_length += 1
+        end
+        child_index is child.next_sibling
+      end
+    end
+    node_index += 1
+  end
+  mem.write8(ptr.add(os_browser_js_source, os_browser_js_source_length), 0)
+  return true
+end
+
+func os_browser_execute_script(source: ptr, source_bytes: u64) do
+  global os_browser_js_executed, os_browser_js_error
+  os_browser_js_error is 0
+  if source == 0 or source_bytes == 0 then return true
+
+  compiler: ptr[BrowserJsSourceCompiler] is os_browser_js_compiler
+  compiler.code is os_browser_js_code
+  compiler.code_capacity is 512
+  compiler.constants is os_browser_js_constants
+  compiler.constant_capacity is 128
+  compiler.bindings is os_browser_js_bindings
+  compiler.binding_capacity is 128
+  program: ptr[BrowserJsProgram] is os_browser_js_program
+  if not browser_js_source_compile(source, source_bytes, program, compiler) then
+    os_browser_js_error is 100 + compiler.error
+    return true
+  end
+
+  vm: ptr[BrowserJsVm] is os_browser_js_vm
+  vm.stack is os_browser_js_stack
+  vm.stack_capacity is 64
+  vm.globals is os_browser_js_globals
+  vm.global_capacity is 128
+  vm.scratch is os_browser_js_scratch
+  vm.instruction_limit is 8192
+  vm.host_context is os_browser_js_dom_host
+  vm.host_callback is addr_of(browser_js_dom_host_call)
+  if not browser_js_vm_init(program, vm) then
+    os_browser_js_error is 2
+    return true
+  end
+  if not browser_js_execute(vm) then
+    os_browser_js_error is 200 + vm.error
+    return true
+  end
+  os_browser_js_executed is 1
+  if not os_serial_cstr_line(os_browser_js_marker) then return false
+  return true
+end
+
+func os_browser_run_inline_scripts(document: ptr[HtmlDomDocument]) do
+  global os_browser_js_executed, os_browser_js_error
+  os_browser_js_executed is 0
+  os_browser_js_error is 0
+  if not os_browser_collect_inline_scripts(document) then
+    os_browser_js_error is 1
+    return true
+  end
+  if os_browser_js_source_length == 0 then return true
+  return os_browser_execute_script(os_browser_js_source, os_browser_js_source_length)
+end
+
+func os_browser_prepare_dom_layout(viewport_width: u64, viewport_height: u64) do
+  global os_browser_dom_ready, os_browser_dom_box_count
+  global os_browser_dom_viewport_width, os_browser_dom_viewport_height
+  global os_browser_dom_render_reported, os_browser_dom_render_error
+  global os_browser_dom_css_variable_count, os_browser_form_editing
+  global os_browser_js_click_reported
+  os_browser_dom_ready is 0
+  os_browser_dom_box_count is 0
+  os_browser_dom_render_reported is 0
+  os_browser_dom_render_error is 0
+  os_browser_js_click_reported is 0
+  if viewport_width == 0 or viewport_height == 0 then return false
+  body_start: u64 is os_browser_response_body_start()
+  if body_start == 0 or body_start >= os_browser_length then return false
+  body_bytes: u64 is os_browser_length - body_start
+  if body_bytes > 65535 then return false
+  if not net_zero(os_browser_dom_html, 65536) then return false
+  if not net_copy(os_browser_dom_html, ptr.add(os_browser_buffer, body_start), body_bytes) then return false
+  mem.write8(ptr.add(os_browser_dom_html, body_bytes), 0)
+  document: ptr[HtmlDomDocument] is os_browser_dom_document
+  document.nodes is os_browser_dom_nodes
+  document.node_capacity is 1024
+  document.attributes is os_browser_dom_attributes
+  document.attribute_capacity is 1024
+  if not html_dom_parse(os_browser_dom_html, body_bytes, document) then return false
+  js_host: ptr[BrowserJsDomHost] is os_browser_js_dom_host
+  js_host.mutations is os_browser_js_dom_mutations
+  js_host.mutation_capacity is 32
+  if not browser_js_dom_init(js_host, document) then return false
+  if not os_browser_run_inline_scripts(document) then return false
+  form_state: ptr[BrowserFormState] is os_browser_form_state
+  form_state.controls is os_browser_form_controls
+  form_state.values is os_browser_form_values
+  form_state.capacity is 32
+  form_state.value_stride is 128
+  if not browser_form_init(document, form_state) then return false
+  os_browser_form_editing is 0
+  if not os_browser_collect_dom_css(document) then return false
+  if not os_browser_fetch_dom_stylesheet(document) then return false
+  os_browser_dom_css_variable_count is css_custom_properties_resolve(os_browser_dom_css_source, os_browser_dom_css_length, os_browser_dom_css_variables, 32)
+  if os_browser_dom_css_variable_count != 0 then
+    if not os_serial_cstr_line(os_browser_css_variables_marker) then return false
+  end
+
+  stylesheet: ptr[CssStylesheet] is os_browser_dom_stylesheet
+  stylesheet.rules is os_browser_dom_css_rules
+  stylesheet.styles is os_browser_dom_rule_styles
+  stylesheet.capacity is 512
+  parsed_css: bool is true
+  if not css_stylesheet_parse_relaxed_viewport(os_browser_dom_css_source, os_browser_dom_css_length, stylesheet, viewport_width, viewport_height) then
+    parsed_css is false
+    stylesheet.input is os_browser_dom_css_source
+    stylesheet.input_bytes is 0
+    stylesheet.count is 0
+  end
+  if not css_compute_document(document, stylesheet, os_browser_dom_computed, 1024, os_browser_dom_scratch, 640) then return false
+  positioned_count: u64 is 0
+  positioned_index: u64 is 0
+  while positioned_index < document.node_count do
+    positioned_style: ptr[CssComputedStyle] is ptr.add(os_browser_dom_computed, positioned_index * 288)
+    if positioned_style.position != 0 then positioned_count += 1
+    positioned_index += 1
+  end
+  if positioned_count != 0 then
+    if not os_serial_cstr_line(os_browser_css_position_marker) then return false
+  end
+  if not parsed_css or stylesheet.count == 0 then
+    if not os_browser_dom_legacy_colors(document) then return false
+  end
+  if not os_browser_prepare_dom_images(document, viewport_width) then return false
+  os_browser_dom_box_count is css_box_layout(document, os_browser_dom_computed, os_browser_dom_boxes, 1024, viewport_width, viewport_height)
+  if os_browser_dom_box_count == 0 then return false
+  os_browser_dom_viewport_width is viewport_width
+  os_browser_dom_viewport_height is viewport_height
+  os_browser_dom_ready is 1
+  if not os_serial_cstr_line(os_browser_dom_marker) then return false
+  return true
+end
+
+func os_browser_http_status_code() do
+  if os_browser_length < 12 then return 0
+  if mem.read8(os_browser_buffer) != 72 then return 0
+  if mem.read8(ptr.add(os_browser_buffer, 1)) != 84 then return 0
+  if mem.read8(ptr.add(os_browser_buffer, 2)) != 84 then return 0
+  if mem.read8(ptr.add(os_browser_buffer, 3)) != 80 then return 0
+  if mem.read8(ptr.add(os_browser_buffer, 4)) != 47 then return 0
+  if mem.read8(ptr.add(os_browser_buffer, 8)) != 32 then return 0
+  first: u64 is mem.read8(ptr.add(os_browser_buffer, 9))
+  second: u64 is mem.read8(ptr.add(os_browser_buffer, 10))
+  third: u64 is mem.read8(ptr.add(os_browser_buffer, 11))
+  if first < 48 or first > 57 or second < 48 or second > 57 or third < 48 or third > 57 then return 0
+  return (first - 48) * 100 + (second - 48) * 10 + third - 48
+end
+
+func os_browser_copy_redirect(location: ptr, location_bytes: u64) do
+  global os_browser_address_length, os_browser_edit_started
+  if location == 0 or location_bytes == 0 or location_bytes > 95 then return false
+
+  absolute: bool is location_bytes >= 7
+  if absolute then absolute is os_network_ascii_lower(mem.read8(location)) == 104
+  if absolute then absolute is os_network_ascii_lower(mem.read8(ptr.add(location, 1))) == 116
+  if absolute then absolute is os_network_ascii_lower(mem.read8(ptr.add(location, 2))) == 116
+  if absolute then absolute is os_network_ascii_lower(mem.read8(ptr.add(location, 3))) == 112
+  if absolute then absolute is mem.read8(ptr.add(location, 4)) == 58
+  if absolute then absolute is mem.read8(ptr.add(location, 5)) == 47
+  if absolute then absolute is mem.read8(ptr.add(location, 6)) == 47
+
+  absolute_https: bool is location_bytes >= 8
+  if absolute_https then absolute_https is os_network_ascii_lower(mem.read8(location)) == 104
+  if absolute_https then absolute_https is os_network_ascii_lower(mem.read8(ptr.add(location, 1))) == 116
+  if absolute_https then absolute_https is os_network_ascii_lower(mem.read8(ptr.add(location, 2))) == 116
+  if absolute_https then absolute_https is os_network_ascii_lower(mem.read8(ptr.add(location, 3))) == 112
+  if absolute_https then absolute_https is os_network_ascii_lower(mem.read8(ptr.add(location, 4))) == 115
+  if absolute_https then absolute_https is mem.read8(ptr.add(location, 5)) == 58
+  if absolute_https then absolute_https is mem.read8(ptr.add(location, 6)) == 47
+  if absolute_https then absolute_https is mem.read8(ptr.add(location, 7)) == 47
+
+  if absolute or absolute_https then
+    if not net_zero(os_browser_address_buffer, 256) then return false
+    if not net_copy(os_browser_address_buffer, location, location_bytes) then return false
+    os_browser_address_length is location_bytes
+    os_browser_edit_started is 0
+    return true
+  end
+
+  protocol_relative: bool is location_bytes >= 2
+  if protocol_relative then protocol_relative is mem.read8(location) == 47 and mem.read8(ptr.add(location, 1)) == 47
+  if protocol_relative then
+    if location_bytes + 5 > 95 then return false
+    if not net_zero(os_browser_address_buffer, 256) then return false
+    if os_browser_use_https != 0 and not net_copy(os_browser_address_buffer, os_browser_https_scheme, 5) then return false
+    if os_browser_use_https == 0 and not net_copy(os_browser_address_buffer, os_browser_http_scheme, 5) then return false
+    if not net_copy(ptr.add(os_browser_address_buffer, 5), location, location_bytes) then return false
+    os_browser_address_length is location_bytes + 5
+    os_browser_edit_started is 0
+    return true
+  end
+
+  if mem.read8(location) != 47 then return false
+  scheme_bytes: u64 is 7
+  if os_browser_use_https != 0 then scheme_bytes is 8
+  required: u64 is scheme_bytes + os_browser_hostname_length + location_bytes
+  if required > 95 then return false
+  if not net_zero(os_browser_address_buffer, 256) then return false
+  if os_browser_use_https != 0 and not net_copy(os_browser_address_buffer, os_browser_https_scheme, 8) then return false
+  if os_browser_use_https == 0 and not net_copy(os_browser_address_buffer, os_browser_http_scheme, 7) then return false
+  if not net_copy(ptr.add(os_browser_address_buffer, scheme_bytes), os_browser_hostname_buffer, os_browser_hostname_length) then return false
+  if not net_copy(ptr.add(os_browser_address_buffer, scheme_bytes + os_browser_hostname_length), location, location_bytes) then return false
+  os_browser_address_length is required
+  os_browser_edit_started is 0
+  return true
+end
+
+func os_browser_apply_http_redirect() do
+  if os_browser_http_status_code() < 300 or os_browser_http_status_code() > 399 then return false
+  cursor: u64 is 0
+  while cursor + 1 < os_browser_length do
+    if mem.read8(ptr.add(os_browser_buffer, cursor)) == 13 and mem.read8(ptr.add(os_browser_buffer, cursor + 1)) == 10 then
+      cursor += 2
+      break
+    end
+    cursor += 1
+  end
+  while cursor + 1 < os_browser_length do
+    if mem.read8(ptr.add(os_browser_buffer, cursor)) == 13 and mem.read8(ptr.add(os_browser_buffer, cursor + 1)) == 10 then return false
+    line_end: u64 is cursor
+    while line_end + 1 < os_browser_length do
+      if mem.read8(ptr.add(os_browser_buffer, line_end)) == 13 and mem.read8(ptr.add(os_browser_buffer, line_end + 1)) == 10 then break
+      line_end += 1
+    end
+    location_header: bool is line_end >= cursor + 9
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor))) == 108
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 1))) == 111
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 2))) == 99
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 3))) == 97
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 4))) == 116
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 5))) == 105
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 6))) == 111
+    if location_header then location_header is os_network_ascii_lower(mem.read8(ptr.add(os_browser_buffer, cursor + 7))) == 110
+    if location_header then location_header is mem.read8(ptr.add(os_browser_buffer, cursor + 8)) == 58
+    if location_header then
+      value_start: u64 is cursor + 9
+      while value_start < line_end and mem.read8(ptr.add(os_browser_buffer, value_start)) <= 32 do
+        value_start += 1
+      end
+      value_end: u64 is line_end
+      while value_end > value_start and mem.read8(ptr.add(os_browser_buffer, value_end - 1)) <= 32 do
+        value_end -= 1
+      end
+      if value_end <= value_start then return false
+      return os_browser_copy_redirect(ptr.add(os_browser_buffer, value_start), value_end - value_start)
+    end
+    if line_end + 2 <= cursor then return false
+    cursor is line_end + 2
+  end
+  return false
+end
+
+func os_browser_request_decimal(value: u64, cursor: u64) do
+  if cursor >= 1023 then return u64("0xffffffffffffffff")
+  count: u64 is 0
+  if value == 0 then
+    mem.write8(os_browser_form_decimal, 48)
+    count is 1
+  else
+    while value != 0 and count < 20 do
+      mem.write8(ptr.add(os_browser_form_decimal, count), 48 + value % 10)
+      value is value / 10
+      count += 1
+    end
+  end
+  if count == 0 or count > 1023 - cursor then return u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < count do
+    mem.write8(ptr.add(os_network_http_request, cursor + index), mem.read8(ptr.add(os_browser_form_decimal, count - index - 1)))
+    index += 1
+  end
+  return cursor + count
+end
+
+func os_browser_build_post_request(payload: ptr, payload_bytes: u64) do
+  global os_browser_http_request_length
+  os_browser_http_request_length is 0
+  if payload == 0 or payload_bytes > 767 or os_browser_hostname_length == 0 or os_browser_path_length == 0 then return false
+  if not net_zero(os_network_http_request, 1024) then return false
+  cursor: u64 is 0
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_browser_http_post_prefix, 5) then return false
+  cursor += 5
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_browser_path_buffer, os_browser_path_length) then return false
+  cursor += os_browser_path_length
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_host_prefix, 17) then return false
+  cursor += 17
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_browser_hostname_buffer, os_browser_hostname_length) then return false
+  cursor += os_browser_hostname_length
+  if cursor > 1023 - 67 or not net_copy(ptr.add(os_network_http_request, cursor), os_browser_http_form_headers, 67) then return false
+  cursor += 67
+  cursor is os_browser_request_decimal(payload_bytes, cursor)
+  if cursor == u64("0xffffffffffffffff") or cursor > 1023 - 56 then return false
+  if not net_copy(ptr.add(os_network_http_request, cursor), os_network_http_close_suffix, 56) then return false
+  cursor += 56
+  if payload_bytes > 1023 - cursor then return false
+  if payload_bytes != 0 and not net_copy(ptr.add(os_network_http_request, cursor), payload, payload_bytes) then return false
+  cursor += payload_bytes
+  mem.write8(ptr.add(os_network_http_request, cursor), 0)
+  os_browser_http_request_length is cursor
+  return true
+end
+
+func os_browser_resolve_host(context: ptr[VirtioNetContext]) do
+  global os_network_resolved_ip
+  if context == 0 or os_browser_hostname_length == 0 then return false
+  os_network_resolved_ip is os_network_ipv4_literal(os_browser_hostname_buffer, os_browser_hostname_length)
+  if os_network_resolved_ip != 0 then return true
+  os_network_resolved_ip is os_network_dns_cache_load(os_browser_hostname_buffer, os_browser_hostname_length)
+  if os_network_resolved_ip != 0 then return true
+  if not os_network_dns_query(context, os_browser_hostname_buffer, os_browser_hostname_length) then return false
+  return os_network_dns_cache_store(os_browser_hostname_buffer, os_browser_hostname_length, os_network_resolved_ip)
+end
+
+func os_browser_wasm_fail(stage: u64) do
+  global os_browser_last_error
+  os_browser_last_error is 700 + stage
+  if not os_serial_text(os_browser_wasm_failure_prefix) then return false
+  if not os_serial_u64(stage) then return false
+  if not serial_write_byte(1016, 10, 1000000) then return false
+  return false
+end
+
+func os_browser_wasm_configure() do
+  module: ptr[BrowserWasmModule] is os_browser_wasm_module
+  module.reader is os_browser_wasm_reader
+  module.types is os_browser_wasm_types
+  module.type_capacity is 16
+  module.param_types is os_browser_wasm_param_types
+  module.param_type_capacity is 64
+  module.functions is os_browser_wasm_functions
+  module.function_capacity is 16
+  module.local_types is os_browser_wasm_local_types
+  module.local_type_capacity is 64
+  module.exports is os_browser_wasm_exports
+  module.export_capacity is 16
+  module.validation is os_browser_wasm_validation
+  module.validation_capacity is 64
+  module.error is browser_wasm_error_none()
+
+  vm: ptr[BrowserWasmVm] is os_browser_wasm_vm
+  vm.reader is os_browser_wasm_vm_reader
+  vm.stack is os_browser_wasm_stack
+  vm.stack_capacity is 128
+  vm.locals is os_browser_wasm_locals
+  vm.local_capacity is 128
+  vm.controls is os_browser_wasm_controls
+  vm.control_capacity is 64
+  vm.instruction_limit is 100000
+  vm.call_depth_limit is 32
+  return true
+end
+
+func os_browser_wasm_append_decimal(value: i64, cursor: u64) do
+  if cursor >= 2048 then return u64("0xffffffffffffffff")
+  negative: bool is value < 0
+  magnitude: u64 is value
+  if negative then magnitude is 0 - magnitude
+  count: u64 is 0
+  if magnitude == 0 then
+    mem.write8(os_browser_wasm_decimal, 48)
+    count is 1
+  else
+    while magnitude != 0 and count < 20 do
+      mem.write8(ptr.add(os_browser_wasm_decimal, count), 48 + magnitude % 10)
+      magnitude is magnitude / 10
+      count += 1
+    end
+  end
+  required: u64 is count
+  if negative then required += 1
+  if required > 2048 - cursor then return u64("0xffffffffffffffff")
+  if negative then
+    mem.write8(ptr.add(os_browser_buffer, cursor), 45)
+    cursor += 1
+  end
+  index: u64 is 0
+  while index < count do
+    mem.write8(ptr.add(os_browser_buffer, cursor + index), mem.read8(ptr.add(os_browser_wasm_decimal, count - index - 1)))
+    index += 1
+  end
+  return cursor + count
+end
+
+func os_browser_execute_wasm(input: ptr, input_bytes: u64) do
+  global os_browser_length
+  if input == 0 or input_bytes < 8 then return os_browser_wasm_fail(1)
+  if not os_browser_wasm_configure() then return os_browser_wasm_fail(2)
+  module: ptr[BrowserWasmModule] is os_browser_wasm_module
+  if not browser_wasm_module_parse(input, input_bytes, module) then return os_browser_wasm_fail(10 + module.error)
+  vm: ptr[BrowserWasmVm] is os_browser_wasm_vm
+  if not browser_wasm_vm_init(module, vm) then return os_browser_wasm_fail(40)
+  result: ptr[BrowserWasmValue] is os_browser_wasm_result
+  if not browser_wasm_invoke(vm, os_browser_wasm_run_name, 3, os_browser_wasm_arguments, 0, result) then return os_browser_wasm_fail(50 + vm.error)
+  if result.kind != browser_wasm_type_i32() and result.kind != browser_wasm_type_i64() then return os_browser_wasm_fail(80)
+
+  if not net_zero(os_browser_buffer, 512) then return os_browser_wasm_fail(81)
+  if not net_copy(os_browser_buffer, os_browser_wasm_page_prefix, 265) then return os_browser_wasm_fail(82)
+  cursor: u64 is os_browser_wasm_append_decimal(result.number, 265)
+  if cursor == u64("0xffffffffffffffff") then return os_browser_wasm_fail(83)
+  if not net_copy(ptr.add(os_browser_buffer, cursor), os_browser_wasm_page_suffix, 21) then return os_browser_wasm_fail(84)
+  os_browser_length is cursor + 21
+  if not os_serial_cstr_line(os_browser_wasm_marker) then return false
+  return true
+end
+
+func os_browser_response_is_wasm() do
+  body_start: u64 is os_browser_response_body_start()
+  if body_start == 0 or body_start + 8 > os_browser_length then return false
+  if mem.read8(ptr.add(os_browser_buffer, body_start)) != 0 then return false
+  if mem.read8(ptr.add(os_browser_buffer, body_start + 1)) != 97 then return false
+  if mem.read8(ptr.add(os_browser_buffer, body_start + 2)) != 115 then return false
+  return mem.read8(ptr.add(os_browser_buffer, body_start + 3)) == 109
+end
+
+func os_browser_finish_response() do
+  global os_browser_status_text, os_browser_edit_started, os_browser_last_error, os_browser_https_reported
+  status_code: u64 is os_browser_http_status_code()
+  if status_code < 200 or status_code >= 300 then return false
+  if os_browser_response_is_wasm() then
+    body_start: u64 is os_browser_response_body_start()
+    if not os_browser_execute_wasm(ptr.add(os_browser_buffer, body_start), os_browser_length - body_start) then
+      os_browser_status_text is os_text_browser_status_network
+      return false
+    end
   end
   if not os_browser_parse_css() then
     os_browser_last_error is 6
@@ -874,9 +2150,501 @@ func os_browser_navigate(context: ptr[VirtioNetContext]) do
     os_browser_status_text is os_text_browser_status_network
     return false
   end
+  os_browser_prepare_dom_layout(672, 276)
   os_browser_status_text is os_text_browser_status_ready
   os_browser_edit_started is 0
+  if os_browser_use_https != 0 and os_browser_https_reported == 0 then
+    if not os_serial_cstr_line(os_browser_https_marker) then return false
+    os_browser_https_reported is 1
+  end
   return true
+end
+
+func os_browser_form_method_post(document: ptr[HtmlDomDocument], form_node: u64) do
+  if document == 0 then return false
+  method: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, form_node, 15)
+  if method == 0 or method.has_value == 0 then return false
+  return html_dom_token_equal(document.input, method.source_start, method.source_bytes, os_browser_form_method_post_value, 4)
+end
+
+func os_browser_form_apply_action(document: ptr[HtmlDomDocument], form_node: u64) do
+  if document == 0 then return false
+  action: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, form_node, 14)
+  if action == 0 or action.has_value == 0 or action.source_bytes == 0 then return true
+  return os_browser_copy_redirect(ptr.add(document.input, action.source_start), action.source_bytes)
+end
+
+func os_browser_form_append_query(payload: ptr, payload_bytes: u64) do
+  global os_browser_address_length
+  if payload == 0 then return false
+  if payload_bytes == 0 then return true
+  if payload_bytes + 1 > 95 - os_browser_address_length then return false
+  delimiter: u64 is 63
+  index: u64 is 0
+  while index < os_browser_address_length do
+    if mem.read8(ptr.add(os_browser_address_buffer, index)) == 63 then delimiter is 38
+    index += 1
+  end
+  mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), delimiter)
+  os_browser_address_length += 1
+  if not net_copy(ptr.add(os_browser_address_buffer, os_browser_address_length), payload, payload_bytes) then return false
+  os_browser_address_length += payload_bytes
+  mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), 0)
+  return true
+end
+
+func os_browser_load_internal_submit(payload: ptr, payload_bytes: u64) do
+  global os_browser_length, os_browser_status_text, os_browser_edit_started, os_browser_last_error, os_browser_address_length
+  global os_browser_form_editing, os_browser_form_submit_reported
+  if payload == 0 or payload_bytes > 767 then return false
+  if not net_zero(os_browser_buffer, 1024) then return false
+  if not net_copy(os_browser_buffer, os_browser_internal_submit_prefix, 248) then return false
+  if payload_bytes != 0 and not net_copy(ptr.add(os_browser_buffer, 248), payload, payload_bytes) then return false
+  if not net_copy(ptr.add(os_browser_buffer, 248 + payload_bytes), os_browser_internal_submit_suffix, 21) then return false
+  os_browser_length is 269 + payload_bytes
+  if not net_zero(os_browser_address_buffer, 256) then return false
+  if not net_copy(os_browser_address_buffer, os_browser_internal_submitted_address, 20) then return false
+  os_browser_address_length is 20
+  os_browser_last_error is 0
+  if not os_browser_parse_css() then return false
+  if not os_browser_prepare_text() then return false
+  if not os_browser_prepare_layout() then return false
+  if not os_browser_prepare_dom_layout(1152, 556) then return false
+  os_browser_status_text is os_text_browser_status_ready
+  os_browser_edit_started is 0
+  os_browser_form_editing is 0
+  if os_browser_form_submit_reported == 0 then
+    if not os_serial_cstr_line(os_browser_form_submit_marker) then return false
+    os_browser_form_submit_reported is 1
+  end
+  return true
+end
+
+func os_browser_submit_post_sync(context: ptr[VirtioNetContext], payload: ptr, payload_bytes: u64) do
+  global os_browser_status_text, os_browser_last_error
+  if context == 0 then return false
+  redirects: u64 is 0
+  while redirects <= 5 do
+    if not os_browser_parse_url() or not os_browser_build_post_request(payload, payload_bytes) then
+      os_browser_last_error is 11
+      os_browser_status_text is os_text_browser_status_invalid
+      return false
+    end
+    os_browser_status_text is os_text_browser_status_loading
+    if not os_browser_resolve_host(context) then
+      os_browser_last_error is 4
+      os_browser_status_text is os_text_browser_status_network
+      return false
+    end
+    request_ok: bool is false
+    if os_browser_use_https != 0 then request_ok is os_network_https_get(context, os_browser_hostname_buffer, os_browser_hostname_length, os_network_http_request, os_browser_http_request_length)
+    if os_browser_use_https == 0 then request_ok is os_network_http_get(context, os_network_http_request, os_browser_http_request_length)
+    if not request_ok then
+      os_browser_last_error is 5
+      if os_browser_use_https != 0 then os_browser_status_text is os_text_browser_status_https else os_browser_status_text is os_text_browser_status_network
+      return false
+    end
+    status_code: u64 is os_browser_http_status_code()
+    if status_code == 307 or status_code == 308 then
+      if redirects >= 5 or not os_browser_apply_http_redirect() then return false
+      if not os_browser_ring3_authorize() then return false
+      redirects += 1
+    elif status_code == 301 or status_code == 302 or status_code == 303 then
+      if redirects >= 5 or not os_browser_apply_http_redirect() then return false
+      return os_browser_navigate_sync(context)
+    elif status_code >= 200 and status_code < 300 then
+      return os_browser_finish_response()
+    else
+      os_browser_last_error is 10
+      os_browser_status_text is os_text_browser_status_network
+      return false
+    end
+  end
+  return false
+end
+
+func os_browser_submit_post(context: ptr[VirtioNetContext], payload: ptr, payload_bytes: u64) do
+  global os_browser_navigation_fetch_active, os_browser_navigation_fetch_cancel_requested
+  if os_browser_navigation_fetch_active != 0 then return false
+  os_browser_navigation_fetch_active is 1
+  if not os_browser_cooperative_fetch_begin() then
+    os_browser_navigation_fetch_active is 0
+    return false
+  end
+  completed: bool is os_browser_submit_post_sync(context, payload, payload_bytes)
+  if os_browser_navigation_fetch_cancel_requested != 0 then
+    return os_browser_cooperative_fetch_cancel_complete()
+  end
+  os_browser_navigation_fetch_active is 0
+  return completed
+end
+
+func os_browser_internal_post_valid(payload: ptr, payload_bytes: u64) do
+  if payload == 0 or os_browser_http_request_length < 11 + payload_bytes then return false
+  index: u64 is 0
+  while index < 11 do
+    if mem.read8(ptr.add(os_network_http_request, index)) != mem.read8(ptr.add(os_browser_internal_post_line, index)) then return false
+    index += 1
+  end
+  payload_start: u64 is os_browser_http_request_length - payload_bytes
+  index is 0
+  while index < payload_bytes do
+    if mem.read8(ptr.add(os_network_http_request, payload_start + index)) != mem.read8(ptr.add(payload, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func os_browser_submit_form(control_index: u64) do
+  global os_browser_form_editing
+  state: ptr[BrowserFormState] is os_browser_form_state
+  control: ptr[BrowserFormControl] is browser_form_control_at(state, control_index)
+  if control == 0 or control.form_node == u64("0xffffffffffffffff") then return false
+  document: ptr[HtmlDomDocument] is state.document
+  post: bool is os_browser_form_method_post(document, control.form_node)
+  payload_bytes: u64 is browser_form_serialize(state, control.form_node, os_browser_form_payload, 768)
+  if payload_bytes == u64("0xffffffffffffffff") then return false
+  os_browser_form_editing is 0
+  if os_browser_internal_form_requested() then
+    if not post then return false
+    if not os_browser_parse_url() then return false
+    if not os_browser_form_apply_action(document, control.form_node) then return false
+    if not os_browser_parse_url() or not os_browser_build_post_request(os_browser_form_payload, payload_bytes) then return false
+    if not os_browser_internal_post_valid(os_browser_form_payload, payload_bytes) then return false
+    return os_browser_load_internal_submit(os_browser_form_payload, payload_bytes)
+  end
+  if not os_browser_form_apply_action(document, control.form_node) then return false
+  if not os_browser_ring3_authorize() then return false
+  if post then return os_browser_submit_post(os_network_context, os_browser_form_payload, payload_bytes)
+  if not os_browser_form_append_query(os_browser_form_payload, payload_bytes) then return false
+  return os_browser_navigate(os_network_context)
+end
+
+func os_browser_internal_form_requested() do
+  if os_browser_address_length != 16 then return false
+  return html_dom_token_equal(os_browser_address_buffer, 0, 16, os_browser_internal_form_address, 16)
+end
+
+func os_browser_internal_js_requested() do
+  if os_browser_address_length != 21 then return false
+  return html_dom_token_equal(os_browser_address_buffer, 0, 21, os_browser_internal_js_address, 21)
+end
+
+func os_browser_internal_wasm_requested() do
+  if os_browser_address_length != 22 then return false
+  return html_dom_token_equal(os_browser_address_buffer, 0, 22, os_browser_internal_wasm_address, 22)
+end
+
+func os_browser_load_internal_form() do
+  global os_browser_length, os_browser_status_text, os_browser_edit_started, os_browser_last_error
+  if not net_zero(os_browser_buffer, 690) then return false
+  if not net_copy(os_browser_buffer, os_browser_internal_form_response, 689) then return false
+  os_browser_length is 689
+  os_browser_last_error is 0
+  if not os_browser_parse_css() then return false
+  if not os_browser_prepare_text() then return false
+  if not os_browser_prepare_layout() then return false
+  if not os_browser_prepare_dom_layout(1152, 556) then return false
+  os_browser_status_text is os_text_browser_status_ready
+  os_browser_edit_started is 0
+  if not os_serial_cstr_line(os_browser_form_page_marker) then return false
+  return true
+end
+
+func os_browser_load_internal_js() do
+  global os_browser_length, os_browser_status_text, os_browser_edit_started, os_browser_last_error
+  if not net_zero(os_browser_buffer, 458) then return os_browser_js_page_fail(1)
+  if not net_copy(os_browser_buffer, os_browser_internal_js_response, 457) then return os_browser_js_page_fail(2)
+  os_browser_length is 457
+  os_browser_last_error is 0
+  if not os_browser_parse_css() then return os_browser_js_page_fail(3)
+  if not os_browser_prepare_text() then return os_browser_js_page_fail(4)
+  if not os_browser_prepare_layout() then return os_browser_js_page_fail(5)
+  if not os_browser_prepare_dom_layout(1152, 556) then return os_browser_js_page_fail(6)
+  os_browser_status_text is os_text_browser_status_ready
+  os_browser_edit_started is 0
+  if not os_serial_cstr_line(os_browser_js_page_marker) then return os_browser_js_page_fail(7)
+  return true
+end
+
+func os_browser_load_internal_wasm() do
+  global os_browser_status_text, os_browser_edit_started, os_browser_last_error
+  os_browser_last_error is 0
+  if not os_browser_execute_wasm(os_browser_wasm_fixture, 36) then return false
+  if not os_browser_finish_response() then return false
+  os_browser_status_text is os_text_browser_status_ready
+  os_browser_edit_started is 0
+  if not os_serial_cstr_line(os_browser_wasm_page_marker) then return false
+  return true
+end
+
+func os_browser_navigation_cancel() do
+  global os_browser_navigation_state, os_browser_navigation_address_length, os_browser_navigation_started_async, os_network_dns_async_active
+  global os_network_tcp_async_active, os_network_tcp_preconnected_port, os_network_tcp_closed
+  if not os_https_handshake_cancel(os_network_context) then return false
+  if os_network_tcp_preconnected_port != 0 then os_network_tcp_close(os_network_context)
+  os_browser_navigation_state is 0
+  os_browser_navigation_address_length is 0
+  os_browser_navigation_started_async is 0
+  os_network_dns_async_active is 0
+  os_network_tcp_async_active is 0
+  os_network_tcp_preconnected_port is 0
+  os_network_tcp_closed is 1
+  return true
+end
+
+func os_browser_navigation_snapshot() do
+  global os_browser_navigation_address_length
+  if os_browser_address_length == 0 or os_browser_address_length > 255 then return false
+  if not net_zero(os_browser_navigation_address, 256) then return false
+  if not net_copy(os_browser_navigation_address, os_browser_address_buffer, os_browser_address_length) then return false
+  os_browser_navigation_address_length is os_browser_address_length
+  return true
+end
+
+func os_browser_navigation_snapshot_matches() do
+  if os_browser_navigation_address_length == 0 or os_browser_address_length != os_browser_navigation_address_length then return false
+  index: u64 is 0
+  while index < os_browser_navigation_address_length do
+    if mem.read8(ptr.add(os_browser_navigation_address, index)) != mem.read8(ptr.add(os_browser_address_buffer, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func os_browser_navigation_begin(context: ptr[VirtioNetContext]) do
+  global os_browser_navigation_state, os_browser_navigation_started_async, os_network_resolved_ip, os_browser_last_error, os_browser_status_text
+  if not os_browser_navigation_cancel() then return false
+  if not os_browser_navigation_snapshot() then return false
+  if os_browser_internal_form_requested() or os_browser_internal_js_requested() or os_browser_internal_wasm_requested() then
+    return os_browser_navigate(context)
+  end
+  if not os_browser_ring3_authorize() then
+    os_browser_last_error is 12
+    os_browser_status_text is os_text_browser_status_network
+    return false
+  end
+  if context == 0 or not os_browser_parse_url() or not os_browser_build_http_request() then
+    os_browser_last_error is 2
+    os_browser_status_text is os_text_browser_status_invalid
+    return false
+  end
+  os_browser_status_text is os_text_browser_status_loading
+  os_network_resolved_ip is os_network_ipv4_literal(os_browser_hostname_buffer, os_browser_hostname_length)
+  if os_network_resolved_ip != 0 then
+    os_browser_navigation_started_async is 1
+    os_browser_navigation_state is 2
+    return true
+  end
+  os_network_resolved_ip is os_network_dns_cache_load(os_browser_hostname_buffer, os_browser_hostname_length)
+  if os_network_resolved_ip != 0 then
+    os_browser_navigation_state is 2
+    return true
+  end
+  if not os_network_dns_begin(context, os_browser_hostname_buffer, os_browser_hostname_length) then
+    os_browser_last_error is 4
+    os_browser_status_text is os_text_browser_status_network
+    return false
+  end
+  os_browser_navigation_started_async is 1
+  os_browser_navigation_state is 1
+  return true
+end
+
+func os_browser_navigation_poll(context: ptr[VirtioNetContext]) do
+  global os_browser_navigation_state, os_browser_navigation_started_async, os_browser_last_error, os_browser_status_text, os_browser_navigation_fetch_cancelled
+  if os_browser_navigation_state == 0 then return 0
+  if not os_browser_navigation_snapshot_matches() then
+    os_browser_navigation_cancel()
+    return 0
+  end
+  if os_browser_navigation_state == 1 then
+    dns_status: u64 is os_network_dns_poll(context, 64)
+    if dns_status == 0 then return 1
+    if dns_status == 2 then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 4
+      os_browser_status_text is os_text_browser_status_network
+      return 3
+    end
+    if not os_network_dns_cache_store(os_browser_hostname_buffer, os_browser_hostname_length, os_network_resolved_ip) then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 4
+      os_browser_status_text is os_text_browser_status_network
+      return 3
+    end
+    os_browser_navigation_state is 2
+    return 1
+  end
+  if os_browser_navigation_state == 2 then
+    destination_port: u64 is 80
+    if os_browser_use_https != 0 then destination_port is 443
+    if not os_network_tcp_begin(context, destination_port) then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 5
+      os_browser_status_text is os_text_browser_status_network
+      return 3
+    end
+    os_browser_navigation_state is 3
+    if not os_serial_cstr_line(os_browser_navigation_tcp_begin_marker) then
+      os_browser_navigation_cancel()
+      return 3
+    end
+    return 1
+  end
+  if os_browser_navigation_state == 3 then
+    tcp_status: u64 is os_network_tcp_poll(context, 64)
+    if tcp_status == 0 then return 1
+    if tcp_status == 2 then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 5
+      os_browser_status_text is os_text_browser_status_network
+      return 3
+    end
+    os_browser_navigation_state is 4
+    if not os_serial_cstr_line(os_browser_navigation_tcp_done_marker) then
+      os_browser_navigation_cancel()
+      return 3
+    end
+    return 1
+  end
+  if os_browser_navigation_state == 4 then
+    if os_browser_use_https == 0 then
+      os_browser_navigation_state is 6
+      return 1
+    end
+    if not os_https_handshake_begin(context, os_browser_hostname_buffer, os_browser_hostname_length) then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 5
+      os_browser_status_text is os_text_browser_status_https
+      return 3
+    end
+    os_browser_navigation_state is 5
+    if not os_serial_cstr_line(os_browser_navigation_tls_begin_marker) then
+      os_browser_navigation_cancel()
+      return 3
+    end
+    return 1
+  end
+  if os_browser_navigation_state == 5 then
+    tls_status: u64 is os_https_handshake_poll(context, os_browser_hostname_buffer, os_browser_hostname_length, 64)
+    if tls_status == 0 then return 1
+    if tls_status == 2 then
+      os_browser_navigation_cancel()
+      os_browser_last_error is 5
+      os_browser_status_text is os_text_browser_status_https
+      return 3
+    end
+    os_browser_navigation_state is 6
+    if not os_serial_cstr_line(os_browser_navigation_tls_done_marker) then
+      os_browser_navigation_cancel()
+      return 3
+    end
+    return 1
+  end
+  if os_browser_navigation_state == 6 then
+    was_async: u64 is os_browser_navigation_started_async
+    os_browser_navigation_state is 0
+    os_browser_navigation_started_async is 0
+    if os_browser_navigate(context) then
+      if os_browser_navigation_fetch_cancelled != 0 then return 5
+      if was_async != 0 then return 4
+      return 2
+    end
+    return 3
+  end
+  os_browser_navigation_cancel()
+  return 3
+end
+
+func os_browser_navigate_sync(context: ptr[VirtioNetContext]) do
+  global os_browser_status_text, os_network_resolved_ip, os_browser_edit_started, os_browser_last_error, os_browser_https_reported
+  os_browser_last_error is 0
+  if not os_browser_ring3_authorize() then
+    os_browser_last_error is 12
+    os_browser_status_text is os_text_browser_status_network
+    return false
+  end
+  if os_browser_internal_form_requested() then return os_browser_load_internal_form()
+  if os_browser_internal_js_requested() then return os_browser_load_internal_js()
+  if os_browser_internal_wasm_requested() then return os_browser_load_internal_wasm()
+  if context == 0 then
+    os_browser_last_error is 1
+    return false
+  end
+  redirects: u64 is 0
+  while redirects <= 5 do
+    if not os_browser_parse_url() then
+      os_browser_last_error is 2
+      return false
+    end
+    if not os_browser_build_http_request() then
+      os_browser_last_error is 3
+      os_browser_status_text is os_text_browser_status_invalid
+      return false
+    end
+    os_browser_status_text is os_text_browser_status_loading
+    os_network_resolved_ip is os_network_dns_cache_load(os_browser_hostname_buffer, os_browser_hostname_length)
+    if os_network_resolved_ip == 0 then
+      if not os_network_dns_query(context, os_browser_hostname_buffer, os_browser_hostname_length) then
+        os_browser_last_error is 4
+        os_browser_status_text is os_text_browser_status_network
+        return false
+      end
+      if not os_network_dns_cache_store(os_browser_hostname_buffer, os_browser_hostname_length, os_network_resolved_ip) then
+        os_browser_last_error is 4
+        os_browser_status_text is os_text_browser_status_network
+        return false
+      end
+    end
+    request_ok: bool is false
+    if os_browser_use_https != 0 then request_ok is os_network_https_get(context, os_browser_hostname_buffer, os_browser_hostname_length, os_network_http_request, os_browser_http_request_length)
+    if os_browser_use_https == 0 then request_ok is os_network_http_get(context, os_network_http_request, os_browser_http_request_length)
+    if not request_ok then
+      os_browser_last_error is 5
+      if os_browser_use_https != 0 then os_browser_status_text is os_text_browser_status_https
+      if os_browser_use_https == 0 then os_browser_status_text is os_text_browser_status_network
+      return false
+    end
+    status_code: u64 is os_browser_http_status_code()
+    if status_code >= 300 and status_code <= 399 then
+      if redirects >= 5 or not os_browser_apply_http_redirect() then
+        os_browser_last_error is 9
+        os_browser_status_text is os_text_browser_status_network
+        return false
+      end
+      if not os_browser_ring3_authorize() then
+        os_browser_last_error is 12
+        os_browser_status_text is os_text_browser_status_network
+        return false
+      end
+      redirects += 1
+    else
+      if status_code < 200 or status_code >= 400 then
+        os_browser_last_error is 10
+        os_browser_status_text is os_text_browser_status_network
+        return false
+      end
+      redirects is 6
+    end
+  end
+  return os_browser_finish_response()
+end
+
+func os_browser_navigate(context: ptr[VirtioNetContext]) do
+  global os_browser_navigation_fetch_active, os_browser_navigation_fetch_cancel_requested
+  if os_browser_navigation_fetch_active != 0 then return false
+  os_browser_navigation_fetch_active is 1
+  if not os_browser_cooperative_fetch_begin() then
+    os_browser_navigation_fetch_active is 0
+    return false
+  end
+  completed: bool is os_browser_navigate_sync(context)
+  if os_browser_navigation_fetch_cancel_requested != 0 then
+    return os_browser_cooperative_fetch_cancel_complete()
+  end
+  os_browser_navigation_fetch_active is 0
+  return completed
 end
 
 func os_browser_accept(value: u64) do
@@ -886,20 +2654,10 @@ func os_browser_accept(value: u64) do
     return true
   end
   if value == 8 then
-    os_browser_edit_started is 1
-    if os_browser_address_length != 0 then
-      os_browser_address_length -= 1
-      mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), 0)
-    end
-    os_browser_status_text is os_text_browser_status_ready
-    return true
+    return os_browser_backspace_codepoint()
   end
   if value < 32 or value > 126 then return true
-  if os_browser_edit_started == 0 then
-    if not net_zero(os_browser_address_buffer, 256) then return false
-    os_browser_address_length is 0
-    os_browser_edit_started is 1
-  end
+  if not os_browser_begin_edit() then return false
   if os_browser_address_length >= 95 then return true
   mem.write8(ptr.add(os_browser_address_buffer, os_browser_address_length), value)
   os_browser_address_length += 1
@@ -915,7 +2673,7 @@ func os_network_start() do
   context: ptr[VirtioNetContext] is os_network_context
   device: ptr[PciDevice] is os_network_pci_device
   os_network_status is 2
-  if not virtio_net_init(context, device, os_network_dma_address, os_network_dma_address, 65536) then
+  if not virtio_net_init(context, device, os_network_dma_address, os_network_dma_address, 163840) then
     return false
   end
   os_network_status is 3

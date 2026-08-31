@@ -1,0 +1,257 @@
+# Sura OS xHCI USB keyboard/mouse integration.
+#
+# The boot path reserves one 64 KiB identity-mapped DMA arena. The controller
+# uses 16 KiB and each boot-HID device uses 24 KiB. Reports are converted to
+# the common KeyEvent/PointerEvent contracts before desktop dispatch.
+
+import "../stdlib/freestanding/xhci.sura"
+import "../stdlib/freestanding/usb_hid.sura"
+
+struct OsXhciInputDevice do
+  dma: ptr[XhciDeviceDma]
+  ep0: ptr[XhciTransferRing]
+  device: ptr[XhciDevice]
+  transfer_result: ptr[XhciTransferResult]
+  hid: ptr[XhciHidEndpoint]
+  ring: ptr[XhciTransferRing]
+  previous_report: ptr
+  report_snapshot: ptr
+  cursor: ptr
+  report_trb: u64
+  active: u64
+end
+
+os_xhci_pci is static.struct(PciDevice)
+os_xhci_controller is static.struct(XhciController)
+os_xhci_dma is static.struct(XhciDma)
+os_xhci_command is static.struct(XhciCommandRing)
+os_xhci_event is static.struct(XhciEventRing)
+os_xhci_command_result is static.struct(XhciCommandResult)
+os_xhci_poll_result is static.struct(XhciTransferResult)
+
+os_xhci_keyboard_context is static.struct(OsXhciInputDevice)
+os_xhci_keyboard_dma is static.struct(XhciDeviceDma)
+os_xhci_keyboard_ep0 is static.struct(XhciTransferRing)
+os_xhci_keyboard_device is static.struct(XhciDevice)
+os_xhci_keyboard_transfer is static.struct(XhciTransferResult)
+os_xhci_keyboard_hid is static.struct(XhciHidEndpoint)
+os_xhci_keyboard_ring is static.struct(XhciTransferRing)
+os_xhci_keyboard_previous is static.zero(8, 8)
+os_xhci_keyboard_snapshot is static.zero(8, 8)
+os_xhci_keyboard_cursor is static.zero(8, 8)
+os_xhci_keyboard_decoder is static.struct(KeyEventDecoder)
+os_xhci_keyboard_down is static.zero(65, 8)
+os_xhci_keyboard_event is static.struct(KeyEvent)
+
+os_xhci_mouse_context is static.struct(OsXhciInputDevice)
+os_xhci_mouse_dma is static.struct(XhciDeviceDma)
+os_xhci_mouse_ep0 is static.struct(XhciTransferRing)
+os_xhci_mouse_device is static.struct(XhciDevice)
+os_xhci_mouse_transfer is static.struct(XhciTransferResult)
+os_xhci_mouse_hid is static.struct(XhciHidEndpoint)
+os_xhci_mouse_ring is static.struct(XhciTransferRing)
+os_xhci_mouse_snapshot is static.zero(1024, 16)
+os_xhci_mouse_decoder is static.struct(PointerEventDecoder)
+os_xhci_mouse_event is static.struct(PointerEvent)
+
+os_xhci_dma_address: u64 is 0
+os_xhci_dma_pages: u64 is 16
+os_xhci_input_ready: u64 is 0
+os_xhci_input_status: u64 is 0
+
+func os_xhci_input_context_clear(context: ptr[OsXhciInputDevice]) do
+  if context == 0 then return false
+  context.dma is 0
+  context.ep0 is 0
+  context.device is 0
+  context.transfer_result is 0
+  context.hid is 0
+  context.ring is 0
+  context.previous_report is 0
+  context.report_snapshot is 0
+  context.cursor is 0
+  context.report_trb is 0
+  context.active is 0
+  return true
+end
+
+func os_xhci_input_device_start(context: ptr[OsXhciInputDevice], port_id: u64, dma_base: u64, protocol: u64) do
+  if context == 0 or port_id == 0 or dma_base == 0 then return false
+  if protocol != 1 and protocol != 2 then return false
+  controller: ptr[XhciController] is os_xhci_controller
+  controller_dma: ptr[XhciDma] is os_xhci_dma
+  command: ptr[XhciCommandRing] is os_xhci_command
+  event: ptr[XhciEventRing] is os_xhci_event
+  result: ptr[XhciCommandResult] is os_xhci_command_result
+  if context.dma == 0 or context.ep0 == 0 or context.device == 0 then return false
+  if context.transfer_result == 0 or context.hid == 0 or context.ring == 0 then return false
+  device_dma: ptr[XhciDeviceDma] is context.dma
+  ep0: ptr[XhciTransferRing] is context.ep0
+  device: ptr[XhciDevice] is context.device
+  transfer_result: ptr[XhciTransferResult] is context.transfer_result
+  hid: ptr[XhciHidEndpoint] is context.hid
+  ring: ptr[XhciTransferRing] is context.ring
+
+  if not xhci_port_reset(controller, port_id) then return false
+  if not xhci_enable_slot(command, event, result) then return false
+  slot_id: u64 is result.slot_id
+  if slot_id == 0 then return false
+  if not xhci_device_init(device, controller, slot_id, port_id) then return false
+  if not xhci_device_dma_configure(device_dma, dma_base, dma_base, 24576) then return false
+  if not xhci_device_context_configure(device, controller_dma, device_dma, ep0) then return false
+  if not xhci_address_device(device, command, event, result) then return false
+  if not xhci_control_get_descriptor(device, event, 256, 18, transfer_result) then return false
+  if mem.read8(device_dma.data) != 18 or mem.read8(ptr.add(device_dma.data, 1)) != 1 then return false
+  if not xhci_control_get_descriptor(device, event, 512, 9, transfer_result) then return false
+  configuration_length: u64 is mem.read16(ptr.add(device_dma.data, 2))
+  if configuration_length < 9 or configuration_length > 4096 then return false
+  if not xhci_control_get_descriptor(device, event, 512, configuration_length, transfer_result) then return false
+  if not xhci_hid_parse_configuration(device_dma.data, configuration_length, hid) then return false
+  if hid.protocol != protocol then return false
+  if protocol == 1 and hid.max_packet_size < 8 then return false
+  if protocol == 2 and hid.max_packet_size < 3 then return false
+  if not xhci_hid_configure_endpoint(device, command, event, hid, ring, result) then return false
+  if not xhci_control_set_configuration(device, event, hid.configuration_value, transfer_result) then return false
+  protocol_ready: bool is false
+  if protocol == 1 then protocol_ready is xhci_hid_set_boot_protocol(device, event, hid, transfer_result)
+  if protocol == 2 then protocol_ready is xhci_hid_set_report_protocol(device, event, hid, transfer_result)
+  if not protocol_ready then return false
+  context.report_trb is xhci_hid_post_report(device, hid, ring)
+  if context.report_trb == 0 then return false
+  context.active is 1
+  return true
+end
+
+func os_xhci_input_bind_contexts() do
+  keyboard: ptr[OsXhciInputDevice] is os_xhci_keyboard_context
+  mouse: ptr[OsXhciInputDevice] is os_xhci_mouse_context
+  os_xhci_input_context_clear(keyboard)
+  os_xhci_input_context_clear(mouse)
+  keyboard.dma is os_xhci_keyboard_dma
+  keyboard.ep0 is os_xhci_keyboard_ep0
+  keyboard.device is os_xhci_keyboard_device
+  keyboard.transfer_result is os_xhci_keyboard_transfer
+  keyboard.hid is os_xhci_keyboard_hid
+  keyboard.ring is os_xhci_keyboard_ring
+  keyboard.previous_report is os_xhci_keyboard_previous
+  keyboard.report_snapshot is os_xhci_keyboard_snapshot
+  keyboard.cursor is os_xhci_keyboard_cursor
+  mouse.dma is os_xhci_mouse_dma
+  mouse.ep0 is os_xhci_mouse_ep0
+  mouse.device is os_xhci_mouse_device
+  mouse.transfer_result is os_xhci_mouse_transfer
+  mouse.hid is os_xhci_mouse_hid
+  mouse.ring is os_xhci_mouse_ring
+  mouse.report_snapshot is os_xhci_mouse_snapshot
+  return true
+end
+
+func os_xhci_input_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func os_xhci_input_start(width: u64, height: u64) do
+  global os_xhci_input_ready, os_xhci_input_status
+  os_xhci_input_ready is 0
+  os_xhci_input_status is 1
+  if os_xhci_dma_address == 0 then return false
+  if not os_xhci_input_bind_contexts() then return false
+  pci: ptr[PciDevice] is os_xhci_pci
+  controller: ptr[XhciController] is os_xhci_controller
+  if not xhci_pci_find(pci) then return false
+  os_xhci_input_status is 2
+  bar: u64 is xhci_pci_bar_physical(pci)
+  if bar == 0 or not xhci_pci_enable(pci) then return false
+  if not xhci_controller_attach(controller, bar, 1000000) then return false
+  if not xhci_dma_configure(os_xhci_dma, os_xhci_dma_address, os_xhci_dma_address, 16384) then return false
+  requested_slots: u64 is controller.max_slots
+  if requested_slots > 8 then requested_slots is 8
+  if not xhci_controller_start(controller, os_xhci_dma, os_xhci_command, os_xhci_event, requested_slots) then return false
+  os_xhci_input_status is 3
+  if xhci_connected_port_count(controller) < 2 then return false
+  keyboard_port: u64 is xhci_connected_port_at(controller, 1)
+  mouse_port: u64 is xhci_connected_port_at(controller, 2)
+  if not os_xhci_input_device_start(os_xhci_keyboard_context, keyboard_port, os_xhci_dma_address + 16384, 1) then return false
+  os_xhci_input_status is 4
+  if not os_xhci_input_device_start(os_xhci_mouse_context, mouse_port, os_xhci_dma_address + 40960, 2) then return false
+  os_xhci_input_status is 5
+  if not key_event_decoder_init(os_xhci_keyboard_decoder, os_xhci_keyboard_down, 65, key_event_key_hangul()) then return false
+  if not pointer_event_decoder_init(os_xhci_mouse_decoder, width, height) then return false
+  os_xhci_input_ready is 1
+  os_xhci_input_status is 0
+  return true
+end
+
+func os_xhci_keyboard_complete(context: ptr[OsXhciInputDevice], result: ptr[XhciTransferResult]) do
+  if context == 0 or result == 0 or context.active == 0 then return false
+  if result.trb_pointer != context.report_trb then return false
+  hid: ptr[XhciHidEndpoint] is context.hid
+  device_dma: ptr[XhciDeviceDma] is context.dma
+  device: ptr[XhciDevice] is context.device
+  ring: ptr[XhciTransferRing] is context.ring
+  report_bytes: u64 is hid.max_packet_size
+  if result.residual_bytes > report_bytes then return false
+  report_bytes -= result.residual_bytes
+  if report_bytes < 8 then return false
+  # Keep the completed report stable and immediately make the interrupt
+  # endpoint available again before a key event triggers a slow desktop
+  # redraw. This lets xHCI queue the release/next-key report during rendering
+  # instead of silently collapsing a complete short key press.
+  if context.report_snapshot == 0 then return false
+  if not os_xhci_input_copy(context.report_snapshot, device_dma.report, 8) then return false
+  context.report_trb is xhci_hid_post_report(device, hid, ring)
+  if context.report_trb == 0 then return false
+  mem.write64(context.cursor, 0)
+  while usb_hid_keyboard_next_event(os_xhci_keyboard_decoder, context.previous_report, context.report_snapshot, 8, context.cursor, os_xhci_keyboard_event) do
+    if not os_keyboard_event(os_xhci_keyboard_event) then return false
+  end
+  return usb_hid_keyboard_report_copy(context.previous_report, context.report_snapshot, 8)
+end
+
+func os_xhci_mouse_complete(context: ptr[OsXhciInputDevice], result: ptr[XhciTransferResult]) do
+  if context == 0 or result == 0 or context.active == 0 then return false
+  if result.trb_pointer != context.report_trb then return false
+  hid: ptr[XhciHidEndpoint] is context.hid
+  device_dma: ptr[XhciDeviceDma] is context.dma
+  device: ptr[XhciDevice] is context.device
+  ring: ptr[XhciTransferRing] is context.ring
+  report_bytes: u64 is hid.max_packet_size
+  if result.residual_bytes > report_bytes then return false
+  report_bytes -= result.residual_bytes
+  if report_bytes < 3 then return false
+  if report_bytes > 1024 or context.report_snapshot == 0 then return false
+  if not os_xhci_input_copy(context.report_snapshot, device_dma.report, report_bytes) then return false
+  context.report_trb is xhci_hid_post_report(device, hid, ring)
+  if context.report_trb == 0 then return false
+  if not usb_hid_mouse_feed_report(os_xhci_mouse_decoder, context.report_snapshot, report_bytes, os_xhci_mouse_event) then return false
+  if not os_pointer_event(os_xhci_mouse_event) then return false
+  return true
+end
+
+func os_xhci_input_poll() do
+  if os_xhci_input_ready == 0 then return false
+  poll_result: ptr[XhciTransferResult] is os_xhci_poll_result
+  keyboard_device: ptr[XhciDevice] is os_xhci_keyboard_device
+  mouse_device: ptr[XhciDevice] is os_xhci_mouse_device
+  attempts: u64 is 0
+  while attempts < 16 do
+    status: u64 is xhci_transfer_poll_any(os_xhci_event, poll_result)
+    if status == 0 then return true
+    if status == 3 then return false
+    if status == 1 then
+      if poll_result.slot_id == keyboard_device.slot_id then
+        if not os_xhci_keyboard_complete(os_xhci_keyboard_context, poll_result) then return false
+      elif poll_result.slot_id == mouse_device.slot_id then
+        if not os_xhci_mouse_complete(os_xhci_mouse_context, poll_result) then return false
+      end
+    end
+    attempts += 1
+  end
+  return true
+end

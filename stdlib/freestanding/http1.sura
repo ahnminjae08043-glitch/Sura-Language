@@ -1,0 +1,364 @@
+# Allocation-free HTTP/1.x response framing for the freestanding browser.
+#
+# State results:
+#   0 = incomplete
+#   1 = one complete response
+#   2 = malformed or unsupported framing
+#
+# Supported response bodies are Content-Length, Transfer-Encoding: chunked,
+# and connection-close delimited. Transfer-Encoding plus Content-Length is
+# rejected. Chunk extensions and syntactically valid trailers are consumed.
+
+struct Http1ResponseInfo do
+  header_bytes: u64
+  body_bytes: u64
+  message_bytes: u64
+  framing: u64
+  status_code: u64
+  content_encoding: u64
+end
+
+http1_content_length_name is static.bytes([99, 111, 110, 116, 101, 110, 116, 45, 108, 101, 110, 103, 116, 104], 1)
+http1_transfer_encoding_name is static.bytes([116, 114, 97, 110, 115, 102, 101, 114, 45, 101, 110, 99, 111, 100, 105, 110, 103], 1)
+http1_content_encoding_name is static.bytes([99, 111, 110, 116, 101, 110, 116, 45, 101, 110, 99, 111, 100, 105, 110, 103], 1)
+http1_chunked_value is static.bytes([99, 104, 117, 110, 107, 101, 100], 1)
+http1_gzip_value is static.bytes([103, 122, 105, 112], 1)
+http1_identity_value is static.bytes([105, 100, 101, 110, 116, 105, 116, 121], 1)
+
+func http1_ascii_lower(value: u64) do
+  if value >= 65 and value <= 90 then return value + 32
+  return value
+end
+
+func http1_name_equal(buffer: ptr, start: u64, length: u64, expected: ptr, expected_length: u64) do
+  if buffer == 0 or expected == 0 or length != expected_length then return false
+  index: u64 is 0
+  while index < length do
+    if http1_ascii_lower(mem.read8(ptr.add(buffer, start + index))) != mem.read8(ptr.add(expected, index)) then
+      return false
+    end
+    index += 1
+  end
+  return true
+end
+
+func http1_find_header_end(buffer: ptr, bytes: u64) do
+  if buffer == 0 or bytes < 4 then return 0
+  cursor: u64 is 0
+  while cursor + 3 < bytes do
+    if mem.read8(ptr.add(buffer, cursor)) == 13 and mem.read8(ptr.add(buffer, cursor + 1)) == 10 and mem.read8(ptr.add(buffer, cursor + 2)) == 13 and mem.read8(ptr.add(buffer, cursor + 3)) == 10 then
+      return cursor + 4
+    end
+    cursor += 1
+  end
+  return 0
+end
+
+func http1_find_crlf(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 or start >= limit then return limit
+  cursor: u64 is start
+  while cursor + 1 < limit do
+    if mem.read8(ptr.add(buffer, cursor)) == 13 and mem.read8(ptr.add(buffer, cursor + 1)) == 10 then
+      return cursor
+    end
+    cursor += 1
+  end
+  return limit
+end
+
+func http1_status_code(buffer: ptr, line_end: u64) do
+  if buffer == 0 or line_end < 12 then return 0
+  if mem.read8(buffer) != 72 or mem.read8(ptr.add(buffer, 1)) != 84 then return 0
+  if mem.read8(ptr.add(buffer, 2)) != 84 or mem.read8(ptr.add(buffer, 3)) != 80 then return 0
+  if mem.read8(ptr.add(buffer, 4)) != 47 or mem.read8(ptr.add(buffer, 5)) != 49 then return 0
+  if mem.read8(ptr.add(buffer, 6)) != 46 then return 0
+  minor: u64 is mem.read8(ptr.add(buffer, 7))
+  if minor != 48 and minor != 49 then return 0
+  if mem.read8(ptr.add(buffer, 8)) != 32 then return 0
+  first: u64 is mem.read8(ptr.add(buffer, 9))
+  second: u64 is mem.read8(ptr.add(buffer, 10))
+  third: u64 is mem.read8(ptr.add(buffer, 11))
+  if first < 49 or first > 57 then return 0
+  if second < 48 or second > 57 or third < 48 or third > 57 then return 0
+  if line_end > 12 and mem.read8(ptr.add(buffer, 12)) != 32 then return 0
+  return (first - 48) * 100 + (second - 48) * 10 + third - 48
+end
+
+func http1_header_name_valid(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 or start >= limit then return false
+  cursor: u64 is start
+  while cursor < limit do
+    value: u64 is mem.read8(ptr.add(buffer, cursor))
+    if value < 33 or value > 126 or value == 58 then return false
+    cursor += 1
+  end
+  return true
+end
+
+func http1_content_length_value(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 then return u64("0xffffffffffffffff")
+  while start < limit and (mem.read8(ptr.add(buffer, start)) == 32 or mem.read8(ptr.add(buffer, start)) == 9) do
+    start += 1
+  end
+  while limit > start and (mem.read8(ptr.add(buffer, limit - 1)) == 32 or mem.read8(ptr.add(buffer, limit - 1)) == 9) do
+    limit -= 1
+  end
+  if start == limit then return u64("0xffffffffffffffff")
+  value: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    digit: u64 is mem.read8(ptr.add(buffer, cursor))
+    if digit < 48 or digit > 57 then return u64("0xffffffffffffffff")
+    digit_value: u64 is digit - 48
+    if value > (u64("0xffffffffffffffff") - digit_value) / 10 then
+      return u64("0xffffffffffffffff")
+    end
+    value is value * 10 + digit_value
+    cursor += 1
+  end
+  return value
+end
+
+func http1_value_is_chunked(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 then return false
+  while start < limit and (mem.read8(ptr.add(buffer, start)) == 32 or mem.read8(ptr.add(buffer, start)) == 9) do
+    start += 1
+  end
+  while limit > start and (mem.read8(ptr.add(buffer, limit - 1)) == 32 or mem.read8(ptr.add(buffer, limit - 1)) == 9) do
+    limit -= 1
+  end
+  return http1_name_equal(buffer, start, limit - start, http1_chunked_value, 7)
+end
+
+func http1_content_encoding_value(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 then return 2
+  while start < limit and (mem.read8(ptr.add(buffer, start)) == 32 or mem.read8(ptr.add(buffer, start)) == 9) do
+    start += 1
+  end
+  while limit > start and (mem.read8(ptr.add(buffer, limit - 1)) == 32 or mem.read8(ptr.add(buffer, limit - 1)) == 9) do
+    limit -= 1
+  end
+  if http1_name_equal(buffer, start, limit - start, http1_gzip_value, 4) then return 1
+  if http1_name_equal(buffer, start, limit - start, http1_identity_value, 8) then return 0
+  return 2
+end
+
+func http1_hex_digit(value: u64) do
+  if value >= 48 and value <= 57 then return value - 48
+  value is http1_ascii_lower(value)
+  if value >= 97 and value <= 102 then return value - 87
+  return 16
+end
+
+func http1_trailer_line_valid(buffer: ptr, start: u64, limit: u64) do
+  if buffer == 0 or start >= limit then return false
+  colon: u64 is start
+  while colon < limit and mem.read8(ptr.add(buffer, colon)) != 58 do
+    colon += 1
+  end
+  if colon == limit then return false
+  return http1_header_name_valid(buffer, start, colon)
+end
+
+func http1_scan_chunked(buffer: ptr, body_start: u64, bytes: u64, info: ptr[Http1ResponseInfo]) do
+  if buffer == 0 or info == 0 or body_start > bytes then return 2
+  cursor: u64 is body_start
+  decoded: u64 is 0
+  while true do
+    chunk_size: u64 is 0
+    digits: u64 is 0
+    extension: bool is false
+    line_done: bool is false
+    while cursor < bytes do
+      value: u64 is mem.read8(ptr.add(buffer, cursor))
+      if value == 13 then
+        if cursor + 1 >= bytes then return 0
+        if mem.read8(ptr.add(buffer, cursor + 1)) != 10 then return 2
+        cursor += 2
+        line_done is true
+        break
+      end
+      if value == 10 then return 2
+      if extension then
+        if value < 32 or value > 126 then
+          return 2
+        end
+      else
+        if value == 59 and digits != 0 then
+          extension is true
+        else
+          digit: u64 is http1_hex_digit(value)
+          if digit > 15 then return 2
+          if chunk_size > u64("0x0fffffffffffffff") then return 2
+          chunk_size is chunk_size * 16 + digit
+          digits += 1
+        end
+      end
+      cursor += 1
+    end
+    if not line_done then return 0
+    if digits == 0 then return 2
+    if decoded > u64("0xffffffffffffffff") - chunk_size then return 2
+    if chunk_size == 0 then
+      while true do
+        if cursor + 1 >= bytes then return 0
+        trailer_end: u64 is http1_find_crlf(buffer, cursor, bytes)
+        if trailer_end == bytes then return 0
+        if trailer_end == cursor then
+          cursor += 2
+          if cursor != bytes then return 2
+          info.body_bytes is decoded
+          info.message_bytes is cursor
+          return 1
+        end
+        if not http1_trailer_line_valid(buffer, cursor, trailer_end) then return 2
+        cursor is trailer_end + 2
+      end
+    end
+    if chunk_size > bytes - cursor then return 0
+    cursor += chunk_size
+    if cursor + 1 >= bytes then return 0
+    if mem.read8(ptr.add(buffer, cursor)) != 13 or mem.read8(ptr.add(buffer, cursor + 1)) != 10 then return 2
+    cursor += 2
+    decoded += chunk_size
+  end
+end
+
+func http1_response_inspect(buffer: ptr, bytes: u64, connection_closed: bool, info: ptr[Http1ResponseInfo]) do
+  if buffer == 0 or info == 0 then return 2
+  info.header_bytes is 0
+  info.body_bytes is 0
+  info.message_bytes is 0
+  info.framing is 0
+  info.status_code is 0
+  info.content_encoding is 0
+  header_end: u64 is http1_find_header_end(buffer, bytes)
+  if header_end == 0 then
+    if connection_closed then return 2
+    return 0
+  end
+  status_end: u64 is http1_find_crlf(buffer, 0, header_end)
+  if status_end == header_end then return 2
+  status: u64 is http1_status_code(buffer, status_end)
+  if status == 0 then return 2
+  info.header_bytes is header_end
+  info.status_code is status
+
+  content_length: u64 is 0
+  content_length_found: bool is false
+  transfer_encoding_found: bool is false
+  content_encoding_found: bool is false
+  cursor: u64 is status_end + 2
+  while cursor + 1 < header_end do
+    line_end: u64 is http1_find_crlf(buffer, cursor, header_end)
+    if line_end == header_end then return 2
+    if line_end == cursor then break
+    colon: u64 is cursor
+    while colon < line_end and mem.read8(ptr.add(buffer, colon)) != 58 do
+      colon += 1
+    end
+    if colon == line_end or not http1_header_name_valid(buffer, cursor, colon) then return 2
+    if http1_name_equal(buffer, cursor, colon - cursor, http1_content_length_name, 14) then
+      if content_length_found then return 2
+      content_length is http1_content_length_value(buffer, colon + 1, line_end)
+      if content_length == u64("0xffffffffffffffff") then return 2
+      content_length_found is true
+    end
+    if http1_name_equal(buffer, cursor, colon - cursor, http1_transfer_encoding_name, 17) then
+      if transfer_encoding_found then return 2
+      if not http1_value_is_chunked(buffer, colon + 1, line_end) then return 2
+      transfer_encoding_found is true
+    end
+    if http1_name_equal(buffer, cursor, colon - cursor, http1_content_encoding_name, 16) then
+      if content_encoding_found then return 2
+      info.content_encoding is http1_content_encoding_value(buffer, colon + 1, line_end)
+      content_encoding_found is true
+    end
+    cursor is line_end + 2
+  end
+  if content_length_found and transfer_encoding_found then return 2
+
+  no_body: bool is status >= 100 and status < 200
+  if status == 204 or status == 304 then no_body is true
+  if no_body then
+    if transfer_encoding_found or (content_length_found and content_length != 0) then return 2
+    if bytes != header_end then return 2
+    info.framing is 1
+    info.message_bytes is header_end
+    return 1
+  end
+  if transfer_encoding_found then
+    info.framing is 2
+    return http1_scan_chunked(buffer, header_end, bytes, info)
+  end
+  if content_length_found then
+    info.framing is 1
+    if content_length > u64("0xffffffffffffffff") - header_end then return 2
+    if bytes < header_end + content_length then
+      if connection_closed then return 2
+      return 0
+    end
+    if bytes != header_end + content_length then return 2
+    info.body_bytes is content_length
+    info.message_bytes is bytes
+    return 1
+  end
+  info.framing is 0
+  if not connection_closed then return 0
+  info.body_bytes is bytes - header_end
+  info.message_bytes is bytes
+  return 1
+end
+
+func http1_copy_forward(destination: ptr, source: ptr, bytes: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < bytes do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func http1_response_dechunk(buffer: ptr, length_pointer: ptr, capacity: u64, info: ptr[Http1ResponseInfo]) do
+  if buffer == 0 or length_pointer == 0 or info == 0 then return false
+  if info.framing != 2 then return true
+  bytes: u64 is mem.read64(length_pointer)
+  if bytes >= capacity then return false
+  if http1_response_inspect(buffer, bytes, false, info) != 1 then return false
+  cursor: u64 is info.header_bytes
+  output: u64 is info.header_bytes
+  while true do
+    chunk_size: u64 is 0
+    extension: bool is false
+    while cursor < bytes do
+      value: u64 is mem.read8(ptr.add(buffer, cursor))
+      if value == 13 then
+        cursor += 2
+        break
+      end
+      if extension then
+        cursor += 1
+      else
+        if value == 59 then
+          extension is true
+          cursor += 1
+        else
+          chunk_size is chunk_size * 16 + http1_hex_digit(value)
+          cursor += 1
+        end
+      end
+    end
+    if chunk_size == 0 then
+      new_length: u64 is info.header_bytes + info.body_bytes
+      mem.write64(length_pointer, new_length)
+      mem.write8(ptr.add(buffer, new_length), 0)
+      info.message_bytes is new_length
+      info.framing is 1
+      return output == new_length
+    end
+    if not http1_copy_forward(ptr.add(buffer, output), ptr.add(buffer, cursor), chunk_size) then return false
+    output += chunk_size
+    cursor += chunk_size + 2
+  end
+end

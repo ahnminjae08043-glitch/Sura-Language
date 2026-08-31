@@ -46,6 +46,10 @@ func process_nx_flag() do
   return u64("0x8000000000000000")
 end
 
+func process_shared_flag() do
+  return 512
+end
+
 func process_user_limit() do
   return u64("0x0000800000000000")
 end
@@ -100,9 +104,11 @@ func process_mapping_access_valid(state: ptr[ProcessAddressSpace], mapping: ptr[
   required: u64 is 5
   if writable then required is 7
   if (mapping.flags & required) != required then return false
-  if not process_owned_contains(state, mapping.physical_address) then return false
-  if not pmem_is_managed(state.allocator, mapping.physical_address) then return false
-  if not pmem_is_used(state.allocator, mapping.physical_address) then return false
+  if (mapping.flags & process_shared_flag()) == 0 then
+    if not process_owned_contains(state, mapping.physical_address) then return false
+    if not pmem_is_managed(state.allocator, mapping.physical_address) then return false
+    if not pmem_is_used(state.allocator, mapping.physical_address) then return false
+  end
   pte: ptr is vmem_walk_pte(state.root, mapping.virtual_address)
   if pte == 0 then return false
   entry: u64 is mem.read64(pte)
@@ -384,6 +390,26 @@ func process_space_protect_page(state: ptr[ProcessAddressSpace], virtual_page: u
   flags: u64 is process_leaf_flags(writable, executable)
   if not vmem_protect_4k(state.root, virtual_page, flags) then return false
   mapping.flags is flags
+  return true
+end
+
+func process_space_map_shared_page(state: ptr[ProcessAddressSpace], virtual_page: u64, physical_page: u64, writable: bool, executable: bool) do
+  if state == 0 or state.initialized == 0 or physical_page == 0 then return false
+  if (physical_page & 4095) != 0 or writable and executable then return false
+  if not process_space_map_page(state, virtual_page, writable, executable) then return false
+  mapping: ptr[ProcessMapping] is process_find_mapping(state, virtual_page)
+  if mapping == 0 then return false
+  allocated_page: u64 is mapping.physical_address
+  if allocated_page == 0 or not process_owned_contains(state, allocated_page) then return false
+  pte: ptr is vmem_walk_pte(state.root, virtual_page)
+  if pte == 0 then return false
+  flags: u64 is process_leaf_flags(writable, executable)
+  mem.write64(pte, (physical_page & u64("0x000ffffffffff000")) | flags)
+  paging.invalidate(virtual_page)
+  if not pmem_free(state.allocator, allocated_page) then return false
+  if not process_owned_remove(state, allocated_page) then return false
+  mapping.physical_address is physical_page
+  mapping.flags is flags | process_shared_flag()
   return true
 end
 

@@ -1,0 +1,268 @@
+# Allocation-free browser form-control state.
+#
+# The DOM keeps immutable source slices. This module discovers a bounded set of
+# input/button controls and stores edited values in caller-owned mutable slots.
+
+import "html_dom.sura"
+
+struct BrowserFormControl do
+  node_index: u64
+  form_node: u64
+  kind: u64
+  flags: u64
+  name_start: u64
+  name_bytes: u64
+  value_bytes: u64
+end
+
+struct BrowserFormState do
+  document: ptr
+  controls: ptr
+  values: ptr
+  capacity: u64
+  value_stride: u64
+  count: u64
+  focused: u64
+end
+
+browser_form_type_text is static.utf8("text")
+browser_form_type_password is static.utf8("password")
+browser_form_type_checkbox is static.utf8("checkbox")
+browser_form_type_submit is static.utf8("submit")
+browser_form_type_button is static.utf8("button")
+browser_form_checkbox_default is static.utf8("on")
+
+func browser_form_control_at(state: ptr[BrowserFormState], index: u64) do
+  if state == 0 or index >= state.count then return 0
+  return ptr.add(state.controls, index * 56)
+end
+
+func browser_form_value_at(state: ptr[BrowserFormState], index: u64) do
+  if state == 0 or index >= state.count then return 0
+  return ptr.add(state.values, index * state.value_stride)
+end
+
+func browser_form_zero(input: ptr, byte_count: u64) do
+  if input == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(input, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func browser_form_attribute_equal(document: ptr[HtmlDomDocument], attribute: ptr[HtmlDomAttribute], expected: ptr, expected_bytes: u64) do
+  if document == 0 or attribute == 0 or attribute.has_value == 0 then return false
+  return html_dom_token_equal(document.input, attribute.source_start, attribute.source_bytes, expected, expected_bytes)
+end
+
+func browser_form_parent(document: ptr[HtmlDomDocument], node_index: u64) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 then return u64("0xffffffffffffffff")
+  parent: u64 is node.parent
+  depth: u64 is 0
+  while parent != u64("0xffffffffffffffff") and depth < 64 do
+    candidate: ptr[HtmlDomNode] is html_dom_node(document, parent)
+    if candidate == 0 then return u64("0xffffffffffffffff")
+    if candidate.kind == 1 and candidate.tag == 30 then return parent
+    parent is candidate.parent
+    depth += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_form_kind(document: ptr[HtmlDomDocument], node_index: u64) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 then return 0
+  type_attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 9)
+  if node.tag == 32 then
+    if browser_form_attribute_equal(document, type_attribute, browser_form_type_button, 6) then return 5
+    return 4
+  end
+  if node.tag != 31 then return 0
+  if browser_form_attribute_equal(document, type_attribute, browser_form_type_password, 8) then return 2
+  if browser_form_attribute_equal(document, type_attribute, browser_form_type_checkbox, 8) then return 3
+  if browser_form_attribute_equal(document, type_attribute, browser_form_type_submit, 6) then return 4
+  if browser_form_attribute_equal(document, type_attribute, browser_form_type_button, 6) then return 5
+  return 1
+end
+
+func browser_form_init(document: ptr[HtmlDomDocument], state: ptr[BrowserFormState]) do
+  if document == 0 or state == 0 or state.controls == 0 or state.values == 0 then return false
+  if state.capacity == 0 or state.value_stride < 2 or state.value_stride > 256 then return false
+  state.document is document
+  state.count is 0
+  state.focused is u64("0xffffffffffffffff")
+  node_index: u64 is 0
+  while node_index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+    kind: u64 is browser_form_kind(document, node_index)
+    if kind != 0 then
+      if state.count >= state.capacity then return false
+      control_index: u64 is state.count
+      state.count += 1
+      control: ptr[BrowserFormControl] is browser_form_control_at(state, control_index)
+      value: ptr is browser_form_value_at(state, control_index)
+      field: u64 is 0
+      while field < 7 do
+        mem.write64(ptr.add(control, field * 8), 0)
+        field += 1
+      end
+      if not browser_form_zero(value, state.value_stride) then return false
+      control.node_index is node_index
+      control.form_node is browser_form_parent(document, node_index)
+      control.kind is kind
+      if html_dom_find_attribute(document, node_index, 18) != 0 then control.flags is control.flags | 1
+      if html_dom_find_attribute(document, node_index, 17) != 0 then control.flags is control.flags | 2
+      name: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 10)
+      if name != 0 and name.has_value != 0 then
+        control.name_start is name.source_start
+        control.name_bytes is name.source_bytes
+      end
+      initial: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 11)
+      if initial != 0 and initial.has_value != 0 then
+        take: u64 is initial.source_bytes
+        if take >= state.value_stride then take is state.value_stride - 1
+        copy_index: u64 is 0
+        while copy_index < take do
+          mem.write8(ptr.add(value, copy_index), mem.read8(ptr.add(document.input, initial.source_start + copy_index)))
+          copy_index += 1
+        end
+        control.value_bytes is take
+      end
+    end
+    node_index += 1
+  end
+  return true
+end
+
+func browser_form_find_node(state: ptr[BrowserFormState], node_index: u64) do
+  if state == 0 then return u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < state.count do
+    control: ptr[BrowserFormControl] is browser_form_control_at(state, index)
+    if control.node_index == node_index then return index
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_form_focus(state: ptr[BrowserFormState], index: u64) do
+  if state == 0 or index >= state.count then return false
+  control: ptr[BrowserFormControl] is browser_form_control_at(state, index)
+  if (control.flags & 1) != 0 then return false
+  state.focused is index
+  return true
+end
+
+func browser_form_insert(state: ptr[BrowserFormState], input: ptr, input_bytes: u64) do
+  if state == 0 or input == 0 or state.focused >= state.count then return false
+  control: ptr[BrowserFormControl] is browser_form_control_at(state, state.focused)
+  if control.kind != 1 and control.kind != 2 then return false
+  if input_bytes > state.value_stride - 1 - control.value_bytes then return false
+  value: ptr is browser_form_value_at(state, state.focused)
+  index: u64 is 0
+  while index < input_bytes do
+    mem.write8(ptr.add(value, control.value_bytes + index), mem.read8(ptr.add(input, index)))
+    index += 1
+  end
+  control.value_bytes += input_bytes
+  mem.write8(ptr.add(value, control.value_bytes), 0)
+  return true
+end
+
+func browser_form_backspace(state: ptr[BrowserFormState]) do
+  if state == 0 or state.focused >= state.count then return false
+  control: ptr[BrowserFormControl] is browser_form_control_at(state, state.focused)
+  if control.kind != 1 and control.kind != 2 then return false
+  if control.value_bytes == 0 then return true
+  value: ptr is browser_form_value_at(state, state.focused)
+  control.value_bytes -= 1
+  while control.value_bytes > 0 and (mem.read8(ptr.add(value, control.value_bytes)) & 192) == 128 do
+    control.value_bytes -= 1
+  end
+  mem.write8(ptr.add(value, control.value_bytes), 0)
+  return true
+end
+
+func browser_form_toggle(state: ptr[BrowserFormState], index: u64) do
+  if state == 0 or index >= state.count then return false
+  control: ptr[BrowserFormControl] is browser_form_control_at(state, index)
+  if control.kind != 3 or (control.flags & 1) != 0 then return false
+  control.flags is control.flags ^ 2
+  return true
+end
+
+func browser_form_hex(value: u64) do
+  value is value & 15
+  if value < 10 then return 48 + value
+  return 65 + value - 10
+end
+
+func browser_form_urlencode_append(input: ptr, input_bytes: u64, output: ptr, capacity: u64, cursor: u64) do
+  if output == 0 or cursor > capacity then return u64("0xffffffffffffffff")
+  if input_bytes != 0 and input == 0 then return u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < input_bytes do
+    value: u64 is mem.read8(ptr.add(input, index))
+    unreserved: bool is value >= 65 and value <= 90
+    if value >= 97 and value <= 122 then unreserved is true
+    if value >= 48 and value <= 57 then unreserved is true
+    if value == 45 or value == 46 or value == 95 or value == 126 then unreserved is true
+    if unreserved or value == 32 then
+      if cursor >= capacity then return u64("0xffffffffffffffff")
+      if value == 32 then value is 43
+      mem.write8(ptr.add(output, cursor), value)
+      cursor += 1
+    else
+      if cursor > capacity or capacity - cursor < 3 then return u64("0xffffffffffffffff")
+      mem.write8(ptr.add(output, cursor), 37)
+      mem.write8(ptr.add(output, cursor + 1), browser_form_hex(value >> 4))
+      mem.write8(ptr.add(output, cursor + 2), browser_form_hex(value))
+      cursor += 3
+    end
+    index += 1
+  end
+  return cursor
+end
+
+func browser_form_serialize(state: ptr[BrowserFormState], form_node: u64, output: ptr, capacity: u64) do
+  if state == 0 or state.document == 0 or output == 0 or capacity == 0 then return u64("0xffffffffffffffff")
+  document: ptr[HtmlDomDocument] is state.document
+  cursor: u64 is 0
+  pairs: u64 is 0
+  index: u64 is 0
+  while index < state.count do
+    control: ptr[BrowserFormControl] is browser_form_control_at(state, index)
+    include: bool is control.form_node == form_node
+    if (control.flags & 1) != 0 then include is false
+    if control.kind != 1 and control.kind != 2 and control.kind != 3 then include is false
+    if control.kind == 3 and (control.flags & 2) == 0 then include is false
+    if control.name_bytes == 0 then include is false
+    if include then
+      if pairs != 0 then
+        if cursor >= capacity - 1 then return u64("0xffffffffffffffff")
+        mem.write8(ptr.add(output, cursor), 38)
+        cursor += 1
+      end
+      cursor is browser_form_urlencode_append(ptr.add(document.input, control.name_start), control.name_bytes, output, capacity - 1, cursor)
+      if cursor == u64("0xffffffffffffffff") or cursor >= capacity - 1 then return u64("0xffffffffffffffff")
+      mem.write8(ptr.add(output, cursor), 61)
+      cursor += 1
+      value: ptr is browser_form_value_at(state, index)
+      value_bytes: u64 is control.value_bytes
+      if control.kind == 3 and value_bytes == 0 then
+        value is browser_form_checkbox_default
+        value_bytes is 2
+      end
+      cursor is browser_form_urlencode_append(value, value_bytes, output, capacity - 1, cursor)
+      if cursor == u64("0xffffffffffffffff") then return cursor
+      pairs += 1
+    end
+    index += 1
+  end
+  if cursor >= capacity then return u64("0xffffffffffffffff")
+  mem.write8(ptr.add(output, cursor), 0)
+  return cursor
+end

@@ -1,0 +1,547 @@
+# Fixed-capacity writable in-memory filesystem for freestanding kernels.
+#
+# The caller supplies node, UTF-8 name, and file-data storage. Each node owns
+# one fixed-size name slot and one fixed-size data slot, so operations never
+# allocate and file growth is bounded by data_stride. This filesystem is
+# intended for VFS bring-up, temporary files, and recovery environments.
+
+import "vfs.sura"
+
+struct MemFs do
+  nodes: ptr
+  node_capacity: u64
+  names: ptr
+  name_stride: u64
+  data: ptr
+  data_stride: u64
+  generation: u64
+  initialized: u64
+  mutation_context: ptr
+  commit_mutation: ptr
+end
+
+func memfs_set_commit_hook(filesystem: ptr[MemFs], context: ptr, callback: ptr) do
+  if filesystem == 0 or filesystem.initialized == 0 then return false
+  if callback == 0 and context != 0 then return false
+  filesystem.mutation_context is context
+  filesystem.commit_mutation is callback
+  return true
+end
+
+func memfs_commit_mutation(filesystem: ptr[MemFs]) do
+  if filesystem == 0 or filesystem.initialized == 0 then return false
+  if filesystem.commit_mutation == 0 then return true
+  return call.indirect(filesystem.commit_mutation, filesystem.mutation_context) == 0
+end
+
+struct MemFsNode do
+  owner: ptr[MemFs]
+  index: u64
+  active: u64
+  kind: u64
+  parent: u64
+  name_length: u64
+  size: u64
+  mode: u64
+  created_generation: u64
+  modified_generation: u64
+  open_count: u64
+end
+
+struct MemFsStorage do
+  nodes: ptr
+  node_capacity: u64
+  names: ptr
+  name_stride: u64
+  data: ptr
+  data_stride: u64
+end
+
+func memfs_node_at(filesystem: ptr[MemFs], index: u64) do
+  if filesystem == 0 or filesystem.initialized == 0 or index >= filesystem.node_capacity then return 0
+  return ptr.index(filesystem.nodes, index, sizeof(MemFsNode))
+end
+
+func memfs_name_at(filesystem: ptr[MemFs], index: u64) do
+  if filesystem == 0 or index >= filesystem.node_capacity then return 0
+  return ptr.add(filesystem.names, index * filesystem.name_stride)
+end
+
+func memfs_data_at(filesystem: ptr[MemFs], index: u64) do
+  if filesystem == 0 or index >= filesystem.node_capacity then return 0
+  return ptr.add(filesystem.data, index * filesystem.data_stride)
+end
+
+func memfs_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func memfs_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func memfs_bytes_equal(left: ptr, right: ptr, byte_count: u64) do
+  if left == 0 or right == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(left, index)) != mem.read8(ptr.add(right, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func memfs_utf8_component_valid(name: ptr, length: u64, capacity: u64) do
+  if name == 0 or length == 0 or length > capacity then return false
+  if length == 1 and mem.read8(name) == 46 then return false
+  if length == 2 and mem.read8(name) == 46 and mem.read8(ptr.add(name, 1)) == 46 then return false
+  index: u64 is 0
+  while index < length do
+    first: u64 is mem.read8(ptr.add(name, index))
+    if first == 0 or first == 47 then return false
+    if first < 128 then
+      index += 1
+    elif first >= 194 and first <= 223 then
+      if index + 1 >= length then return false
+      second: u64 is mem.read8(ptr.add(name, index + 1))
+      if (second & 192) != 128 then return false
+      index += 2
+    elif first >= 224 and first <= 239 then
+      if index + 2 >= length then return false
+      second: u64 is mem.read8(ptr.add(name, index + 1))
+      third: u64 is mem.read8(ptr.add(name, index + 2))
+      if (second & 192) != 128 or (third & 192) != 128 then return false
+      if first == 224 and second < 160 then return false
+      if first == 237 and second >= 160 then return false
+      index += 3
+    elif first >= 240 and first <= 244 then
+      if index + 3 >= length then return false
+      second: u64 is mem.read8(ptr.add(name, index + 1))
+      third: u64 is mem.read8(ptr.add(name, index + 2))
+      fourth: u64 is mem.read8(ptr.add(name, index + 3))
+      if (second & 192) != 128 or (third & 192) != 128 or (fourth & 192) != 128 then return false
+      if first == 240 and second < 144 then return false
+      if first == 244 and second > 143 then return false
+      index += 4
+    else
+      return false
+    end
+  end
+  return true
+end
+
+func memfs_path_valid(filesystem: ptr[MemFs], path: ptr, path_length: u64, allow_root: bool) do
+  if filesystem == 0 or filesystem.initialized == 0 then return false
+  if path_length == 0 then return allow_root
+  if path == 0 or mem.read8(path) == 47 or mem.read8(ptr.add(path, path_length - 1)) == 47 then return false
+  start: u64 is 0
+  index: u64 is 0
+  while index <= path_length do
+    boundary: bool is index == path_length
+    if not boundary then boundary is mem.read8(ptr.add(path, index)) == 47
+    if boundary then
+      if not memfs_utf8_component_valid(ptr.add(path, start), index - start, filesystem.name_stride) then return false
+      start is index + 1
+    end
+    index += 1
+  end
+  return true
+end
+
+func memfs_next_generation(filesystem: ptr[MemFs]) do
+  if filesystem.generation == u64("0xffffffffffffffff") then
+    filesystem.generation is 1
+  else
+    filesystem.generation += 1
+  end
+  return filesystem.generation
+end
+
+func memfs_find_child(filesystem: ptr[MemFs], parent: u64, name: ptr, name_length: u64) do
+  index: u64 is 1
+  while index < filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    if node.active != 0 and node.parent == parent and node.name_length == name_length then
+      if memfs_bytes_equal(memfs_name_at(filesystem, index), name, name_length) then return node
+    end
+    index += 1
+  end
+  return 0
+end
+
+func memfs_resolve(filesystem: ptr[MemFs], path: ptr, path_length: u64) do
+  if not memfs_path_valid(filesystem, path, path_length, true) then return 0
+  current: ptr[MemFsNode] is memfs_node_at(filesystem, 0)
+  if path_length == 0 then return current
+  start: u64 is 0
+  index: u64 is 0
+  while index <= path_length do
+    boundary: bool is index == path_length
+    if not boundary then boundary is mem.read8(ptr.add(path, index)) == 47
+    if boundary then
+      if current.kind != vfs_kind_directory then return 0
+      current is memfs_find_child(filesystem, current.index, ptr.add(path, start), index - start)
+      if current == 0 then return 0
+      start is index + 1
+    end
+    index += 1
+  end
+  return current
+end
+
+func memfs_leaf_offset(path: ptr, path_length: u64) do
+  if path == 0 or path_length == 0 then return u64("0xffffffffffffffff")
+  offset: u64 is 0
+  index: u64 is 0
+  while index < path_length do
+    if mem.read8(ptr.add(path, index)) == 47 then offset is index + 1
+    index += 1
+  end
+  return offset
+end
+
+func memfs_free_node(filesystem: ptr[MemFs]) do
+  index: u64 is 1
+  while index < filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    if node.active == 0 then return node
+    index += 1
+  end
+  return 0
+end
+
+func memfs_create_internal(filesystem: ptr[MemFs], path: ptr, path_length: u64, kind: u64, mode: u64) do
+  if kind != vfs_kind_file and kind != vfs_kind_directory then return false
+  if not memfs_path_valid(filesystem, path, path_length, false) then return false
+  if memfs_resolve(filesystem, path, path_length) != 0 then return false
+  leaf_offset: u64 is memfs_leaf_offset(path, path_length)
+  if leaf_offset == u64("0xffffffffffffffff") then return false
+  parent_length: u64 is 0
+  if leaf_offset != 0 then parent_length is leaf_offset - 1
+  parent: ptr[MemFsNode] is memfs_resolve(filesystem, path, parent_length)
+  if parent == 0 or parent.kind != vfs_kind_directory then return false
+  node: ptr[MemFsNode] is memfs_free_node(filesystem)
+  if node == 0 then return false
+  leaf_length: u64 is path_length - leaf_offset
+  if not memfs_zero(memfs_name_at(filesystem, node.index), filesystem.name_stride) then return false
+  if not memfs_copy(memfs_name_at(filesystem, node.index), ptr.add(path, leaf_offset), leaf_length) then return false
+  if not memfs_zero(memfs_data_at(filesystem, node.index), filesystem.data_stride) then return false
+  generation: u64 is memfs_next_generation(filesystem)
+  node.active is 1
+  node.kind is kind
+  node.parent is parent.index
+  node.name_length is leaf_length
+  node.size is 0
+  node.mode is mode
+  node.created_generation is generation
+  node.modified_generation is generation
+  node.open_count is 0
+  return memfs_commit_mutation(filesystem)
+end
+
+func memfs_is_descendant(filesystem: ptr[MemFs], candidate: u64, ancestor: u64) do
+  if candidate >= filesystem.node_capacity or ancestor >= filesystem.node_capacity then return false
+  current: u64 is candidate
+  steps: u64 is 0
+  while steps < filesystem.node_capacity do
+    if current == ancestor then return true
+    if current == 0 then return false
+    node: ptr[MemFsNode] is memfs_node_at(filesystem, current)
+    current is node.parent
+    steps += 1
+  end
+  return false
+end
+
+func memfs_init_status(filesystem: ptr[MemFs], storage: ptr[MemFsStorage]) do
+  if storage == 0 then return 1
+  nodes: ptr is storage.nodes
+  node_capacity: u64 is storage.node_capacity
+  names: ptr is storage.names
+  name_stride: u64 is storage.name_stride
+  data: ptr is storage.data
+  data_stride: u64 is storage.data_stride
+  if filesystem == 0 or nodes == 0 or names == 0 or data == 0 then return 2
+  if node_capacity < 2 or node_capacity > 4096 then return 3
+  if name_stride < 4 or name_stride > 4096 then return 4
+  if data_stride == 0 or data_stride > 16777216 then return 5
+  filesystem.nodes is nodes
+  filesystem.node_capacity is node_capacity
+  filesystem.names is names
+  filesystem.name_stride is name_stride
+  filesystem.data is data
+  filesystem.data_stride is data_stride
+  filesystem.generation is 1
+  filesystem.initialized is 1
+  filesystem.mutation_context is 0
+  filesystem.commit_mutation is 0
+  index: u64 is 0
+  while index < node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    node.owner is filesystem
+    node.index is index
+    node.active is 0
+    node.kind is 0
+    node.parent is 0
+    node.name_length is 0
+    node.size is 0
+    node.mode is 0
+    node.created_generation is 0
+    node.modified_generation is 0
+    node.open_count is 0
+    if not memfs_zero(memfs_name_at(filesystem, index), name_stride) then return 7
+    if not memfs_zero(memfs_data_at(filesystem, index), data_stride) then return 8
+    index += 1
+  end
+  root: ptr[MemFsNode] is memfs_node_at(filesystem, 0)
+  root.active is 1
+  root.kind is vfs_kind_directory
+  root.mode is 493
+  root.created_generation is 1
+  root.modified_generation is 1
+  return 0
+end
+
+func memfs_init(filesystem: ptr[MemFs], storage: ptr[MemFsStorage]) do
+  return memfs_init_status(filesystem, storage) == 0
+end
+
+func memfs_read_callback(handle: ptr, offset: u64, buffer: ptr, count: u64) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 or node.kind != vfs_kind_file or buffer == 0 then return u64("0xffffffffffffffff")
+  if offset >= node.size then return 0
+  available: u64 is node.size - offset
+  if count > available then count is available
+  filesystem: ptr[MemFs] is node.owner
+  if not memfs_copy(buffer, ptr.add(memfs_data_at(filesystem, node.index), offset), count) then return u64("0xffffffffffffffff")
+  return count
+end
+
+func memfs_write_callback(handle: ptr, offset: u64, buffer: ptr, count: u64) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 or node.kind != vfs_kind_file or buffer == 0 then return u64("0xffffffffffffffff")
+  filesystem: ptr[MemFs] is node.owner
+  if offset > filesystem.data_stride or count > filesystem.data_stride - offset then return u64("0xffffffffffffffff")
+  destination: ptr is memfs_data_at(filesystem, node.index)
+  if offset > node.size then
+    if not memfs_zero(ptr.add(destination, node.size), offset - node.size) then return u64("0xffffffffffffffff")
+  end
+  if not memfs_copy(ptr.add(destination, offset), buffer, count) then return u64("0xffffffffffffffff")
+  if offset + count > node.size then node.size is offset + count
+  node.modified_generation is memfs_next_generation(filesystem)
+  if not memfs_commit_mutation(filesystem) then return u64("0xffffffffffffffff")
+  return count
+end
+
+func memfs_replace_callback(handle: ptr, buffer: ptr, count: u64) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 or node.kind != vfs_kind_file then return 1
+  filesystem: ptr[MemFs] is node.owner
+  if count > filesystem.data_stride then return 1
+  if count != 0 and buffer == 0 then return 1
+  destination: ptr is memfs_data_at(filesystem, node.index)
+  if count != 0 and not memfs_copy(destination, buffer, count) then return 1
+  if count < filesystem.data_stride then
+    if not memfs_zero(ptr.add(destination, count), filesystem.data_stride - count) then return 1
+  end
+  node.size is count
+  node.modified_generation is memfs_next_generation(filesystem)
+  if not memfs_commit_mutation(filesystem) then return 1
+  return 0
+end
+
+func memfs_resize_callback(handle: ptr, size: u64) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 or node.kind != vfs_kind_file then return 1
+  filesystem: ptr[MemFs] is node.owner
+  if size > filesystem.data_stride then return 1
+  if size > node.size then
+    if not memfs_zero(ptr.add(memfs_data_at(filesystem, node.index), node.size), size - node.size) then return 1
+  end
+  node.size is size
+  node.modified_generation is memfs_next_generation(filesystem)
+  if not memfs_commit_mutation(filesystem) then return 1
+  return 0
+end
+
+func memfs_flush_callback(handle: ptr) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 then return 1
+  return 0
+end
+
+func memfs_close_callback(handle: ptr) do
+  node: ptr[MemFsNode] is handle
+  if node == 0 or node.active == 0 or node.open_count == 0 then return 1
+  node.open_count -= 1
+  return 0
+end
+
+func memfs_open_callback(context: ptr, path: ptr, path_length: u64, flags: u64, file_address: ptr) do
+  filesystem: ptr[MemFs] is context
+  file: ptr[VfsFile] is file_address
+  if filesystem == 0 or file == 0 then return 1
+  node: ptr[MemFsNode] is memfs_resolve(filesystem, path, path_length)
+  if node == 0 and (flags & vfs_open_create) != 0 then
+    if not memfs_create_internal(filesystem, path, path_length, vfs_kind_file, 420) then return 1
+    node is memfs_resolve(filesystem, path, path_length)
+  end
+  if node == 0 or node.kind != vfs_kind_file then return 1
+  if (flags & vfs_open_truncate) != 0 then
+    if (flags & vfs_open_write) == 0 then return 1
+    node.size is 0
+    node.modified_generation is memfs_next_generation(filesystem)
+    if not memfs_commit_mutation(filesystem) then return 1
+  end
+  if node.open_count == u64("0xffffffffffffffff") then return 1
+  node.open_count += 1
+  file.active is 1
+  file.handle is node
+  file.size is node.size
+  file.read_file is addr_of(memfs_read_callback)
+  file.write_file is addr_of(memfs_write_callback)
+  file.replace_file is addr_of(memfs_replace_callback)
+  file.resize_file is addr_of(memfs_resize_callback)
+  file.flush_file is addr_of(memfs_flush_callback)
+  file.close_file is addr_of(memfs_close_callback)
+  return 0
+end
+
+func memfs_sync_callback(context: ptr) do
+  filesystem: ptr[MemFs] is context
+  if filesystem == 0 or filesystem.initialized == 0 then return 1
+  return 0
+end
+
+func memfs_stat_callback(context: ptr, path: ptr, path_length: u64, stat_address: ptr) do
+  filesystem: ptr[MemFs] is context
+  stat: ptr[VfsStat] is stat_address
+  if filesystem == 0 or stat == 0 then return 1
+  node: ptr[MemFsNode] is memfs_resolve(filesystem, path, path_length)
+  if node == 0 then return 1
+  stat.valid is 1
+  stat.kind is node.kind
+  stat.size is node.size
+  stat.mode is node.mode
+  stat.owner is 0
+  stat.group is 0
+  stat.created_time is node.created_generation
+  stat.modified_time is node.modified_generation
+  stat.flags is 0
+  return 0
+end
+
+func memfs_create_callback(context: ptr, path: ptr, path_length: u64, kind: u64, mode: u64) do
+  filesystem: ptr[MemFs] is context
+  if memfs_create_internal(filesystem, path, path_length, kind, mode) then return 0
+  return 1
+end
+
+func memfs_remove_callback(context: ptr, path: ptr, path_length: u64, recursive: bool) do
+  filesystem: ptr[MemFs] is context
+  node: ptr[MemFsNode] is memfs_resolve(filesystem, path, path_length)
+  if node == 0 or node.index == 0 then return 1
+  index: u64 is 1
+  while index < filesystem.node_capacity do
+    candidate: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    if candidate.active != 0 and memfs_is_descendant(filesystem, index, node.index) then
+      if candidate.open_count != 0 then return 1
+      if not recursive and index != node.index then return 1
+    end
+    index += 1
+  end
+  index is 1
+  while index < filesystem.node_capacity do
+    candidate: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    if candidate.active != 0 and memfs_is_descendant(filesystem, index, node.index) then
+      candidate.active is 0
+      candidate.kind is 0
+      candidate.name_length is 0
+      candidate.size is 0
+      candidate.mode is 0
+      candidate.open_count is 0
+      memfs_zero(memfs_name_at(filesystem, index), filesystem.name_stride)
+      memfs_zero(memfs_data_at(filesystem, index), filesystem.data_stride)
+    end
+    index += 1
+  end
+  memfs_next_generation(filesystem)
+  if not memfs_commit_mutation(filesystem) then return 1
+  return 0
+end
+
+func memfs_rename_callback(context: ptr, old_path: ptr, old_length: u64, new_path: ptr, new_length: u64) do
+  filesystem: ptr[MemFs] is context
+  source: ptr[MemFsNode] is memfs_resolve(filesystem, old_path, old_length)
+  if source == 0 or source.index == 0 then return 1
+  existing: ptr[MemFsNode] is memfs_resolve(filesystem, new_path, new_length)
+  if existing == source then return 0
+  if existing != 0 or not memfs_path_valid(filesystem, new_path, new_length, false) then return 1
+  leaf_offset: u64 is memfs_leaf_offset(new_path, new_length)
+  if leaf_offset == u64("0xffffffffffffffff") then return 1
+  parent_length: u64 is 0
+  if leaf_offset != 0 then parent_length is leaf_offset - 1
+  parent: ptr[MemFsNode] is memfs_resolve(filesystem, new_path, parent_length)
+  if parent == 0 or parent.kind != vfs_kind_directory then return 1
+  if source.kind == vfs_kind_directory and memfs_is_descendant(filesystem, parent.index, source.index) then return 1
+  leaf_length: u64 is new_length - leaf_offset
+  if not memfs_zero(memfs_name_at(filesystem, source.index), filesystem.name_stride) then return 1
+  if not memfs_copy(memfs_name_at(filesystem, source.index), ptr.add(new_path, leaf_offset), leaf_length) then return 1
+  source.parent is parent.index
+  source.name_length is leaf_length
+  source.modified_generation is memfs_next_generation(filesystem)
+  if not memfs_commit_mutation(filesystem) then return 1
+  return 0
+end
+
+func memfs_list_callback(context: ptr, path: ptr, path_length: u64, ordinal: u64, entry_address: ptr) do
+  filesystem: ptr[MemFs] is context
+  entry: ptr[VfsDirEntry] is entry_address
+  directory: ptr[MemFsNode] is memfs_resolve(filesystem, path, path_length)
+  if directory == 0 or directory.kind != vfs_kind_directory or entry == 0 then return 1
+  found: u64 is 0
+  index: u64 is 1
+  while index < filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(filesystem, index)
+    if node.active != 0 and node.parent == directory.index then
+      if found == ordinal then
+        if node.name_length > entry.name_capacity then return 1
+        if not memfs_copy(entry.name, memfs_name_at(filesystem, index), node.name_length) then return 1
+        entry.valid is 1
+        entry.kind is node.kind
+        entry.size is node.size
+        entry.mode is node.mode
+        entry.name_length is node.name_length
+        entry.flags is 0
+        return 0
+      end
+      found += 1
+    end
+    index += 1
+  end
+  return 1
+end
+
+func memfs_bind(filesystem: ptr[MemFs], interface: ptr[VfsFileSystem]) do
+  if filesystem == 0 or filesystem.initialized == 0 or interface == 0 then return false
+  interface.context is filesystem
+  interface.open_file is addr_of(memfs_open_callback)
+  interface.sync_filesystem is addr_of(memfs_sync_callback)
+  interface.stat_path is addr_of(memfs_stat_callback)
+  interface.create_node is addr_of(memfs_create_callback)
+  interface.remove_node is addr_of(memfs_remove_callback)
+  interface.rename_node is addr_of(memfs_rename_callback)
+  interface.list_directory is addr_of(memfs_list_callback)
+  return true
+end

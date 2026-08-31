@@ -1,0 +1,248 @@
+# Process-aware system calls for the single-CPU x86-64 ring-3 scheduler.
+#
+# Numbers 0..2 are safe for both the software-interrupt and fast-SYSCALL
+# dispatchers. Yield, exit, and event wait require the software-interrupt entry
+# below because they can replace the interrupted IRET frame. Receive remains
+# non-blocking; wait sleeps until the queue becomes nonempty, after which user
+# code calls receive. User pointers are copied through the current process
+# address space and are never dereferenced by the kernel.
+
+import "syscall.sura"
+import "user_process.sura"
+
+struct ProcessSyscallState do
+  scheduler: ptr[UserProcessScheduler]
+  table: ptr[SoftwareSyscallTable]
+  scratch: ptr[IpcMessage]
+  initialized: u64
+end
+
+process_syscall_active: ptr[ProcessSyscallState] is 0
+
+func process_syscall_number_getpid() do
+  return 0
+end
+
+func process_syscall_number_send() do
+  return 1
+end
+
+func process_syscall_number_receive() do
+  return 2
+end
+
+func process_syscall_number_yield() do
+  return 3
+end
+
+func process_syscall_number_exit() do
+  return 4
+end
+
+func process_syscall_number_wait() do
+  return 5
+end
+
+func process_syscall_ok() do
+  return 0
+end
+
+func process_syscall_would_block() do
+  return 1
+end
+
+func process_syscall_invalid_argument() do
+  return 2
+end
+
+func process_syscall_no_process() do
+  return 3
+end
+
+func process_syscall_bad_address() do
+  return 4
+end
+
+func process_syscall_denied() do
+  return 5
+end
+
+func process_syscall_current_process(state: ptr[ProcessSyscallState]) do
+  if state == 0 or state.initialized == 0 or state.scheduler == 0 then return 0
+  scheduler: ptr[UserProcessScheduler] is state.scheduler
+  if scheduler.initialized == 0 or scheduler.current >= scheduler.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(scheduler, scheduler.current)
+  if process == 0 or process.state != 1 or process.address_space == 0 then return 0
+  return process
+end
+
+func process_syscall_getpid(a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) do
+  global process_syscall_active
+  process: ptr[UserProcess] is process_syscall_current_process(process_syscall_active)
+  # Process identifiers are nonzero, so zero is an unambiguous no-context
+  # result while every other process syscall returns a status code.
+  if process == 0 then return 0
+  return process.id
+end
+
+func process_syscall_send(target_id: u64, user_message: u64, a2: u64, a3: u64, a4: u64) do
+  global process_syscall_active
+  state: ptr[ProcessSyscallState] is process_syscall_active
+  process: ptr[UserProcess] is process_syscall_current_process(state)
+  if process == 0 then return process_syscall_no_process()
+  if target_id == 0 or user_message == 0 then return process_syscall_invalid_argument()
+
+  scheduler: ptr[UserProcessScheduler] is state.scheduler
+  target_index: u64 is user_process_find_index(scheduler, target_id)
+  if target_index >= scheduler.capacity then return process_syscall_no_process()
+  target: ptr[UserProcess] is user_process_at(scheduler, target_index)
+  if target == 0 or target.event_queue == 0 then return process_syscall_no_process()
+  if target.state != 1 and target.state != 4 then return process_syscall_no_process()
+
+  message: ptr[IpcMessage] is state.scratch
+  if not process_copy_from_user(process.address_space, message, user_message, sizeof(IpcMessage)) then
+    return process_syscall_bad_address()
+  end
+  if message.kind == 0 then return process_syscall_invalid_argument()
+
+  # The authenticated current process and requested destination replace both
+  # identity fields copied from user memory.
+  message.source is process.id
+  message.target is target_id
+  if not user_process_post_event(scheduler, process.id, target_id, message) then
+    return process_syscall_would_block()
+  end
+  return process_syscall_ok()
+end
+
+func process_syscall_receive(user_output: u64, a1: u64, a2: u64, a3: u64, a4: u64) do
+  global process_syscall_active
+  state: ptr[ProcessSyscallState] is process_syscall_active
+  process: ptr[UserProcess] is process_syscall_current_process(state)
+  if process == 0 then return process_syscall_no_process()
+  if user_output == 0 then return process_syscall_invalid_argument()
+  if process.event_queue == 0 then return process_syscall_denied()
+  if not process_user_access_valid(process.address_space, user_output, sizeof(IpcMessage), true) then
+    return process_syscall_bad_address()
+  end
+
+  message: ptr[IpcMessage] is state.scratch
+  # Peek before copying so an invalid destination can never consume an event.
+  if not ipc_queue_peek(process.event_queue, message) then return process_syscall_would_block()
+  if not process_copy_to_user(process.address_space, user_output, message, sizeof(IpcMessage)) then
+    return process_syscall_bad_address()
+  end
+  if not ipc_queue_pop(process.event_queue, message) then return process_syscall_would_block()
+  return process_syscall_ok()
+end
+
+func process_syscall_init(state: ptr[ProcessSyscallState], scheduler: ptr[UserProcessScheduler], table: ptr[SoftwareSyscallTable], scratch: ptr[IpcMessage]) do
+  global process_syscall_active, user_process_scheduler_active
+  if state == 0 or scheduler == 0 or table == 0 or scratch == 0 then return false
+  if state.initialized != 0 or process_syscall_active != 0 then return false
+  if user_process_scheduler_active != scheduler then return false
+  if scheduler.initialized == 0 or table.handlers == 0 or table.capacity <= process_syscall_number_wait() then return false
+  if not syscall_table_set(table, process_syscall_number_getpid(), addr_of(process_syscall_getpid)) then return false
+  if not syscall_table_set(table, process_syscall_number_send(), addr_of(process_syscall_send)) then
+    syscall_table_remove(table, process_syscall_number_getpid())
+    return false
+  end
+  if not syscall_table_set(table, process_syscall_number_receive(), addr_of(process_syscall_receive)) then
+    syscall_table_remove(table, process_syscall_number_send())
+    syscall_table_remove(table, process_syscall_number_getpid())
+    return false
+  end
+
+  ipc_message_clear(scratch)
+  state.scheduler is scheduler
+  state.table is table
+  state.scratch is scratch
+  state.initialized is 1
+  process_syscall_active is state
+  return true
+end
+
+# Install this handler on a DPL-3 interrupt gate. Unlike fast SYSCALL, its IRET
+# frame can be handed directly to the scheduler for yield and process exit.
+func process_software_syscall_dispatch(frame: ptr[SoftwareSyscallFrame]) interrupt do
+  global process_syscall_active
+  state: ptr[ProcessSyscallState] is process_syscall_active
+  if state == 0 or state.initialized == 0 or frame == 0 then
+    if frame != 0 then frame.rax is u64("0xffffffffffffffff")
+    return
+  end
+  if (frame.cs & 3) != 3 then
+    frame.rax is process_syscall_denied()
+    return
+  end
+
+  number: u64 is frame.rax
+  if number == process_syscall_number_yield() then
+    frame.rax is process_syscall_ok()
+    if user_process_select(state.scheduler, frame, false, false) then
+      scheduler: ptr[UserProcessScheduler] is state.scheduler
+      kind: u64 is scheduler.resume_kind
+      target: ptr is user_process_activate_selected(scheduler)
+      if target == 0 then user_process_fatal()
+      if kind == 1 then
+        resumed: bool is user.resume(target)
+      else
+        resumed: bool is preempt.resume(target)
+      end
+      user_process_fatal()
+    end
+    return
+  end
+
+  if number == process_syscall_number_exit() then
+    if not user_process_mark_exit_current(frame.rdi) then
+      frame.rax is process_syscall_no_process()
+      return
+    end
+    if not user_process_select(state.scheduler, frame, false, true) then user_process_fatal()
+    scheduler: ptr[UserProcessScheduler] is state.scheduler
+    kind: u64 is scheduler.resume_kind
+    target: ptr is user_process_activate_selected(scheduler)
+    if target == 0 then user_process_fatal()
+    if kind == 1 then
+      resumed: bool is user.resume(target)
+    else
+      resumed: bool is preempt.resume(target)
+    end
+    user_process_fatal()
+    return
+  end
+
+  if number == process_syscall_number_wait() then
+    process: ptr[UserProcess] is process_syscall_current_process(state)
+    if process == 0 or process.event_queue == 0 then
+      frame.rax is process_syscall_denied()
+      return
+    end
+    queue: ptr[IpcQueue] is process.event_queue
+    if queue.count != 0 then
+      frame.rax is process_syscall_ok()
+      return
+    end
+    frame.rax is process_syscall_ok()
+    if not user_process_block_current(state.scheduler, frame) then
+      frame.rax is process_syscall_would_block()
+      return
+    end
+    if not user_process_select(state.scheduler, frame, false, true) then user_process_fatal()
+    scheduler: ptr[UserProcessScheduler] is state.scheduler
+    kind: u64 is scheduler.resume_kind
+    target: ptr is user_process_activate_selected(scheduler)
+    if target == 0 then user_process_fatal()
+    if kind == 1 then
+      resumed: bool is user.resume(target)
+    else
+      resumed: bool is preempt.resume(target)
+    end
+    user_process_fatal()
+    return
+  end
+
+  syscall_dispatch(state.table, frame)
+  return
+end

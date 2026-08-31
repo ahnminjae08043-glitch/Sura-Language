@@ -1,6 +1,6 @@
-# Fixed-capacity ASCII terminal buffer for freestanding graphical consoles.
+# Fixed-capacity Unicode terminal buffer for freestanding graphical consoles.
 
-import "./font5x7.sura"
+import "./font_ui.sura"
 
 struct TextTerminal do
   cells: ptr
@@ -31,7 +31,7 @@ func text_terminal_clear(state: ptr[TextTerminal]) do
   if state == 0 or state.cells == 0 or state.capacity == 0 then return false
   index: u64 is 0
   while index < state.capacity do
-    mem.write8(ptr.add(state.cells, index), 0)
+    mem.write32(ptr.add(state.cells, index * 4), 0)
     index += 1
   end
   state.cursor_x is 0
@@ -49,7 +49,7 @@ func text_terminal_scroll(state: ptr[TextTerminal]) do
       while column < state.columns do
         source: u64 is (target_row + 1) * state.columns + column
         target: u64 is target_row * state.columns + column
-        mem.write8(ptr.add(state.cells, target), mem.read8(ptr.add(state.cells, source)))
+        mem.write32(ptr.add(state.cells, target * 4), mem.read32(ptr.add(state.cells, source * 4)))
         column += 1
       end
       target_row += 1
@@ -58,7 +58,7 @@ func text_terminal_scroll(state: ptr[TextTerminal]) do
   last_start: u64 is (state.rows - 1) * state.columns
   clear_column: u64 is 0
   while clear_column < state.columns do
-    mem.write8(ptr.add(state.cells, last_start + clear_column), 0)
+    mem.write32(ptr.add(state.cells, (last_start + clear_column) * 4), 0)
     clear_column += 1
   end
   state.cursor_x is 0
@@ -78,20 +78,38 @@ func text_terminal_newline(state: ptr[TextTerminal]) do
 end
 
 func text_terminal_put(state: ptr[TextTerminal], value: u64) do
-  if state == 0 or state.cells == 0 or value > 255 then return false
+  if state == 0 or state.cells == 0 or value > 1114111 then return false
+  if value >= 55296 and value <= 57343 then return false
   if value == 13 then return true
   if value == 10 then return text_terminal_newline(state)
   if value == 8 then
     if state.cursor_x > 0 then
-      state.cursor_x -= 1
-      mem.write8(ptr.add(state.cells, state.cursor_y * state.columns + state.cursor_x), 0)
+      found: bool is false
+      while state.cursor_x > 0 and not found do
+        state.cursor_x -= 1
+        offset: u64 is state.cursor_y * state.columns + state.cursor_x
+        previous: u64 is mem.read32(ptr.add(state.cells, offset * 4))
+        if previous != 0 then
+          mem.write32(ptr.add(state.cells, offset * 4), 0)
+          if previous >= 44032 and previous <= 55203 and state.cursor_x + 1 < state.columns then
+            mem.write32(ptr.add(state.cells, (offset + 1) * 4), 0)
+          end
+          found is true
+        end
+      end
     end
     return true
   end
-  if value < 32 or value > 126 then value is 63
+  if value < 32 then value is 63
+  width: u64 is 1
+  if value >= 44032 and value <= 55203 then width is 2
+  if state.cursor_x + width > state.columns then
+    if not text_terminal_newline(state) then return false
+  end
   offset: u64 is state.cursor_y * state.columns + state.cursor_x
-  mem.write8(ptr.add(state.cells, offset), value)
-  state.cursor_x += 1
+  mem.write32(ptr.add(state.cells, offset * 4), value)
+  if width == 2 then mem.write32(ptr.add(state.cells, (offset + 1) * 4), 0)
+  state.cursor_x += width
   if state.cursor_x >= state.columns then return text_terminal_newline(state)
   return true
 end
@@ -102,6 +120,19 @@ func text_terminal_write(state: ptr[TextTerminal], text: ptr, length: usize) do
   while index < length do
     if not text_terminal_put(state, mem.read8(ptr.add(text, index))) then return false
     index += 1
+  end
+  return true
+end
+
+func text_terminal_write_utf8(state: ptr[TextTerminal], text: ptr, length: u64) do
+  global font_utf8_consumed
+  if state == 0 or text == 0 then return false
+  index: u64 is 0
+  while index < length do
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 or index + font_utf8_consumed > length then return false
+    if not text_terminal_put(state, codepoint) then return false
+    index += font_utf8_consumed
   end
   return true
 end
@@ -137,9 +168,9 @@ func text_terminal_draw(state: ptr[TextTerminal], surface: ptr[FramebufferSurfac
   while row < state.rows do
     column: u64 is 0
     while column < state.columns do
-      value: u64 is mem.read8(ptr.add(state.cells, row * state.columns + column))
+      value: u64 is mem.read32(ptr.add(state.cells, (row * state.columns + column) * 4))
       if value != 0 and value != 32 then
-        font5x7_draw_char(surface, x + column * 6 * style.scale, y + row * 8 * style.scale, value, style)
+        font_ui_draw_char(surface, x + column * 6 * style.scale, y + row * 8 * style.scale, value, style)
       end
       column += 1
     end

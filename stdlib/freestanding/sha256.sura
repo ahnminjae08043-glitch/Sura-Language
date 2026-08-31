@@ -1,0 +1,203 @@
+# SHA-256 for the freestanding Sura target.
+#
+# The caller owns all mutable storage. No host runtime, allocator, operating
+# system service, or firmware service is used after initialization.
+
+sha256_round_constants is static.u64([1116352408, 1899447441, 3049323471, 3921009573, 961987163, 1508970993, 2453635748, 2870763221, 3624381080, 310598401, 607225278, 1426881987, 1925078388, 2162078206, 2614888103, 3248222580, 3835390401, 4022224774, 264347078, 604807628, 770255983, 1249150122, 1555081692, 1996064986, 2554220882, 2821834349, 2952996808, 3210313671, 3336571891, 3584528711, 113926993, 338241895, 666307205, 773529912, 1294757372, 1396182291, 1695183700, 1986661051, 2177026350, 2456956037, 2730485921, 2820302411, 3259730800, 3345764771, 3516065817, 3600352804, 4094571909, 275423344, 430227734, 506948616, 659060556, 883997877, 958139571, 1322822218, 1537002063, 1747873779, 1955562222, 2024104815, 2227730452, 2361852424, 2428436474, 2756734187, 3204031479, 3329325298], 8)
+
+struct Sha256State do
+  h0: u64
+  h1: u64
+  h2: u64
+  h3: u64
+  h4: u64
+  h5: u64
+  h6: u64
+  h7: u64
+  total_bytes: u64
+  block_bytes: u64
+  block: ptr
+  schedule: ptr
+  initialized: u64
+end
+
+func sha256_rotr(value: u64, count: u64) do
+  word: u64 is value & u64("0xffffffff")
+  return ((word >> count) | (word << (32 - count))) & u64("0xffffffff")
+end
+
+func sha256_read_u32_be(input: ptr) do
+  return ((mem.read8(input) << 24) | (mem.read8(ptr.add(input, 1)) << 16) | (mem.read8(ptr.add(input, 2)) << 8) | mem.read8(ptr.add(input, 3))) & u64("0xffffffff")
+end
+
+func sha256_write_u32_be(output: ptr, value: u64) do
+  if output == 0 then return false
+  mem.write8(output, (value >> 24) & 255)
+  mem.write8(ptr.add(output, 1), (value >> 16) & 255)
+  mem.write8(ptr.add(output, 2), (value >> 8) & 255)
+  mem.write8(ptr.add(output, 3), value & 255)
+  return true
+end
+
+func sha256_clear(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func sha256_init(state: ptr[Sha256State], block: ptr, schedule: ptr) do
+  if state == 0 or block == 0 or schedule == 0 then return false
+  state.h0 is 1779033703
+  state.h1 is 3144134277
+  state.h2 is 1013904242
+  state.h3 is 2773480762
+  state.h4 is 1359893119
+  state.h5 is 2600822924
+  state.h6 is 528734635
+  state.h7 is 1541459225
+  state.total_bytes is 0
+  state.block_bytes is 0
+  state.block is block
+  state.schedule is schedule
+  state.initialized is 1
+  if not sha256_clear(block, 64) then return false
+  return sha256_clear(schedule, 512)
+end
+
+func sha256_compress(state: ptr[Sha256State]) do
+  if state == 0 or state.initialized == 0 or state.block == 0 or state.schedule == 0 then return false
+  block: ptr is state.block
+  schedule: ptr is state.schedule
+  index: u64 is 0
+  while index < 16 do
+    mem.write64(ptr.index(schedule, index, 8), sha256_read_u32_be(ptr.index(block, index, 4)))
+    index += 1
+  end
+  while index < 64 do
+    word15: u64 is mem.read64(ptr.index(schedule, index - 15, 8))
+    word2: u64 is mem.read64(ptr.index(schedule, index - 2, 8))
+    sigma0: u64 is sha256_rotr(word15, 7) ^ sha256_rotr(word15, 18) ^ (word15 >> 3)
+    sigma1: u64 is sha256_rotr(word2, 17) ^ sha256_rotr(word2, 19) ^ (word2 >> 10)
+    next_word: u64 is mem.read64(ptr.index(schedule, index - 16, 8))
+    next_word is next_word + sigma0 + mem.read64(ptr.index(schedule, index - 7, 8)) + sigma1
+    mem.write64(ptr.index(schedule, index, 8), next_word & u64("0xffffffff"))
+    index += 1
+  end
+
+  a: u64 is state.h0
+  b: u64 is state.h1
+  c: u64 is state.h2
+  d: u64 is state.h3
+  e: u64 is state.h4
+  f: u64 is state.h5
+  g: u64 is state.h6
+  h: u64 is state.h7
+  index is 0
+  while index < 64 do
+    sum1: u64 is sha256_rotr(e, 6) ^ sha256_rotr(e, 11) ^ sha256_rotr(e, 25)
+    choice: u64 is (e & f) ^ ((~e) & g)
+    constant: u64 is mem.read64(ptr.index(sha256_round_constants, index, 8))
+    word: u64 is mem.read64(ptr.index(schedule, index, 8))
+    temporary1: u64 is (h + sum1 + choice + constant + word) & u64("0xffffffff")
+    sum0: u64 is sha256_rotr(a, 2) ^ sha256_rotr(a, 13) ^ sha256_rotr(a, 22)
+    majority: u64 is (a & b) ^ (a & c) ^ (b & c)
+    temporary2: u64 is (sum0 + majority) & u64("0xffffffff")
+    h is g
+    g is f
+    f is e
+    e is (d + temporary1) & u64("0xffffffff")
+    d is c
+    c is b
+    b is a
+    a is (temporary1 + temporary2) & u64("0xffffffff")
+    index += 1
+  end
+
+  state.h0 is (state.h0 + a) & u64("0xffffffff")
+  state.h1 is (state.h1 + b) & u64("0xffffffff")
+  state.h2 is (state.h2 + c) & u64("0xffffffff")
+  state.h3 is (state.h3 + d) & u64("0xffffffff")
+  state.h4 is (state.h4 + e) & u64("0xffffffff")
+  state.h5 is (state.h5 + f) & u64("0xffffffff")
+  state.h6 is (state.h6 + g) & u64("0xffffffff")
+  state.h7 is (state.h7 + h) & u64("0xffffffff")
+  state.block_bytes is 0
+  return sha256_clear(block, 64)
+end
+
+func sha256_update(state: ptr[Sha256State], input: ptr, input_bytes: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  if input_bytes == 0 then return true
+  if input == 0 then return false
+  maximum_bytes: u64 is u64("0x1fffffffffffffff")
+  if state.total_bytes > maximum_bytes - input_bytes then return false
+  state.total_bytes is state.total_bytes + input_bytes
+  input_index: u64 is 0
+  while input_index < input_bytes do
+    available: u64 is 64 - state.block_bytes
+    remaining: u64 is input_bytes - input_index
+    take: u64 is remaining
+    if take > available then take is available
+    copied: u64 is 0
+    while copied < take do
+      mem.write8(ptr.add(state.block, state.block_bytes + copied), mem.read8(ptr.add(input, input_index + copied)))
+      copied += 1
+    end
+    state.block_bytes is state.block_bytes + take
+    input_index is input_index + take
+    if state.block_bytes == 64 then
+      if not sha256_compress(state) then return false
+    end
+  end
+  return true
+end
+
+func sha256_final(state: ptr[Sha256State], output: ptr) do
+  if state == 0 or state.initialized == 0 or output == 0 then return false
+  block: ptr is state.block
+  cursor: u64 is state.block_bytes
+  mem.write8(ptr.add(block, cursor), 128)
+  cursor += 1
+  if cursor > 56 then
+    while cursor < 64 do
+      mem.write8(ptr.add(block, cursor), 0)
+      cursor += 1
+    end
+    state.block_bytes is 64
+    if not sha256_compress(state) then return false
+    cursor is 0
+  end
+  while cursor < 56 do
+    mem.write8(ptr.add(block, cursor), 0)
+    cursor += 1
+  end
+  bit_length: u64 is state.total_bytes << 3
+  length_index: u64 is 0
+  while length_index < 8 do
+    shift: u64 is (7 - length_index) * 8
+    mem.write8(ptr.add(block, 56 + length_index), (bit_length >> shift) & 255)
+    length_index += 1
+  end
+  state.block_bytes is 64
+  if not sha256_compress(state) then return false
+  if not sha256_write_u32_be(output, state.h0) then return false
+  if not sha256_write_u32_be(ptr.add(output, 4), state.h1) then return false
+  if not sha256_write_u32_be(ptr.add(output, 8), state.h2) then return false
+  if not sha256_write_u32_be(ptr.add(output, 12), state.h3) then return false
+  if not sha256_write_u32_be(ptr.add(output, 16), state.h4) then return false
+  if not sha256_write_u32_be(ptr.add(output, 20), state.h5) then return false
+  if not sha256_write_u32_be(ptr.add(output, 24), state.h6) then return false
+  if not sha256_write_u32_be(ptr.add(output, 28), state.h7) then return false
+  state.initialized is 0
+  return true
+end
+
+func sha256_digest(input: ptr, input_bytes: u64, output: ptr, state: ptr[Sha256State], block: ptr, schedule: ptr) do
+  if not sha256_init(state, block, schedule) then return false
+  if not sha256_update(state, input, input_bytes) then return false
+  return sha256_final(state, output)
+end

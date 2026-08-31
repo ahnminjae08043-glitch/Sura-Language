@@ -1,0 +1,339 @@
+# Persistent Ring-3 Window Server composition worker.
+#
+# The mailbox contains a bounded 16x16 output plus two caller-provided app
+# surfaces. The worker performs damage-only z-order composition without port
+# I/O or kernel/framebuffer access. It is intentionally small enough to copy
+# into process-owned W^X code pages for the scheduler and isolation gates.
+
+struct UserWindowServerMailbox do
+  request_sequence: u64
+  response_sequence: u64
+  command: u64
+  status: u64
+  error: u64
+  generation: u64
+  width: u64
+  height: u64
+  stride: u64
+  damage_x: u64
+  damage_y: u64
+  damage_width: u64
+  damage_height: u64
+  background: u64
+  surface_count: u64
+  remove_owner: u64
+  first_owner: u64
+  first_x: u64
+  first_y: u64
+  first_width: u64
+  first_height: u64
+  first_z: u64
+  first_active: u64
+  first_offset: u64
+  first_stride: u64
+  second_owner: u64
+  second_x: u64
+  second_y: u64
+  second_width: u64
+  second_height: u64
+  second_z: u64
+  second_active: u64
+  second_offset: u64
+  second_stride: u64
+  output_offset: u64
+  composed_pixels: u64
+  active_surfaces: u64
+  shared_address: u64
+  shared_pixels: u64
+  shared_index: u64
+  shared_write: u64
+  shared_original: u64
+  shared_observed: u64
+  commit_owner: u64
+  commit_offset: u64
+  commit_width: u64
+  commit_height: u64
+  commit_stride: u64
+  drag_source_owner: u64
+  drag_target_owner: u64
+  drag_payload_offset: u64
+  drag_payload_length: u64
+  drag_output_offset: u64
+  drag_output_capacity: u64
+  drag_delivered: u64
+  animation_owner: u64
+  animation_from_x: u64
+  animation_from_y: u64
+  animation_to_x: u64
+  animation_to_y: u64
+  animation_elapsed_ms: u64
+  animation_duration_ms: u64
+  monitor_x: u64
+  monitor_y: u64
+  monitor_width: u64
+  monitor_height: u64
+  monitor_output_offset: u64
+  monitor_output_stride: u64
+  monitor_pixels: u64
+end
+
+func user_window_server_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 96, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 4096, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 97, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+    end
+
+    mailbox: ptr[UserWindowServerMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+      mailbox.status is 0
+      mailbox.error is 0
+      mailbox.composed_pixels is 0
+      mailbox.active_surfaces is 0
+      mailbox.drag_delivered is 0
+      mailbox.monitor_pixels is 0
+
+      if mailbox.command == 1 then
+        if mailbox.width == 0 or mailbox.width > 16 or mailbox.height == 0 or mailbox.height > 16 then
+          mailbox.error is 1
+        elif mailbox.stride < mailbox.width or mailbox.output_offset < 512 then
+          mailbox.error is 2
+        elif mailbox.damage_x + mailbox.damage_width > mailbox.width or mailbox.damage_y + mailbox.damage_height > mailbox.height then
+          mailbox.error is 3
+        else
+          row: u64 is 0
+          while row < mailbox.damage_height do
+            column: u64 is 0
+            while column < mailbox.damage_width do
+              destination_x: u64 is mailbox.damage_x + column
+              destination_y: u64 is mailbox.damage_y + row
+              destination_offset: u64 is mailbox.output_offset + (destination_y * mailbox.stride + destination_x) * 4
+              mem.write32(ptr.add(mailbox_address, destination_offset), mailbox.background)
+              mailbox.composed_pixels += 1
+              column += 1
+            end
+            row += 1
+          end
+
+          pass: u64 is 0
+          while pass < 2 do
+            use_second: bool is false
+            if mailbox.first_active == 0 then
+              use_second is true
+            elif mailbox.second_active != 0 and mailbox.second_z < mailbox.first_z then
+              use_second is pass == 0
+            else
+              use_second is pass == 1
+            end
+
+            owner: u64 is mailbox.first_owner
+            surface_x: u64 is mailbox.first_x
+            surface_y: u64 is mailbox.first_y
+            surface_width: u64 is mailbox.first_width
+            surface_height: u64 is mailbox.first_height
+            surface_offset: u64 is mailbox.first_offset
+            surface_stride: u64 is mailbox.first_stride
+            active: u64 is mailbox.first_active
+            if use_second then
+              owner is mailbox.second_owner
+              surface_x is mailbox.second_x
+              surface_y is mailbox.second_y
+              surface_width is mailbox.second_width
+              surface_height is mailbox.second_height
+              surface_offset is mailbox.second_offset
+              surface_stride is mailbox.second_stride
+              active is mailbox.second_active
+            end
+            if active != 0 and owner != 0 and surface_width <= 16 and surface_height <= 16 and surface_stride >= surface_width then
+              mailbox.active_surfaces += 1
+              surface_row: u64 is 0
+              while surface_row < surface_height do
+                destination_y is surface_y + surface_row
+                if destination_y >= mailbox.damage_y and destination_y < mailbox.damage_y + mailbox.damage_height then
+                  surface_column: u64 is 0
+                  while surface_column < surface_width do
+                    destination_x is surface_x + surface_column
+                    if destination_x >= mailbox.damage_x and destination_x < mailbox.damage_x + mailbox.damage_width then
+                      source_address: u64 is mailbox_address + surface_offset + (surface_row * surface_stride + surface_column) * 4
+                      destination_address: u64 is mailbox_address + mailbox.output_offset + (destination_y * mailbox.stride + destination_x) * 4
+                      mem.write32(destination_address, mem.read32(source_address))
+                    end
+                    surface_column += 1
+                  end
+                end
+                surface_row += 1
+              end
+            end
+            pass += 1
+          end
+          mailbox.generation += 1
+          mailbox.status is 1
+        end
+      elif mailbox.command == 2 then
+        if mailbox.remove_owner == 0 then
+          mailbox.error is 4
+        else
+          if mailbox.first_active != 0 and mailbox.first_owner == mailbox.remove_owner then mailbox.first_active is 0
+          if mailbox.second_active != 0 and mailbox.second_owner == mailbox.remove_owner then mailbox.second_active is 0
+          if mailbox.first_active != 0 then mailbox.active_surfaces += 1
+          if mailbox.second_active != 0 then mailbox.active_surfaces += 1
+          mailbox.generation += 1
+          mailbox.status is 1
+        end
+      elif mailbox.command == 3 then
+        if mailbox.shared_address < 4096 or mailbox.shared_pixels == 0 or mailbox.shared_index >= mailbox.shared_pixels then
+          mailbox.error is 6
+        else
+          shared_pixel: u64 is mailbox.shared_address + mailbox.shared_index * 4
+          mailbox.shared_original is mem.read32(shared_pixel)
+          mem.write32(shared_pixel, mailbox.shared_write)
+          mailbox.shared_observed is mem.read32(shared_pixel)
+          mem.write32(shared_pixel, mailbox.shared_original)
+          mailbox.generation += 1
+          mailbox.status is 1
+        end
+      elif mailbox.command == 4 then
+        if mailbox.commit_owner == 0 or mailbox.commit_offset < 512 then
+          mailbox.error is 7
+        elif mailbox.commit_width == 0 or mailbox.commit_width > 16 or mailbox.commit_height == 0 or mailbox.commit_height > 16 then
+          mailbox.error is 8
+        elif mailbox.commit_stride < mailbox.commit_width or mailbox.commit_offset + mailbox.commit_stride * mailbox.commit_height * 4 > 4096 then
+          mailbox.error is 9
+        else
+          committed: bool is false
+          if mailbox.first_active != 0 and mailbox.first_owner == mailbox.commit_owner then
+            mailbox.first_offset is mailbox.commit_offset
+            mailbox.first_width is mailbox.commit_width
+            mailbox.first_height is mailbox.commit_height
+            mailbox.first_stride is mailbox.commit_stride
+            committed is true
+          end
+          if mailbox.second_active != 0 and mailbox.second_owner == mailbox.commit_owner then
+            mailbox.second_offset is mailbox.commit_offset
+            mailbox.second_width is mailbox.commit_width
+            mailbox.second_height is mailbox.commit_height
+            mailbox.second_stride is mailbox.commit_stride
+            committed is true
+          end
+          if committed then
+            mailbox.generation += 1
+            mailbox.status is 1
+          else
+            mailbox.error is 10
+          end
+        end
+      elif mailbox.command == 5 then
+        source_valid: bool is false
+        target_valid: bool is false
+        if mailbox.first_active != 0 and mailbox.first_owner == mailbox.drag_source_owner then source_valid is true
+        if mailbox.second_active != 0 and mailbox.second_owner == mailbox.drag_source_owner then source_valid is true
+        if mailbox.first_active != 0 and mailbox.first_owner == mailbox.drag_target_owner then target_valid is true
+        if mailbox.second_active != 0 and mailbox.second_owner == mailbox.drag_target_owner then target_valid is true
+        if mailbox.drag_source_owner == 0 or mailbox.drag_target_owner == 0 or mailbox.drag_source_owner == mailbox.drag_target_owner then
+          mailbox.error is 11
+        elif not source_valid or not target_valid then
+          mailbox.error is 12
+        elif mailbox.drag_payload_length == 0 or mailbox.drag_payload_length > mailbox.drag_output_capacity then
+          mailbox.error is 13
+        elif mailbox.drag_payload_offset + mailbox.drag_payload_length > 4096 or mailbox.drag_output_offset + mailbox.drag_payload_length > 4096 then
+          mailbox.error is 14
+        else
+          drag_index: u64 is 0
+          while drag_index < mailbox.drag_payload_length do
+            drag_byte: u64 is mem.read8(ptr.add(mailbox_address, mailbox.drag_payload_offset + drag_index))
+            mem.write8(ptr.add(mailbox_address, mailbox.drag_output_offset + drag_index), drag_byte)
+            drag_index += 1
+          end
+          mailbox.drag_delivered is 1
+          mailbox.generation += 1
+          mailbox.status is 1
+        end
+      elif mailbox.command == 6 then
+        if mailbox.animation_owner == 0 or mailbox.animation_duration_ms == 0 or mailbox.animation_elapsed_ms > mailbox.animation_duration_ms then
+          mailbox.error is 15
+        else
+          animated_x: u64 is mailbox.animation_from_x
+          animated_y: u64 is mailbox.animation_from_y
+          if mailbox.animation_to_x >= mailbox.animation_from_x then
+            animated_x += ((mailbox.animation_to_x - mailbox.animation_from_x) * mailbox.animation_elapsed_ms) / mailbox.animation_duration_ms
+          else
+            animated_x -= ((mailbox.animation_from_x - mailbox.animation_to_x) * mailbox.animation_elapsed_ms) / mailbox.animation_duration_ms
+          end
+          if mailbox.animation_to_y >= mailbox.animation_from_y then
+            animated_y += ((mailbox.animation_to_y - mailbox.animation_from_y) * mailbox.animation_elapsed_ms) / mailbox.animation_duration_ms
+          else
+            animated_y -= ((mailbox.animation_from_y - mailbox.animation_to_y) * mailbox.animation_elapsed_ms) / mailbox.animation_duration_ms
+          end
+          animated: bool is false
+          if mailbox.first_active != 0 and mailbox.first_owner == mailbox.animation_owner and animated_x + mailbox.first_width <= mailbox.width and animated_y + mailbox.first_height <= mailbox.height then
+            mailbox.first_x is animated_x
+            mailbox.first_y is animated_y
+            animated is true
+          end
+          if mailbox.second_active != 0 and mailbox.second_owner == mailbox.animation_owner and animated_x + mailbox.second_width <= mailbox.width and animated_y + mailbox.second_height <= mailbox.height then
+            mailbox.second_x is animated_x
+            mailbox.second_y is animated_y
+            animated is true
+          end
+          if animated then
+            mailbox.generation += 1
+            mailbox.status is 1
+          else
+            mailbox.error is 16
+          end
+        end
+      elif mailbox.command == 7 then
+        if mailbox.monitor_width == 0 or mailbox.monitor_height == 0 or mailbox.monitor_output_stride < mailbox.monitor_width then
+          mailbox.error is 17
+        elif mailbox.monitor_x + mailbox.monitor_width > mailbox.width or mailbox.monitor_y + mailbox.monitor_height > mailbox.height then
+          mailbox.error is 18
+        elif mailbox.monitor_output_offset + mailbox.monitor_output_stride * mailbox.monitor_height * 4 > 4096 then
+          mailbox.error is 19
+        else
+          monitor_row: u64 is 0
+          while monitor_row < mailbox.monitor_height do
+            monitor_column: u64 is 0
+            while monitor_column < mailbox.monitor_width do
+              monitor_source: u64 is mailbox.output_offset + ((mailbox.monitor_y + monitor_row) * mailbox.stride + mailbox.monitor_x + monitor_column) * 4
+              monitor_destination: u64 is mailbox.monitor_output_offset + (monitor_row * mailbox.monitor_output_stride + monitor_column) * 4
+              mem.write32(ptr.add(mailbox_address, monitor_destination), mem.read32(ptr.add(mailbox_address, monitor_source)))
+              mailbox.monitor_pixels += 1
+              monitor_column += 1
+            end
+            monitor_row += 1
+          end
+          mailbox.generation += 1
+          mailbox.status is 1
+        end
+      else
+        mailbox.error is 5
+      end
+      mailbox.response_sequence is mailbox.request_sequence
+    end
+
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
+  end
+end
+
+func user_window_server_program_end() do
+  return true
+end

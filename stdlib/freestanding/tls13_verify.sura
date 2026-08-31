@@ -1,0 +1,55 @@
+# TLS 1.3 server CertificateVerify verification for RSA-PSS-RSAE-SHA256.
+
+import "x509.sura"
+import "rsa_sha256.sura"
+
+struct Tls13CertificateVerifyRequest do
+  certificate: ptr
+  signature_scheme: u64
+  signature: ptr
+  signature_bytes: u64
+  transcript_hash: ptr
+  rsa_workspace: ptr
+  rsa_request: ptr
+  signed_message: ptr
+  signed_message_capacity: u64
+end
+
+tls13_server_certificate_verify_context is static.bytes([84, 76, 83, 32, 49, 46, 51, 44, 32, 115, 101, 114, 118, 101, 114, 32, 67, 101, 114, 116, 105, 102, 105, 99, 97, 116, 101, 86, 101, 114, 105, 102, 121], 1)
+
+func tls13_certificate_verify_server(request: ptr[Tls13CertificateVerifyRequest]) do
+  if request == 0 or request.certificate == 0 then return false
+  if request.signature_scheme != 2052 then return false
+  if request.signature == 0 or request.transcript_hash == 0 then return false
+  if request.rsa_workspace == 0 or request.rsa_request == 0 then return false
+  if request.signed_message == 0 or request.signed_message_capacity < 130 then return false
+  certificate: ptr[X509Certificate] is request.certificate
+  if certificate.modulus == 0 or certificate.exponent != 65537 then return false
+  if request.signature_bytes != certificate.modulus_bytes then return false
+  index: u64 is 0
+  while index < 64 do
+    mem.write8(ptr.add(request.signed_message, index), 32)
+    index += 1
+  end
+  index is 0
+  while index < 33 do
+    mem.write8(ptr.add(request.signed_message, 64 + index), mem.read8(ptr.add(tls13_server_certificate_verify_context, index)))
+    index += 1
+  end
+  mem.write8(ptr.add(request.signed_message, 97), 0)
+  index is 0
+  while index < 32 do
+    mem.write8(ptr.add(request.signed_message, 98 + index), mem.read8(ptr.add(request.transcript_hash, index)))
+    index += 1
+  end
+  rsa_request: ptr[RsaSha256VerifyRequest] is request.rsa_request
+  rsa_request.modulus is certificate.modulus
+  rsa_request.modulus_bytes is certificate.modulus_bytes
+  rsa_request.exponent is certificate.exponent
+  rsa_request.signature is request.signature
+  rsa_request.signature_bytes is request.signature_bytes
+  rsa_request.message is request.signed_message
+  rsa_request.message_bytes is 130
+  rsa_workspace: ptr[RsaSha256Workspace] is request.rsa_workspace
+  return rsa_pss_sha256_verify(rsa_workspace, rsa_request)
+end

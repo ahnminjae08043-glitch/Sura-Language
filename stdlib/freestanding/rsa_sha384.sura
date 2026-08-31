@@ -1,0 +1,93 @@
+# RSA PKCS#1 v1.5 SHA-384 signature verification for the freestanding Sura
+# target. The accepted public exponent is 65537 and all mutable storage is
+# caller-owned.
+
+import "rsa_public.sura"
+import "sha384.sura"
+
+struct RsaSha384Workspace do
+  rsa_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  message_hash: ptr
+  initialized: u64
+end
+
+struct RsaSha384Buffers do
+  rsa_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  message_hash: ptr
+end
+
+struct RsaSha384VerifyRequest do
+  modulus: ptr
+  modulus_bytes: u64
+  exponent: u64
+  signature: ptr
+  signature_bytes: u64
+  message: ptr
+  message_bytes: u64
+end
+
+rsa_sha384_digest_info_prefix is static.bytes([48, 65, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 2, 5, 0, 4, 48], 1)
+
+func rsa_sha384_bytes_equal(left: ptr, right: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if left == 0 or right == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(left, index)) ^ mem.read8(ptr.add(right, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func rsa_sha384_workspace_init(workspace: ptr[RsaSha384Workspace], buffers: ptr[RsaSha384Buffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.rsa_workspace == 0 or buffers.sha_state == 0 then return false
+  if buffers.sha_block == 0 or buffers.sha_schedule == 0 or buffers.message_hash == 0 then return false
+  workspace.rsa_workspace is buffers.rsa_workspace
+  workspace.sha_state is buffers.sha_state
+  workspace.sha_block is buffers.sha_block
+  workspace.sha_schedule is buffers.sha_schedule
+  workspace.message_hash is buffers.message_hash
+  workspace.initialized is 1
+  return true
+end
+
+func rsa_sha384_prepare(workspace: ptr[RsaSha384Workspace], request: ptr[RsaSha384VerifyRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.modulus == 0 or request.signature == 0 then return false
+  if request.modulus_bytes < 128 or request.modulus_bytes > 512 then return false
+  if request.signature_bytes != request.modulus_bytes or request.exponent != 65537 then return false
+  if request.message_bytes != 0 and request.message == 0 then return false
+  rsa: ptr[RsaPublicWorkspace] is workspace.rsa_workspace
+  state: ptr[Sha384State] is workspace.sha_state
+  if rsa == 0 or state == 0 then return false
+  if not rsa_public_load_modulus(rsa, request.modulus, request.modulus_bytes) then return false
+  if not rsa_public_exponent_65537(rsa, request.signature, request.signature_bytes) then return false
+  return sha384_digest(request.message, request.message_bytes, workspace.message_hash, state, workspace.sha_block, workspace.sha_schedule)
+end
+
+func rsa_pkcs1_v15_sha384_verify(workspace: ptr[RsaSha384Workspace], request: ptr[RsaSha384VerifyRequest]) do
+  if not rsa_sha384_prepare(workspace, request) then return false
+  rsa: ptr[RsaPublicWorkspace] is workspace.rsa_workspace
+  encoded: ptr is rsa.encoded
+  encoded_bytes: u64 is rsa.modulus_bytes
+  if encoded_bytes < 78 then return false
+  if mem.read8(encoded) != 0 or mem.read8(ptr.add(encoded, 1)) != 1 then return false
+  cursor: u64 is 2
+  while cursor < encoded_bytes and mem.read8(ptr.add(encoded, cursor)) == 255 do
+    cursor += 1
+  end
+  if cursor < 10 or cursor >= encoded_bytes then return false
+  if mem.read8(ptr.add(encoded, cursor)) != 0 then return false
+  cursor += 1
+  if encoded_bytes - cursor != 67 then return false
+  if not rsa_sha384_bytes_equal(ptr.add(encoded, cursor), rsa_sha384_digest_info_prefix, 19) then return false
+  return rsa_sha384_bytes_equal(ptr.add(encoded, cursor + 19), workspace.message_hash, 48)
+end

@@ -1,8 +1,8 @@
-# Ring-3 command-line editing and command recognition for the Sura OS terminal.
+# Ring-3 UTF-8 command-line editing and command recognition for Sura OS.
 #
-# The worker owns only a bounded ASCII line. Ring 0 still renders terminal
-# cells and performs privileged commands such as memory inspection and QEMU
-# shutdown.
+# The worker owns a bounded UTF-8 line. Built-in command names remain ASCII,
+# while non-ASCII text is preserved as an unknown command instead of being
+# discarded. Ring 0 renders terminal cells and performs privileged commands.
 
 struct UserTerminalMailbox do
   length: u64
@@ -17,21 +17,61 @@ struct UserTerminalMailbox do
   reserved: u64
 end
 
-func user_terminal_program(mailbox_address: u64) do
-  mailbox: ptr[UserTerminalMailbox] is mailbox_address
-  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+func user_terminal_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 96, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 4096, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 97, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+    end
+
+    mailbox: ptr[UserTerminalMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
     mailbox.action is 0
     mailbox.command is 0
     mailbox.status is 1
     mailbox.error is 0
     buffer: ptr is ptr.add(mailbox_address, 80)
     value: u64 is mailbox.input
+    packed_count: u64 is (value >> 56) & 7
 
-    if mailbox.capacity < 2 or mailbox.capacity > 64 or mailbox.length >= mailbox.capacity or value > 255 then
+    if mailbox.capacity < 2 or mailbox.capacity > 64 or mailbox.length >= mailbox.capacity then
+      mailbox.error is 1
+    elif packed_count != 0 then
+      if mailbox.length + packed_count >= mailbox.capacity then
+        mailbox.error is 2
+      else
+        packed_index: u64 is 0
+        while packed_index < packed_count do
+          byte: u64 is (value >> (packed_index * 8)) & 255
+          mem.write8(ptr.add(buffer, mailbox.length + packed_index), byte)
+          packed_index += 1
+        end
+        mailbox.length += packed_count
+        mem.write8(ptr.add(buffer, mailbox.length), 0)
+        mailbox.action is 1
+      end
+    elif value > 255 then
       mailbox.error is 1
     elif value == 8 or value == 127 then
       if mailbox.length > 0 then
         mailbox.length -= 1
+        while mailbox.length > 0 and (mem.read8(ptr.add(buffer, mailbox.length)) & 192) == 128 do
+          mailbox.length -= 1
+        end
         mem.write8(ptr.add(buffer, mailbox.length), 0)
         mailbox.action is 2
       end
@@ -47,6 +87,10 @@ func user_terminal_program(mailbox_address: u64) do
       if length == 5 and mem.read8(buffer) == 97 and mem.read8(ptr.add(buffer, 1)) == 98 and mem.read8(ptr.add(buffer, 2)) == 111 and mem.read8(ptr.add(buffer, 3)) == 117 and mem.read8(ptr.add(buffer, 4)) == 116 then command is 4
       if length == 5 and mem.read8(buffer) == 99 and mem.read8(ptr.add(buffer, 1)) == 108 and mem.read8(ptr.add(buffer, 2)) == 101 and mem.read8(ptr.add(buffer, 3)) == 97 and mem.read8(ptr.add(buffer, 4)) == 114 then command is 5
       if length == 8 and mem.read8(buffer) == 115 and mem.read8(ptr.add(buffer, 1)) == 104 and mem.read8(ptr.add(buffer, 2)) == 117 and mem.read8(ptr.add(buffer, 3)) == 116 and mem.read8(ptr.add(buffer, 4)) == 100 and mem.read8(ptr.add(buffer, 5)) == 111 and mem.read8(ptr.add(buffer, 6)) == 119 and mem.read8(ptr.add(buffer, 7)) == 110 then command is 6
+      if length == 6 and mem.read8(buffer) == 114 and mem.read8(ptr.add(buffer, 1)) == 101 and mem.read8(ptr.add(buffer, 2)) == 98 and mem.read8(ptr.add(buffer, 3)) == 111 and mem.read8(ptr.add(buffer, 4)) == 111 and mem.read8(ptr.add(buffer, 5)) == 116 then command is 10
+      if length == 8 and mem.read8(buffer) == 102 and mem.read8(ptr.add(buffer, 1)) == 97 and mem.read8(ptr.add(buffer, 2)) == 117 and mem.read8(ptr.add(buffer, 3)) == 108 and mem.read8(ptr.add(buffer, 4)) == 116 and mem.read8(ptr.add(buffer, 5)) == 97 and mem.read8(ptr.add(buffer, 6)) == 112 and mem.read8(ptr.add(buffer, 7)) == 112 then command is 8
+      if length == 7 and mem.read8(buffer) == 104 and mem.read8(ptr.add(buffer, 1)) == 97 and mem.read8(ptr.add(buffer, 2)) == 110 and mem.read8(ptr.add(buffer, 3)) == 103 and mem.read8(ptr.add(buffer, 4)) == 97 and mem.read8(ptr.add(buffer, 5)) == 112 and mem.read8(ptr.add(buffer, 6)) == 112 then command is 9
+      if length == 12 and mem.read8(buffer) == 102 and mem.read8(ptr.add(buffer, 1)) == 97 and mem.read8(ptr.add(buffer, 2)) == 117 and mem.read8(ptr.add(buffer, 3)) == 108 and mem.read8(ptr.add(buffer, 4)) == 116 and mem.read8(ptr.add(buffer, 5)) == 98 and mem.read8(ptr.add(buffer, 6)) == 114 and mem.read8(ptr.add(buffer, 7)) == 111 and mem.read8(ptr.add(buffer, 8)) == 119 and mem.read8(ptr.add(buffer, 9)) == 115 and mem.read8(ptr.add(buffer, 10)) == 101 and mem.read8(ptr.add(buffer, 11)) == 114 then command is 11
       mailbox.command is command
       mailbox.length is 0
       mem.write8(buffer, 0)
@@ -63,11 +107,14 @@ func user_terminal_program(mailbox_address: u64) do
     end
 
     mailbox.response_sequence is mailbox.request_sequence
-  end
+    end
 
-  completed: bool is interrupt.invoke(128)
-  while true do
-    cpu.pause()
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
   end
 end
 

@@ -1,0 +1,272 @@
+# TLS 1.3 SHA-256 handshake key schedule for TLS_AES_128_GCM_SHA256.
+#
+# This module derives the initial handshake traffic secrets, record keys,
+# record IVs, and Finished keys from the complete ClientHello and ServerHello
+# handshake messages plus an X25519 shared secret. All mutable storage is
+# caller-owned.
+
+import "hkdf_sha256.sura"
+
+struct Tls13HandshakeWorkspace do
+  hmac_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  label_request: ptr
+  expand_request: ptr
+  expand_spec: ptr
+  label_info: ptr
+  label_info_capacity: u64
+  zero32: ptr
+  empty_hash: ptr
+  transcript_hash: ptr
+  initialized: u64
+end
+
+struct Tls13HandshakeBuffers do
+  hmac_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  label_request: ptr
+  expand_request: ptr
+  expand_spec: ptr
+  label_info: ptr
+  label_info_capacity: u64
+  zero32: ptr
+  empty_hash: ptr
+  transcript_hash: ptr
+end
+
+struct Tls13HandshakeExpandSpec do
+  secret: ptr
+  label: ptr
+  label_bytes: u64
+  context: ptr
+  context_bytes: u64
+  output: ptr
+  output_bytes: u64
+end
+
+struct Tls13HandshakeSecrets do
+  early_secret: ptr
+  derived_secret: ptr
+  handshake_secret: ptr
+  client_traffic_secret: ptr
+  server_traffic_secret: ptr
+  client_key: ptr
+  client_iv: ptr
+  server_key: ptr
+  server_iv: ptr
+  client_finished_key: ptr
+  server_finished_key: ptr
+end
+
+struct Tls13HandshakeRequest do
+  client_hello: ptr
+  client_hello_bytes: u64
+  server_hello: ptr
+  server_hello_bytes: u64
+  shared_secret: ptr
+  shared_secret_bytes: u64
+  secrets: ptr
+end
+
+struct Tls13ApplicationSecrets do
+  derived_secret: ptr
+  master_secret: ptr
+  client_traffic_secret: ptr
+  server_traffic_secret: ptr
+  client_key: ptr
+  client_iv: ptr
+  server_key: ptr
+  server_iv: ptr
+end
+
+struct Tls13ApplicationRequest do
+  handshake_secret: ptr
+  transcript_hash: ptr
+  secrets: ptr
+end
+
+tls13_label_derived is static.bytes([100, 101, 114, 105, 118, 101, 100], 1)
+tls13_label_client_handshake_traffic is static.bytes([99, 32, 104, 115, 32, 116, 114, 97, 102, 102, 105, 99], 1)
+tls13_label_server_handshake_traffic is static.bytes([115, 32, 104, 115, 32, 116, 114, 97, 102, 102, 105, 99], 1)
+tls13_label_client_application_traffic is static.bytes([99, 32, 97, 112, 32, 116, 114, 97, 102, 102, 105, 99], 1)
+tls13_label_server_application_traffic is static.bytes([115, 32, 97, 112, 32, 116, 114, 97, 102, 102, 105, 99], 1)
+tls13_label_key is static.bytes([107, 101, 121], 1)
+tls13_label_iv is static.bytes([105, 118], 1)
+tls13_label_finished is static.bytes([102, 105, 110, 105, 115, 104, 101, 100], 1)
+
+func tls13_handshake_workspace_init(workspace: ptr[Tls13HandshakeWorkspace], buffers: ptr[Tls13HandshakeBuffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.hmac_workspace == 0 or buffers.sha_state == 0 then return false
+  if buffers.sha_block == 0 or buffers.sha_schedule == 0 then return false
+  if buffers.label_request == 0 or buffers.expand_request == 0 or buffers.expand_spec == 0 then return false
+  if buffers.label_info == 0 or buffers.label_info_capacity < 64 then return false
+  if buffers.zero32 == 0 or buffers.empty_hash == 0 or buffers.transcript_hash == 0 then return false
+  workspace.hmac_workspace is buffers.hmac_workspace
+  workspace.sha_state is buffers.sha_state
+  workspace.sha_block is buffers.sha_block
+  workspace.sha_schedule is buffers.sha_schedule
+  workspace.label_request is buffers.label_request
+  workspace.expand_request is buffers.expand_request
+  workspace.expand_spec is buffers.expand_spec
+  workspace.label_info is buffers.label_info
+  workspace.label_info_capacity is buffers.label_info_capacity
+  workspace.zero32 is buffers.zero32
+  workspace.empty_hash is buffers.empty_hash
+  workspace.transcript_hash is buffers.transcript_hash
+  workspace.initialized is 1
+  if not sha256_clear(workspace.zero32, 32) then return false
+  if not sha256_clear(workspace.empty_hash, 32) then return false
+  return sha256_clear(workspace.transcript_hash, 32)
+end
+
+func tls13_handshake_expand(workspace: ptr[Tls13HandshakeWorkspace]) do
+  if workspace == 0 or workspace.initialized == 0 then return false
+  spec: ptr[Tls13HandshakeExpandSpec] is workspace.expand_spec
+  request: ptr[Tls13HkdfExpandLabelRequest] is workspace.label_request
+  if spec == 0 or request == 0 then return false
+  request.secret is spec.secret
+  request.secret_bytes is 32
+  request.label is spec.label
+  request.label_bytes is spec.label_bytes
+  request.context is spec.context
+  request.context_bytes is spec.context_bytes
+  request.output is spec.output
+  request.output_bytes is spec.output_bytes
+  request.info is workspace.label_info
+  request.info_capacity is workspace.label_info_capacity
+  request.expand_request is workspace.expand_request
+  hmac: ptr[HmacSha256Workspace] is workspace.hmac_workspace
+  return tls13_hkdf_expand_label(hmac, request)
+end
+
+func tls13_handshake_set_expand(workspace: ptr[Tls13HandshakeWorkspace], secret: ptr, label: ptr, label_bytes: u64, output: ptr, output_bytes: u64) do
+  if workspace == 0 or workspace.initialized == 0 then return false
+  spec: ptr[Tls13HandshakeExpandSpec] is workspace.expand_spec
+  if spec == 0 then return false
+  spec.secret is secret
+  spec.label is label
+  spec.label_bytes is label_bytes
+  spec.context is 0
+  spec.context_bytes is 0
+  spec.output is output
+  spec.output_bytes is output_bytes
+  return true
+end
+
+func tls13_handshake_secrets_valid(secrets: ptr[Tls13HandshakeSecrets]) do
+  if secrets == 0 then return false
+  if secrets.early_secret == 0 or secrets.derived_secret == 0 or secrets.handshake_secret == 0 then return false
+  if secrets.client_traffic_secret == 0 or secrets.server_traffic_secret == 0 then return false
+  if secrets.client_key == 0 or secrets.client_iv == 0 then return false
+  if secrets.server_key == 0 or secrets.server_iv == 0 then return false
+  if secrets.client_finished_key == 0 or secrets.server_finished_key == 0 then return false
+  return true
+end
+
+func tls13_handshake_derive(workspace: ptr[Tls13HandshakeWorkspace], request: ptr[Tls13HandshakeRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.client_hello == 0 or request.client_hello_bytes < 4 then return false
+  if request.server_hello == 0 or request.server_hello_bytes < 4 then return false
+  if request.shared_secret == 0 or request.shared_secret_bytes != 32 then return false
+  secrets: ptr[Tls13HandshakeSecrets] is request.secrets
+  if not tls13_handshake_secrets_valid(secrets) then return false
+  hmac: ptr[HmacSha256Workspace] is workspace.hmac_workspace
+  state: ptr[Sha256State] is workspace.sha_state
+  if hmac == 0 or state == 0 then return false
+
+  if not sha256_clear(workspace.zero32, 32) then return false
+  if not hkdf_sha256_extract(hmac, 0, 0, workspace.zero32, 32, secrets.early_secret) then return false
+  if not sha256_digest(0, 0, workspace.empty_hash, state, workspace.sha_block, workspace.sha_schedule) then return false
+
+  if not tls13_handshake_set_expand(workspace, secrets.early_secret, tls13_label_derived, 7, secrets.derived_secret, 32) then return false
+  spec: ptr[Tls13HandshakeExpandSpec] is workspace.expand_spec
+  spec.context is workspace.empty_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+
+  if not hkdf_sha256_extract(hmac, secrets.derived_secret, 32, request.shared_secret, 32, secrets.handshake_secret) then return false
+  if not sha256_init(state, workspace.sha_block, workspace.sha_schedule) then return false
+  if not sha256_update(state, request.client_hello, request.client_hello_bytes) then return false
+  if not sha256_update(state, request.server_hello, request.server_hello_bytes) then return false
+  if not sha256_final(state, workspace.transcript_hash) then return false
+
+  if not tls13_handshake_set_expand(workspace, secrets.handshake_secret, tls13_label_client_handshake_traffic, 12, secrets.client_traffic_secret, 32) then return false
+  spec.context is workspace.transcript_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.handshake_secret, tls13_label_server_handshake_traffic, 12, secrets.server_traffic_secret, 32) then return false
+  spec.context is workspace.transcript_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+
+  if not tls13_handshake_set_expand(workspace, secrets.client_traffic_secret, tls13_label_key, 3, secrets.client_key, 16) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.client_traffic_secret, tls13_label_iv, 2, secrets.client_iv, 12) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.server_traffic_secret, tls13_label_key, 3, secrets.server_key, 16) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.server_traffic_secret, tls13_label_iv, 2, secrets.server_iv, 12) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.client_traffic_secret, tls13_label_finished, 8, secrets.client_finished_key, 32) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.server_traffic_secret, tls13_label_finished, 8, secrets.server_finished_key, 32) then return false
+  return tls13_handshake_expand(workspace)
+end
+
+func tls13_application_secrets_valid(secrets: ptr[Tls13ApplicationSecrets]) do
+  if secrets == 0 then return false
+  if secrets.derived_secret == 0 or secrets.master_secret == 0 then return false
+  if secrets.client_traffic_secret == 0 or secrets.server_traffic_secret == 0 then return false
+  if secrets.client_key == 0 or secrets.client_iv == 0 then return false
+  if secrets.server_key == 0 or secrets.server_iv == 0 then return false
+  return true
+end
+
+func tls13_application_derive(workspace: ptr[Tls13HandshakeWorkspace], request: ptr[Tls13ApplicationRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.handshake_secret == 0 or request.transcript_hash == 0 then return false
+  secrets: ptr[Tls13ApplicationSecrets] is request.secrets
+  if not tls13_application_secrets_valid(secrets) then return false
+  hmac: ptr[HmacSha256Workspace] is workspace.hmac_workspace
+  if hmac == 0 then return false
+
+  if not tls13_handshake_set_expand(workspace, request.handshake_secret, tls13_label_derived, 7, secrets.derived_secret, 32) then return false
+  spec: ptr[Tls13HandshakeExpandSpec] is workspace.expand_spec
+  spec.context is workspace.empty_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+  if not hkdf_sha256_extract(hmac, secrets.derived_secret, 32, workspace.zero32, 32, secrets.master_secret) then return false
+
+  if not tls13_handshake_set_expand(workspace, secrets.master_secret, tls13_label_client_application_traffic, 12, secrets.client_traffic_secret, 32) then return false
+  spec.context is request.transcript_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.master_secret, tls13_label_server_application_traffic, 12, secrets.server_traffic_secret, 32) then return false
+  spec.context is request.transcript_hash
+  spec.context_bytes is 32
+  if not tls13_handshake_expand(workspace) then return false
+
+  if not tls13_handshake_set_expand(workspace, secrets.client_traffic_secret, tls13_label_key, 3, secrets.client_key, 16) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.client_traffic_secret, tls13_label_iv, 2, secrets.client_iv, 12) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.server_traffic_secret, tls13_label_key, 3, secrets.server_key, 16) then return false
+  if not tls13_handshake_expand(workspace) then return false
+  if not tls13_handshake_set_expand(workspace, secrets.server_traffic_secret, tls13_label_iv, 2, secrets.server_iv, 12) then return false
+  return tls13_handshake_expand(workspace)
+end
+
+func tls13_finished_compute(hmac: ptr[HmacSha256Workspace], finished_key: ptr, transcript_hash: ptr, output: ptr) do
+  if hmac == 0 or finished_key == 0 or transcript_hash == 0 or output == 0 then return false
+  return hmac_sha256(hmac, finished_key, 32, transcript_hash, 32, output)
+end
+
+func tls13_finished_verify(hmac: ptr[HmacSha256Workspace], finished_key: ptr, transcript_hash: ptr, verify_data: ptr, scratch: ptr) do
+  if verify_data == 0 or scratch == 0 then return false
+  if not tls13_finished_compute(hmac, finished_key, transcript_hash, scratch) then return false
+  return crypto_bytes_equal(scratch, verify_data, 32)
+end

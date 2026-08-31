@@ -1,0 +1,437 @@
+# Polling Intel High Definition Audio controller, codec, and PCM output path.
+#
+# The controller path discovers the PCI multimedia-audio function, resets the
+# MMIO controller, waits for a codec in STATESTS, and sends codec verbs through
+# ICOI/ICII/ICIS. The output path configures one 48-kHz, signed 16-bit stereo
+# stream descriptor backed by a caller-owned, identity-mapped 48-page DMA area.
+
+import "pci.sura"
+
+struct HdaController do
+  bar: ptr
+  gcap: u64
+  version: u64
+  input_streams: u64
+  output_streams: u64
+  bidirectional_streams: u64
+  codec_mask: u64
+  ready: u64
+end
+
+struct HdaOutputStream do
+  controller: ptr[HdaController]
+  codec: u64
+  audio_function_group: u64
+  converter: u64
+  pin: u64
+  descriptor_offset: u64
+  stream_tag: u64
+  format: u64
+  bdl: ptr
+  bdl_physical: u64
+  samples: ptr
+  samples_physical: u64
+  sample_bytes: u64
+  ready: u64
+  running: u64
+end
+
+func hda_mmio_read8(base: ptr, offset: u64) do
+  if base == 0 then return 255
+  value: u64 is mem.read8(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func hda_mmio_read16(base: ptr, offset: u64) do
+  if base == 0 or (offset & 1) != 0 then return 65535
+  value: u64 is mem.read16(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func hda_mmio_read32(base: ptr, offset: u64) do
+  if base == 0 or (offset & 3) != 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func hda_mmio_write8(base: ptr, offset: u64, value: u64) do
+  if base == 0 or value > 255 then return false
+  atomic.store_fence()
+  mem.write8(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func hda_mmio_write16(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 1) != 0 or value > 65535 then return false
+  atomic.store_fence()
+  mem.write16(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func hda_mmio_write32(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 3) != 0 then return false
+  atomic.store_fence()
+  mem.write32(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func hda_clear(controller: ptr[HdaController]) do
+  if controller == 0 then return false
+  controller.bar is 0
+  controller.gcap is 0
+  controller.version is 0
+  controller.input_streams is 0
+  controller.output_streams is 0
+  controller.bidirectional_streams is 0
+  controller.codec_mask is 0
+  controller.ready is 0
+  return true
+end
+
+func hda_pci_find(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  return pci_find_class(4, 3, 0, true, device)
+end
+
+func hda_pci_bar(device: ptr[PciDevice]) do
+  if device == 0 then return 0
+  bar: u64 is pci_bar_value(device.bdf, 0)
+  if bar == 0 or pci_bar_is_io(bar) then return 0
+  return pci_bar_address(device.bdf, 0)
+end
+
+func hda_wait_gctl(controller: ptr[HdaController], expected: u64, spin_limit: u64) do
+  if controller == 0 or controller.bar == 0 or expected > 1 then return false
+  spins: u64 is 0
+  while spins < spin_limit do
+    if (hda_mmio_read32(controller.bar, 8) & 1) == expected then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_controller_reset(controller: ptr[HdaController], spin_limit: u64) do
+  if controller == 0 or controller.bar == 0 or spin_limit == 0 then return false
+  control: u64 is hda_mmio_read32(controller.bar, 8)
+  if not hda_mmio_write32(controller.bar, 8, control & (~1)) then return false
+  if not hda_wait_gctl(controller, 0, spin_limit) then return false
+  control is hda_mmio_read32(controller.bar, 8)
+  if not hda_mmio_write32(controller.bar, 8, control | 1) then return false
+  if not hda_wait_gctl(controller, 1, spin_limit) then return false
+
+  spins: u64 is 0
+  codec_mask: u64 is 0
+  while spins < spin_limit do
+    codec_mask is hda_mmio_read16(controller.bar, 14) & 32767
+    if codec_mask != 0 then
+      controller.codec_mask is codec_mask
+      return true
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_controller_init(controller: ptr[HdaController], device: ptr[PciDevice], spin_limit: u64) do
+  if controller == 0 or device == 0 or spin_limit == 0 then return false
+  hda_clear(controller)
+  if not hda_pci_find(device) then return false
+  if not pci_enable_command(device.bdf, 6) then return false
+  bar: u64 is hda_pci_bar(device)
+  if bar == 0 then return false
+  controller.bar is bar
+  controller.gcap is hda_mmio_read16(controller.bar, 0)
+  major: u64 is hda_mmio_read8(controller.bar, 3)
+  minor: u64 is hda_mmio_read8(controller.bar, 2)
+  if major == 0 or major == 255 then return false
+  controller.version is (major << 8) | minor
+  controller.output_streams is (controller.gcap >> 12) & 15
+  controller.input_streams is (controller.gcap >> 8) & 15
+  controller.bidirectional_streams is (controller.gcap >> 3) & 31
+  if controller.output_streams == 0 and controller.bidirectional_streams == 0 then return false
+  if not hda_controller_reset(controller, spin_limit) then return false
+  controller.ready is 1
+  return true
+end
+
+func hda_codec_first(controller: ptr[HdaController]) do
+  if controller == 0 or controller.codec_mask == 0 then return 255
+  codec: u64 is 0
+  while codec < 15 do
+    if (controller.codec_mask & (1 << codec)) != 0 then return codec
+    codec += 1
+  end
+  return 255
+end
+
+func hda_verb(codec: u64, node: u64, verb: u64, payload: u64) do
+  if codec > 15 or node > 255 or verb > 4095 or payload > 255 then
+    return u64("0xffffffffffffffff")
+  end
+  return (codec << 28) | (node << 20) | (verb << 8) | payload
+end
+
+func hda_verb16(codec: u64, node: u64, verb: u64, payload: u64) do
+  if codec > 15 or node > 255 or verb > 15 or payload > 65535 then
+    return u64("0xffffffffffffffff")
+  end
+  return (codec << 28) | (node << 20) | (verb << 16) | payload
+end
+
+func hda_immediate_command(controller: ptr[HdaController], command: u64, response: ptr, spin_limit: u64) do
+  if controller == 0 or controller.ready == 0 or response == 0 then return false
+  if command > u64("0xffffffff") or spin_limit == 0 then return false
+  bar: ptr is controller.bar
+  spins: u64 is 0
+  while spins < spin_limit do
+    status: u64 is hda_mmio_read16(bar, 104)
+    if (status & 1) == 0 then break
+    cpu.pause()
+    spins += 1
+  end
+  if spins == spin_limit then return false
+  if (hda_mmio_read16(bar, 104) & 2) != 0 then
+    hda_mmio_write16(bar, 104, 2)
+  end
+  if not hda_mmio_write32(bar, 96, command) then return false
+  if not hda_mmio_write16(bar, 104, 1) then return false
+
+  spins is 0
+  while spins < spin_limit do
+    status: u64 is hda_mmio_read16(bar, 104)
+    if (status & 1) == 0 and (status & 2) != 0 then
+      mem.write32(response, hda_mmio_read32(bar, 100))
+      hda_mmio_write16(bar, 104, 2)
+      return true
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_get_parameter(controller: ptr[HdaController], codec: u64, node: u64, parameter: u64, response: ptr, spin_limit: u64) do
+  if parameter > 255 then return false
+  command: u64 is hda_verb(codec, node, 3840, parameter)
+  if command == u64("0xffffffffffffffff") then return false
+  return hda_immediate_command(controller, command, response, spin_limit)
+end
+
+func hda_find_audio_function_group(controller: ptr[HdaController], codec: u64, response: ptr, spin_limit: u64) do
+  if controller == 0 or response == 0 then return 0
+  if not hda_get_parameter(controller, codec, 0, 4, response, spin_limit) then return 0
+  node_range: u64 is mem.read32(response)
+  first_node: u64 is (node_range >> 16) & 255
+  node_count: u64 is node_range & 255
+  if first_node == 0 or node_count == 0 or first_node + node_count > 256 then return 0
+  node: u64 is first_node
+  while node < first_node + node_count do
+    if not hda_get_parameter(controller, codec, node, 5, response, spin_limit) then return 0
+    function_type: u64 is mem.read32(response) & 255
+    if function_type == 1 then return node
+    node += 1
+  end
+  return 0
+end
+
+func hda_output_clear(stream: ptr[HdaOutputStream]) do
+  if stream == 0 then return false
+  stream.controller is 0
+  stream.codec is 0
+  stream.audio_function_group is 0
+  stream.converter is 0
+  stream.pin is 0
+  stream.descriptor_offset is 0
+  stream.stream_tag is 0
+  stream.format is 0
+  stream.bdl is 0
+  stream.bdl_physical is 0
+  stream.samples is 0
+  stream.samples_physical is 0
+  stream.sample_bytes is 0
+  stream.ready is 0
+  stream.running is 0
+  return true
+end
+
+func hda_codec_set8(controller: ptr[HdaController], codec: u64, node: u64, verb: u64, payload: u64, response: ptr) do
+  command: u64 is hda_verb(codec, node, verb, payload)
+  if command == u64("0xffffffffffffffff") then return false
+  return hda_immediate_command(controller, command, response, 100000000)
+end
+
+func hda_codec_set16(controller: ptr[HdaController], codec: u64, node: u64, verb: u64, payload: u64, response: ptr) do
+  command: u64 is hda_verb16(codec, node, verb, payload)
+  if command == u64("0xffffffffffffffff") then return false
+  return hda_immediate_command(controller, command, response, 100000000)
+end
+
+func hda_output_find_widgets(controller: ptr[HdaController], codec: u64, afg: u64, stream: ptr[HdaOutputStream], response: ptr) do
+  if controller == 0 or stream == 0 or response == 0 or afg == 0 then return false
+  if not hda_get_parameter(controller, codec, afg, 4, response, 100000000) then return false
+  node_range: u64 is mem.read32(response)
+  first_node: u64 is (node_range >> 16) & 255
+  node_count: u64 is node_range & 255
+  if first_node == 0 or node_count == 0 or first_node + node_count > 256 then return false
+
+  node: u64 is first_node
+  while node < first_node + node_count do
+    if not hda_get_parameter(controller, codec, node, 9, response, 100000000) then return false
+    widget_type: u64 is (mem.read32(response) >> 20) & 15
+    if widget_type == 0 and stream.converter == 0 then stream.converter is node
+    if widget_type == 4 and stream.pin == 0 then stream.pin is node
+    node += 1
+  end
+  return stream.converter != 0 and stream.pin != 0
+end
+
+func hda_output_wait_control(stream: ptr[HdaOutputStream], mask: u64, expected: u64, spin_limit: u64) do
+  if stream == 0 or stream.controller == 0 or mask > 255 or expected > 255 then return false
+  controller: ptr[HdaController] is stream.controller
+  spins: u64 is 0
+  while spins < spin_limit do
+    if (hda_mmio_read8(controller.bar, stream.descriptor_offset) & mask) == expected then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_output_descriptor_reset(stream: ptr[HdaOutputStream], spin_limit: u64) do
+  if stream == 0 or stream.controller == 0 or spin_limit == 0 then return false
+  controller: ptr[HdaController] is stream.controller
+  offset: u64 is stream.descriptor_offset
+  control: u64 is hda_mmio_read8(controller.bar, offset)
+  if not hda_mmio_write8(controller.bar, offset, control & (~2)) then return false
+  if not hda_output_wait_control(stream, 2, 0, spin_limit) then return false
+  control is hda_mmio_read8(controller.bar, offset)
+  if not hda_mmio_write8(controller.bar, offset, control | 1) then return false
+  if not hda_output_wait_control(stream, 1, 1, spin_limit) then return false
+  control is hda_mmio_read8(controller.bar, offset)
+  if not hda_mmio_write8(controller.bar, offset, control & (~1)) then return false
+  if not hda_output_wait_control(stream, 1, 0, spin_limit) then return false
+  return hda_mmio_write8(controller.bar, offset + 3, 28)
+end
+
+func hda_output_fill_square_wave(stream: ptr[HdaOutputStream]) do
+  if stream == 0 or stream.samples == 0 or stream.sample_bytes != 192000 then return false
+  frame: u64 is 0
+  while frame < 48000 do
+    sample: u64 is 12000
+    if ((frame / 54) & 1) != 0 then sample is 53536
+    offset: u64 is frame * 4
+    mem.write16(ptr.add(stream.samples, offset), sample)
+    mem.write16(ptr.add(stream.samples, offset + 2), sample)
+    frame += 1
+  end
+  atomic.fence()
+  return true
+end
+
+func hda_output_prepare_48k_s16_stereo(stream: ptr[HdaOutputStream], controller: ptr[HdaController], codec: u64, afg: u64, dma_virtual: ptr, dma_physical: u64) do
+  if stream == 0 or controller == 0 or controller.ready == 0 then return false
+  if controller.output_streams == 0 or codec > 14 or afg == 0 then return false
+  if dma_virtual == 0 or dma_physical == 0 or (dma_physical & 4095) != 0 then return false
+  hda_output_clear(stream)
+  stream.controller is controller
+  stream.codec is codec
+  stream.audio_function_group is afg
+  stream.descriptor_offset is 128 + controller.input_streams * 32
+  stream.stream_tag is 1
+  stream.format is 17
+  stream.bdl is dma_virtual
+  stream.bdl_physical is dma_physical
+  stream.samples is ptr.add(dma_virtual, 4096)
+  stream.samples_physical is dma_physical + 4096
+  stream.sample_bytes is 192000
+
+  response: ptr is ptr.add(dma_virtual, 64)
+  if not hda_output_find_widgets(controller, codec, afg, stream, response) then return false
+  if not hda_output_fill_square_wave(stream) then return false
+
+  mem.write64(stream.bdl, stream.samples_physical)
+  mem.write32(ptr.add(stream.bdl, 8), stream.sample_bytes)
+  mem.write32(ptr.add(stream.bdl, 12), 0)
+  atomic.fence()
+
+  if not hda_codec_set8(controller, codec, afg, 1797, 0, response) then return false
+  if not hda_codec_set8(controller, codec, stream.converter, 1797, 0, response) then return false
+  if not hda_codec_set8(controller, codec, stream.pin, 1797, 0, response) then return false
+  if not hda_codec_set8(controller, codec, stream.pin, 1799, 64, response) then return false
+  if not hda_codec_set16(controller, codec, stream.converter, 2, stream.format, response) then return false
+  if not hda_codec_set8(controller, codec, stream.converter, 1798, stream.stream_tag << 4, response) then return false
+  # Select the output amplifier, both channels, no mute, and gain step 0x4a.
+  # QEMU's reference codec exposes 0x4a as its maximum linear gain step.
+  hda_codec_set16(controller, codec, stream.converter, 3, 45130, response)
+
+  if not hda_output_descriptor_reset(stream, 100000000) then return false
+  offset: u64 is stream.descriptor_offset
+  if not hda_mmio_write32(controller.bar, offset + 8, stream.sample_bytes) then return false
+  if not hda_mmio_write16(controller.bar, offset + 12, 0) then return false
+  if not hda_mmio_write16(controller.bar, offset + 18, stream.format) then return false
+  if not hda_mmio_write32(controller.bar, offset + 24, stream.bdl_physical & u64("0xffffffff")) then return false
+  if not hda_mmio_write32(controller.bar, offset + 28, stream.bdl_physical >> 32) then return false
+  if not hda_mmio_write8(controller.bar, offset + 2, stream.stream_tag << 4) then return false
+  stream.ready is 1
+  return true
+end
+
+func hda_output_start(stream: ptr[HdaOutputStream], spin_limit: u64) do
+  if stream == 0 or stream.ready == 0 or stream.controller == 0 or spin_limit == 0 then return false
+  controller: ptr[HdaController] is stream.controller
+  offset: u64 is stream.descriptor_offset
+  if not hda_mmio_write8(controller.bar, offset + 3, 28) then return false
+  control: u64 is hda_mmio_read8(controller.bar, offset)
+  if not hda_mmio_write8(controller.bar, offset, control | 2) then return false
+  if not hda_output_wait_control(stream, 2, 2, spin_limit) then return false
+  stream.running is 1
+  spins: u64 is 0
+  while spins < spin_limit do
+    if hda_mmio_read32(controller.bar, offset + 4) > 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_output_wait_position(stream: ptr[HdaOutputStream], minimum: u64, spin_limit: u64) do
+  if stream == 0 or stream.running == 0 or stream.controller == 0 then return false
+  if minimum == 0 or minimum >= stream.sample_bytes or spin_limit == 0 then return false
+  controller: ptr[HdaController] is stream.controller
+  spins: u64 is 0
+  while spins < spin_limit do
+    position: u64 is hda_mmio_read32(controller.bar, stream.descriptor_offset + 4)
+    if position >= minimum and position < stream.sample_bytes then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func hda_output_stop(stream: ptr[HdaOutputStream], spin_limit: u64) do
+  if stream == 0 or stream.controller == 0 or spin_limit == 0 then return false
+  controller: ptr[HdaController] is stream.controller
+  offset: u64 is stream.descriptor_offset
+  control: u64 is hda_mmio_read8(controller.bar, offset)
+  if not hda_mmio_write8(controller.bar, offset, control & (~2)) then return false
+  if not hda_output_wait_control(stream, 2, 0, spin_limit) then return false
+  stream.running is 0
+  return true
+end
+
+func hda_controller_stop(controller: ptr[HdaController], spin_limit: u64) do
+  if controller == 0 or controller.bar == 0 then return false
+  control: u64 is hda_mmio_read32(controller.bar, 8)
+  if not hda_mmio_write32(controller.bar, 8, control & (~1)) then return false
+  if not hda_wait_gctl(controller, 0, spin_limit) then return false
+  controller.ready is 0
+  return true
+end

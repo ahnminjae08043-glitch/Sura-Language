@@ -1,0 +1,389 @@
+# Persistent fixed-capacity SuraFS foundation.
+#
+# Every mutation commits a complete metadata/data snapshot into the inactive
+# bank, flushes it, then publishes a checksummed superblock for that bank.
+# Mount validates both generations and chooses the newest intact snapshot.
+# Caller-owned buffers keep the implementation allocation-free.
+
+import "block.sura"
+import "memfs.sura"
+
+surafs_super_magic is static.bytes([83, 85, 82, 65, 70, 83, 49, 0], 8)
+surafs_bank_magic is static.bytes([83, 85, 82, 65, 66, 65, 78, 75], 8)
+
+struct SuraFs do
+  device: ptr[BlockDevice]
+  start_lba: u64
+  bank_buffer: ptr
+  bank_buffer_capacity: u64
+  sector_buffer: ptr
+  open_counts: ptr
+  memory_filesystem: ptr[MemFs]
+  memory_storage: ptr[MemFsStorage]
+  nodes_offset: u64
+  names_offset: u64
+  data_offset: u64
+  bank_bytes: u64
+  bank_sectors: u64
+  active_bank: u64
+  generation: u64
+  mounted: u64
+end
+
+struct SuraFsConfig do
+  device: ptr[BlockDevice]
+  start_lba: u64
+  bank_buffer: ptr
+  bank_buffer_capacity: u64
+  sector_buffer: ptr
+  open_counts: ptr
+  memory_filesystem: ptr[MemFs]
+  memory_storage: ptr[MemFsStorage]
+  node_capacity: u64
+  name_stride: u64
+  data_stride: u64
+end
+
+func surafs_align_up(value: u64, alignment: u64) do
+  if alignment == 0 or (alignment & (alignment - 1)) != 0 then return u64("0xffffffffffffffff")
+  if value > u64("0xffffffffffffffff") - (alignment - 1) then return u64("0xffffffffffffffff")
+  return (value + alignment - 1) & ~(alignment - 1)
+end
+
+func surafs_crc32(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return 0
+  crc: u64 is u64("0xffffffff")
+  index: u64 is 0
+  while index < byte_count do
+    crc is crc ^ mem.read8(ptr.add(buffer, index))
+    bit: u64 is 0
+    while bit < 8 do
+      mask: u64 is 0 - (crc & 1)
+      crc is (crc >> 1) ^ (u64("0xedb88320") & mask)
+      bit += 1
+    end
+    index += 1
+  end
+  return (crc ^ u64("0xffffffff")) & u64("0xffffffff")
+end
+
+func surafs_magic_equal(buffer: ptr, magic: ptr) do
+  if buffer == 0 or magic == 0 then return false
+  return memfs_bytes_equal(buffer, magic, 8)
+end
+
+func surafs_layout(filesystem: ptr[SuraFs], config: ptr[SuraFsConfig]) do
+  if filesystem == 0 or config == 0 then return false
+  device: ptr[BlockDevice] is config.device
+  if not block_device_valid(device) or device.read_only != 0 then return false
+  if config.bank_buffer == 0 or config.sector_buffer == 0 or config.open_counts == 0 then return false
+  if config.memory_filesystem == 0 or config.memory_storage == 0 then return false
+  if config.node_capacity < 2 or config.node_capacity > 256 then return false
+  if config.name_stride < 4 or config.name_stride > 256 then return false
+  if config.data_stride == 0 or config.data_stride > 1048576 then return false
+  if not ptr.is_aligned(config.bank_buffer, device.alignment) then return false
+  if not ptr.is_aligned(config.sector_buffer, device.alignment) then return false
+
+  nodes_bytes: u64 is config.node_capacity * sizeof(MemFsNode)
+  if nodes_bytes / config.node_capacity != sizeof(MemFsNode) then return false
+  names_bytes: u64 is config.node_capacity * config.name_stride
+  if names_bytes / config.node_capacity != config.name_stride then return false
+  data_bytes: u64 is config.node_capacity * config.data_stride
+  if data_bytes / config.node_capacity != config.data_stride then return false
+
+  nodes_offset: u64 is device.sector_size
+  names_offset: u64 is surafs_align_up(nodes_offset + nodes_bytes, 8)
+  if names_offset == u64("0xffffffffffffffff") then return false
+  data_offset: u64 is surafs_align_up(names_offset + names_bytes, device.sector_size)
+  if data_offset == u64("0xffffffffffffffff") then return false
+  bank_bytes: u64 is surafs_align_up(data_offset + data_bytes, device.sector_size)
+  if bank_bytes == u64("0xffffffffffffffff") or bank_bytes > config.bank_buffer_capacity then return false
+  bank_sectors: u64 is bank_bytes / device.sector_size
+  if bank_sectors == 0 then return false
+  if bank_sectors > (u64("0xffffffffffffffff") - 2) / 2 then return false
+  required_sectors: u64 is 2 + bank_sectors * 2
+  if config.start_lba >= device.sector_count then return false
+  if required_sectors > device.sector_count - config.start_lba then return false
+
+  filesystem.device is device
+  filesystem.start_lba is config.start_lba
+  filesystem.bank_buffer is config.bank_buffer
+  filesystem.bank_buffer_capacity is config.bank_buffer_capacity
+  filesystem.sector_buffer is config.sector_buffer
+  filesystem.open_counts is config.open_counts
+  filesystem.memory_filesystem is config.memory_filesystem
+  filesystem.memory_storage is config.memory_storage
+  filesystem.nodes_offset is nodes_offset
+  filesystem.names_offset is names_offset
+  filesystem.data_offset is data_offset
+  filesystem.bank_bytes is bank_bytes
+  filesystem.bank_sectors is bank_sectors
+  filesystem.active_bank is 0
+  filesystem.generation is 0
+  filesystem.mounted is 0
+
+  storage: ptr[MemFsStorage] is config.memory_storage
+  storage.nodes is ptr.add(config.bank_buffer, nodes_offset)
+  storage.node_capacity is config.node_capacity
+  storage.names is ptr.add(config.bank_buffer, names_offset)
+  storage.name_stride is config.name_stride
+  storage.data is ptr.add(config.bank_buffer, data_offset)
+  storage.data_stride is config.data_stride
+  return true
+end
+
+func surafs_bank_lba(filesystem: ptr[SuraFs], bank: u64) do
+  if filesystem == 0 or bank > 1 then return u64("0xffffffffffffffff")
+  return filesystem.start_lba + 2 + bank * filesystem.bank_sectors
+end
+
+func surafs_normalize_owners(filesystem: ptr[SuraFs], attach: bool) do
+  if filesystem == 0 or filesystem.memory_filesystem == 0 then return false
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  index: u64 is 0
+  while index < memory_filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(memory_filesystem, index)
+    if attach then
+      node.owner is memory_filesystem
+    else
+      node.owner is 0
+    end
+    index += 1
+  end
+  return true
+end
+
+func surafs_save_open_counts(filesystem: ptr[SuraFs]) do
+  if filesystem == 0 or filesystem.open_counts == 0 then return false
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  index: u64 is 0
+  while index < memory_filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(memory_filesystem, index)
+    mem.write64(ptr.add(filesystem.open_counts, index * 8), node.open_count)
+    index += 1
+  end
+  return true
+end
+
+func surafs_restore_open_counts(filesystem: ptr[SuraFs]) do
+  if filesystem == 0 or filesystem.open_counts == 0 then return false
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  index: u64 is 0
+  while index < memory_filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(memory_filesystem, index)
+    node.open_count is mem.read64(ptr.add(filesystem.open_counts, index * 8))
+    index += 1
+  end
+  return true
+end
+
+func surafs_bank_header_write(filesystem: ptr[SuraFs], generation: u64) do
+  buffer: ptr is filesystem.bank_buffer
+  device: ptr[BlockDevice] is filesystem.device
+  if not memfs_zero(buffer, device.sector_size) then return false
+  if not memfs_copy(buffer, surafs_bank_magic, 8) then return false
+  mem.write64(ptr.add(buffer, 8), 1)
+  mem.write64(ptr.add(buffer, 16), generation)
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  mem.write64(ptr.add(buffer, 24), memory_filesystem.node_capacity)
+  mem.write64(ptr.add(buffer, 32), memory_filesystem.name_stride)
+  mem.write64(ptr.add(buffer, 40), memory_filesystem.data_stride)
+  mem.write64(ptr.add(buffer, 48), 0)
+  checksum: u64 is surafs_crc32(buffer, filesystem.bank_bytes)
+  mem.write64(ptr.add(buffer, 48), checksum)
+  return checksum
+end
+
+func surafs_super_write(filesystem: ptr[SuraFs], bank: u64, generation: u64, bank_checksum: u64) do
+  buffer: ptr is filesystem.sector_buffer
+  device: ptr[BlockDevice] is filesystem.device
+  if not memfs_zero(buffer, device.sector_size) then return false
+  if not memfs_copy(buffer, surafs_super_magic, 8) then return false
+  mem.write64(ptr.add(buffer, 8), 1)
+  mem.write64(ptr.add(buffer, 16), generation)
+  mem.write64(ptr.add(buffer, 24), bank)
+  mem.write64(ptr.add(buffer, 32), filesystem.bank_sectors)
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  mem.write64(ptr.add(buffer, 40), memory_filesystem.node_capacity)
+  mem.write64(ptr.add(buffer, 48), memory_filesystem.name_stride)
+  mem.write64(ptr.add(buffer, 56), memory_filesystem.data_stride)
+  mem.write64(ptr.add(buffer, 64), bank_checksum)
+  mem.write64(ptr.add(buffer, 72), 0)
+  header_checksum: u64 is surafs_crc32(buffer, 80)
+  mem.write64(ptr.add(buffer, 72), header_checksum)
+  if not block_write(device, filesystem.start_lba + bank, 1, buffer) then return false
+  return block_flush(device)
+end
+
+func surafs_attach_loaded(filesystem: ptr[SuraFs], generation: u64) do
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  storage: ptr[MemFsStorage] is filesystem.memory_storage
+  memory_filesystem.nodes is storage.nodes
+  memory_filesystem.node_capacity is storage.node_capacity
+  memory_filesystem.names is storage.names
+  memory_filesystem.name_stride is storage.name_stride
+  memory_filesystem.data is storage.data
+  memory_filesystem.data_stride is storage.data_stride
+  memory_filesystem.generation is generation
+  memory_filesystem.initialized is 1
+  memory_filesystem.mutation_context is 0
+  memory_filesystem.commit_mutation is 0
+
+  index: u64 is 0
+  while index < memory_filesystem.node_capacity do
+    node: ptr[MemFsNode] is memfs_node_at(memory_filesystem, index)
+    if node.owner != 0 or node.index != index then return false
+    if node.active != 0 then
+      if node.kind != vfs_kind_file and node.kind != vfs_kind_directory then return false
+      if node.parent >= memory_filesystem.node_capacity then return false
+      if node.name_length > memory_filesystem.name_stride then return false
+      if node.size > memory_filesystem.data_stride then return false
+      if index == 0 then
+        invalid_root: bool is node.kind != vfs_kind_directory or node.parent != 0 or node.name_length != 0
+        if invalid_root then
+          return false
+        end
+      else
+        if node.name_length == 0 then return false
+        if not memfs_utf8_component_valid(memfs_name_at(memory_filesystem, index), node.name_length, memory_filesystem.name_stride) then return false
+      end
+    end
+    node.owner is memory_filesystem
+    node.open_count is 0
+    index += 1
+  end
+  root: ptr[MemFsNode] is memfs_node_at(memory_filesystem, 0)
+  if root.active == 0 then return false
+  return true
+end
+
+func surafs_load_candidate(filesystem: ptr[SuraFs], bank: u64) do
+  if filesystem == 0 or bank > 1 then return false
+  device: ptr[BlockDevice] is filesystem.device
+  header: ptr is filesystem.sector_buffer
+  if not block_read(device, filesystem.start_lba + bank, 1, header) then return false
+  if not surafs_magic_equal(header, surafs_super_magic) then return false
+  if mem.read64(ptr.add(header, 8)) != 1 then return false
+  generation: u64 is mem.read64(ptr.add(header, 16))
+  if generation == 0 or mem.read64(ptr.add(header, 24)) != bank then return false
+  if mem.read64(ptr.add(header, 32)) != filesystem.bank_sectors then return false
+  storage: ptr[MemFsStorage] is filesystem.memory_storage
+  if mem.read64(ptr.add(header, 40)) != storage.node_capacity then return false
+  if mem.read64(ptr.add(header, 48)) != storage.name_stride then return false
+  if mem.read64(ptr.add(header, 56)) != storage.data_stride then return false
+  expected_bank_checksum: u64 is mem.read64(ptr.add(header, 64))
+  stored_header_checksum: u64 is mem.read64(ptr.add(header, 72))
+  mem.write64(ptr.add(header, 72), 0)
+  computed_header_checksum: u64 is surafs_crc32(header, 80)
+  mem.write64(ptr.add(header, 72), stored_header_checksum)
+  if computed_header_checksum != stored_header_checksum then return false
+
+  bank_lba: u64 is surafs_bank_lba(filesystem, bank)
+  if not block_read(device, bank_lba, filesystem.bank_sectors, filesystem.bank_buffer) then return false
+  buffer: ptr is filesystem.bank_buffer
+  if not surafs_magic_equal(buffer, surafs_bank_magic) then return false
+  if mem.read64(ptr.add(buffer, 8)) != 1 then return false
+  if mem.read64(ptr.add(buffer, 16)) != generation then return false
+  if mem.read64(ptr.add(buffer, 24)) != storage.node_capacity then return false
+  if mem.read64(ptr.add(buffer, 32)) != storage.name_stride then return false
+  if mem.read64(ptr.add(buffer, 40)) != storage.data_stride then return false
+  stored_bank_checksum: u64 is mem.read64(ptr.add(buffer, 48))
+  if stored_bank_checksum != expected_bank_checksum then return false
+  mem.write64(ptr.add(buffer, 48), 0)
+  computed_bank_checksum: u64 is surafs_crc32(buffer, filesystem.bank_bytes)
+  mem.write64(ptr.add(buffer, 48), stored_bank_checksum)
+  if computed_bank_checksum != stored_bank_checksum then return false
+  if not surafs_attach_loaded(filesystem, generation) then return false
+  filesystem.active_bank is bank
+  filesystem.generation is generation
+  filesystem.mounted is 1
+  return true
+end
+
+func surafs_reload_active(filesystem: ptr[SuraFs]) do
+  if filesystem == 0 or filesystem.mounted == 0 then return false
+  bank: u64 is filesystem.active_bank
+  generation: u64 is filesystem.generation
+  if not surafs_load_candidate(filesystem, bank) then return false
+  return filesystem.generation == generation
+end
+
+func surafs_commit_callback(context: ptr) do
+  filesystem: ptr[SuraFs] is context
+  if filesystem == 0 or filesystem.mounted == 0 then return 1
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  if memory_filesystem.generation <= filesystem.generation then return 1
+  if not surafs_save_open_counts(filesystem) then return 1
+  inactive: u64 is 1 - filesystem.active_bank
+  next_generation: u64 is memory_filesystem.generation
+  if not surafs_normalize_owners(filesystem, false) then return 1
+  bank_checksum: u64 is surafs_bank_header_write(filesystem, next_generation)
+  device: ptr[BlockDevice] is filesystem.device
+  bank_lba: u64 is surafs_bank_lba(filesystem, inactive)
+  bank_ok: bool is block_write(device, bank_lba, filesystem.bank_sectors, filesystem.bank_buffer)
+  if bank_ok then bank_ok is block_flush(device)
+  if bank_ok then bank_ok is surafs_super_write(filesystem, inactive, next_generation, bank_checksum)
+  surafs_normalize_owners(filesystem, true)
+  if not bank_ok then
+    if surafs_reload_active(filesystem) then surafs_restore_open_counts(filesystem)
+    return 1
+  end
+  filesystem.active_bank is inactive
+  filesystem.generation is next_generation
+  return 0
+end
+
+func surafs_format(filesystem: ptr[SuraFs], config: ptr[SuraFsConfig]) do
+  if not surafs_layout(filesystem, config) then return false
+  device: ptr[BlockDevice] is filesystem.device
+  if not memfs_zero(filesystem.sector_buffer, device.sector_size) then return false
+  if not block_write(device, filesystem.start_lba, 1, filesystem.sector_buffer) then return false
+  if not block_write(device, filesystem.start_lba + 1, 1, filesystem.sector_buffer) then return false
+  if not block_flush(device) then return false
+  if not memfs_zero(filesystem.bank_buffer, filesystem.bank_bytes) then return false
+  if not memfs_init(filesystem.memory_filesystem, filesystem.memory_storage) then return false
+  filesystem.active_bank is 0
+  filesystem.generation is 1
+  filesystem.mounted is 1
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  memory_filesystem.generation is 1
+  if not surafs_normalize_owners(filesystem, false) then return false
+  bank_checksum: u64 is surafs_bank_header_write(filesystem, 1)
+  bank_lba: u64 is surafs_bank_lba(filesystem, 0)
+  if not block_write(device, bank_lba, filesystem.bank_sectors, filesystem.bank_buffer) then
+    surafs_normalize_owners(filesystem, true)
+    return false
+  end
+  if not block_flush(device) then
+    surafs_normalize_owners(filesystem, true)
+    return false
+  end
+  surafs_normalize_owners(filesystem, true)
+  if not surafs_super_write(filesystem, 0, 1, bank_checksum) then return false
+  return memfs_set_commit_hook(memory_filesystem, filesystem, addr_of(surafs_commit_callback))
+end
+
+func surafs_mount(filesystem: ptr[SuraFs], config: ptr[SuraFsConfig]) do
+  if not surafs_layout(filesystem, config) then return false
+  best_bank: u64 is 2
+  best_generation: u64 is 0
+  if surafs_load_candidate(filesystem, 0) then
+    best_bank is 0
+    best_generation is filesystem.generation
+  end
+  if surafs_load_candidate(filesystem, 1) then
+    if best_bank > 1 or filesystem.generation > best_generation then
+      best_bank is 1
+      best_generation is filesystem.generation
+    end
+  end
+  if best_bank > 1 then return false
+  if not surafs_load_candidate(filesystem, best_bank) then return false
+  memory_filesystem: ptr[MemFs] is filesystem.memory_filesystem
+  return memfs_set_commit_hook(memory_filesystem, filesystem, addr_of(surafs_commit_callback))
+end
+
+func surafs_bind(filesystem: ptr[SuraFs], interface: ptr[VfsFileSystem]) do
+  if filesystem == 0 or filesystem.mounted == 0 then return false
+  return memfs_bind(filesystem.memory_filesystem, interface)
+end

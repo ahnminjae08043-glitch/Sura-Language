@@ -1,0 +1,741 @@
+# Allocation-free source compiler for the bounded browser JavaScript VM.
+#
+# Supported source subset:
+# - signed integer, UTF-8 string, boolean, null, and undefined literals
+# - let/const/var global declarations
+# - identifier reads and assignment to declared globals
+# - unary ! and -
+# - +, -, *, /, %, ==, ===, !=, !==, <, <=, >, >=
+# - if/else and brace-delimited blocks
+# - expression statements
+#
+# The caller owns every output buffer. Strings remain immutable slices of the
+# input source. Unsupported syntax and every capacity overflow fail closed.
+
+import "browser_js.sura"
+
+struct BrowserJsBinding do
+  source_start: u64
+  source_bytes: u64
+  slot: u64
+end
+
+struct BrowserJsSourceCompiler do
+  source: ptr
+  source_bytes: u64
+  cursor: u64
+  code: ptr
+  code_capacity: u64
+  code_count: u64
+  constants: ptr
+  constant_capacity: u64
+  constant_count: u64
+  bindings: ptr
+  binding_capacity: u64
+  binding_count: u64
+  token_kind: u64
+  token_start: u64
+  token_bytes: u64
+  token_number: i64
+  depth: u64
+  error: u64
+end
+
+# Token kinds.
+func browser_js_token_eof() do
+  return 0
+end
+func browser_js_token_number() do
+  return 1
+end
+func browser_js_token_string() do
+  return 2
+end
+func browser_js_token_identifier() do
+  return 3
+end
+func browser_js_token_let() do
+  return 4
+end
+func browser_js_token_const() do
+  return 5
+end
+func browser_js_token_var() do
+  return 6
+end
+func browser_js_token_if() do
+  return 7
+end
+func browser_js_token_else() do
+  return 8
+end
+func browser_js_token_true() do
+  return 9
+end
+func browser_js_token_false() do
+  return 10
+end
+func browser_js_token_null() do
+  return 11
+end
+func browser_js_token_undefined() do
+  return 12
+end
+func browser_js_token_left_paren() do
+  return 13
+end
+func browser_js_token_right_paren() do
+  return 14
+end
+func browser_js_token_left_brace() do
+  return 15
+end
+func browser_js_token_right_brace() do
+  return 16
+end
+func browser_js_token_semicolon() do
+  return 17
+end
+func browser_js_token_assign() do
+  return 18
+end
+func browser_js_token_plus() do
+  return 19
+end
+func browser_js_token_minus() do
+  return 20
+end
+func browser_js_token_star() do
+  return 21
+end
+func browser_js_token_slash() do
+  return 22
+end
+func browser_js_token_percent() do
+  return 23
+end
+func browser_js_token_bang() do
+  return 24
+end
+func browser_js_token_equal() do
+  return 25
+end
+func browser_js_token_not_equal() do
+  return 26
+end
+func browser_js_token_less() do
+  return 27
+end
+func browser_js_token_less_equal() do
+  return 28
+end
+func browser_js_token_greater() do
+  return 29
+end
+func browser_js_token_greater_equal() do
+  return 30
+end
+func browser_js_token_comma() do
+  return 31
+end
+
+func browser_js_token_dot() do
+  return 32
+end
+
+# Compiler errors.
+func browser_js_source_error_none() do
+  return 0
+end
+func browser_js_source_error_state() do
+  return 1
+end
+func browser_js_source_error_token() do
+  return 2
+end
+func browser_js_source_error_syntax() do
+  return 3
+end
+func browser_js_source_error_code_capacity() do
+  return 4
+end
+func browser_js_source_error_constant_capacity() do
+  return 5
+end
+func browser_js_source_error_binding_capacity() do
+  return 6
+end
+func browser_js_source_error_undefined() do
+  return 7
+end
+func browser_js_source_error_integer() do
+  return 8
+end
+func browser_js_source_error_depth() do
+  return 9
+end
+
+browser_js_source_keyword_let is static.utf8("let")
+browser_js_source_keyword_const is static.utf8("const")
+browser_js_source_keyword_var is static.utf8("var")
+browser_js_source_keyword_if is static.utf8("if")
+browser_js_source_keyword_else is static.utf8("else")
+browser_js_source_keyword_true is static.utf8("true")
+browser_js_source_keyword_false is static.utf8("false")
+browser_js_source_keyword_null is static.utf8("null")
+browser_js_source_keyword_undefined is static.utf8("undefined")
+browser_js_source_global_document is static.utf8("document")
+browser_js_source_member_get_element_by_id is static.utf8("getElementById")
+browser_js_source_member_text_content is static.utf8("textContent")
+
+func browser_js_source_fail(compiler: ptr[BrowserJsSourceCompiler], error: u64) do
+  if compiler != 0 and compiler.error == browser_js_source_error_none() then compiler.error is error
+  return false
+end
+
+func browser_js_source_space(value: u64) do
+  return value == 9 or value == 10 or value == 12 or value == 13 or value == 32
+end
+
+func browser_js_source_identifier_start(value: u64) do
+  if value >= 65 and value <= 90 then return true
+  if value >= 97 and value <= 122 then return true
+  return value == 95 or value == 36
+end
+
+func browser_js_source_identifier_byte(value: u64) do
+  if browser_js_source_identifier_start(value) then return true
+  return value >= 48 and value <= 57
+end
+
+func browser_js_source_slice_equal(source: ptr, start: u64, byte_count: u64, expected: ptr, expected_bytes: u64) do
+  if source == 0 or expected == 0 or byte_count != expected_bytes then return false
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(source, start + index)) != mem.read8(ptr.add(expected, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_js_source_keyword(compiler: ptr[BrowserJsSourceCompiler]) do
+  start: u64 is compiler.token_start
+  byte_count: u64 is compiler.token_bytes
+  source: ptr is compiler.source
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_let, 3) then return browser_js_token_let()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_const, 5) then return browser_js_token_const()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_var, 3) then return browser_js_token_var()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_if, 2) then return browser_js_token_if()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_else, 4) then return browser_js_token_else()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_true, 4) then return browser_js_token_true()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_false, 5) then return browser_js_token_false()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_null, 4) then return browser_js_token_null()
+  if browser_js_source_slice_equal(source, start, byte_count, browser_js_source_keyword_undefined, 9) then return browser_js_token_undefined()
+  return browser_js_token_identifier()
+end
+
+func browser_js_source_skip(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler == 0 or compiler.source == 0 then return false
+  while compiler.cursor < compiler.source_bytes do
+    value: u64 is mem.read8(ptr.add(compiler.source, compiler.cursor))
+    if browser_js_source_space(value) then
+      compiler.cursor += 1
+    elif value == 47 and compiler.cursor + 1 < compiler.source_bytes and mem.read8(ptr.add(compiler.source, compiler.cursor + 1)) == 47 then
+      compiler.cursor += 2
+      while compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(compiler.source, compiler.cursor)) != 10 do
+        compiler.cursor += 1
+      end
+    elif value == 47 and compiler.cursor + 1 < compiler.source_bytes and mem.read8(ptr.add(compiler.source, compiler.cursor + 1)) == 42 then
+      compiler.cursor += 2
+      closed: bool is false
+      while compiler.cursor + 1 < compiler.source_bytes do
+        if mem.read8(ptr.add(compiler.source, compiler.cursor)) == 42 and mem.read8(ptr.add(compiler.source, compiler.cursor + 1)) == 47 then
+          compiler.cursor += 2
+          closed is true
+          break
+        end
+        compiler.cursor += 1
+      end
+      if not closed then
+        return browser_js_source_fail(compiler, browser_js_source_error_token())
+      end
+    else
+      return true
+    end
+  end
+  return true
+end
+
+func browser_js_source_next(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler == 0 or compiler.source == 0 then return false
+  if not browser_js_source_skip(compiler) then return false
+  compiler.token_start is compiler.cursor
+  compiler.token_bytes is 0
+  compiler.token_number is 0
+  if compiler.cursor >= compiler.source_bytes then
+    compiler.token_kind is browser_js_token_eof()
+    return true
+  end
+  source: ptr is compiler.source
+  value: u64 is mem.read8(ptr.add(source, compiler.cursor))
+  if browser_js_source_identifier_start(value) then
+    compiler.cursor += 1
+    while compiler.cursor < compiler.source_bytes and browser_js_source_identifier_byte(mem.read8(ptr.add(source, compiler.cursor))) do
+      compiler.cursor += 1
+    end
+    compiler.token_bytes is compiler.cursor - compiler.token_start
+    compiler.token_kind is browser_js_source_keyword(compiler)
+    return true
+  end
+  if value >= 48 and value <= 57 then
+    number: i64 is 0
+    while compiler.cursor < compiler.source_bytes do
+      digit: u64 is mem.read8(ptr.add(source, compiler.cursor))
+      if digit < 48 or digit > 57 then break
+      digit -= 48
+      if number > u64("0x0ccccccccccccccc") or (number == u64("0x0ccccccccccccccc") and digit > 7) then return browser_js_source_fail(compiler, browser_js_source_error_integer())
+      number is number * 10 + digit
+      compiler.cursor += 1
+    end
+    compiler.token_bytes is compiler.cursor - compiler.token_start
+    compiler.token_number is number
+    compiler.token_kind is browser_js_token_number()
+    return true
+  end
+  if value == 34 or value == 39 then
+    quote: u64 is value
+    compiler.cursor += 1
+    compiler.token_start is compiler.cursor
+    while compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) != quote do
+      character: u64 is mem.read8(ptr.add(source, compiler.cursor))
+      if character == 92 or character == 10 or character == 13 then return browser_js_source_fail(compiler, browser_js_source_error_token())
+      compiler.cursor += 1
+    end
+    if compiler.cursor >= compiler.source_bytes then return browser_js_source_fail(compiler, browser_js_source_error_token())
+    compiler.token_bytes is compiler.cursor - compiler.token_start
+    compiler.cursor += 1
+    compiler.token_kind is browser_js_token_string()
+    return true
+  end
+  compiler.cursor += 1
+  compiler.token_bytes is 1
+  if value == 40 then
+    compiler.token_kind is browser_js_token_left_paren()
+  elif value == 41 then
+    compiler.token_kind is browser_js_token_right_paren()
+  elif value == 123 then
+    compiler.token_kind is browser_js_token_left_brace()
+  elif value == 125 then
+    compiler.token_kind is browser_js_token_right_brace()
+  elif value == 59 then
+    compiler.token_kind is browser_js_token_semicolon()
+  elif value == 43 then
+    compiler.token_kind is browser_js_token_plus()
+  elif value == 45 then
+    compiler.token_kind is browser_js_token_minus()
+  elif value == 42 then
+    compiler.token_kind is browser_js_token_star()
+  elif value == 47 then
+    compiler.token_kind is browser_js_token_slash()
+  elif value == 37 then
+    compiler.token_kind is browser_js_token_percent()
+  elif value == 44 then
+    compiler.token_kind is browser_js_token_comma()
+  elif value == 46 then
+    compiler.token_kind is browser_js_token_dot()
+  elif value == 61 then
+    if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+      compiler.cursor += 1
+      compiler.token_bytes += 1
+      if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+        compiler.cursor += 1
+        compiler.token_bytes += 1
+      end
+      compiler.token_kind is browser_js_token_equal()
+    else
+      compiler.token_kind is browser_js_token_assign()
+    end
+  elif value == 33 then
+    if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+      compiler.cursor += 1
+      compiler.token_bytes += 1
+      if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+        compiler.cursor += 1
+        compiler.token_bytes += 1
+      end
+      compiler.token_kind is browser_js_token_not_equal()
+    else
+      compiler.token_kind is browser_js_token_bang()
+    end
+  elif value == 60 then
+    if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+      compiler.cursor += 1
+      compiler.token_bytes += 1
+      compiler.token_kind is browser_js_token_less_equal()
+    else
+      compiler.token_kind is browser_js_token_less()
+    end
+  elif value == 62 then
+    if compiler.cursor < compiler.source_bytes and mem.read8(ptr.add(source, compiler.cursor)) == 61 then
+      compiler.cursor += 1
+      compiler.token_bytes += 1
+      compiler.token_kind is browser_js_token_greater_equal()
+    else
+      compiler.token_kind is browser_js_token_greater()
+    end
+  else
+    return browser_js_source_fail(compiler, browser_js_source_error_token())
+  end
+  return true
+end
+
+func browser_js_source_instruction(compiler: ptr[BrowserJsSourceCompiler], index: u64) do
+  if compiler == 0 or compiler.code == 0 or index >= compiler.code_count then return 0
+  return ptr.add(compiler.code, index * 24)
+end
+
+func browser_js_source_emit(compiler: ptr[BrowserJsSourceCompiler], opcode: u64, a: u64, b: u64) do
+  if compiler == 0 or compiler.code == 0 or compiler.code_count >= compiler.code_capacity then
+    browser_js_source_fail(compiler, browser_js_source_error_code_capacity())
+    return u64("0xffffffffffffffff")
+  end
+  index: u64 is compiler.code_count
+  compiler.code_count += 1
+  instruction: ptr[BrowserJsInstruction] is ptr.add(compiler.code, index * 24)
+  instruction.opcode is opcode
+  instruction.a is a
+  instruction.b is b
+  return index
+end
+
+func browser_js_source_patch(compiler: ptr[BrowserJsSourceCompiler], index: u64, target: u64) do
+  instruction: ptr[BrowserJsInstruction] is browser_js_source_instruction(compiler, index)
+  if instruction == 0 or target >= compiler.code_capacity then return browser_js_source_fail(compiler, browser_js_source_error_state())
+  instruction.a is target
+  return true
+end
+
+func browser_js_source_constant_number(compiler: ptr[BrowserJsSourceCompiler], number: i64) do
+  if compiler.constant_count >= compiler.constant_capacity then
+    browser_js_source_fail(compiler, browser_js_source_error_constant_capacity())
+    return u64("0xffffffffffffffff")
+  end
+  index: u64 is compiler.constant_count
+  compiler.constant_count += 1
+  value: ptr[BrowserJsValue] is browser_js_value_at(compiler.constants, index)
+  if not browser_js_value_number(value, number) then
+    browser_js_source_fail(compiler, browser_js_source_error_state())
+    return u64("0xffffffffffffffff")
+  end
+  return index
+end
+
+func browser_js_source_constant_string(compiler: ptr[BrowserJsSourceCompiler], start: u64, byte_count: u64) do
+  if compiler.constant_count >= compiler.constant_capacity then
+    browser_js_source_fail(compiler, browser_js_source_error_constant_capacity())
+    return u64("0xffffffffffffffff")
+  end
+  index: u64 is compiler.constant_count
+  compiler.constant_count += 1
+  value: ptr[BrowserJsValue] is browser_js_value_at(compiler.constants, index)
+  if not browser_js_value_string(value, ptr.add(compiler.source, start), byte_count) then
+    browser_js_source_fail(compiler, browser_js_source_error_state())
+    return u64("0xffffffffffffffff")
+  end
+  return index
+end
+
+func browser_js_source_binding(compiler: ptr[BrowserJsSourceCompiler], index: u64) do
+  if compiler == 0 or compiler.bindings == 0 or index >= compiler.binding_count then return 0
+  return ptr.add(compiler.bindings, index * 24)
+end
+
+func browser_js_source_find_binding(compiler: ptr[BrowserJsSourceCompiler], start: u64, byte_count: u64) do
+  index: u64 is 0
+  while index < compiler.binding_count do
+    binding: ptr[BrowserJsBinding] is browser_js_source_binding(compiler, index)
+    if binding.source_bytes == byte_count and browser_js_source_slice_equal(compiler.source, binding.source_start, binding.source_bytes, ptr.add(compiler.source, start), byte_count) then return binding.slot
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_js_source_add_binding(compiler: ptr[BrowserJsSourceCompiler], start: u64, byte_count: u64) do
+  if browser_js_source_find_binding(compiler, start, byte_count) != u64("0xffffffffffffffff") then
+    browser_js_source_fail(compiler, browser_js_source_error_syntax())
+    return u64("0xffffffffffffffff")
+  end
+  if compiler.binding_count >= compiler.binding_capacity then
+    browser_js_source_fail(compiler, browser_js_source_error_binding_capacity())
+    return u64("0xffffffffffffffff")
+  end
+  index: u64 is compiler.binding_count
+  compiler.binding_count += 1
+  binding: ptr[BrowserJsBinding] is ptr.add(compiler.bindings, index * 24)
+  binding.source_start is start
+  binding.source_bytes is byte_count
+  binding.slot is index
+  return index
+end
+
+func browser_js_source_expression(compiler: ptr[BrowserJsSourceCompiler]) do
+  return browser_js_source_equality(compiler)
+end
+
+func browser_js_source_primary(compiler: ptr[BrowserJsSourceCompiler]) do
+  kind: u64 is compiler.token_kind
+  if kind == browser_js_token_number() then
+    constant: u64 is browser_js_source_constant_number(compiler, compiler.token_number)
+    if constant == u64("0xffffffffffffffff") then return false
+    if browser_js_source_emit(compiler, browser_js_op_constant(), constant, 0) == u64("0xffffffffffffffff") then return false
+    return browser_js_source_next(compiler)
+  end
+  if kind == browser_js_token_string() then
+    constant: u64 is browser_js_source_constant_string(compiler, compiler.token_start, compiler.token_bytes)
+    if constant == u64("0xffffffffffffffff") then return false
+    if browser_js_source_emit(compiler, browser_js_op_constant(), constant, 0) == u64("0xffffffffffffffff") then return false
+    return browser_js_source_next(compiler)
+  end
+  if kind == browser_js_token_true() or kind == browser_js_token_false() then
+    opcode: u64 is browser_js_op_true()
+    if kind == browser_js_token_false() then opcode is browser_js_op_false()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+    return browser_js_source_next(compiler)
+  end
+  if kind == browser_js_token_null() or kind == browser_js_token_undefined() then
+    opcode: u64 is browser_js_op_null()
+    if kind == browser_js_token_undefined() then opcode is browser_js_op_undefined()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+    return browser_js_source_next(compiler)
+  end
+  if kind == browser_js_token_identifier() then
+    slot: u64 is browser_js_source_find_binding(compiler, compiler.token_start, compiler.token_bytes)
+    if slot == u64("0xffffffffffffffff") then return browser_js_source_fail(compiler, browser_js_source_error_undefined())
+    if browser_js_source_emit(compiler, browser_js_op_get_global(), slot, 0) == u64("0xffffffffffffffff") then return false
+    return browser_js_source_next(compiler)
+  end
+  if kind == browser_js_token_left_paren() then
+    if compiler.depth >= 32 then return browser_js_source_fail(compiler, browser_js_source_error_depth())
+    compiler.depth += 1
+    if not browser_js_source_next(compiler) then return false
+    if not browser_js_source_expression(compiler) then return false
+    if compiler.token_kind != browser_js_token_right_paren() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+    compiler.depth -= 1
+    return browser_js_source_next(compiler)
+  end
+  return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+end
+
+func browser_js_source_unary(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler.token_kind == browser_js_token_bang() or compiler.token_kind == browser_js_token_minus() then
+    kind: u64 is compiler.token_kind
+    if not browser_js_source_next(compiler) then return false
+    if not browser_js_source_unary(compiler) then return false
+    opcode: u64 is browser_js_op_not()
+    if kind == browser_js_token_minus() then opcode is browser_js_op_negate()
+    return browser_js_source_emit(compiler, opcode, 0, 0) != u64("0xffffffffffffffff")
+  end
+  return browser_js_source_primary(compiler)
+end
+
+func browser_js_source_factor(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_unary(compiler) then return false
+  while compiler.token_kind == browser_js_token_star() or compiler.token_kind == browser_js_token_slash() or compiler.token_kind == browser_js_token_percent() do
+    kind: u64 is compiler.token_kind
+    if not browser_js_source_next(compiler) or not browser_js_source_unary(compiler) then return false
+    opcode: u64 is browser_js_op_multiply()
+    if kind == browser_js_token_slash() then opcode is browser_js_op_divide()
+    if kind == browser_js_token_percent() then opcode is browser_js_op_modulo()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+  end
+  return true
+end
+
+func browser_js_source_term(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_factor(compiler) then return false
+  while compiler.token_kind == browser_js_token_plus() or compiler.token_kind == browser_js_token_minus() do
+    kind: u64 is compiler.token_kind
+    if not browser_js_source_next(compiler) or not browser_js_source_factor(compiler) then return false
+    opcode: u64 is browser_js_op_add()
+    if kind == browser_js_token_minus() then opcode is browser_js_op_subtract()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+  end
+  return true
+end
+
+func browser_js_source_comparison(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_term(compiler) then return false
+  while compiler.token_kind >= browser_js_token_less() and compiler.token_kind <= browser_js_token_greater_equal() do
+    kind: u64 is compiler.token_kind
+    if not browser_js_source_next(compiler) or not browser_js_source_term(compiler) then return false
+    opcode: u64 is browser_js_op_less()
+    if kind == browser_js_token_less_equal() then opcode is browser_js_op_less_equal()
+    if kind == browser_js_token_greater() then opcode is browser_js_op_greater()
+    if kind == browser_js_token_greater_equal() then opcode is browser_js_op_greater_equal()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+  end
+  return true
+end
+
+func browser_js_source_equality(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_comparison(compiler) then return false
+  while compiler.token_kind == browser_js_token_equal() or compiler.token_kind == browser_js_token_not_equal() do
+    kind: u64 is compiler.token_kind
+    if not browser_js_source_next(compiler) or not browser_js_source_comparison(compiler) then return false
+    opcode: u64 is browser_js_op_equal()
+    if kind == browser_js_token_not_equal() then opcode is browser_js_op_not_equal()
+    if browser_js_source_emit(compiler, opcode, 0, 0) == u64("0xffffffffffffffff") then return false
+  end
+  return true
+end
+
+func browser_js_source_statement_end(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler.token_kind == browser_js_token_semicolon() then return browser_js_source_next(compiler)
+  if compiler.token_kind == browser_js_token_eof() or compiler.token_kind == browser_js_token_right_brace() then return true
+  return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+end
+
+func browser_js_source_declaration(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_next(compiler) then return false
+  if compiler.token_kind != browser_js_token_identifier() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  name_start: u64 is compiler.token_start
+  name_bytes: u64 is compiler.token_bytes
+  slot: u64 is browser_js_source_add_binding(compiler, name_start, name_bytes)
+  if slot == u64("0xffffffffffffffff") then return false
+  if not browser_js_source_next(compiler) then return false
+  if compiler.token_kind == browser_js_token_assign() then
+    if not browser_js_source_next(compiler) or not browser_js_source_expression(compiler) then
+      return false
+    end
+  else
+    if browser_js_source_emit(compiler, browser_js_op_undefined(), 0, 0) == u64("0xffffffffffffffff") then return false
+  end
+  if browser_js_source_emit(compiler, browser_js_op_set_global(), slot, 0) == u64("0xffffffffffffffff") then return false
+  if browser_js_source_emit(compiler, browser_js_op_pop(), 0, 0) == u64("0xffffffffffffffff") then return false
+  return browser_js_source_statement_end(compiler)
+end
+
+func browser_js_source_block(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler.token_kind != browser_js_token_left_brace() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if compiler.depth >= 32 then return browser_js_source_fail(compiler, browser_js_source_error_depth())
+  compiler.depth += 1
+  if not browser_js_source_next(compiler) then return false
+  while compiler.token_kind != browser_js_token_right_brace() and compiler.token_kind != browser_js_token_eof() do
+    if not browser_js_source_statement(compiler) then return false
+  end
+  if compiler.token_kind != browser_js_token_right_brace() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  compiler.depth -= 1
+  return browser_js_source_next(compiler)
+end
+
+func browser_js_source_if(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_next(compiler) then return false
+  if compiler.token_kind != browser_js_token_left_paren() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or not browser_js_source_expression(compiler) then return false
+  if compiler.token_kind != browser_js_token_right_paren() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) then return false
+  false_jump: u64 is browser_js_source_emit(compiler, browser_js_op_jump_if_false(), 0, 0)
+  if false_jump == u64("0xffffffffffffffff") then return false
+  if not browser_js_source_block(compiler) then return false
+  if compiler.token_kind == browser_js_token_else() then
+    end_jump: u64 is browser_js_source_emit(compiler, browser_js_op_jump(), 0, 0)
+    if end_jump == u64("0xffffffffffffffff") then return false
+    if not browser_js_source_patch(compiler, false_jump, compiler.code_count) then return false
+    if not browser_js_source_next(compiler) then return false
+    if compiler.token_kind == browser_js_token_if() then
+      if not browser_js_source_if(compiler) then
+        return false
+      end
+    else
+      if not browser_js_source_block(compiler) then return false
+    end
+    return browser_js_source_patch(compiler, end_jump, compiler.code_count)
+  end
+  return browser_js_source_patch(compiler, false_jump, compiler.code_count)
+end
+
+func browser_js_source_current_equal(compiler: ptr[BrowserJsSourceCompiler], expected: ptr, expected_bytes: u64) do
+  if compiler == 0 or compiler.token_kind != browser_js_token_identifier() then return false
+  return browser_js_source_slice_equal(compiler.source, compiler.token_start, compiler.token_bytes, expected, expected_bytes)
+end
+
+func browser_js_source_document_statement(compiler: ptr[BrowserJsSourceCompiler]) do
+  if not browser_js_source_current_equal(compiler, browser_js_source_global_document, 8) then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_dot() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or not browser_js_source_current_equal(compiler, browser_js_source_member_get_element_by_id, 14) then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_left_paren() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_string() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  identifier_constant: u64 is browser_js_source_constant_string(compiler, compiler.token_start, compiler.token_bytes)
+  if identifier_constant == u64("0xffffffffffffffff") then return false
+  if browser_js_source_emit(compiler, browser_js_op_constant(), identifier_constant, 0) == u64("0xffffffffffffffff") then return false
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_right_paren() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_dot() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or not browser_js_source_current_equal(compiler, browser_js_source_member_text_content, 11) then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or compiler.token_kind != browser_js_token_assign() then return browser_js_source_fail(compiler, browser_js_source_error_syntax())
+  if not browser_js_source_next(compiler) or not browser_js_source_expression(compiler) then return false
+  if browser_js_source_emit(compiler, browser_js_op_host_call(), 1, 2) == u64("0xffffffffffffffff") then return false
+  if browser_js_source_emit(compiler, browser_js_op_pop(), 0, 0) == u64("0xffffffffffffffff") then return false
+  return browser_js_source_statement_end(compiler)
+end
+
+func browser_js_source_assignment_or_expression(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler == 0 then return false
+  if browser_js_source_current_equal(compiler, browser_js_source_global_document, 8) then return browser_js_source_document_statement(compiler)
+  if compiler.token_kind == browser_js_token_identifier() then
+    saved_start: u64 is compiler.token_start
+    saved_bytes: u64 is compiler.token_bytes
+    saved_number: i64 is compiler.token_number
+    saved_cursor: u64 is compiler.cursor
+    if not browser_js_source_next(compiler) then return false
+    if compiler.token_kind == browser_js_token_assign() then
+      slot: u64 is browser_js_source_find_binding(compiler, saved_start, saved_bytes)
+      if slot == u64("0xffffffffffffffff") then return browser_js_source_fail(compiler, browser_js_source_error_undefined())
+      if not browser_js_source_next(compiler) then return false
+      if not browser_js_source_expression(compiler) then return false
+      if browser_js_source_emit(compiler, browser_js_op_set_global(), slot, 0) == u64("0xffffffffffffffff") then return false
+      if browser_js_source_emit(compiler, browser_js_op_pop(), 0, 0) == u64("0xffffffffffffffff") then return false
+      return browser_js_source_statement_end(compiler)
+    end
+    compiler.token_kind is browser_js_token_identifier()
+    compiler.token_start is saved_start
+    compiler.token_bytes is saved_bytes
+    compiler.token_number is saved_number
+    compiler.cursor is saved_cursor
+  end
+  if not browser_js_source_expression(compiler) then return false
+  if browser_js_source_emit(compiler, browser_js_op_pop(), 0, 0) == u64("0xffffffffffffffff") then return false
+  return browser_js_source_statement_end(compiler)
+end
+
+func browser_js_source_statement(compiler: ptr[BrowserJsSourceCompiler]) do
+  if compiler.token_kind == browser_js_token_semicolon() then return browser_js_source_next(compiler)
+  if compiler.token_kind == browser_js_token_let() or compiler.token_kind == browser_js_token_const() or compiler.token_kind == browser_js_token_var() then return browser_js_source_declaration(compiler)
+  if compiler.token_kind == browser_js_token_if() then return browser_js_source_if(compiler)
+  if compiler.token_kind == browser_js_token_left_brace() then return browser_js_source_block(compiler)
+  return browser_js_source_assignment_or_expression(compiler)
+end
+
+func browser_js_source_compile(source: ptr, source_bytes: u64, program: ptr[BrowserJsProgram], compiler: ptr[BrowserJsSourceCompiler]) do
+  if source == 0 or source_bytes == 0 or program == 0 or compiler == 0 then return false
+  if compiler.code == 0 or compiler.code_capacity == 0 or compiler.constants == 0 or compiler.constant_capacity == 0 then return false
+  if compiler.bindings == 0 or compiler.binding_capacity == 0 then return false
+  compiler.source is source
+  compiler.source_bytes is source_bytes
+  compiler.cursor is 0
+  compiler.code_count is 0
+  compiler.constant_count is 0
+  compiler.binding_count is 0
+  compiler.depth is 0
+  compiler.error is browser_js_source_error_none()
+  if not browser_js_source_next(compiler) then return false
+  while compiler.token_kind != browser_js_token_eof() do
+    if not browser_js_source_statement(compiler) then return false
+  end
+  if browser_js_source_emit(compiler, browser_js_op_halt(), 0, 0) == u64("0xffffffffffffffff") then return false
+  program.code is compiler.code
+  program.code_count is compiler.code_count
+  program.constants is compiler.constants
+  program.constant_count is compiler.constant_count
+  program.global_count is compiler.binding_count
+  return true
+end

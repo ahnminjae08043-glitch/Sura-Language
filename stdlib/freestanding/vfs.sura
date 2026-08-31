@@ -8,6 +8,11 @@ struct VfsFileSystem do
   context: ptr
   open_file: ptr
   sync_filesystem: ptr
+  stat_path: ptr
+  create_node: ptr
+  remove_node: ptr
+  rename_node: ptr
+  list_directory: ptr
 end
 
 struct VfsMount do
@@ -31,14 +36,72 @@ struct VfsFile do
   flags: u64
   read_file: ptr
   write_file: ptr
+  replace_file: ptr
+  resize_file: ptr
   flush_file: ptr
   close_file: ptr
 end
 
+struct VfsStat do
+  valid: u64
+  kind: u64
+  size: u64
+  mode: u64
+  owner: u64
+  group: u64
+  created_time: u64
+  modified_time: u64
+  flags: u64
+end
+
+# The caller initializes name/name_capacity before vfs_list. The mounted file
+# system writes one UTF-8 component into that buffer and fills the metadata.
+struct VfsDirEntry do
+  valid: u64
+  kind: u64
+  size: u64
+  mode: u64
+  name: ptr
+  name_capacity: u64
+  name_length: u64
+  flags: u64
+end
+
+# Caller-owned bounded storage used by vfs_copy_tree. The two path stacks hold
+# stack_capacity slots of path_capacity bytes. Length and ordinal stacks hold
+# one u64 per slot. This keeps recursive directory copies allocation-free.
+struct VfsCopyWorkspace do
+  source_paths: ptr
+  destination_paths: ptr
+  source_lengths: ptr
+  destination_lengths: ptr
+  ordinals: ptr
+  stack_capacity: u64
+  path_capacity: u64
+  entry_name: ptr
+  entry_name_capacity: u64
+  file_buffer: ptr
+  file_buffer_capacity: u64
+  source_file: ptr
+  destination_file: ptr
+  source_count: ptr
+  destination_count: ptr
+  stat: ptr
+  entry: ptr
+end
+
+vfs_kind_file: u64 is 1
+vfs_kind_directory: u64 is 2
+
+vfs_open_read: u64 is 1
+vfs_open_write: u64 is 2
+vfs_open_create: u64 is 4
+vfs_open_truncate: u64 is 8
+vfs_open_append: u64 is 16
+
 func vfs_state_valid(state: ptr[VfsState]) do
   if state == 0 or state.mounts == 0 or state.capacity == 0 then return false
-  if state.count > state.capacity then return false
-  if state.capacity > u64("0xffffffffffffffff") / sizeof(VfsMount) then return false
+  if state.count > state.capacity or state.capacity > 65536 then return false
   return true
 end
 
@@ -51,8 +114,35 @@ func vfs_file_clear(file: ptr[VfsFile]) do
   file.flags is 0
   file.read_file is 0
   file.write_file is 0
+  file.replace_file is 0
+  file.resize_file is 0
   file.flush_file is 0
   file.close_file is 0
+  return true
+end
+
+func vfs_stat_clear(stat: ptr[VfsStat]) do
+  if stat == 0 then return false
+  stat.valid is 0
+  stat.kind is 0
+  stat.size is 0
+  stat.mode is 0
+  stat.owner is 0
+  stat.group is 0
+  stat.created_time is 0
+  stat.modified_time is 0
+  stat.flags is 0
+  return true
+end
+
+func vfs_dir_entry_clear(entry: ptr[VfsDirEntry]) do
+  if entry == 0 then return false
+  entry.valid is 0
+  entry.kind is 0
+  entry.size is 0
+  entry.mode is 0
+  entry.name_length is 0
+  entry.flags is 0
   return true
 end
 
@@ -63,7 +153,7 @@ end
 
 func vfs_init(state: ptr[VfsState], mounts: ptr, capacity: u64) do
   if state == 0 or mounts == 0 or capacity == 0 then return false
-  if capacity > u64("0xffffffffffffffff") / sizeof(VfsMount) then return false
+  if capacity > 65536 then return false
   index: u64 is 0
   while index < capacity do
     mount: ptr[VfsMount] is ptr.index(mounts, index, sizeof(VfsMount))
@@ -198,9 +288,19 @@ func vfs_resolve_mount(state: ptr[VfsState], path: ptr, path_length: u64) do
   return best
 end
 
+func vfs_relative_offset(mount: ptr[VfsMount], path: ptr, path_length: u64) do
+  if mount == 0 or path == 0 or mount.path_length > path_length then return path_length
+  offset: u64 is mount.path_length
+  if offset < path_length and mem.read8(ptr.add(path, offset)) == 47 then
+    offset += 1
+  end
+  return offset
+end
+
 func vfs_open(state: ptr[VfsState], path: ptr, path_length: u64, flags: u64, file: ptr[VfsFile]) do
   if not vfs_state_valid(state) or file == 0 then return false
   if (flags & 3) == 0 then return false
+  if (flags & (vfs_open_create | vfs_open_truncate | vfs_open_append)) != 0 and (flags & vfs_open_write) == 0 then return false
   vfs_file_clear(file)
   mount_address: ptr is vfs_resolve_mount(state, path, path_length)
   if mount_address == 0 then return false
@@ -208,17 +308,14 @@ func vfs_open(state: ptr[VfsState], path: ptr, path_length: u64, flags: u64, fil
   filesystem: ptr[VfsFileSystem] is mount.filesystem
   if filesystem == 0 or filesystem.open_file == 0 then return false
 
-  relative_offset: u64 is mount.path_length
-  if relative_offset < path_length and mem.read8(ptr.add(path, relative_offset)) == 47 then
-    relative_offset += 1
-  end
-  relative_length: u64 is path_length - relative_offset
-  status: u64 is call.indirect(filesystem.open_file, filesystem.context, ptr.add(path, relative_offset), relative_length, flags, file)
+  relative_offset: u64 is vfs_relative_offset(mount, path, path_length)
+  status: u64 is call.indirect(filesystem.open_file, filesystem.context, ptr.add(path, relative_offset), path_length - relative_offset, flags, file)
   if status != 0 or file.active == 0 or file.handle == 0 then
     vfs_file_clear(file)
     return false
   end
   file.position is 0
+  if (flags & vfs_open_append) != 0 then file.position is file.size
   file.flags is flags
   return true
 end
@@ -266,10 +363,29 @@ func vfs_write(file: ptr[VfsFile], buffer: ptr, count: u64, bytes_written: ptr) 
   return true
 end
 
+func vfs_replace(file: ptr[VfsFile], buffer: ptr, count: u64) do
+  if file == 0 or file.active == 0 or file.handle == 0 then return false
+  if (file.flags & vfs_open_write) == 0 or file.replace_file == 0 then return false
+  if count != 0 and buffer == 0 then return false
+  if call.indirect(file.replace_file, file.handle, buffer, count) != 0 then return false
+  file.size is count
+  file.position is count
+  return true
+end
+
 func vfs_seek(file: ptr[VfsFile], position: u64) do
   if file == 0 or file.active == 0 then return false
   if (file.flags & 2) == 0 and position > file.size then return false
   file.position is position
+  return true
+end
+
+func vfs_resize(file: ptr[VfsFile], size: u64) do
+  if file == 0 or file.active == 0 or file.handle == 0 then return false
+  if (file.flags & vfs_open_write) == 0 or file.resize_file == 0 then return false
+  if call.indirect(file.resize_file, file.handle, size) != 0 then return false
+  file.size is size
+  if file.position > size then file.position is size
   return true
 end
 
@@ -307,4 +423,253 @@ func vfs_sync_mounts(state: ptr[VfsState]) do
     index += 1
   end
   return ok
+end
+
+func vfs_stat(state: ptr[VfsState], path: ptr, path_length: u64, stat: ptr[VfsStat]) do
+  if stat == 0 then return false
+  vfs_stat_clear(stat)
+  mount_address: ptr is vfs_resolve_mount(state, path, path_length)
+  if mount_address == 0 then return false
+  mount: ptr[VfsMount] is mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.stat_path == 0 then return false
+  relative_offset: u64 is vfs_relative_offset(mount, path, path_length)
+  status: u64 is call.indirect(filesystem.stat_path, filesystem.context, ptr.add(path, relative_offset), path_length - relative_offset, stat)
+  if status != 0 or stat.valid == 0 then
+    vfs_stat_clear(stat)
+    return false
+  end
+  return true
+end
+
+func vfs_create(state: ptr[VfsState], path: ptr, path_length: u64, kind: u64, mode: u64) do
+  if kind != vfs_kind_file and kind != vfs_kind_directory then return false
+  mount_address: ptr is vfs_resolve_mount(state, path, path_length)
+  if mount_address == 0 then return false
+  mount: ptr[VfsMount] is mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.create_node == 0 then return false
+  relative_offset: u64 is vfs_relative_offset(mount, path, path_length)
+  return call.indirect(filesystem.create_node, filesystem.context, ptr.add(path, relative_offset), path_length - relative_offset, kind, mode) == 0
+end
+
+func vfs_remove(state: ptr[VfsState], path: ptr, path_length: u64, recursive: bool) do
+  mount_address: ptr is vfs_resolve_mount(state, path, path_length)
+  if mount_address == 0 then return false
+  mount: ptr[VfsMount] is mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.remove_node == 0 then return false
+  relative_offset: u64 is vfs_relative_offset(mount, path, path_length)
+  return call.indirect(filesystem.remove_node, filesystem.context, ptr.add(path, relative_offset), path_length - relative_offset, recursive) == 0
+end
+
+func vfs_rename(state: ptr[VfsState], old_path: ptr, old_length: u64, new_path: ptr, new_length: u64) do
+  old_mount_address: ptr is vfs_resolve_mount(state, old_path, old_length)
+  new_mount_address: ptr is vfs_resolve_mount(state, new_path, new_length)
+  if old_mount_address == 0 or new_mount_address == 0 then return false
+  if old_mount_address != new_mount_address then return false
+  mount: ptr[VfsMount] is old_mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.rename_node == 0 then return false
+  old_offset: u64 is vfs_relative_offset(mount, old_path, old_length)
+  new_offset: u64 is vfs_relative_offset(mount, new_path, new_length)
+  return call.indirect(filesystem.rename_node, filesystem.context, ptr.add(old_path, old_offset), old_length - old_offset, ptr.add(new_path, new_offset), new_length - new_offset) == 0
+end
+
+func vfs_list(state: ptr[VfsState], path: ptr, path_length: u64, ordinal: u64, entry: ptr[VfsDirEntry]) do
+  if entry == 0 or entry.name == 0 or entry.name_capacity == 0 then return false
+  vfs_dir_entry_clear(entry)
+  mount_address: ptr is vfs_resolve_mount(state, path, path_length)
+  if mount_address == 0 then return false
+  mount: ptr[VfsMount] is mount_address
+  filesystem: ptr[VfsFileSystem] is mount.filesystem
+  if filesystem == 0 or filesystem.list_directory == 0 then return false
+  relative_offset: u64 is vfs_relative_offset(mount, path, path_length)
+  status: u64 is call.indirect(filesystem.list_directory, filesystem.context, ptr.add(path, relative_offset), path_length - relative_offset, ordinal, entry)
+  if status != 0 or entry.valid == 0 or entry.name_length == 0 or entry.name_length > entry.name_capacity then
+    vfs_dir_entry_clear(entry)
+    return false
+  end
+  return true
+end
+
+func vfs_copy_workspace_valid(workspace: ptr[VfsCopyWorkspace]) do
+  if workspace == 0 then return false
+  if workspace.source_paths == 0 or workspace.destination_paths == 0 then return false
+  if workspace.source_lengths == 0 or workspace.destination_lengths == 0 or workspace.ordinals == 0 then return false
+  if workspace.stack_capacity == 0 or workspace.stack_capacity > 65536 then return false
+  if workspace.path_capacity < 2 or workspace.path_capacity > 4096 then return false
+  if workspace.entry_name == 0 or workspace.entry_name_capacity == 0 then return false
+  if workspace.file_buffer == 0 or workspace.file_buffer_capacity == 0 then return false
+  if workspace.source_file == 0 or workspace.destination_file == 0 then return false
+  if workspace.source_count == 0 or workspace.destination_count == 0 then return false
+  if workspace.stat == 0 or workspace.entry == 0 then return false
+  return true
+end
+
+func vfs_copy_bytes(destination: ptr, source: ptr, count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func vfs_copy_child_path(parent: ptr, parent_length: u64, name: ptr, name_length: u64, destination: ptr, capacity: u64) do
+  if parent == 0 or parent_length == 0 or name == 0 or name_length == 0 or destination == 0 then return 0
+  separator: u64 is 1
+  if parent_length == 1 and mem.read8(parent) == 47 then separator is 0
+  if parent_length + separator + name_length >= capacity then return 0
+  if not vfs_copy_bytes(destination, parent, parent_length) then return 0
+  output: u64 is parent_length
+  if separator != 0 then
+    mem.write8(ptr.add(destination, output), 47)
+    output += 1
+  end
+  if not vfs_copy_bytes(ptr.add(destination, output), name, name_length) then return 0
+  mem.write8(ptr.add(destination, output + name_length), 0)
+  return output + name_length
+end
+
+func vfs_path_is_descendant(parent: ptr, parent_length: u64, candidate: ptr, candidate_length: u64) do
+  if parent == 0 or candidate == 0 or parent_length == 0 then return false
+  if candidate_length <= parent_length then return false
+  if not vfs_path_equal(parent, candidate, parent_length) then return false
+  if parent_length == 1 and mem.read8(parent) == 47 then return true
+  return mem.read8(ptr.add(candidate, parent_length)) == 47
+end
+
+func vfs_copy_file(state: ptr[VfsState], source: ptr, source_length: u64, destination: ptr, destination_length: u64, workspace: ptr[VfsCopyWorkspace]) do
+  if not vfs_copy_workspace_valid(workspace) then return false
+  source_file: ptr[VfsFile] is workspace.source_file
+  destination_file: ptr[VfsFile] is workspace.destination_file
+  if not vfs_open(state, source, source_length, vfs_open_read, source_file) then return false
+  if not vfs_open(state, destination, destination_length, vfs_open_write, destination_file) then
+    vfs_close(source_file)
+    return false
+  end
+
+  ok: bool is true
+  remaining: u64 is source_file.size
+  while remaining != 0 and ok do
+    request: u64 is remaining
+    if request > workspace.file_buffer_capacity then request is workspace.file_buffer_capacity
+    if not vfs_read(source_file, workspace.file_buffer, request, workspace.source_count) then
+      ok is false
+    else
+      received: u64 is mem.read64(workspace.source_count)
+      if received == 0 or received > request then
+        ok is false
+      else
+        written: u64 is 0
+        while written < received and ok do
+          if not vfs_write(destination_file, ptr.add(workspace.file_buffer, written), received - written, workspace.destination_count) then
+            ok is false
+          else
+            chunk: u64 is mem.read64(workspace.destination_count)
+            if chunk == 0 or chunk > received - written then
+              ok is false
+            else
+              written += chunk
+            end
+          end
+        end
+        if ok then remaining -= received
+      end
+    end
+  end
+  if ok then ok is vfs_flush(destination_file)
+  destination_closed: bool is vfs_close(destination_file)
+  source_closed: bool is vfs_close(source_file)
+  return ok and destination_closed and source_closed
+end
+
+func vfs_copy_rollback(state: ptr[VfsState], destination: ptr, destination_length: u64) do
+  vfs_remove(state, destination, destination_length, true)
+  return false
+end
+
+# Copies a file or complete directory tree without allocation. Destination
+# must not already exist. Directory copies are iterative, bounded by the
+# caller's stack, and reject copying a tree into one of its descendants.
+func vfs_copy_tree(state: ptr[VfsState], source: ptr, source_length: u64, destination: ptr, destination_length: u64, workspace: ptr[VfsCopyWorkspace]) do
+  if not vfs_copy_workspace_valid(workspace) then return false
+  if source == 0 or destination == 0 or source_length == 0 or destination_length == 0 then return false
+  if source_length >= workspace.path_capacity or destination_length >= workspace.path_capacity then return false
+  stat: ptr[VfsStat] is workspace.stat
+  if not vfs_stat(state, source, source_length, stat) then return false
+  source_kind: u64 is stat.kind
+  source_mode: u64 is stat.mode
+  if vfs_stat(state, destination, destination_length, stat) then return false
+
+  if source_kind == vfs_kind_file then
+    if not vfs_create(state, destination, destination_length, vfs_kind_file, source_mode) then return false
+    if not vfs_copy_file(state, source, source_length, destination, destination_length, workspace) then
+      return vfs_copy_rollback(state, destination, destination_length)
+    end
+    return true
+  end
+  if source_kind != vfs_kind_directory then return false
+  if vfs_path_is_descendant(source, source_length, destination, destination_length) then return false
+  if not vfs_create(state, destination, destination_length, vfs_kind_directory, source_mode) then return false
+
+  source_root: ptr is workspace.source_paths
+  destination_root: ptr is workspace.destination_paths
+  if not vfs_copy_bytes(source_root, source, source_length) then return vfs_copy_rollback(state, destination, destination_length)
+  if not vfs_copy_bytes(destination_root, destination, destination_length) then return vfs_copy_rollback(state, destination, destination_length)
+  mem.write8(ptr.add(source_root, source_length), 0)
+  mem.write8(ptr.add(destination_root, destination_length), 0)
+  mem.write64(workspace.source_lengths, source_length)
+  mem.write64(workspace.destination_lengths, destination_length)
+  mem.write64(workspace.ordinals, 0)
+
+  stack_count: u64 is 1
+  while stack_count != 0 do
+    top: u64 is stack_count - 1
+    source_directory: ptr is ptr.add(workspace.source_paths, top * workspace.path_capacity)
+    destination_directory: ptr is ptr.add(workspace.destination_paths, top * workspace.path_capacity)
+    source_directory_length: u64 is mem.read64(ptr.add(workspace.source_lengths, top * 8))
+    destination_directory_length: u64 is mem.read64(ptr.add(workspace.destination_lengths, top * 8))
+    ordinal_address: ptr is ptr.add(workspace.ordinals, top * 8)
+    ordinal: u64 is mem.read64(ordinal_address)
+    entry: ptr[VfsDirEntry] is workspace.entry
+    entry.name is workspace.entry_name
+    entry.name_capacity is workspace.entry_name_capacity
+    if not vfs_list(state, source_directory, source_directory_length, ordinal, entry) then
+      stack_count -= 1
+    else
+      mem.write64(ordinal_address, ordinal + 1)
+      if stack_count >= workspace.stack_capacity then
+        return vfs_copy_rollback(state, destination, destination_length)
+      end
+      source_child: ptr is ptr.add(workspace.source_paths, stack_count * workspace.path_capacity)
+      destination_child: ptr is ptr.add(workspace.destination_paths, stack_count * workspace.path_capacity)
+      source_child_length: u64 is vfs_copy_child_path(source_directory, source_directory_length, entry.name, entry.name_length, source_child, workspace.path_capacity)
+      destination_child_length: u64 is vfs_copy_child_path(destination_directory, destination_directory_length, entry.name, entry.name_length, destination_child, workspace.path_capacity)
+      if source_child_length == 0 or destination_child_length == 0 then
+        return vfs_copy_rollback(state, destination, destination_length)
+      end
+      if entry.kind == vfs_kind_file then
+        if not vfs_create(state, destination_child, destination_child_length, vfs_kind_file, entry.mode) then
+          return vfs_copy_rollback(state, destination, destination_length)
+        end
+        if not vfs_copy_file(state, source_child, source_child_length, destination_child, destination_child_length, workspace) then
+          return vfs_copy_rollback(state, destination, destination_length)
+        end
+      elif entry.kind == vfs_kind_directory then
+        if not vfs_create(state, destination_child, destination_child_length, vfs_kind_directory, entry.mode) then
+          return vfs_copy_rollback(state, destination, destination_length)
+        end
+        mem.write64(ptr.add(workspace.source_lengths, stack_count * 8), source_child_length)
+        mem.write64(ptr.add(workspace.destination_lengths, stack_count * 8), destination_child_length)
+        mem.write64(ptr.add(workspace.ordinals, stack_count * 8), 0)
+        stack_count += 1
+      else
+        return vfs_copy_rollback(state, destination, destination_length)
+      end
+    end
+  end
+  return true
 end

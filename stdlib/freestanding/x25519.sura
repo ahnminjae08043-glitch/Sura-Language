@@ -1,0 +1,312 @@
+# X25519 Diffie-Hellman for the freestanding Sura target.
+#
+# Field elements use sixteen signed 16-bit limbs stored in 64-bit slots.
+# The Montgomery ladder and conditional swaps have a fixed control flow for
+# every scalar. Caller-owned scratch storage avoids allocation.
+
+x25519_121665 is static.u64([121665, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8)
+
+struct X25519Workspace do
+  field_a: ptr
+  field_b: ptr
+  field_c: ptr
+  field_d: ptr
+  field_e: ptr
+  field_f: ptr
+  field_x: ptr
+  scalar: ptr
+  product: ptr
+  reduce_m: ptr
+  initialized: u64
+end
+
+struct X25519Buffers do
+  field_a: ptr
+  field_b: ptr
+  field_c: ptr
+  field_d: ptr
+  field_e: ptr
+  field_f: ptr
+  field_x: ptr
+  scalar: ptr
+  product: ptr
+  reduce_m: ptr
+end
+
+func x25519_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func x25519_copy_bytes(destination: ptr, source: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func x25519_workspace_init(workspace: ptr[X25519Workspace], buffers: ptr[X25519Buffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.field_a == 0 or buffers.field_b == 0 or buffers.field_c == 0 then return false
+  if buffers.field_d == 0 or buffers.field_e == 0 or buffers.field_f == 0 then return false
+  if buffers.field_x == 0 or buffers.scalar == 0 or buffers.product == 0 then return false
+  if buffers.reduce_m == 0 then return false
+  workspace.field_a is buffers.field_a
+  workspace.field_b is buffers.field_b
+  workspace.field_c is buffers.field_c
+  workspace.field_d is buffers.field_d
+  workspace.field_e is buffers.field_e
+  workspace.field_f is buffers.field_f
+  workspace.field_x is buffers.field_x
+  workspace.scalar is buffers.scalar
+  workspace.product is buffers.product
+  workspace.reduce_m is buffers.reduce_m
+  workspace.initialized is 1
+  if not x25519_zero(workspace.field_a, 128) then return false
+  if not x25519_zero(workspace.field_b, 128) then return false
+  if not x25519_zero(workspace.field_c, 128) then return false
+  if not x25519_zero(workspace.field_d, 128) then return false
+  if not x25519_zero(workspace.field_e, 128) then return false
+  if not x25519_zero(workspace.field_f, 128) then return false
+  if not x25519_zero(workspace.field_x, 128) then return false
+  if not x25519_zero(workspace.scalar, 32) then return false
+  if not x25519_zero(workspace.product, 248) then return false
+  return x25519_zero(workspace.reduce_m, 128)
+end
+
+func x25519_field_copy(output: ptr, input: ptr) do
+  index: u64 is 0
+  while index < 16 do
+    mem.write64(ptr.index(output, index, 8), mem.read64(ptr.index(input, index, 8)))
+    index += 1
+  end
+  return true
+end
+
+func x25519_field_add(output: ptr, left: ptr, right: ptr) do
+  index: u64 is 0
+  while index < 16 do
+    left_value: i64 is mem.read64(ptr.index(left, index, 8))
+    right_value: i64 is mem.read64(ptr.index(right, index, 8))
+    mem.write64(ptr.index(output, index, 8), left_value + right_value)
+    index += 1
+  end
+  return true
+end
+
+func x25519_field_subtract(output: ptr, left: ptr, right: ptr) do
+  index: u64 is 0
+  while index < 16 do
+    left_value: i64 is mem.read64(ptr.index(left, index, 8))
+    right_value: i64 is mem.read64(ptr.index(right, index, 8))
+    mem.write64(ptr.index(output, index, 8), left_value - right_value)
+    index += 1
+  end
+  return true
+end
+
+func x25519_carry(field: ptr) do
+  carry: i64 is 1
+  index: u64 is 0
+  while index < 16 do
+    limb: i64 is mem.read64(ptr.index(field, index, 8))
+    value: i64 is limb + carry + 65535
+    carry is value >> 16
+    mem.write64(ptr.index(field, index, 8), value - carry * 65536)
+    index += 1
+  end
+  first: i64 is mem.read64(field)
+  first is first + carry - 1 + 37 * (carry - 1)
+  mem.write64(field, first)
+  return true
+end
+
+func x25519_field_multiply(workspace: ptr[X25519Workspace], output: ptr, left: ptr, right: ptr) do
+  if not x25519_zero(workspace.product, 248) then return false
+  left_index: u64 is 0
+  while left_index < 16 do
+    left_value: i64 is mem.read64(ptr.index(left, left_index, 8))
+    right_index: u64 is 0
+    while right_index < 16 do
+      right_value: i64 is mem.read64(ptr.index(right, right_index, 8))
+      product_index: u64 is left_index + right_index
+      accumulated: i64 is mem.read64(ptr.index(workspace.product, product_index, 8))
+      accumulated is accumulated + left_value * right_value
+      mem.write64(ptr.index(workspace.product, product_index, 8), accumulated)
+      right_index += 1
+    end
+    left_index += 1
+  end
+  index: u64 is 0
+  while index < 15 do
+    low: i64 is mem.read64(ptr.index(workspace.product, index, 8))
+    high: i64 is mem.read64(ptr.index(workspace.product, index + 16, 8))
+    mem.write64(ptr.index(workspace.product, index, 8), low + 38 * high)
+    index += 1
+  end
+  index is 0
+  while index < 16 do
+    mem.write64(ptr.index(output, index, 8), mem.read64(ptr.index(workspace.product, index, 8)))
+    index += 1
+  end
+  if not x25519_carry(output) then return false
+  return x25519_carry(output)
+end
+
+func x25519_field_square(workspace: ptr[X25519Workspace], output: ptr, input: ptr) do
+  return x25519_field_multiply(workspace, output, input, input)
+end
+
+func x25519_select(left: ptr, right: ptr, bit: u64) do
+  mask: u64 is ~(bit - 1)
+  index: u64 is 0
+  while index < 16 do
+    left_value: u64 is mem.read64(ptr.index(left, index, 8))
+    right_value: u64 is mem.read64(ptr.index(right, index, 8))
+    difference: u64 is mask & (left_value ^ right_value)
+    mem.write64(ptr.index(left, index, 8), left_value ^ difference)
+    mem.write64(ptr.index(right, index, 8), right_value ^ difference)
+    index += 1
+  end
+  return true
+end
+
+func x25519_unpack(output: ptr, input: ptr) do
+  index: u64 is 0
+  while index < 16 do
+    value: u64 is mem.read8(ptr.add(input, index * 2))
+    value is value | (mem.read8(ptr.add(input, index * 2 + 1)) << 8)
+    mem.write64(ptr.index(output, index, 8), value)
+    index += 1
+  end
+  mem.write64(ptr.index(output, 15, 8), mem.read64(ptr.index(output, 15, 8)) & 32767)
+  return true
+end
+
+func x25519_pack(workspace: ptr[X25519Workspace], input: ptr, output: ptr) do
+  temporary: ptr is workspace.field_x
+  reduced: ptr is workspace.reduce_m
+  if not x25519_field_copy(temporary, input) then return false
+  if not x25519_carry(temporary) then return false
+  if not x25519_carry(temporary) then return false
+  if not x25519_carry(temporary) then return false
+  pass: u64 is 0
+  while pass < 2 do
+    first: i64 is mem.read64(temporary)
+    mem.write64(reduced, first - 65517)
+    index: u64 is 1
+    while index < 15 do
+      previous: i64 is mem.read64(ptr.index(reduced, index - 1, 8))
+      current: i64 is mem.read64(ptr.index(temporary, index, 8))
+      mem.write64(ptr.index(reduced, index, 8), current - 65535 - ((previous >> 16) & 1))
+      mem.write64(ptr.index(reduced, index - 1, 8), previous & 65535)
+      index += 1
+    end
+    previous: i64 is mem.read64(ptr.index(reduced, 14, 8))
+    last: i64 is mem.read64(ptr.index(temporary, 15, 8))
+    last is last - 32767 - ((previous >> 16) & 1)
+    mem.write64(ptr.index(reduced, 15, 8), last)
+    mem.write64(ptr.index(reduced, 14, 8), previous & 65535)
+    borrow: u64 is (last >> 16) & 1
+    if not x25519_select(temporary, reduced, 1 - borrow) then return false
+    pass += 1
+  end
+  index: u64 is 0
+  while index < 16 do
+    value: u64 is mem.read64(ptr.index(temporary, index, 8))
+    mem.write8(ptr.add(output, index * 2), value & 255)
+    mem.write8(ptr.add(output, index * 2 + 1), (value >> 8) & 255)
+    index += 1
+  end
+  return true
+end
+
+func x25519_invert(workspace: ptr[X25519Workspace], output: ptr, input: ptr) do
+  temporary: ptr is workspace.field_f
+  if not x25519_field_copy(temporary, input) then return false
+  exponent: i64 is 253
+  while exponent >= 0 do
+    if not x25519_field_square(workspace, temporary, temporary) then return false
+    if exponent != 2 and exponent != 4 then
+      if not x25519_field_multiply(workspace, temporary, temporary, input) then return false
+    end
+    exponent -= 1
+  end
+  return x25519_field_copy(output, temporary)
+end
+
+func x25519(workspace: ptr[X25519Workspace], scalar: ptr, coordinate: ptr, output: ptr) do
+  if workspace == 0 or workspace.initialized == 0 then return false
+  if scalar == 0 or coordinate == 0 or output == 0 then return false
+  if not x25519_copy_bytes(workspace.scalar, scalar, 32) then return false
+  mem.write8(workspace.scalar, mem.read8(workspace.scalar) & 248)
+  mem.write8(ptr.add(workspace.scalar, 31), (mem.read8(ptr.add(workspace.scalar, 31)) & 127) | 64)
+
+  a: ptr is workspace.field_a
+  b: ptr is workspace.field_b
+  c: ptr is workspace.field_c
+  d: ptr is workspace.field_d
+  e: ptr is workspace.field_e
+  f: ptr is workspace.field_f
+  x: ptr is workspace.field_x
+  if not x25519_unpack(x, coordinate) then return false
+  if not x25519_zero(a, 128) then return false
+  if not x25519_field_copy(b, x) then return false
+  if not x25519_zero(c, 128) then return false
+  if not x25519_zero(d, 128) then return false
+  mem.write64(a, 1)
+  mem.write64(d, 1)
+
+  position: i64 is 254
+  while position >= 0 do
+    scalar_index: u64 is position / 8
+    scalar_bit: u64 is position % 8
+    bit: u64 is (mem.read8(ptr.add(workspace.scalar, scalar_index)) >> scalar_bit) & 1
+    if not x25519_select(a, b, bit) then return false
+    if not x25519_select(c, d, bit) then return false
+    if not x25519_field_add(e, a, c) then return false
+    if not x25519_field_subtract(a, a, c) then return false
+    if not x25519_field_add(c, b, d) then return false
+    if not x25519_field_subtract(b, b, d) then return false
+    if not x25519_field_square(workspace, d, e) then return false
+    if not x25519_field_square(workspace, f, a) then return false
+    if not x25519_field_multiply(workspace, a, c, a) then return false
+    if not x25519_field_multiply(workspace, c, b, e) then return false
+    if not x25519_field_add(e, a, c) then return false
+    if not x25519_field_subtract(a, a, c) then return false
+    if not x25519_field_square(workspace, b, a) then return false
+    if not x25519_field_subtract(c, d, f) then return false
+    if not x25519_field_multiply(workspace, a, c, x25519_121665) then return false
+    if not x25519_field_add(a, a, d) then return false
+    if not x25519_field_multiply(workspace, c, c, a) then return false
+    if not x25519_field_multiply(workspace, a, d, f) then return false
+    if not x25519_field_multiply(workspace, d, b, x) then return false
+    if not x25519_field_square(workspace, b, e) then return false
+    if not x25519_select(a, b, bit) then return false
+    if not x25519_select(c, d, bit) then return false
+    position -= 1
+  end
+  if not x25519_invert(workspace, c, c) then return false
+  if not x25519_field_multiply(workspace, a, a, c) then return false
+  return x25519_pack(workspace, a, output)
+end
+
+func x25519_shared_secret(workspace: ptr[X25519Workspace], scalar: ptr, coordinate: ptr, output: ptr) do
+  if not x25519(workspace, scalar, coordinate, output) then return false
+  combined: u64 is 0
+  index: u64 is 0
+  while index < 32 do
+    combined is combined | mem.read8(ptr.add(output, index))
+    index += 1
+  end
+  return combined != 0
+end

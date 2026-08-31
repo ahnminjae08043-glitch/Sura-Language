@@ -1,0 +1,1226 @@
+# Allocation-free WebAssembly MVP integer runtime for the Sura OS browser.
+#
+# The caller owns every table and execution buffer. This first layer accepts
+# custom, type, function, export, and code sections. It executes i32/i64
+# locals, integer arithmetic/comparisons, direct calls, and structured control
+# flow. Imports, tables, memories, globals, start, elements, data, floats,
+# references, exceptions, threads, and SIMD are rejected.
+
+struct BrowserWasmReader do
+  input: ptr
+  input_bytes: u64
+  cursor: u64
+  limit: u64
+  error: u64
+end
+
+struct BrowserWasmType do
+  param_start: u64
+  param_count: u64
+  result_type: u64
+  result_count: u64
+end
+
+struct BrowserWasmFunction do
+  type_index: u64
+  code_start: u64
+  code_end: u64
+  local_start: u64
+  local_count: u64
+end
+
+struct BrowserWasmExport do
+  name_start: u64
+  name_bytes: u64
+  kind: u64
+  index: u64
+end
+
+struct BrowserWasmModule do
+  input: ptr
+  input_bytes: u64
+  reader: ptr
+  types: ptr
+  type_capacity: u64
+  type_count: u64
+  param_types: ptr
+  param_type_capacity: u64
+  param_type_count: u64
+  functions: ptr
+  function_capacity: u64
+  function_count: u64
+  local_types: ptr
+  local_type_capacity: u64
+  local_type_count: u64
+  exports: ptr
+  export_capacity: u64
+  export_count: u64
+  validation: ptr
+  validation_capacity: u64
+  error: u64
+end
+
+struct BrowserWasmValue do
+  kind: u64
+  number: i64
+end
+
+struct BrowserWasmControl do
+  kind: u64
+  start_pc: u64
+  else_pc: u64
+  end_pc: u64
+  stack_height: u64
+  result_type: u64
+end
+
+struct BrowserWasmVm do
+  module: ptr
+  reader: ptr
+  stack: ptr
+  stack_capacity: u64
+  stack_count: u64
+  locals: ptr
+  local_capacity: u64
+  local_count: u64
+  controls: ptr
+  control_capacity: u64
+  control_count: u64
+  instruction_limit: u64
+  instruction_count: u64
+  call_depth_limit: u64
+  call_depth: u64
+  error: u64
+end
+
+func browser_wasm_type_i32() do
+  return 127
+end
+
+func browser_wasm_type_i64() do
+  return 126
+end
+
+func browser_wasm_type_empty() do
+  return 64
+end
+
+func browser_wasm_error_none() do
+  return 0
+end
+
+func browser_wasm_error_state() do
+  return 1
+end
+
+func browser_wasm_error_magic() do
+  return 2
+end
+
+func browser_wasm_error_version() do
+  return 3
+end
+
+func browser_wasm_error_truncated() do
+  return 4
+end
+
+func browser_wasm_error_leb128() do
+  return 5
+end
+
+func browser_wasm_error_section() do
+  return 6
+end
+
+func browser_wasm_error_unsupported() do
+  return 7
+end
+
+func browser_wasm_error_capacity() do
+  return 8
+end
+
+func browser_wasm_error_type() do
+  return 9
+end
+
+func browser_wasm_error_function() do
+  return 10
+end
+
+func browser_wasm_error_export() do
+  return 11
+end
+
+func browser_wasm_error_code() do
+  return 12
+end
+
+func browser_wasm_error_opcode() do
+  return 13
+end
+
+func browser_wasm_error_control() do
+  return 14
+end
+
+func browser_wasm_error_stack_underflow() do
+  return 15
+end
+
+func browser_wasm_error_stack_overflow() do
+  return 16
+end
+
+func browser_wasm_error_local() do
+  return 17
+end
+
+func browser_wasm_error_divide_by_zero() do
+  return 18
+end
+
+func browser_wasm_error_integer_overflow() do
+  return 19
+end
+
+func browser_wasm_error_instruction_limit() do
+  return 20
+end
+
+func browser_wasm_error_call_depth() do
+  return 21
+end
+
+func browser_wasm_error_argument_count() do
+  return 22
+end
+
+func browser_wasm_error_result() do
+  return 23
+end
+
+func browser_wasm_module_fail(module: ptr[BrowserWasmModule], error: u64) do
+  if module != 0 and module.error == browser_wasm_error_none() then module.error is error
+  return false
+end
+
+func browser_wasm_vm_fail(vm: ptr[BrowserWasmVm], error: u64) do
+  if vm != 0 and vm.error == browser_wasm_error_none() then vm.error is error
+  return false
+end
+
+func browser_wasm_valid_value_type(value: u64) do
+  return value == browser_wasm_type_i32() or value == browser_wasm_type_i64()
+end
+
+func browser_wasm_reader_reset(reader: ptr[BrowserWasmReader], input: ptr, input_bytes: u64, cursor: u64, limit: u64) do
+  if reader == 0 or input == 0 or cursor > limit or limit > input_bytes then return false
+  reader.input is input
+  reader.input_bytes is input_bytes
+  reader.cursor is cursor
+  reader.limit is limit
+  reader.error is 0
+  return true
+end
+
+func browser_wasm_reader_byte(reader: ptr[BrowserWasmReader]) do
+  if reader == 0 or reader.input == 0 or reader.cursor >= reader.limit then
+    if reader != 0 then reader.error is browser_wasm_error_truncated()
+    return 256
+  end
+  value: u64 is mem.read8(ptr.add(reader.input, reader.cursor))
+  reader.cursor += 1
+  return value
+end
+
+func browser_wasm_read_u32(reader: ptr[BrowserWasmReader], output: ptr) do
+  if reader == 0 or output == 0 then return false
+  result: u64 is 0
+  shift: u64 is 0
+  index: u64 is 0
+  while index < 5 do
+    byte: u64 is browser_wasm_reader_byte(reader)
+    if byte > 255 then return false
+    if index == 4 and (byte & 240) != 0 then
+      reader.error is browser_wasm_error_leb128()
+      return false
+    end
+    result is result | ((byte & 127) << shift)
+    if (byte & 128) == 0 then
+      mem.write64(output, result)
+      return true
+    end
+    shift += 7
+    index += 1
+  end
+  reader.error is browser_wasm_error_leb128()
+  return false
+end
+
+func browser_wasm_read_signed(reader: ptr[BrowserWasmReader], bits: u64, output: ptr) do
+  if reader == 0 or output == 0 or (bits != 32 and bits != 64) then return false
+  result: u64 is 0
+  shift: u64 is 0
+  maximum: u64 is 5
+  if bits == 64 then maximum is 10
+  index: u64 is 0
+  while index < maximum do
+    byte: u64 is browser_wasm_reader_byte(reader)
+    if byte > 255 then return false
+    payload: u64 is byte & 127
+    if index + 1 == maximum then
+      if bits == 32 then
+        high: u64 is payload & 112
+        if high != 0 and high != 112 then
+          reader.error is browser_wasm_error_leb128()
+          return false
+        end
+      else
+        high64: u64 is payload & 126
+        if high64 != 0 and high64 != 126 then
+          reader.error is browser_wasm_error_leb128()
+          return false
+        end
+      end
+    end
+    result is result | (payload << shift)
+    shift += 7
+    if (byte & 128) == 0 then
+      if (byte & 64) != 0 and shift < 64 then result is result | (u64("0xffffffffffffffff") << shift)
+      if bits == 32 then
+        signed32: i64 is result & 4294967295
+        if signed32 >= 2147483648 then signed32 -= 4294967296
+        mem.write64(output, signed32)
+      else
+        mem.write64(output, result)
+      end
+      return true
+    end
+    index += 1
+  end
+  reader.error is browser_wasm_error_leb128()
+  return false
+end
+
+func browser_wasm_type_at(module: ptr[BrowserWasmModule], index: u64) do
+  if module == 0 or module.types == 0 or index >= module.type_count then return 0
+  return ptr.add(module.types, index * 32)
+end
+
+func browser_wasm_function_at(module: ptr[BrowserWasmModule], index: u64) do
+  if module == 0 or module.functions == 0 or index >= module.function_count then return 0
+  return ptr.add(module.functions, index * 40)
+end
+
+func browser_wasm_export_at(module: ptr[BrowserWasmModule], index: u64) do
+  if module == 0 or module.exports == 0 or index >= module.export_count then return 0
+  return ptr.add(module.exports, index * 32)
+end
+
+func browser_wasm_value_at(base: ptr, index: u64) do
+  if base == 0 then return 0
+  return ptr.add(base, index * 16)
+end
+
+func browser_wasm_control_at(vm: ptr[BrowserWasmVm], index: u64) do
+  if vm == 0 or vm.controls == 0 or index >= vm.control_capacity then return 0
+  return ptr.add(vm.controls, index * 48)
+end
+
+func browser_wasm_param_type(module: ptr[BrowserWasmModule], type_info: ptr[BrowserWasmType], index: u64) do
+  if module == 0 or type_info == 0 or module.param_types == 0 or index >= type_info.param_count then return 0
+  return mem.read64(ptr.add(module.param_types, (type_info.param_start + index) * 8))
+end
+
+func browser_wasm_function_local_type(module: ptr[BrowserWasmModule], function: ptr[BrowserWasmFunction], index: u64) do
+  if module == 0 or function == 0 or module.local_types == 0 or index >= function.local_count then return 0
+  return mem.read64(ptr.add(module.local_types, (function.local_start + index) * 8))
+end
+
+func browser_wasm_module_reset(module: ptr[BrowserWasmModule]) do
+  if module == 0 then return false
+  module.input is 0
+  module.input_bytes is 0
+  module.type_count is 0
+  module.param_type_count is 0
+  module.function_count is 0
+  module.local_type_count is 0
+  module.export_count is 0
+  module.error is browser_wasm_error_none()
+  return true
+end
+
+func browser_wasm_parse_types(module: ptr[BrowserWasmModule], reader: ptr[BrowserWasmReader], section_end: u64) do
+  count: u64 is 0
+  if not browser_wasm_read_u32(reader, addr_of(count)) then return browser_wasm_module_fail(module, reader.error)
+  if count > module.type_capacity - module.type_count then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+  index: u64 is 0
+  while index < count do
+    if browser_wasm_reader_byte(reader) != 96 then return browser_wasm_module_fail(module, browser_wasm_error_type())
+    type_info: ptr[BrowserWasmType] is ptr.add(module.types, module.type_count * 32)
+    type_info.param_start is module.param_type_count
+    param_count: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(param_count)) then return browser_wasm_module_fail(module, reader.error)
+    if param_count > 8 or param_count > module.param_type_capacity - module.param_type_count then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+    type_info.param_count is param_count
+    param_index: u64 is 0
+    while param_index < param_count do
+      value_type: u64 is browser_wasm_reader_byte(reader)
+      if not browser_wasm_valid_value_type(value_type) then return browser_wasm_module_fail(module, browser_wasm_error_type())
+      mem.write64(ptr.add(module.param_types, module.param_type_count * 8), value_type)
+      module.param_type_count += 1
+      param_index += 1
+    end
+    result_count: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(result_count)) then return browser_wasm_module_fail(module, reader.error)
+    if result_count > 1 then return browser_wasm_module_fail(module, browser_wasm_error_unsupported())
+    type_info.result_count is result_count
+    type_info.result_type is browser_wasm_type_empty()
+    if result_count == 1 then
+      result_type: u64 is browser_wasm_reader_byte(reader)
+      if not browser_wasm_valid_value_type(result_type) then return browser_wasm_module_fail(module, browser_wasm_error_type())
+      type_info.result_type is result_type
+    end
+    module.type_count += 1
+    index += 1
+  end
+  if reader.cursor != section_end then return browser_wasm_module_fail(module, browser_wasm_error_section())
+  return true
+end
+
+func browser_wasm_parse_functions(module: ptr[BrowserWasmModule], reader: ptr[BrowserWasmReader], section_end: u64) do
+  count: u64 is 0
+  if not browser_wasm_read_u32(reader, addr_of(count)) then return browser_wasm_module_fail(module, reader.error)
+  if count > module.function_capacity - module.function_count then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+  index: u64 is 0
+  while index < count do
+    type_index: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(type_index)) then return browser_wasm_module_fail(module, reader.error)
+    if type_index >= module.type_count then return browser_wasm_module_fail(module, browser_wasm_error_type())
+    function: ptr[BrowserWasmFunction] is ptr.add(module.functions, module.function_count * 40)
+    function.type_index is type_index
+    function.code_start is 0
+    function.code_end is 0
+    function.local_start is 0
+    function.local_count is 0
+    module.function_count += 1
+    index += 1
+  end
+  if reader.cursor != section_end then return browser_wasm_module_fail(module, browser_wasm_error_section())
+  return true
+end
+
+func browser_wasm_parse_exports(module: ptr[BrowserWasmModule], reader: ptr[BrowserWasmReader], section_end: u64) do
+  count: u64 is 0
+  if not browser_wasm_read_u32(reader, addr_of(count)) then return browser_wasm_module_fail(module, reader.error)
+  if count > module.export_capacity - module.export_count then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+  index: u64 is 0
+  while index < count do
+    name_bytes: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(name_bytes)) then return browser_wasm_module_fail(module, reader.error)
+    if name_bytes > reader.limit - reader.cursor then return browser_wasm_module_fail(module, browser_wasm_error_truncated())
+    export_info: ptr[BrowserWasmExport] is ptr.add(module.exports, module.export_count * 32)
+    export_info.name_start is reader.cursor
+    export_info.name_bytes is name_bytes
+    reader.cursor += name_bytes
+    export_info.kind is browser_wasm_reader_byte(reader)
+    export_index: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(export_index)) then return browser_wasm_module_fail(module, reader.error)
+    export_info.index is export_index
+    if export_info.kind != 0 then return browser_wasm_module_fail(module, browser_wasm_error_unsupported())
+    module.export_count += 1
+    index += 1
+  end
+  if reader.cursor != section_end then return browser_wasm_module_fail(module, browser_wasm_error_section())
+  return true
+end
+
+func browser_wasm_skip_immediate(reader: ptr[BrowserWasmReader], opcode: u64) do
+  if opcode == 2 or opcode == 3 or opcode == 4 then
+    block_type: u64 is browser_wasm_reader_byte(reader)
+    return block_type == browser_wasm_type_empty() or browser_wasm_valid_value_type(block_type)
+  end
+  if opcode == 12 or opcode == 13 or opcode == 16 or opcode == 32 or opcode == 33 or opcode == 34 then
+    immediate: u64 is 0
+    return browser_wasm_read_u32(reader, addr_of(immediate))
+  end
+  if opcode == 65 then
+    signed32: i64 is 0
+    return browser_wasm_read_signed(reader, 32, addr_of(signed32))
+  end
+  if opcode == 66 then
+    signed64: i64 is 0
+    return browser_wasm_read_signed(reader, 64, addr_of(signed64))
+  end
+  if opcode == 0 or opcode == 1 or opcode == 5 or opcode == 11 or opcode == 15 or opcode == 26 or opcode == 27 then return true
+  if opcode >= 69 and opcode <= 90 then return true
+  if opcode >= 106 and opcode <= 118 then return true
+  if opcode >= 124 and opcode <= 136 then return true
+  reader.error is browser_wasm_error_opcode()
+  return false
+end
+
+func browser_wasm_validate_body(module: ptr[BrowserWasmModule], function_index: u64) do
+  function: ptr[BrowserWasmFunction] is browser_wasm_function_at(module, function_index)
+  if function == 0 or function.code_start >= function.code_end then return browser_wasm_module_fail(module, browser_wasm_error_code())
+  reader: ptr[BrowserWasmReader] is module.reader
+  if not browser_wasm_reader_reset(reader, module.input, module.input_bytes, function.code_start, function.code_end) then return browser_wasm_module_fail(module, browser_wasm_error_state())
+  if module.validation == 0 or module.validation_capacity == 0 then return browser_wasm_module_fail(module, browser_wasm_error_state())
+  depth: u64 is 1
+  mem.write64(module.validation, 0)
+  type_info: ptr[BrowserWasmType] is browser_wasm_type_at(module, function.type_index)
+  local_limit: u64 is type_info.param_count + function.local_count
+  while reader.cursor < reader.limit do
+    opcode: u64 is browser_wasm_reader_byte(reader)
+    if opcode == 2 or opcode == 3 or opcode == 4 then
+      if depth >= module.validation_capacity then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+      kind: u64 is opcode
+      mem.write64(ptr.add(module.validation, depth * 8), kind)
+      depth += 1
+      if not browser_wasm_skip_immediate(reader, opcode) then
+        return browser_wasm_module_fail(module, reader.error)
+      end
+    elif opcode == 5 then
+      if depth <= 1 then return browser_wasm_module_fail(module, browser_wasm_error_control())
+      top_kind: u64 is mem.read64(ptr.add(module.validation, (depth - 1) * 8))
+      if top_kind != 4 then return browser_wasm_module_fail(module, browser_wasm_error_control())
+      mem.write64(ptr.add(module.validation, (depth - 1) * 8), 5)
+    elif opcode == 11 then
+      if depth == 0 then return browser_wasm_module_fail(module, browser_wasm_error_control())
+      depth -= 1
+      if depth == 0 then
+        if reader.cursor != reader.limit then return browser_wasm_module_fail(module, browser_wasm_error_code())
+        return true
+      end
+    elif opcode == 12 or opcode == 13 then
+      label: u64 is 0
+      if not browser_wasm_read_u32(reader, addr_of(label)) then return browser_wasm_module_fail(module, reader.error)
+      if label >= depth then
+        return browser_wasm_module_fail(module, browser_wasm_error_control())
+      end
+    elif opcode == 16 then
+      target: u64 is 0
+      if not browser_wasm_read_u32(reader, addr_of(target)) then return browser_wasm_module_fail(module, reader.error)
+      if target >= module.function_count then
+        return browser_wasm_module_fail(module, browser_wasm_error_function())
+      end
+    elif opcode == 32 or opcode == 33 or opcode == 34 then
+      local_index: u64 is 0
+      if not browser_wasm_read_u32(reader, addr_of(local_index)) then return browser_wasm_module_fail(module, reader.error)
+      if local_index >= local_limit then
+        return browser_wasm_module_fail(module, browser_wasm_error_local())
+      end
+    else
+      if not browser_wasm_skip_immediate(reader, opcode) then return browser_wasm_module_fail(module, reader.error)
+    end
+  end
+  return browser_wasm_module_fail(module, browser_wasm_error_code())
+end
+
+func browser_wasm_parse_code(module: ptr[BrowserWasmModule], reader: ptr[BrowserWasmReader], section_end: u64) do
+  count: u64 is 0
+  if not browser_wasm_read_u32(reader, addr_of(count)) then return browser_wasm_module_fail(module, reader.error)
+  if count != module.function_count then return browser_wasm_module_fail(module, browser_wasm_error_function())
+  function_index: u64 is 0
+  while function_index < count do
+    body_bytes: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(body_bytes)) then return browser_wasm_module_fail(module, reader.error)
+    if body_bytes == 0 or body_bytes > section_end - reader.cursor then return browser_wasm_module_fail(module, browser_wasm_error_truncated())
+    body_end: u64 is reader.cursor + body_bytes
+    old_limit: u64 is reader.limit
+    reader.limit is body_end
+    function: ptr[BrowserWasmFunction] is browser_wasm_function_at(module, function_index)
+    function.local_start is module.local_type_count
+    local_group_count: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(local_group_count)) then return browser_wasm_module_fail(module, reader.error)
+    group_index: u64 is 0
+    while group_index < local_group_count do
+      repeated: u64 is 0
+      if not browser_wasm_read_u32(reader, addr_of(repeated)) then return browser_wasm_module_fail(module, reader.error)
+      value_type: u64 is browser_wasm_reader_byte(reader)
+      if not browser_wasm_valid_value_type(value_type) then return browser_wasm_module_fail(module, browser_wasm_error_type())
+      if repeated > 64 or repeated > module.local_type_capacity - module.local_type_count then return browser_wasm_module_fail(module, browser_wasm_error_capacity())
+      repeated_index: u64 is 0
+      while repeated_index < repeated do
+        mem.write64(ptr.add(module.local_types, module.local_type_count * 8), value_type)
+        module.local_type_count += 1
+        function.local_count += 1
+        repeated_index += 1
+      end
+      group_index += 1
+    end
+    function.code_start is reader.cursor
+    function.code_end is body_end
+    reader.cursor is body_end
+    reader.limit is old_limit
+    function_index += 1
+  end
+  if reader.cursor != section_end then return browser_wasm_module_fail(module, browser_wasm_error_section())
+  return true
+end
+
+func browser_wasm_module_parse(input: ptr, input_bytes: u64, module: ptr[BrowserWasmModule]) do
+  if module == 0 or input == 0 or input_bytes < 8 then return false
+  if module.reader == 0 or module.types == 0 or module.param_types == 0 or module.functions == 0 then return browser_wasm_module_fail(module, browser_wasm_error_state())
+  if module.local_types == 0 or module.exports == 0 or module.validation == 0 then return browser_wasm_module_fail(module, browser_wasm_error_state())
+  if not browser_wasm_module_reset(module) then return false
+  module.input is input
+  module.input_bytes is input_bytes
+  if mem.read8(input) != 0 or mem.read8(ptr.add(input, 1)) != 97 or mem.read8(ptr.add(input, 2)) != 115 or mem.read8(ptr.add(input, 3)) != 109 then return browser_wasm_module_fail(module, browser_wasm_error_magic())
+  if mem.read8(ptr.add(input, 4)) != 1 or mem.read8(ptr.add(input, 5)) != 0 or mem.read8(ptr.add(input, 6)) != 0 or mem.read8(ptr.add(input, 7)) != 0 then return browser_wasm_module_fail(module, browser_wasm_error_version())
+  reader: ptr[BrowserWasmReader] is module.reader
+  if not browser_wasm_reader_reset(reader, input, input_bytes, 8, input_bytes) then return browser_wasm_module_fail(module, browser_wasm_error_state())
+  last_section: u64 is 0
+  saw_code: u64 is 0
+  while reader.cursor < reader.limit do
+    section_id: u64 is browser_wasm_reader_byte(reader)
+    if section_id > 12 then return browser_wasm_module_fail(module, browser_wasm_error_section())
+    section_bytes: u64 is 0
+    if not browser_wasm_read_u32(reader, addr_of(section_bytes)) then return browser_wasm_module_fail(module, reader.error)
+    if section_bytes > reader.limit - reader.cursor then return browser_wasm_module_fail(module, browser_wasm_error_truncated())
+    section_end: u64 is reader.cursor + section_bytes
+    if section_id != 0 then
+      if section_id <= last_section then return browser_wasm_module_fail(module, browser_wasm_error_section())
+      last_section is section_id
+    end
+    old_limit: u64 is reader.limit
+    reader.limit is section_end
+    if section_id == 0 then
+      reader.cursor is section_end
+    elif section_id == 1 then
+      if not browser_wasm_parse_types(module, reader, section_end) then
+        return false
+      end
+    elif section_id == 3 then
+      if not browser_wasm_parse_functions(module, reader, section_end) then
+        return false
+      end
+    elif section_id == 7 then
+      if not browser_wasm_parse_exports(module, reader, section_end) then
+        return false
+      end
+    elif section_id == 10 then
+      if not browser_wasm_parse_code(module, reader, section_end) then return false
+      saw_code is 1
+    else
+      return browser_wasm_module_fail(module, browser_wasm_error_unsupported())
+    end
+    reader.limit is old_limit
+    reader.cursor is section_end
+  end
+  if module.function_count != 0 and saw_code == 0 then return browser_wasm_module_fail(module, browser_wasm_error_code())
+  export_index: u64 is 0
+  while export_index < module.export_count do
+    export_info: ptr[BrowserWasmExport] is browser_wasm_export_at(module, export_index)
+    if export_info.index >= module.function_count then return browser_wasm_module_fail(module, browser_wasm_error_export())
+    export_index += 1
+  end
+  function_index: u64 is 0
+  while function_index < module.function_count do
+    if not browser_wasm_validate_body(module, function_index) then return false
+    function_index += 1
+  end
+  module.error is browser_wasm_error_none()
+  return true
+end
+
+func browser_wasm_export_name_equal(module: ptr[BrowserWasmModule], export_info: ptr[BrowserWasmExport], name: ptr, name_bytes: u64) do
+  if module == 0 or export_info == 0 or name == 0 or export_info.name_bytes != name_bytes then return false
+  index: u64 is 0
+  while index < name_bytes do
+    if mem.read8(ptr.add(module.input, export_info.name_start + index)) != mem.read8(ptr.add(name, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_wasm_find_export(module: ptr[BrowserWasmModule], name: ptr, name_bytes: u64) do
+  if module == 0 or name == 0 then return u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < module.export_count do
+    export_info: ptr[BrowserWasmExport] is browser_wasm_export_at(module, index)
+    if browser_wasm_export_name_equal(module, export_info, name, name_bytes) then return index
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_wasm_value_set(value: ptr[BrowserWasmValue], kind: u64, number: i64) do
+  if value == 0 or not browser_wasm_valid_value_type(kind) then return false
+  value.kind is kind
+  if kind == browser_wasm_type_i32() then
+    normalized: i64 is number & 4294967295
+    if normalized >= 2147483648 then normalized -= 4294967296
+    value.number is normalized
+  else
+    value.number is number
+  end
+  return true
+end
+
+func browser_wasm_value_copy(destination: ptr[BrowserWasmValue], source: ptr[BrowserWasmValue]) do
+  if destination == 0 or source == 0 then return false
+  destination.kind is source.kind
+  destination.number is source.number
+  return true
+end
+
+func browser_wasm_stack_push(vm: ptr[BrowserWasmVm], value: ptr[BrowserWasmValue]) do
+  if vm == 0 or value == 0 or vm.stack == 0 then return false
+  if vm.stack_count >= vm.stack_capacity then return browser_wasm_vm_fail(vm, browser_wasm_error_stack_overflow())
+  destination: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.stack, vm.stack_count)
+  if not browser_wasm_value_copy(destination, value) then return false
+  vm.stack_count += 1
+  return true
+end
+
+func browser_wasm_stack_pop(vm: ptr[BrowserWasmVm], output: ptr[BrowserWasmValue]) do
+  if vm == 0 or output == 0 then return false
+  if vm.stack_count == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_stack_underflow())
+  vm.stack_count -= 1
+  return browser_wasm_value_copy(output, browser_wasm_value_at(vm.stack, vm.stack_count))
+end
+
+func browser_wasm_pop_type(vm: ptr[BrowserWasmVm], expected: u64, output: ptr[BrowserWasmValue]) do
+  if not browser_wasm_stack_pop(vm, output) then return false
+  if output.kind != expected then return browser_wasm_vm_fail(vm, browser_wasm_error_type())
+  return true
+end
+
+func browser_wasm_push_number(vm: ptr[BrowserWasmVm], kind: u64, number: i64) do
+  if vm == 0 or vm.locals == 0 or vm.local_capacity == 0 then return false
+  scratch: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  if not browser_wasm_value_set(scratch, kind, number) then return false
+  return browser_wasm_stack_push(vm, scratch)
+end
+
+func browser_wasm_vm_init(module: ptr[BrowserWasmModule], vm: ptr[BrowserWasmVm]) do
+  if module == 0 or vm == 0 or module.error != browser_wasm_error_none() then return false
+  if vm.reader == 0 or vm.stack == 0 or vm.locals == 0 or vm.controls == 0 then return false
+  if vm.stack_capacity == 0 or vm.local_capacity < 2 or vm.control_capacity == 0 then return false
+  if vm.instruction_limit == 0 or vm.call_depth_limit == 0 then return false
+  vm.module is module
+  vm.stack_count is 0
+  vm.local_count is 0
+  vm.control_count is 0
+  vm.instruction_count is 0
+  vm.call_depth is 0
+  vm.error is browser_wasm_error_none()
+  return true
+end
+
+func browser_wasm_find_control(vm: ptr[BrowserWasmVm], start: u64, limit: u64, else_output: ptr, end_output: ptr) do
+  if vm == 0 or else_output == 0 or end_output == 0 then return false
+  module: ptr[BrowserWasmModule] is vm.module
+  reader: ptr[BrowserWasmReader] is vm.reader
+  if not browser_wasm_reader_reset(reader, module.input, module.input_bytes, start, limit) then return browser_wasm_vm_fail(vm, browser_wasm_error_state())
+  depth: u64 is 1
+  mem.write64(else_output, u64("0xffffffffffffffff"))
+  while reader.cursor < reader.limit do
+    opcode_position: u64 is reader.cursor
+    opcode: u64 is browser_wasm_reader_byte(reader)
+    if opcode == 2 or opcode == 3 or opcode == 4 then
+      depth += 1
+      if not browser_wasm_skip_immediate(reader, opcode) then
+        return browser_wasm_vm_fail(vm, reader.error)
+      end
+    elif opcode == 5 then
+      if depth == 1 and mem.read64(else_output) == u64("0xffffffffffffffff") then
+        mem.write64(else_output, opcode_position)
+      end
+    elif opcode == 11 then
+      depth -= 1
+      if depth == 0 then
+        mem.write64(end_output, opcode_position)
+        return true
+      end
+    else
+      if not browser_wasm_skip_immediate(reader, opcode) then return browser_wasm_vm_fail(vm, reader.error)
+    end
+  end
+  return browser_wasm_vm_fail(vm, browser_wasm_error_control())
+end
+
+func browser_wasm_push_control(vm: ptr[BrowserWasmVm], kind: u64, start_pc: u64, else_pc: u64, end_pc: u64, result_type: u64) do
+  if vm.control_count >= vm.control_capacity then return browser_wasm_vm_fail(vm, browser_wasm_error_capacity())
+  control: ptr[BrowserWasmControl] is browser_wasm_control_at(vm, vm.control_count)
+  control.kind is kind
+  control.start_pc is start_pc
+  control.else_pc is else_pc
+  control.end_pc is end_pc
+  control.stack_height is vm.stack_count
+  control.result_type is result_type
+  vm.control_count += 1
+  return true
+end
+
+func browser_wasm_leave_control(vm: ptr[BrowserWasmVm]) do
+  if vm == 0 or vm.control_count == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_control())
+  control: ptr[BrowserWasmControl] is browser_wasm_control_at(vm, vm.control_count - 1)
+  saved: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  has_result: bool is control.result_type != browser_wasm_type_empty()
+  if has_result and not browser_wasm_pop_type(vm, control.result_type, saved) then return false
+  if vm.stack_count != control.stack_height then return browser_wasm_vm_fail(vm, browser_wasm_error_result())
+  vm.control_count -= 1
+  if has_result and not browser_wasm_stack_push(vm, saved) then return false
+  return true
+end
+
+func browser_wasm_branch(vm: ptr[BrowserWasmVm], depth: u64, pc_output: ptr) do
+  if vm == 0 or pc_output == 0 or depth >= vm.control_count then return browser_wasm_vm_fail(vm, browser_wasm_error_control())
+  target_index: u64 is vm.control_count - 1 - depth
+  target: ptr[BrowserWasmControl] is browser_wasm_control_at(vm, target_index)
+  saved: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  has_result: bool is target.result_type != browser_wasm_type_empty()
+  if has_result and not browser_wasm_pop_type(vm, target.result_type, saved) then return false
+  if vm.stack_count < target.stack_height then return browser_wasm_vm_fail(vm, browser_wasm_error_stack_underflow())
+  vm.stack_count is target.stack_height
+  if has_result and not browser_wasm_stack_push(vm, saved) then return false
+  if target.kind == 3 then
+    vm.control_count is target_index + 1
+    mem.write64(pc_output, target.start_pc)
+  else
+    vm.control_count is target_index + 1
+    mem.write64(pc_output, target.end_pc)
+  end
+  return true
+end
+
+func browser_wasm_binary_i32(vm: ptr[BrowserWasmVm], opcode: u64) do
+  right: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  left: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 2)
+  if not browser_wasm_pop_type(vm, browser_wasm_type_i32(), right) then return false
+  if not browser_wasm_pop_type(vm, browser_wasm_type_i32(), left) then return false
+  a: i64 is left.number
+  b: i64 is right.number
+  result: i64 is 0
+  unsigned_a: u64 is a
+  unsigned_b: u64 is b
+  if opcode == 106 then
+    result is a + b
+  elif opcode == 107 then
+    result is a - b
+  elif opcode == 108 then
+    result is a * b
+  elif opcode == 109 then
+    if b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    if a == -2147483648 and b == -1 then return browser_wasm_vm_fail(vm, browser_wasm_error_integer_overflow())
+    result is a / b
+  elif opcode == 110 then
+    unsigned_a is unsigned_a & 4294967295
+    unsigned_b is unsigned_b & 4294967295
+    if unsigned_b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    result is unsigned_a / unsigned_b
+  elif opcode == 111 then
+    if b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    if a == -2147483648 and b == -1 then result is 0 else result is a % b
+  elif opcode == 112 then
+    unsigned_a is unsigned_a & 4294967295
+    unsigned_b is unsigned_b & 4294967295
+    if unsigned_b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    result is unsigned_a % unsigned_b
+  elif opcode == 113 then
+    result is a & b
+  elif opcode == 114 then
+    result is a | b
+  elif opcode == 115 then
+    result is a ^ b
+  elif opcode == 116 then
+    result is (a & 4294967295) << (b & 31)
+  elif opcode == 117 then
+    result is a >> (b & 31)
+  elif opcode == 118 then
+    result is (a & 4294967295) >> (b & 31)
+  else
+    return browser_wasm_vm_fail(vm, browser_wasm_error_opcode())
+  end
+  return browser_wasm_push_number(vm, browser_wasm_type_i32(), result)
+end
+
+func browser_wasm_binary_i64(vm: ptr[BrowserWasmVm], opcode: u64) do
+  right: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  left: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 2)
+  if not browser_wasm_pop_type(vm, browser_wasm_type_i64(), right) then return false
+  if not browser_wasm_pop_type(vm, browser_wasm_type_i64(), left) then return false
+  a: i64 is left.number
+  b: i64 is right.number
+  result: i64 is 0
+  unsigned_a: u64 is a
+  unsigned_b: u64 is b
+  i64_min: i64 is u64("0x8000000000000000")
+  if opcode == 124 then
+    result is a + b
+  elif opcode == 125 then
+    result is a - b
+  elif opcode == 126 then
+    result is a * b
+  elif opcode == 127 then
+    if b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    if a == i64_min and b == -1 then return browser_wasm_vm_fail(vm, browser_wasm_error_integer_overflow())
+    result is a / b
+  elif opcode == 128 then
+    if unsigned_b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    result is unsigned_a / unsigned_b
+  elif opcode == 129 then
+    if b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    if a == i64_min and b == -1 then result is 0 else result is a % b
+  elif opcode == 130 then
+    if unsigned_b == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_divide_by_zero())
+    result is unsigned_a % unsigned_b
+  elif opcode == 131 then
+    result is a & b
+  elif opcode == 132 then
+    result is a | b
+  elif opcode == 133 then
+    result is a ^ b
+  elif opcode == 134 then
+    result is a << (b & 63)
+  elif opcode == 135 then
+    result is a >> (b & 63)
+  elif opcode == 136 then
+    result is unsigned_a >> (unsigned_b & 63)
+  else
+    return browser_wasm_vm_fail(vm, browser_wasm_error_opcode())
+  end
+  return browser_wasm_push_number(vm, browser_wasm_type_i64(), result)
+end
+
+func browser_wasm_compare(vm: ptr[BrowserWasmVm], opcode: u64) do
+  kind: u64 is browser_wasm_type_i32()
+  if opcode >= 80 then kind is browser_wasm_type_i64()
+  right: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+  left: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 2)
+  if not browser_wasm_pop_type(vm, kind, right) then return false
+  if not browser_wasm_pop_type(vm, kind, left) then return false
+  a: i64 is left.number
+  b: i64 is right.number
+  unsigned_a: u64 is a
+  unsigned_b: u64 is b
+  enabled: bool is false
+  base: u64 is opcode
+  if kind == browser_wasm_type_i64() then base -= 11
+  if base == 70 then
+    enabled is a == b
+  elif base == 71 then
+    enabled is a != b
+  elif base == 72 then
+    enabled is a < b
+  elif base == 73 then
+    enabled is unsigned_a < unsigned_b
+  elif base == 74 then
+    enabled is a > b
+  elif base == 75 then
+    enabled is unsigned_a > unsigned_b
+  elif base == 76 then
+    enabled is a <= b
+  elif base == 77 then
+    enabled is unsigned_a <= unsigned_b
+  elif base == 78 then
+    enabled is a >= b
+  elif base == 79 then
+    enabled is unsigned_a >= unsigned_b
+  else
+    return browser_wasm_vm_fail(vm, browser_wasm_error_opcode())
+  end
+  result: i64 is 0
+  if enabled then result is 1
+  return browser_wasm_push_number(vm, browser_wasm_type_i32(), result)
+end
+
+func browser_wasm_execute_function(vm: ptr[BrowserWasmVm], function_index: u64, arguments: ptr, argument_count: u64, result: ptr[BrowserWasmValue]) do
+  if vm == 0 or result == 0 or vm.module == 0 then return false
+  if vm.call_depth >= vm.call_depth_limit then return browser_wasm_vm_fail(vm, browser_wasm_error_call_depth())
+  module: ptr[BrowserWasmModule] is vm.module
+  function: ptr[BrowserWasmFunction] is browser_wasm_function_at(module, function_index)
+  if function == 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_function())
+  type_info: ptr[BrowserWasmType] is browser_wasm_type_at(module, function.type_index)
+  if type_info == 0 or argument_count != type_info.param_count then return browser_wasm_vm_fail(vm, browser_wasm_error_argument_count())
+  stack_base: u64 is vm.stack_count
+  local_base: u64 is vm.local_count
+  control_base: u64 is vm.control_count
+  required_locals: u64 is type_info.param_count + function.local_count
+  if required_locals + 2 > vm.local_capacity - vm.local_count then return browser_wasm_vm_fail(vm, browser_wasm_error_capacity())
+  index: u64 is 0
+  while index < type_info.param_count do
+    argument: ptr[BrowserWasmValue] is browser_wasm_value_at(arguments, index)
+    expected: u64 is browser_wasm_param_type(module, type_info, index)
+    if argument == 0 or argument.kind != expected then return browser_wasm_vm_fail(vm, browser_wasm_error_type())
+    if not browser_wasm_value_copy(browser_wasm_value_at(vm.locals, vm.local_count), argument) then return false
+    vm.local_count += 1
+    index += 1
+  end
+  index is 0
+  while index < function.local_count do
+    local_type: u64 is browser_wasm_function_local_type(module, function, index)
+    if not browser_wasm_value_set(browser_wasm_value_at(vm.locals, vm.local_count), local_type, 0) then return false
+    vm.local_count += 1
+    index += 1
+  end
+  vm.call_depth += 1
+  if not browser_wasm_push_control(vm, 0, function.code_start, u64("0xffffffffffffffff"), function.code_end - 1, type_info.result_type) then return false
+  pc: u64 is function.code_start
+  reader: ptr[BrowserWasmReader] is vm.reader
+  finished: bool is false
+  while not finished do
+    if vm.instruction_count >= vm.instruction_limit then
+      browser_wasm_vm_fail(vm, browser_wasm_error_instruction_limit())
+      finished is true
+    else
+      if not browser_wasm_reader_reset(reader, module.input, module.input_bytes, pc, function.code_end) then return browser_wasm_vm_fail(vm, browser_wasm_error_state())
+      opcode: u64 is browser_wasm_reader_byte(reader)
+      pc is reader.cursor
+      vm.instruction_count += 1
+      if opcode == 0 then
+        browser_wasm_vm_fail(vm, browser_wasm_error_opcode())
+        finished is true
+      elif opcode == 1 then
+        finished is false
+      elif opcode == 2 or opcode == 3 or opcode == 4 then
+        block_type: u64 is browser_wasm_reader_byte(reader)
+        if block_type != browser_wasm_type_empty() and not browser_wasm_valid_value_type(block_type) then return browser_wasm_vm_fail(vm, browser_wasm_error_type())
+        block_start: u64 is reader.cursor
+        else_pc: u64 is u64("0xffffffffffffffff")
+        end_pc: u64 is 0
+        if not browser_wasm_find_control(vm, block_start, function.code_end, addr_of(else_pc), addr_of(end_pc)) then finished is true
+        if vm.error == browser_wasm_error_none() then
+          if opcode == 4 then
+            condition: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+            if not browser_wasm_pop_type(vm, browser_wasm_type_i32(), condition) then
+              finished is true
+            elif not browser_wasm_push_control(vm, opcode, block_start, else_pc, end_pc, block_type) then
+              finished is true
+            elif condition.number == 0 then
+              if else_pc != u64("0xffffffffffffffff") then
+                pc is else_pc + 1
+              else
+                pc is end_pc
+              end
+            else
+              pc is block_start
+            end
+          else
+            if not browser_wasm_push_control(vm, opcode, block_start, else_pc, end_pc, block_type) then finished is true else pc is block_start
+          end
+        end
+      elif opcode == 5 then
+        if vm.control_count <= control_base + 1 then
+          browser_wasm_vm_fail(vm, browser_wasm_error_control())
+          finished is true
+        else
+          active: ptr[BrowserWasmControl] is browser_wasm_control_at(vm, vm.control_count - 1)
+          if active.kind != 4 or active.else_pc != pc - 1 then
+            browser_wasm_vm_fail(vm, browser_wasm_error_control())
+            finished is true
+          else
+            pc is active.end_pc
+          end
+        end
+      elif opcode == 11 then
+        if vm.control_count <= control_base then
+          browser_wasm_vm_fail(vm, browser_wasm_error_control())
+          finished is true
+        else
+          active: ptr[BrowserWasmControl] is browser_wasm_control_at(vm, vm.control_count - 1)
+          is_function: bool is active.kind == 0
+          if not browser_wasm_leave_control(vm) then finished is true
+          if is_function then finished is true
+        end
+      elif opcode == 12 or opcode == 13 then
+        depth: u64 is 0
+        if not browser_wasm_read_u32(reader, addr_of(depth)) then
+          browser_wasm_vm_fail(vm, reader.error)
+          finished is true
+        else
+          pc is reader.cursor
+          take: bool is true
+          if opcode == 13 then
+            condition: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+            if not browser_wasm_pop_type(vm, browser_wasm_type_i32(), condition) then finished is true
+            if condition.number == 0 then take is false
+          end
+          if vm.error == browser_wasm_error_none() and take and not browser_wasm_branch(vm, depth, addr_of(pc)) then finished is true
+        end
+      elif opcode == 15 then
+        function_depth: u64 is vm.control_count - control_base - 1
+        if not browser_wasm_branch(vm, function_depth, addr_of(pc)) then
+          finished is true
+        end
+      elif opcode == 16 then
+        target_index: u64 is 0
+        if not browser_wasm_read_u32(reader, addr_of(target_index)) then
+          browser_wasm_vm_fail(vm, reader.error)
+          finished is true
+        else
+          pc is reader.cursor
+          target_function: ptr[BrowserWasmFunction] is browser_wasm_function_at(module, target_index)
+          if target_function == 0 then
+            browser_wasm_vm_fail(vm, browser_wasm_error_function())
+            finished is true
+          else
+            target_type: ptr[BrowserWasmType] is browser_wasm_type_at(module, target_function.type_index)
+            argument_base: u64 is vm.local_count
+            if target_type.param_count + 2 > vm.local_capacity - argument_base then
+              browser_wasm_vm_fail(vm, browser_wasm_error_capacity())
+              finished is true
+            else
+              argument_index: u64 is target_type.param_count
+              while argument_index > 0 and vm.error == browser_wasm_error_none() do
+                argument_index -= 1
+                argument_slot: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, argument_base + argument_index)
+                expected: u64 is browser_wasm_param_type(module, target_type, argument_index)
+                if not browser_wasm_pop_type(vm, expected, argument_slot) then finished is true
+              end
+              if vm.error == browser_wasm_error_none() then
+                vm.local_count is argument_base + target_type.param_count
+                call_result: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+                if not browser_wasm_execute_function(vm, target_index, browser_wasm_value_at(vm.locals, argument_base), target_type.param_count, call_result) then
+                  finished is true
+                else
+                  vm.local_count is argument_base
+                  if target_type.result_count == 1 and not browser_wasm_stack_push(vm, call_result) then finished is true
+                end
+              end
+            end
+          end
+        end
+      elif opcode == 26 then
+        dropped: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+        if not browser_wasm_stack_pop(vm, dropped) then
+          finished is true
+        end
+      elif opcode == 27 then
+        condition: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+        second: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 2)
+        first: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 3)
+        if not browser_wasm_pop_type(vm, browser_wasm_type_i32(), condition) then finished is true
+        if vm.error == browser_wasm_error_none() and not browser_wasm_stack_pop(vm, second) then finished is true
+        if vm.error == browser_wasm_error_none() and not browser_wasm_stack_pop(vm, first) then finished is true
+        if vm.error == browser_wasm_error_none() then
+          if first.kind != second.kind then
+            browser_wasm_vm_fail(vm, browser_wasm_error_type())
+            finished is true
+          elif condition.number != 0 then
+            if not browser_wasm_stack_push(vm, first) then
+              finished is true
+            end
+          else
+            if not browser_wasm_stack_push(vm, second) then finished is true
+          end
+        end
+      elif opcode == 32 or opcode == 33 or opcode == 34 then
+        local_index: u64 is 0
+        if not browser_wasm_read_u32(reader, addr_of(local_index)) then
+          browser_wasm_vm_fail(vm, reader.error)
+          finished is true
+        else
+          pc is reader.cursor
+          if local_index >= required_locals then
+            browser_wasm_vm_fail(vm, browser_wasm_error_local())
+            finished is true
+          else
+            local_value: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, local_base + local_index)
+            if opcode == 32 then
+              if not browser_wasm_stack_push(vm, local_value) then
+                finished is true
+              end
+            else
+              incoming: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+              if not browser_wasm_stack_pop(vm, incoming) then
+                finished is true
+              elif incoming.kind != local_value.kind then
+                browser_wasm_vm_fail(vm, browser_wasm_error_type())
+                finished is true
+              elif not browser_wasm_value_copy(local_value, incoming) then
+                finished is true
+              elif opcode == 34 and not browser_wasm_stack_push(vm, incoming) then
+                finished is true
+              end
+            end
+          end
+        end
+      elif opcode == 65 or opcode == 66 then
+        signed: i64 is 0
+        bits: u64 is 32
+        kind: u64 is browser_wasm_type_i32()
+        if opcode == 66 then
+          bits is 64
+          kind is browser_wasm_type_i64()
+        end
+        if not browser_wasm_read_signed(reader, bits, addr_of(signed)) then
+          browser_wasm_vm_fail(vm, reader.error)
+          finished is true
+        else
+          pc is reader.cursor
+          if not browser_wasm_push_number(vm, kind, signed) then finished is true
+        end
+      elif opcode == 69 or opcode == 80 then
+        kind: u64 is browser_wasm_type_i32()
+        if opcode == 80 then kind is browser_wasm_type_i64()
+        value: ptr[BrowserWasmValue] is browser_wasm_value_at(vm.locals, vm.local_capacity - 1)
+        if not browser_wasm_pop_type(vm, kind, value) then
+          finished is true
+        else
+          zero: i64 is 0
+          if value.number == 0 then zero is 1
+          if not browser_wasm_push_number(vm, browser_wasm_type_i32(), zero) then finished is true
+        end
+      elif (opcode >= 70 and opcode <= 79) or (opcode >= 81 and opcode <= 90) then
+        if not browser_wasm_compare(vm, opcode) then
+          finished is true
+        end
+      elif opcode >= 106 and opcode <= 118 then
+        if not browser_wasm_binary_i32(vm, opcode) then
+          finished is true
+        end
+      elif opcode >= 124 and opcode <= 136 then
+        if not browser_wasm_binary_i64(vm, opcode) then
+          finished is true
+        end
+      else
+        browser_wasm_vm_fail(vm, browser_wasm_error_opcode())
+        finished is true
+      end
+    end
+  end
+  success: bool is vm.error == browser_wasm_error_none()
+  if success then
+    if type_info.result_count == 1 then
+      if vm.stack_count != stack_base + 1 then
+        browser_wasm_vm_fail(vm, browser_wasm_error_result())
+        success is false
+      elif not browser_wasm_pop_type(vm, type_info.result_type, result) then
+        success is false
+      end
+    else
+      if vm.stack_count != stack_base then
+        browser_wasm_vm_fail(vm, browser_wasm_error_result())
+        success is false
+      else
+        result.kind is browser_wasm_type_empty()
+        result.number is 0
+      end
+    end
+  end
+  vm.stack_count is stack_base
+  vm.local_count is local_base
+  vm.control_count is control_base
+  if vm.call_depth > 0 then vm.call_depth -= 1
+  return success
+end
+
+func browser_wasm_invoke(vm: ptr[BrowserWasmVm], name: ptr, name_bytes: u64, arguments: ptr, argument_count: u64, result: ptr[BrowserWasmValue]) do
+  if vm == 0 or vm.module == 0 or name == 0 or result == 0 then return false
+  vm.stack_count is 0
+  vm.local_count is 0
+  vm.control_count is 0
+  vm.instruction_count is 0
+  vm.call_depth is 0
+  vm.error is browser_wasm_error_none()
+  export_index: u64 is browser_wasm_find_export(vm.module, name, name_bytes)
+  if export_index == u64("0xffffffffffffffff") then return browser_wasm_vm_fail(vm, browser_wasm_error_export())
+  export_info: ptr[BrowserWasmExport] is browser_wasm_export_at(vm.module, export_index)
+  if export_info.kind != 0 then return browser_wasm_vm_fail(vm, browser_wasm_error_export())
+  return browser_wasm_execute_function(vm, export_info.index, arguments, argument_count, result)
+end

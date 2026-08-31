@@ -1113,6 +1113,55 @@ class UefiX64Compiler {
         return name;
     }
 
+    bool expression_is_signed(const Expr* expr) {
+        if (!expr) return false;
+        switch (expr->kind) {
+            case NK::NUM_LIT:
+                return static_cast<const NumLit*>(expr)->value < 0;
+            case NK::IDENT:
+                return signed_scalar_type(
+                    identifier_type(static_cast<const Ident*>(expr)));
+            case NK::DOT_ACCESS: {
+                const auto* access = static_cast<const DotAccess*>(expr);
+                if (!access->obj || access->obj->kind != NK::IDENT) return false;
+                const auto* pointer =
+                    static_cast<const Ident*>(access->obj.get());
+                return signed_scalar_type(
+                    typed_pointer_field(pointer, access->prop, access).type);
+            }
+            case NK::UNARY_OP:
+                return expression_is_signed(
+                    static_cast<const UnaryOp*>(expr)->operand.get());
+            case NK::BIN_OP: {
+                const auto* binary = static_cast<const BinOp*>(expr);
+                return expression_is_signed(binary->left.get()) ||
+                       expression_is_signed(binary->right.get());
+            }
+            case NK::CALL:
+            case NK::METHOD_CALL: {
+                std::string name;
+                const std::vector<ExprPtr>* args = nullptr;
+                if (!flatten_call(expr, name, args)) return false;
+                const std::string intrinsic = canonical_intrinsic(name);
+                if (intrinsic == "i8" || intrinsic == "i16" ||
+                    intrinsic == "i32" || intrinsic == "i64" ||
+                    intrinsic == "isize") {
+                    return true;
+                }
+                if (expr->kind == NK::CALL) {
+                    auto function = functions.find(name);
+                    if (function != functions.end()) {
+                        return signed_scalar_type(
+                            function->second->return_type);
+                    }
+                }
+                return false;
+            }
+            default:
+                return false;
+        }
+    }
+
     void compile_expr(const Expr* expr) {
         if (!expr) {
             x.bytes({0x31, 0xc0}); // xor eax,eax
@@ -1170,6 +1219,9 @@ class UefiX64Compiler {
             }
             case NK::BIN_OP: {
                 auto* binary = static_cast<const BinOp*>(expr);
+                const bool signed_operation =
+                    expression_is_signed(binary->left.get()) ||
+                    expression_is_signed(binary->right.get());
                 // Match hosted Sura semantics: logical operators short-circuit
                 // and return the selected operand instead of a normalized bool.
                 // This is also required for checked pointer guards such as
@@ -1205,21 +1257,35 @@ class UefiX64Compiler {
                 else if (op == "|") x.bytes({0x48, 0x09, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "^") x.bytes({0x48, 0x31, 0xc1, 0x48, 0x89, 0xc8});
                 else if (op == "/" || op == "%") {
-                    x.bytes({0x49, 0x89, 0xc2, 0x48, 0x89, 0xc8, 0x48, 0x99,
-                             0x49, 0xf7, 0xfa});
+                    x.bytes({0x49, 0x89, 0xc2, 0x48, 0x89, 0xc8});
+                    if (signed_operation) {
+                        x.bytes({0x48, 0x99, 0x49, 0xf7, 0xfa});
+                    } else {
+                        x.bytes({0x31, 0xd2, 0x49, 0xf7, 0xf2});
+                    }
                     if (op == "%") x.bytes({0x48, 0x89, 0xd0});
                 } else if (op == "<<" || op == ">>") {
                     x.bytes({0x49, 0x89, 0xca, 0x48, 0x89, 0xc1, 0x4c, 0x89, 0xd0});
                     if (op == "<<") x.bytes({0x48, 0xd3, 0xe0});
+                    else if (signed_operation) x.bytes({0x48, 0xd3, 0xf8});
                     else x.bytes({0x48, 0xd3, 0xe8});
                 } else {
                     x.bytes({0x48, 0x39, 0xc1}); // cmp rcx,rax
                     if (op == "==") x.bytes({0x0f, 0x94, 0xc0});
                     else if (op == "!=") x.bytes({0x0f, 0x95, 0xc0});
-                    else if (op == "<") x.bytes({0x0f, 0x9c, 0xc0});
-                    else if (op == "<=") x.bytes({0x0f, 0x9e, 0xc0});
-                    else if (op == ">") x.bytes({0x0f, 0x9f, 0xc0});
-                    else if (op == ">=") x.bytes({0x0f, 0x9d, 0xc0});
+                    else if (op == "<") {
+                        if (signed_operation) x.bytes({0x0f, 0x9c, 0xc0});
+                        else x.bytes({0x0f, 0x92, 0xc0});
+                    } else if (op == "<=") {
+                        if (signed_operation) x.bytes({0x0f, 0x9e, 0xc0});
+                        else x.bytes({0x0f, 0x96, 0xc0});
+                    } else if (op == ">") {
+                        if (signed_operation) x.bytes({0x0f, 0x9f, 0xc0});
+                        else x.bytes({0x0f, 0x97, 0xc0});
+                    } else if (op == ">=") {
+                        if (signed_operation) x.bytes({0x0f, 0x9d, 0xc0});
+                        else x.bytes({0x0f, 0x93, 0xc0});
+                    }
                     else fail(expr, "unsupported freestanding binary operator '" + op + "'");
                     x.bytes({0x0f, 0xb6, 0xc0});
                 }
@@ -1928,6 +1994,13 @@ class UefiX64Compiler {
             if (name == "cpu_rdtsc") x.bytes({0x0f, 0x31});
             else x.bytes({0x0f, 0x01, 0xf9});
             x.bytes({0x48, 0xc1, 0xe2, 0x20, 0x48, 0x09, 0xd0});
+            return;
+        }
+        if (name == "cpu_rdrand") {
+            if (!args.empty()) fail(origin, "cpu.rdrand() takes no arguments");
+            // RDRAND rax; preserve the generated value when CF=1 and return
+            // zero when the instruction reports that no value is available.
+            x.bytes({0x48, 0x0f, 0xc7, 0xf0, 0x72, 0x02, 0x31, 0xc0});
             return;
         }
         if (name == "cpu_xgetbv") {

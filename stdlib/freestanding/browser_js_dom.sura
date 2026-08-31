@@ -1,0 +1,145 @@
+# Bounded DOM host operations for the browser JavaScript VM.
+#
+# Operation 1 implements the mutation side of:
+#   document.getElementById(id).textContent = text
+#
+# Mutations are overlays; the immutable HTML source and parsed DOM stay intact.
+# The renderer asks browser_js_dom_text_override for replacement/suppression.
+
+import "html_dom.sura"
+import "browser_js.sura"
+
+struct BrowserJsDomMutation do
+  node_index: u64
+  text: ptr
+  text_bytes: u64
+end
+
+struct BrowserJsDomHost do
+  document: ptr
+  mutations: ptr
+  mutation_capacity: u64
+  mutation_count: u64
+end
+
+func browser_js_dom_mutation(host: ptr[BrowserJsDomHost], index: u64) do
+  if host == 0 or host.mutations == 0 or index >= host.mutation_count then return 0
+  return ptr.add(host.mutations, index * 24)
+end
+
+func browser_js_dom_init(host: ptr[BrowserJsDomHost], document: ptr[HtmlDomDocument]) do
+  if host == 0 or document == 0 or host.mutations == 0 or host.mutation_capacity == 0 then return false
+  host.document is document
+  host.mutation_count is 0
+  return true
+end
+
+func browser_js_dom_value_matches_slice(value: ptr[BrowserJsValue], source: ptr, start: u64, byte_count: u64) do
+  if value == 0 or value.kind != browser_js_kind_string() or value.bytes != byte_count then return false
+  if value.bytes != 0 and (value.data == 0 or source == 0) then return false
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(value.data, index)) != mem.read8(ptr.add(source, start + index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_js_dom_find_id(host: ptr[BrowserJsDomHost], identifier: ptr[BrowserJsValue]) do
+  if host == 0 or host.document == 0 or identifier == 0 then return u64("0xffffffffffffffff")
+  document: ptr[HtmlDomDocument] is host.document
+  index: u64 is 0
+  while index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, index)
+    if node != 0 and node.kind == 1 then
+      attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, index, 1)
+      if attribute != 0 and attribute.has_value != 0 and browser_js_dom_value_matches_slice(identifier, document.input, attribute.source_start, attribute.source_bytes) then return index
+    end
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_js_dom_find_mutation(host: ptr[BrowserJsDomHost], node_index: u64) do
+  if host == 0 then return u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < host.mutation_count do
+    mutation: ptr[BrowserJsDomMutation] is browser_js_dom_mutation(host, index)
+    if mutation.node_index == node_index then return index
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func browser_js_dom_set_text(host: ptr[BrowserJsDomHost], identifier: ptr[BrowserJsValue], text: ptr[BrowserJsValue]) do
+  if host == 0 or identifier == 0 or text == 0 then return false
+  if identifier.kind != browser_js_kind_string() or text.kind != browser_js_kind_string() then return false
+  node_index: u64 is browser_js_dom_find_id(host, identifier)
+  if node_index == u64("0xffffffffffffffff") then return false
+  mutation_index: u64 is browser_js_dom_find_mutation(host, node_index)
+  if mutation_index == u64("0xffffffffffffffff") then
+    if host.mutation_count >= host.mutation_capacity then return false
+    mutation_index is host.mutation_count
+    host.mutation_count += 1
+  end
+  mutation: ptr[BrowserJsDomMutation] is browser_js_dom_mutation(host, mutation_index)
+  mutation.node_index is node_index
+  mutation.text is text.data
+  mutation.text_bytes is text.bytes
+  return true
+end
+
+func browser_js_dom_host_call(context: ptr, operation: u64, arguments: ptr, argument_count: u64, result: ptr[BrowserJsValue]) do
+  if context == 0 or result == 0 then return 1
+  if operation != 1 or arguments == 0 or argument_count != 2 then return 2
+  host: ptr[BrowserJsDomHost] is context
+  identifier: ptr[BrowserJsValue] is browser_js_value_at(arguments, 0)
+  text: ptr[BrowserJsValue] is browser_js_value_at(arguments, 1)
+  if not browser_js_dom_set_text(host, identifier, text) then return 3
+  if not browser_js_value_clear(result) then return 4
+  return 0
+end
+
+func browser_js_dom_descends_from(document: ptr[HtmlDomDocument], node_index: u64, ancestor: u64) do
+  if document == 0 or node_index >= document.node_count or ancestor >= document.node_count then return false
+  current: u64 is node_index
+  depth: u64 is 0
+  while current != u64("0xffffffffffffffff") and depth < 64 do
+    if current == ancestor then return true
+    node: ptr[HtmlDomNode] is html_dom_node(document, current)
+    if node == 0 then return false
+    current is node.parent
+    depth += 1
+  end
+  return false
+end
+
+func browser_js_dom_text_override(host: ptr[BrowserJsDomHost], text_node_index: u64, output: ptr[BrowserJsValue]) do
+  if host == 0 or host.document == 0 or output == 0 then return 0
+  document: ptr[HtmlDomDocument] is host.document
+  node: ptr[HtmlDomNode] is html_dom_node(document, text_node_index)
+  if node == 0 or node.kind != 2 then return 0
+  current: u64 is node.parent
+  mutation_index: u64 is u64("0xffffffffffffffff")
+  depth: u64 is 0
+  while current != u64("0xffffffffffffffff") and depth < 64 and mutation_index == u64("0xffffffffffffffff") do
+    mutation_index is browser_js_dom_find_mutation(host, current)
+    if mutation_index == u64("0xffffffffffffffff") then
+      parent: ptr[HtmlDomNode] is html_dom_node(document, current)
+      if parent == 0 then current is u64("0xffffffffffffffff") else current is parent.parent
+    end
+    depth += 1
+  end
+  if mutation_index == u64("0xffffffffffffffff") then return 0
+  mutation: ptr[BrowserJsDomMutation] is browser_js_dom_mutation(host, mutation_index)
+  first_text: u64 is u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < document.node_count and first_text == u64("0xffffffffffffffff") do
+    candidate: ptr[HtmlDomNode] is html_dom_node(document, index)
+    if candidate != 0 and candidate.kind == 2 and browser_js_dom_descends_from(document, index, mutation.node_index) then first_text is index
+    index += 1
+  end
+  if first_text != text_node_index then return 2
+  if not browser_js_value_string(output, mutation.text, mutation.text_bytes) then return 0
+  return 1
+end

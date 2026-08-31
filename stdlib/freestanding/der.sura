@@ -1,0 +1,122 @@
+# Bounded DER reader for freestanding Sura.
+#
+# DER indefinite lengths, non-minimal long-form lengths, high-tag-number
+# encodings, oversized lengths, and elements extending beyond the parent are
+# rejected. Readers and element descriptors use caller-owned storage.
+
+struct DerReader do
+  input: ptr
+  input_bytes: u64
+  cursor: u64
+  initialized: u64
+end
+
+struct DerElement do
+  encoded: ptr
+  encoded_bytes: u64
+  tag: u64
+  header_bytes: u64
+  content: ptr
+  content_bytes: u64
+end
+
+func der_reader_init(reader: ptr[DerReader], input: ptr, input_bytes: u64) do
+  if reader == 0 then return false
+  if input_bytes != 0 and input == 0 then return false
+  reader.input is input
+  reader.input_bytes is input_bytes
+  reader.cursor is 0
+  reader.initialized is 1
+  return true
+end
+
+func der_reader_remaining(reader: ptr[DerReader]) do
+  if reader == 0 or reader.initialized == 0 then return 0
+  if reader.cursor > reader.input_bytes then return 0
+  return reader.input_bytes - reader.cursor
+end
+
+func der_reader_finished(reader: ptr[DerReader]) do
+  if reader == 0 or reader.initialized == 0 then return false
+  return reader.cursor == reader.input_bytes
+end
+
+func der_read_element(reader: ptr[DerReader], element: ptr[DerElement]) do
+  if reader == 0 or reader.initialized == 0 or element == 0 then return false
+  if reader.cursor >= reader.input_bytes then return false
+  start: u64 is reader.cursor
+  if reader.input_bytes - start < 2 then return false
+  tag: u64 is mem.read8(ptr.add(reader.input, start))
+  if (tag & 31) == 31 then return false
+  first_length: u64 is mem.read8(ptr.add(reader.input, start + 1))
+  header_bytes: u64 is 2
+  content_bytes: u64 is 0
+  if first_length < 128 then
+    content_bytes is first_length
+  else
+    length_octets: u64 is first_length & 127
+    if length_octets == 0 or length_octets > 4 then return false
+    if reader.input_bytes - start < 2 + length_octets then return false
+    if mem.read8(ptr.add(reader.input, start + 2)) == 0 then return false
+    index: u64 is 0
+    while index < length_octets do
+      if content_bytes > u64("0xffffffff") >> 8 then return false
+      content_bytes is (content_bytes << 8) | mem.read8(ptr.add(reader.input, start + 2 + index))
+      index += 1
+    end
+    if content_bytes < 128 then return false
+    header_bytes is 2 + length_octets
+  end
+  if content_bytes > reader.input_bytes - start - header_bytes then return false
+  encoded_bytes: u64 is header_bytes + content_bytes
+  element.encoded is ptr.add(reader.input, start)
+  element.encoded_bytes is encoded_bytes
+  element.tag is tag
+  element.header_bytes is header_bytes
+  element.content is ptr.add(reader.input, start + header_bytes)
+  element.content_bytes is content_bytes
+  reader.cursor is start + encoded_bytes
+  return true
+end
+
+func der_enter(element: ptr[DerElement], reader: ptr[DerReader]) do
+  if element == 0 or reader == 0 then return false
+  return der_reader_init(reader, element.content, element.content_bytes)
+end
+
+func der_expect(reader: ptr[DerReader], element: ptr[DerElement], tag: u64) do
+  if tag > 255 then return false
+  if not der_read_element(reader, element) then return false
+  return element.tag == tag
+end
+
+func der_oid_equal(element: ptr[DerElement], oid: ptr, oid_bytes: u64) do
+  if element == 0 or element.tag != 6 then return false
+  if element.content_bytes != oid_bytes then return false
+  if oid_bytes != 0 and oid == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < oid_bytes do
+    difference is difference | (mem.read8(ptr.add(element.content, index)) ^ mem.read8(ptr.add(oid, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func der_positive_integer_u64(element: ptr[DerElement]) do
+  if element == 0 or element.tag != 2 then return 0
+  if element.content_bytes == 0 or element.content_bytes > 9 then return 0
+  cursor: u64 is 0
+  if element.content_bytes == 9 then
+    if mem.read8(element.content) != 0 then return 0
+    cursor is 1
+  end
+  if (mem.read8(ptr.add(element.content, cursor)) & 128) != 0 then return 0
+  if element.content_bytes - cursor > 1 and mem.read8(ptr.add(element.content, cursor)) == 0 then return 0
+  value: u64 is 0
+  while cursor < element.content_bytes do
+    value is (value << 8) | mem.read8(ptr.add(element.content, cursor))
+    cursor += 1
+  end
+  return value
+end

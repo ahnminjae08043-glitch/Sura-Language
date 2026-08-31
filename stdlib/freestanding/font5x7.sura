@@ -1,5 +1,4 @@
 # Compact 5x7 English bitmap font for the freestanding framebuffer.
-# Lowercase ASCII is rendered with the corresponding uppercase glyph.
 
 import "./framebuffer.sura"
 
@@ -11,12 +10,14 @@ struct BitmapFontStyle do
 end
 
 font5x7_data is static.bytes([0, 0, 0, 0, 0, 0, 0, 14, 17, 17, 31, 17, 17, 17, 30, 17, 17, 30, 17, 17, 30, 15, 16, 16, 16, 16, 16, 15, 30, 17, 17, 17, 17, 17, 30, 31, 16, 16, 30, 16, 16, 31, 31, 16, 16, 30, 16, 16, 16, 15, 16, 16, 23, 17, 17, 15, 17, 17, 17, 31, 17, 17, 17, 31, 4, 4, 4, 4, 4, 31, 7, 2, 2, 2, 18, 18, 12, 17, 18, 20, 24, 20, 18, 17, 16, 16, 16, 16, 16, 16, 31, 17, 27, 21, 21, 17, 17, 17, 17, 25, 21, 19, 17, 17, 17, 14, 17, 17, 17, 17, 17, 14, 30, 17, 17, 30, 16, 16, 16, 14, 17, 17, 17, 21, 18, 13, 30, 17, 17, 30, 20, 18, 17, 15, 16, 16, 14, 1, 1, 30, 31, 4, 4, 4, 4, 4, 4, 17, 17, 17, 17, 17, 17, 14, 17, 17, 17, 17, 17, 10, 4, 17, 17, 17, 21, 21, 21, 10, 17, 17, 10, 4, 10, 17, 17, 17, 17, 10, 4, 4, 4, 4, 31, 1, 2, 4, 8, 16, 31, 14, 17, 19, 21, 25, 17, 14, 4, 12, 4, 4, 4, 4, 14, 14, 17, 1, 2, 4, 8, 31, 30, 1, 1, 14, 1, 1, 30, 2, 6, 10, 18, 31, 2, 2, 31, 16, 16, 30, 1, 1, 30, 14, 16, 16, 30, 17, 17, 14, 31, 1, 2, 4, 8, 8, 8, 14, 17, 17, 14, 17, 17, 14, 14, 17, 17, 15, 1, 1, 14, 16, 8, 4, 2, 4, 8, 16, 0, 4, 4, 0, 4, 4, 0, 0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 31, 1, 2, 2, 4, 8, 8, 16, 14, 17, 1, 2, 4, 0, 4, 4, 4, 4, 4, 4, 0, 4, 2, 4, 8, 8, 8, 4, 2, 8, 4, 2, 2, 2, 4, 8, 14, 8, 8, 8, 8, 8, 14, 14, 2, 2, 2, 2, 2, 14, 0, 4, 4, 31, 4, 4, 0, 0, 31, 0, 31, 0, 0, 0, 25, 26, 4, 8, 22, 6, 0], 1)
+font5x7_lowercase_data is static.bytes([0, 0, 14, 1, 15, 17, 15, 16, 16, 22, 25, 17, 17, 30, 0, 0, 14, 17, 16, 17, 14, 1, 1, 13, 19, 17, 17, 15, 0, 0, 14, 17, 31, 16, 14, 6, 9, 8, 28, 8, 8, 8, 0, 0, 15, 17, 15, 1, 14, 16, 16, 22, 25, 17, 17, 17, 4, 0, 12, 4, 4, 4, 14, 2, 0, 6, 2, 2, 18, 12, 16, 16, 18, 20, 24, 20, 18, 12, 4, 4, 4, 4, 4, 14, 0, 0, 26, 21, 21, 17, 17, 0, 0, 22, 25, 17, 17, 17, 0, 0, 14, 17, 17, 17, 14, 0, 0, 30, 17, 30, 16, 16, 0, 0, 15, 17, 15, 1, 1, 0, 0, 22, 25, 16, 16, 16, 0, 0, 15, 16, 14, 1, 30, 8, 8, 28, 8, 8, 9, 6, 0, 0, 17, 17, 17, 19, 13, 0, 0, 17, 17, 17, 10, 4, 0, 0, 17, 17, 21, 21, 10, 0, 0, 17, 10, 4, 10, 17, 0, 0, 17, 17, 15, 1, 14, 0, 0, 31, 2, 4, 8, 31], 1)
+font5x7_symbol_data is static.bytes([0, 0, 0, 0, 0, 4, 8, 0, 4, 0, 0, 4, 4, 8, 4, 4, 8, 0, 0, 0, 0, 10, 10, 0, 0, 0, 0, 0, 10, 31, 10, 10, 31, 10, 0, 12, 18, 20, 8, 21, 18, 13, 14, 17, 23, 21, 23, 16, 14, 0, 21, 14, 31, 14, 21, 0, 2, 4, 8, 16, 8, 4, 2, 16, 8, 8, 4, 2, 2, 1, 6, 8, 8, 16, 8, 8, 6, 12, 2, 2, 1, 2, 2, 12, 4, 4, 4, 4, 4, 4, 4, 4, 10, 17, 0, 0, 0, 0, 0, 0, 8, 21, 2, 0, 0, 4, 15, 20, 14, 5, 30, 4], 1)
 
 func font5x7_glyph_index(character: u64) do
   value: u64 is character
-  if value >= 97 and value <= 122 then value is value - 32
   if value == 32 then return 0
   if value >= 65 and value <= 90 then return value - 64
+  if value >= 97 and value <= 122 then return 52 + value - 97
   if value >= 48 and value <= 57 then return value - 21
   if value == 62 then return 37
   if value == 58 then return 38
@@ -33,6 +34,22 @@ func font5x7_glyph_index(character: u64) do
   if value == 43 then return 49
   if value == 61 then return 50
   if value == 37 then return 51
+  if value == 44 then return 78
+  if value == 59 then return 79
+  if value == 39 then return 80
+  if value == 34 then return 81
+  if value == 35 then return 82
+  if value == 38 then return 83
+  if value == 64 then return 84
+  if value == 42 then return 85
+  if value == 60 then return 86
+  if value == 92 then return 87
+  if value == 123 then return 88
+  if value == 125 then return 89
+  if value == 124 then return 90
+  if value == 94 then return 91
+  if value == 126 then return 92
+  if value == 36 then return 93
   return 43
 end
 
@@ -54,7 +71,10 @@ func font5x7_draw_char(surface: ptr[FramebufferSurface], x: u64, y: u64, charact
   glyph: u64 is font5x7_glyph_index(character)
   row: u64 is 0
   while row < 7 do
-    bits: u64 is mem.read8(ptr.add(font5x7_data, glyph * 7 + row))
+    bits: u64 is 0
+    if glyph < 52 then bits is mem.read8(ptr.add(font5x7_data, glyph * 7 + row))
+    if glyph >= 52 and glyph < 78 then bits is mem.read8(ptr.add(font5x7_lowercase_data, (glyph - 52) * 7 + row))
+    if glyph >= 78 then bits is mem.read8(ptr.add(font5x7_symbol_data, (glyph - 78) * 7 + row))
     column: u64 is 0
     while column < 5 do
       mask: u64 is 1 << (4 - column)

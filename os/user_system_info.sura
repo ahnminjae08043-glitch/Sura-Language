@@ -19,9 +19,29 @@ struct UserSystemInfoMailbox do
   pixel_count: u64
 end
 
-func user_system_info_program(mailbox_address: u64) do
-  mailbox: ptr[UserSystemInfoMailbox] is mailbox_address
-  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+func user_system_info_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 92, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 4096, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 93, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+    end
+
+    mailbox: ptr[UserSystemInfoMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
     mailbox.action is 0
     mailbox.status is 1
     mailbox.error is 0
@@ -38,11 +58,14 @@ func user_system_info_program(mailbox_address: u64) do
       mailbox.action is 1
     end
     mailbox.response_sequence is mailbox.request_sequence
-  end
+    end
 
-  completed: bool is interrupt.invoke(128)
-  while true do
-    cpu.pause()
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
   end
 end
 

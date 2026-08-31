@@ -1,0 +1,384 @@
+# AES-128-GCM authenticated encryption for the freestanding Sura target.
+#
+# This implementation uses caller-owned fixed storage and supports the
+# 96-bit nonce and 128-bit authentication tag required by TLS 1.3's
+# TLS_AES_128_GCM_SHA256 cipher suite.
+
+aes128_sbox is static.bytes([99, 124, 119, 123, 242, 107, 111, 197, 48, 1, 103, 43, 254, 215, 171, 118, 202, 130, 201, 125, 250, 89, 71, 240, 173, 212, 162, 175, 156, 164, 114, 192, 183, 253, 147, 38, 54, 63, 247, 204, 52, 165, 229, 241, 113, 216, 49, 21, 4, 199, 35, 195, 24, 150, 5, 154, 7, 18, 128, 226, 235, 39, 178, 117, 9, 131, 44, 26, 27, 110, 90, 160, 82, 59, 214, 179, 41, 227, 47, 132, 83, 209, 0, 237, 32, 252, 177, 91, 106, 203, 190, 57, 74, 76, 88, 207, 208, 239, 170, 251, 67, 77, 51, 133, 69, 249, 2, 127, 80, 60, 159, 168, 81, 163, 64, 143, 146, 157, 56, 245, 188, 182, 218, 33, 16, 255, 243, 210, 205, 12, 19, 236, 95, 151, 68, 23, 196, 167, 126, 61, 100, 93, 25, 115, 96, 129, 79, 220, 34, 42, 144, 136, 70, 238, 184, 20, 222, 94, 11, 219, 224, 50, 58, 10, 73, 6, 36, 92, 194, 211, 172, 98, 145, 149, 228, 121, 231, 200, 55, 109, 141, 213, 78, 169, 108, 86, 244, 234, 101, 122, 174, 8, 186, 120, 37, 46, 28, 166, 180, 198, 232, 221, 116, 31, 75, 189, 139, 138, 112, 62, 181, 102, 72, 3, 246, 14, 97, 53, 87, 185, 134, 193, 29, 158, 225, 248, 152, 17, 105, 217, 142, 148, 155, 30, 135, 233, 206, 85, 40, 223, 140, 161, 137, 13, 191, 230, 66, 104, 65, 153, 45, 15, 176, 84, 187, 22], 1)
+aes128_rcon is static.bytes([1, 2, 4, 8, 16, 32, 64, 128, 27, 54], 1)
+
+struct Aes128GcmWorkspace do
+  round_keys: ptr
+  state: ptr
+  hash_subkey: ptr
+  counter: ptr
+  ghash: ptr
+  multiply_z: ptr
+  multiply_v: ptr
+  scratch: ptr
+  initialized: u64
+end
+
+struct Aes128GcmBuffers do
+  round_keys: ptr
+  state: ptr
+  hash_subkey: ptr
+  counter: ptr
+  ghash: ptr
+  multiply_z: ptr
+  multiply_v: ptr
+  scratch: ptr
+end
+
+struct Aes128GcmRequest do
+  key: ptr
+  nonce: ptr
+  nonce_bytes: u64
+  aad: ptr
+  aad_bytes: u64
+  input: ptr
+  input_bytes: u64
+  output: ptr
+  output_capacity: u64
+  tag: ptr
+  tag_bytes: u64
+end
+
+func aes128_gcm_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func aes128_gcm_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func aes128_gcm_equal(left: ptr, right: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if left == 0 or right == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(left, index)) ^ mem.read8(ptr.add(right, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func aes128_gcm_workspace_init(workspace: ptr[Aes128GcmWorkspace], buffers: ptr[Aes128GcmBuffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.round_keys == 0 or buffers.state == 0 or buffers.hash_subkey == 0 then return false
+  if buffers.counter == 0 or buffers.ghash == 0 or buffers.multiply_z == 0 then return false
+  if buffers.multiply_v == 0 or buffers.scratch == 0 then return false
+  workspace.round_keys is buffers.round_keys
+  workspace.state is buffers.state
+  workspace.hash_subkey is buffers.hash_subkey
+  workspace.counter is buffers.counter
+  workspace.ghash is buffers.ghash
+  workspace.multiply_z is buffers.multiply_z
+  workspace.multiply_v is buffers.multiply_v
+  workspace.scratch is buffers.scratch
+  workspace.initialized is 1
+  if not aes128_gcm_zero(workspace.round_keys, 176) then return false
+  if not aes128_gcm_zero(workspace.state, 16) then return false
+  if not aes128_gcm_zero(workspace.hash_subkey, 16) then return false
+  if not aes128_gcm_zero(workspace.counter, 16) then return false
+  if not aes128_gcm_zero(workspace.ghash, 16) then return false
+  if not aes128_gcm_zero(workspace.multiply_z, 16) then return false
+  if not aes128_gcm_zero(workspace.multiply_v, 16) then return false
+  return aes128_gcm_zero(workspace.scratch, 16)
+end
+
+func aes128_xtime(value: u64) do
+  shifted: u64 is (value << 1) & 255
+  if (value & 128) != 0 then shifted is shifted ^ 27
+  return shifted
+end
+
+func aes128_expand_key(workspace: ptr[Aes128GcmWorkspace], key: ptr) do
+  if workspace == 0 or workspace.initialized == 0 or key == 0 then return false
+  if not aes128_gcm_copy(workspace.round_keys, key, 16) then return false
+  generated: u64 is 16
+  rcon_index: u64 is 0
+  while generated < 176 do
+    mem.write8(workspace.state, mem.read8(ptr.add(workspace.round_keys, generated - 4)))
+    mem.write8(ptr.add(workspace.state, 1), mem.read8(ptr.add(workspace.round_keys, generated - 3)))
+    mem.write8(ptr.add(workspace.state, 2), mem.read8(ptr.add(workspace.round_keys, generated - 2)))
+    mem.write8(ptr.add(workspace.state, 3), mem.read8(ptr.add(workspace.round_keys, generated - 1)))
+    if (generated % 16) == 0 then
+      first: u64 is mem.read8(workspace.state)
+      mem.write8(workspace.state, mem.read8(ptr.add(workspace.state, 1)))
+      mem.write8(ptr.add(workspace.state, 1), mem.read8(ptr.add(workspace.state, 2)))
+      mem.write8(ptr.add(workspace.state, 2), mem.read8(ptr.add(workspace.state, 3)))
+      mem.write8(ptr.add(workspace.state, 3), first)
+      index: u64 is 0
+      while index < 4 do
+        mem.write8(ptr.add(workspace.state, index), mem.read8(ptr.add(aes128_sbox, mem.read8(ptr.add(workspace.state, index)))))
+        index += 1
+      end
+      mem.write8(workspace.state, mem.read8(workspace.state) ^ mem.read8(ptr.add(aes128_rcon, rcon_index)))
+      rcon_index += 1
+    end
+    word_index: u64 is 0
+    while word_index < 4 do
+      value: u64 is mem.read8(ptr.add(workspace.round_keys, generated - 16))
+      value is value ^ mem.read8(ptr.add(workspace.state, word_index))
+      mem.write8(ptr.add(workspace.round_keys, generated), value)
+      generated += 1
+      word_index += 1
+    end
+  end
+  return true
+end
+
+func aes128_add_round_key(workspace: ptr[Aes128GcmWorkspace], round: u64) do
+  index: u64 is 0
+  while index < 16 do
+    value: u64 is mem.read8(ptr.add(workspace.state, index))
+    value is value ^ mem.read8(ptr.add(workspace.round_keys, round * 16 + index))
+    mem.write8(ptr.add(workspace.state, index), value)
+    index += 1
+  end
+  return true
+end
+
+func aes128_sub_bytes(workspace: ptr[Aes128GcmWorkspace]) do
+  index: u64 is 0
+  while index < 16 do
+    value: u64 is mem.read8(ptr.add(workspace.state, index))
+    mem.write8(ptr.add(workspace.state, index), mem.read8(ptr.add(aes128_sbox, value)))
+    index += 1
+  end
+  return true
+end
+
+func aes128_shift_rows(workspace: ptr[Aes128GcmWorkspace]) do
+  row: u64 is 0
+  while row < 4 do
+    column: u64 is 0
+    while column < 4 do
+      source_column: u64 is (column + row) % 4
+      value: u64 is mem.read8(ptr.add(workspace.state, source_column * 4 + row))
+      mem.write8(ptr.add(workspace.scratch, column * 4 + row), value)
+      column += 1
+    end
+    row += 1
+  end
+  return aes128_gcm_copy(workspace.state, workspace.scratch, 16)
+end
+
+func aes128_mix_columns(workspace: ptr[Aes128GcmWorkspace]) do
+  column: u64 is 0
+  while column < 4 do
+    offset: u64 is column * 4
+    a0: u64 is mem.read8(ptr.add(workspace.state, offset))
+    a1: u64 is mem.read8(ptr.add(workspace.state, offset + 1))
+    a2: u64 is mem.read8(ptr.add(workspace.state, offset + 2))
+    a3: u64 is mem.read8(ptr.add(workspace.state, offset + 3))
+    mem.write8(ptr.add(workspace.scratch, offset), aes128_xtime(a0) ^ (aes128_xtime(a1) ^ a1) ^ a2 ^ a3)
+    mem.write8(ptr.add(workspace.scratch, offset + 1), a0 ^ aes128_xtime(a1) ^ (aes128_xtime(a2) ^ a2) ^ a3)
+    mem.write8(ptr.add(workspace.scratch, offset + 2), a0 ^ a1 ^ aes128_xtime(a2) ^ (aes128_xtime(a3) ^ a3))
+    mem.write8(ptr.add(workspace.scratch, offset + 3), (aes128_xtime(a0) ^ a0) ^ a1 ^ a2 ^ aes128_xtime(a3))
+    column += 1
+  end
+  return aes128_gcm_copy(workspace.state, workspace.scratch, 16)
+end
+
+func aes128_encrypt_block(workspace: ptr[Aes128GcmWorkspace], input: ptr, output: ptr) do
+  if workspace == 0 or workspace.initialized == 0 or input == 0 or output == 0 then return false
+  if not aes128_gcm_copy(workspace.state, input, 16) then return false
+  if not aes128_add_round_key(workspace, 0) then return false
+  round: u64 is 1
+  while round < 10 do
+    if not aes128_sub_bytes(workspace) then return false
+    if not aes128_shift_rows(workspace) then return false
+    if not aes128_mix_columns(workspace) then return false
+    if not aes128_add_round_key(workspace, round) then return false
+    round += 1
+  end
+  if not aes128_sub_bytes(workspace) then return false
+  if not aes128_shift_rows(workspace) then return false
+  if not aes128_add_round_key(workspace, 10) then return false
+  return aes128_gcm_copy(output, workspace.state, 16)
+end
+
+func aes128_gcm_multiply(workspace: ptr[Aes128GcmWorkspace], value: ptr) do
+  if not aes128_gcm_zero(workspace.multiply_z, 16) then return false
+  if not aes128_gcm_copy(workspace.multiply_v, workspace.hash_subkey, 16) then return false
+  bit_index: u64 is 0
+  while bit_index < 128 do
+    source_byte: u64 is mem.read8(ptr.add(value, bit_index / 8))
+    source_bit: u64 is (source_byte >> (7 - (bit_index % 8))) & 1
+    if source_bit != 0 then
+      xor_index: u64 is 0
+      while xor_index < 16 do
+        next: u64 is mem.read8(ptr.add(workspace.multiply_z, xor_index)) ^ mem.read8(ptr.add(workspace.multiply_v, xor_index))
+        mem.write8(ptr.add(workspace.multiply_z, xor_index), next)
+        xor_index += 1
+      end
+    end
+    least_bit: u64 is mem.read8(ptr.add(workspace.multiply_v, 15)) & 1
+    carry: u64 is 0
+    shift_index: u64 is 0
+    while shift_index < 16 do
+      current: u64 is mem.read8(ptr.add(workspace.multiply_v, shift_index))
+      mem.write8(ptr.add(workspace.multiply_v, shift_index), (current >> 1) | (carry << 7))
+      carry is current & 1
+      shift_index += 1
+    end
+    if least_bit != 0 then
+      mem.write8(workspace.multiply_v, mem.read8(workspace.multiply_v) ^ 225)
+    end
+    bit_index += 1
+  end
+  return aes128_gcm_copy(value, workspace.multiply_z, 16)
+end
+
+func aes128_gcm_hash_block(workspace: ptr[Aes128GcmWorkspace], input: ptr, input_bytes: u64) do
+  if input_bytes > 16 then return false
+  if input_bytes != 0 and input == 0 then return false
+  index: u64 is 0
+  while index < 16 do
+    value: u64 is mem.read8(ptr.add(workspace.ghash, index))
+    if index < input_bytes then value is value ^ mem.read8(ptr.add(input, index))
+    mem.write8(ptr.add(workspace.ghash, index), value)
+    index += 1
+  end
+  return aes128_gcm_multiply(workspace, workspace.ghash)
+end
+
+func aes128_gcm_hash_data(workspace: ptr[Aes128GcmWorkspace], input: ptr, input_bytes: u64) do
+  offset: u64 is 0
+  while offset < input_bytes do
+    take: u64 is input_bytes - offset
+    if take > 16 then take is 16
+    if not aes128_gcm_hash_block(workspace, ptr.add(input, offset), take) then return false
+    offset is offset + take
+  end
+  return true
+end
+
+func aes128_gcm_write_u64_be(output: ptr, value: u64) do
+  index: u64 is 0
+  while index < 8 do
+    mem.write8(ptr.add(output, index), (value >> ((7 - index) * 8)) & 255)
+    index += 1
+  end
+  return true
+end
+
+func aes128_gcm_increment_counter(workspace: ptr[Aes128GcmWorkspace]) do
+  value: u64 is (mem.read8(ptr.add(workspace.counter, 12)) << 24) | (mem.read8(ptr.add(workspace.counter, 13)) << 16)
+  value is value | (mem.read8(ptr.add(workspace.counter, 14)) << 8) | mem.read8(ptr.add(workspace.counter, 15))
+  value is (value + 1) & u64("0xffffffff")
+  mem.write8(ptr.add(workspace.counter, 12), (value >> 24) & 255)
+  mem.write8(ptr.add(workspace.counter, 13), (value >> 16) & 255)
+  mem.write8(ptr.add(workspace.counter, 14), (value >> 8) & 255)
+  mem.write8(ptr.add(workspace.counter, 15), value & 255)
+  return value != 0
+end
+
+func aes128_gcm_prepare(workspace: ptr[Aes128GcmWorkspace], key: ptr, nonce: ptr) do
+  if workspace == 0 or workspace.initialized == 0 or key == 0 or nonce == 0 then return false
+  if not aes128_expand_key(workspace, key) then return false
+  if not aes128_gcm_zero(workspace.scratch, 16) then return false
+  if not aes128_encrypt_block(workspace, workspace.scratch, workspace.hash_subkey) then return false
+  if not aes128_gcm_zero(workspace.counter, 16) then return false
+  if not aes128_gcm_copy(workspace.counter, nonce, 12) then return false
+  mem.write8(ptr.add(workspace.counter, 15), 1)
+  return aes128_gcm_zero(workspace.ghash, 16)
+end
+
+func aes128_gcm_validate_request(workspace: ptr[Aes128GcmWorkspace], request: ptr[Aes128GcmRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.key == 0 or request.nonce == 0 or request.nonce_bytes != 12 then return false
+  if request.aad_bytes != 0 and request.aad == 0 then return false
+  if request.input_bytes != 0 and request.input == 0 then return false
+  if request.input_bytes != 0 and request.output == 0 then return false
+  if request.output_capacity < request.input_bytes then return false
+  if request.tag == 0 or request.tag_bytes != 16 then return false
+  if request.aad_bytes > u64("0x1fffffffffffffff") then return false
+  if request.input_bytes > u64("0x1fffffffffffffff") then return false
+  if request.input_bytes > u64("0x0000000fffffffe0") then return false
+  return true
+end
+
+func aes128_gcm_finish_tag(workspace: ptr[Aes128GcmWorkspace], aad_bytes: u64, ciphertext_bytes: u64, output: ptr) do
+  if not aes128_gcm_zero(workspace.scratch, 16) then return false
+  if not aes128_gcm_write_u64_be(workspace.scratch, aad_bytes << 3) then return false
+  if not aes128_gcm_write_u64_be(ptr.add(workspace.scratch, 8), ciphertext_bytes << 3) then return false
+  if not aes128_gcm_hash_block(workspace, workspace.scratch, 16) then return false
+  mem.write8(ptr.add(workspace.counter, 12), 0)
+  mem.write8(ptr.add(workspace.counter, 13), 0)
+  mem.write8(ptr.add(workspace.counter, 14), 0)
+  mem.write8(ptr.add(workspace.counter, 15), 1)
+  if not aes128_encrypt_block(workspace, workspace.counter, workspace.scratch) then return false
+  index: u64 is 0
+  while index < 16 do
+    mem.write8(ptr.add(output, index), mem.read8(ptr.add(workspace.scratch, index)) ^ mem.read8(ptr.add(workspace.ghash, index)))
+    index += 1
+  end
+  return true
+end
+
+func aes128_gcm_encrypt(workspace: ptr[Aes128GcmWorkspace], request: ptr[Aes128GcmRequest]) do
+  if not aes128_gcm_validate_request(workspace, request) then return false
+  if not aes128_gcm_prepare(workspace, request.key, request.nonce) then return false
+  if not aes128_gcm_hash_data(workspace, request.aad, request.aad_bytes) then return false
+  offset: u64 is 0
+  while offset < request.input_bytes do
+    if not aes128_gcm_increment_counter(workspace) then return false
+    if not aes128_encrypt_block(workspace, workspace.counter, workspace.scratch) then return false
+    take: u64 is request.input_bytes - offset
+    if take > 16 then take is 16
+    index: u64 is 0
+    while index < take do
+      value: u64 is mem.read8(ptr.add(request.input, offset + index)) ^ mem.read8(ptr.add(workspace.scratch, index))
+      mem.write8(ptr.add(request.output, offset + index), value)
+      index += 1
+    end
+    if not aes128_gcm_hash_block(workspace, ptr.add(request.output, offset), take) then return false
+    offset is offset + take
+  end
+  return aes128_gcm_finish_tag(workspace, request.aad_bytes, request.input_bytes, request.tag)
+end
+
+func aes128_gcm_decrypt(workspace: ptr[Aes128GcmWorkspace], request: ptr[Aes128GcmRequest]) do
+  if not aes128_gcm_validate_request(workspace, request) then return false
+  if not aes128_gcm_prepare(workspace, request.key, request.nonce) then return false
+  if not aes128_gcm_hash_data(workspace, request.aad, request.aad_bytes) then return false
+  if not aes128_gcm_hash_data(workspace, request.input, request.input_bytes) then return false
+  if not aes128_gcm_finish_tag(workspace, request.aad_bytes, request.input_bytes, workspace.multiply_z) then return false
+  if not aes128_gcm_equal(workspace.multiply_z, request.tag, 16) then return false
+
+  if not aes128_gcm_zero(workspace.counter, 16) then return false
+  if not aes128_gcm_copy(workspace.counter, request.nonce, 12) then return false
+  mem.write8(ptr.add(workspace.counter, 15), 1)
+  offset: u64 is 0
+  while offset < request.input_bytes do
+    if not aes128_gcm_increment_counter(workspace) then return false
+    if not aes128_encrypt_block(workspace, workspace.counter, workspace.scratch) then return false
+    take: u64 is request.input_bytes - offset
+    if take > 16 then take is 16
+    index: u64 is 0
+    while index < take do
+      value: u64 is mem.read8(ptr.add(request.input, offset + index)) ^ mem.read8(ptr.add(workspace.scratch, index))
+      mem.write8(ptr.add(request.output, offset + index), value)
+      index += 1
+    end
+    offset is offset + take
+  end
+  return true
+end

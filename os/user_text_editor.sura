@@ -1,54 +1,156 @@
 # Ring-3 text editor state transition used by the Sura OS desktop.
 #
-# Bytes 0..63 contain this fixed header and bytes 64..575 contain the bounded
-# text buffer. Rendering, FAT32 persistence, and input routing stay in ring 0.
+# Bytes 0..95 contain this fixed header, bytes 96..4191 contain the bounded
+# document, and bytes 4192..8287 contain one insertion payload. Rendering, VFS
+# persistence, clipboard ownership, and input routing stay in ring 0.
 
 struct UserTextEditorMailbox do
   length: u64
   capacity: u64
   dirty: u64
+  cursor: u64
+  selection_anchor: u64
   request_sequence: u64
   response_sequence: u64
+  command: u64
   input: u64
+  payload_length: u64
   status: u64
   error: u64
 end
 
-func user_text_editor_program(mailbox_address: u64) do
-  mailbox: ptr[UserTextEditorMailbox] is mailbox_address
-  if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
-    mailbox.status is 1
-    mailbox.error is 0
-    value: u64 is mailbox.input
-    buffer: ptr is ptr.add(mailbox_address, 64)
-
-    if mailbox.capacity < 2 or mailbox.capacity > 512 or mailbox.length >= mailbox.capacity or value > 255 then
-      mailbox.error is 1
-    elif value == 8 or value == 127 then
-      if mailbox.length > 0 then
-        mailbox.length -= 1
-        mem.write8(ptr.add(buffer, mailbox.length), 0)
-        mailbox.dirty is 1
+# Keep the copied Ring-3 entry self-contained. Freestanding helpers can be
+# emitted outside the entry/end symbol range, so all cursor and buffer
+# transitions used by this worker are deliberately inlined here.
+func user_text_editor_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 98, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
       end
-    elif value == 13 then
-      mailbox.error is 0
-    elif value == 10 or value >= 32 and value <= 126 then
-      if mailbox.length + 1 >= mailbox.capacity then
-        mailbox.error is 2
-      else
-        mem.write8(ptr.add(buffer, mailbox.length), value)
-        mailbox.length += 1
-        mem.write8(ptr.add(buffer, mailbox.length), 0)
-        mailbox.dirty is 1
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 12288, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 99, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
       end
     end
 
-    mailbox.response_sequence is mailbox.request_sequence
-  end
+    mailbox: ptr[UserTextEditorMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+    mailbox.status is 1
+    mailbox.error is 0
+    buffer: ptr is ptr.add(mailbox_address, 96)
+    payload: ptr is ptr.add(mailbox_address, 4192)
 
-  completed: bool is interrupt.invoke(128)
-  while true do
-    cpu.pause()
+    valid: bool is mailbox.capacity >= 2 and mailbox.capacity <= 4096
+    if valid then valid is mailbox.length < mailbox.capacity
+    if valid then valid is mailbox.cursor <= mailbox.length and mailbox.selection_anchor <= mailbox.length
+    if valid and mailbox.cursor != 0 and mailbox.cursor != mailbox.length then
+      valid is (mem.read8(ptr.add(buffer, mailbox.cursor)) & 192) != 128
+    end
+    if valid and mailbox.selection_anchor != 0 and mailbox.selection_anchor != mailbox.length then
+      valid is (mem.read8(ptr.add(buffer, mailbox.selection_anchor)) & 192) != 128
+    end
+    if valid then valid is mailbox.payload_length < mailbox.capacity
+
+    start: u64 is mailbox.cursor
+    finish: u64 is mailbox.selection_anchor
+    if start > finish then
+      swap: u64 is start
+      start is finish
+      finish is swap
+    end
+
+    if not valid then
+      mailbox.error is 1
+    elif mailbox.command == 1 then
+      removed: u64 is finish - start
+      if mailbox.length - removed + mailbox.payload_length >= mailbox.capacity then
+        mailbox.error is 2
+      else
+        tail: u64 is mailbox.length - finish
+        if mailbox.payload_length > removed then
+          index: u64 is tail + 1
+          while index != 0 do
+            index -= 1
+            mem.write8(ptr.add(buffer, start + mailbox.payload_length + index), mem.read8(ptr.add(buffer, finish + index)))
+          end
+        else
+          index: u64 is 0
+          while index <= tail do
+            mem.write8(ptr.add(buffer, start + mailbox.payload_length + index), mem.read8(ptr.add(buffer, finish + index)))
+            index += 1
+          end
+        end
+        index is 0
+        while index < mailbox.payload_length do
+          mem.write8(ptr.add(buffer, start + index), mem.read8(ptr.add(payload, index)))
+          index += 1
+        end
+        mailbox.length is mailbox.length - removed + mailbox.payload_length
+        mailbox.cursor is start + mailbox.payload_length
+        mailbox.selection_anchor is mailbox.cursor
+        if removed != 0 or mailbox.payload_length != 0 then mailbox.dirty is 1
+      end
+    elif mailbox.command == 2 then
+      if start == finish and mailbox.cursor != 0 then
+        start is mailbox.cursor - 1
+        while start > 0 and (mem.read8(ptr.add(buffer, start)) & 192) == 128 do
+          start -= 1
+        end
+      end
+      if finish > start then
+        tail: u64 is mailbox.length - finish
+        index: u64 is 0
+        while index <= tail do
+          mem.write8(ptr.add(buffer, start + index), mem.read8(ptr.add(buffer, finish + index)))
+          index += 1
+        end
+        mailbox.length -= finish - start
+        mailbox.dirty is 1
+      end
+      mailbox.cursor is start
+      mailbox.selection_anchor is start
+    elif mailbox.command == 3 then
+      if start == finish and mailbox.cursor < mailbox.length then
+        finish is mailbox.cursor + 1
+        while finish < mailbox.length and (mem.read8(ptr.add(buffer, finish)) & 192) == 128 do
+          finish += 1
+        end
+      end
+      if finish > start then
+        tail: u64 is mailbox.length - finish
+        index: u64 is 0
+        while index <= tail do
+          mem.write8(ptr.add(buffer, start + index), mem.read8(ptr.add(buffer, finish + index)))
+          index += 1
+        end
+        mailbox.length -= finish - start
+        mailbox.dirty is 1
+      end
+      mailbox.cursor is start
+      mailbox.selection_anchor is start
+    else
+      mailbox.error is 1
+    end
+
+    mailbox.response_sequence is mailbox.request_sequence
+    end
+
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
   end
 end
 

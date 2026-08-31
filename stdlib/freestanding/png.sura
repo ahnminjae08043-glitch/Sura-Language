@@ -1,0 +1,212 @@
+# Allocation-free bounded PNG decoder for freestanding clients.
+#
+# png_decode_rgba() accepts non-interlaced 8-bit grayscale, grayscale-alpha,
+# RGB, and RGBA images. It validates every chunk CRC, concatenates consecutive
+# IDAT chunks, validates the zlib wrapper, reconstructs PNG filters 0 through
+# 4, and writes RGBA8 pixels. The return value packs width in the high 32 bits
+# and height in the low 32 bits; zero means invalid or unsupported input.
+
+import "gzip.sura"
+
+png_signature is static.bytes([137, 80, 78, 71, 13, 10, 26, 10], 1)
+
+func png_read_u32_be(buffer: ptr, offset: u64) do
+  return gzip_read_u32_be(buffer, offset)
+end
+
+func png_signature_valid(input: ptr, input_bytes: u64) do
+  if input == 0 or input_bytes < 8 then return false
+  index: u64 is 0
+  while index < 8 do
+    if mem.read8(ptr.add(input, index)) != mem.read8(ptr.add(png_signature, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func png_chunk_type(input: ptr, offset: u64) do
+  return png_read_u32_be(input, offset + 4)
+end
+
+func png_abs_difference(first: u64, second: u64) do
+  if first >= second then return first - second
+  return second - first
+end
+
+func png_paeth(left: u64, up: u64, upper_left: u64) do
+  left_distance: u64 is png_abs_difference(up, upper_left)
+  up_distance: u64 is png_abs_difference(left, upper_left)
+  corner_distance: u64 is png_abs_difference(left + up, upper_left * 2)
+  if left_distance <= up_distance and left_distance <= corner_distance then return left
+  if up_distance <= corner_distance then return up
+  return upper_left
+end
+
+func png_channels(color_type: u64) do
+  if color_type == 0 then return 1
+  if color_type == 2 then return 3
+  if color_type == 4 then return 2
+  if color_type == 6 then return 4
+  return 0
+end
+
+func png_decode_rgba(input: ptr, input_bytes: u64, output: ptr, output_capacity: u64, workspace: ptr, workspace_bytes: u64) do
+  if input == 0 or output == 0 or workspace == 0 then return 0
+  if input_bytes < 57 or input_bytes > 16777216 then return 0
+  if not png_signature_valid(input, input_bytes) then return 0
+
+  width: u64 is 0
+  height: u64 is 0
+  color_type: u64 is 0
+  channels: u64 is 0
+  idat_bytes: u64 is 0
+  ihdr_found: bool is false
+  idat_found: bool is false
+  idat_ended: bool is false
+  iend_found: bool is false
+  cursor: u64 is 8
+  chunk_index: u64 is 0
+  while cursor < input_bytes do
+    if input_bytes - cursor < 12 then return 0
+    length: u64 is png_read_u32_be(input, cursor)
+    if length > input_bytes - cursor - 12 then return 0
+    chunk_end: u64 is cursor + 12 + length
+    chunk_type: u64 is png_chunk_type(input, cursor)
+    expected_crc: u64 is png_read_u32_be(input, cursor + 8 + length)
+    if gzip_crc32(ptr.add(input, cursor + 4), length + 4) != expected_crc then return 0
+
+    if chunk_type == u64("0x49484452") then
+      if chunk_index != 0 or ihdr_found or length != 13 then return 0
+      width is png_read_u32_be(input, cursor + 8)
+      height is png_read_u32_be(input, cursor + 12)
+      if width == 0 or height == 0 or width > 2048 or height > 2048 then return 0
+      if mem.read8(ptr.add(input, cursor + 16)) != 8 then return 0
+      color_type is mem.read8(ptr.add(input, cursor + 17))
+      channels is png_channels(color_type)
+      if channels == 0 then return 0
+      if mem.read8(ptr.add(input, cursor + 18)) != 0 then return 0
+      if mem.read8(ptr.add(input, cursor + 19)) != 0 then return 0
+      if mem.read8(ptr.add(input, cursor + 20)) != 0 then return 0
+      ihdr_found is true
+    else
+      if not ihdr_found then return 0
+      if chunk_type == u64("0x49444154") then
+        if idat_ended or length == 0 then return 0
+        if idat_bytes > input_bytes - length then return 0
+        idat_bytes += length
+        idat_found is true
+      else
+        if idat_found then idat_ended is true
+        if chunk_type == u64("0x49454e44") then
+          if length != 0 or not idat_found or chunk_end != input_bytes then return 0
+          iend_found is true
+        else
+          first_type_byte: u64 is mem.read8(ptr.add(input, cursor + 4))
+          if (first_type_byte & 32) == 0 then return 0
+        end
+      end
+    end
+    cursor is chunk_end
+    chunk_index += 1
+  end
+  if not ihdr_found or not idat_found or not iend_found or cursor != input_bytes then return 0
+
+  if width > u64("0xffffffffffffffff") / channels then return 0
+  row_bytes: u64 is width * channels
+  if row_bytes == u64("0xffffffffffffffff") then return 0
+  scanline_bytes: u64 is row_bytes + 1
+  if height > u64("0xffffffffffffffff") / scanline_bytes then return 0
+  raw_bytes: u64 is scanline_bytes * height
+  if width > u64("0xffffffffffffffff") / height then return 0
+  pixels: u64 is width * height
+  if pixels > u64("0xffffffffffffffff") / 4 then return 0
+  output_bytes: u64 is pixels * 4
+  if output_bytes > output_capacity then return 0
+  if idat_bytes > workspace_bytes or raw_bytes > workspace_bytes - idat_bytes then return 0
+  used: u64 is idat_bytes + raw_bytes
+  if used > workspace_bytes or workspace_bytes - used < 4096 then return 0
+
+  compressed: ptr is workspace
+  raw: ptr is ptr.add(workspace, idat_bytes)
+  scratch: ptr is ptr.add(raw, raw_bytes)
+  compressed_cursor: u64 is 0
+  cursor is 8
+  while cursor < input_bytes do
+    length: u64 is png_read_u32_be(input, cursor)
+    if png_chunk_type(input, cursor) == u64("0x49444154") then
+      index: u64 is 0
+      while index < length do
+        mem.write8(ptr.add(compressed, compressed_cursor), mem.read8(ptr.add(input, cursor + 8 + index)))
+        compressed_cursor += 1
+        index += 1
+      end
+    end
+    cursor += length + 12
+  end
+  if compressed_cursor != idat_bytes then return 0
+  decoded: u64 is zlib_decompress(compressed, idat_bytes, raw, raw_bytes, scratch, workspace_bytes - used)
+  if decoded != raw_bytes then return 0
+
+  row: u64 is 0
+  while row < height do
+    row_start: u64 is row * scanline_bytes + 1
+    filter: u64 is mem.read8(ptr.add(raw, row_start - 1))
+    if filter > 4 then return 0
+    column: u64 is 0
+    while column < row_bytes do
+      value: u64 is mem.read8(ptr.add(raw, row_start + column))
+      left: u64 is 0
+      up: u64 is 0
+      upper_left: u64 is 0
+      if column >= channels then left is mem.read8(ptr.add(raw, row_start + column - channels))
+      if row > 0 then up is mem.read8(ptr.add(raw, row_start - scanline_bytes + column))
+      if row > 0 and column >= channels then upper_left is mem.read8(ptr.add(raw, row_start - scanline_bytes + column - channels))
+      if filter == 1 then value += left
+      if filter == 2 then value += up
+      if filter == 3 then value += (left + up) >> 1
+      if filter == 4 then value += png_paeth(left, up, upper_left)
+      mem.write8(ptr.add(raw, row_start + column), value & 255)
+      column += 1
+    end
+    row += 1
+  end
+
+  row is 0
+  while row < height do
+    source: u64 is row * scanline_bytes + 1
+    column: u64 is 0
+    while column < width do
+      source_pixel: u64 is source + column * channels
+      destination: u64 is (row * width + column) * 4
+      if color_type == 0 then
+        gray: u64 is mem.read8(ptr.add(raw, source_pixel))
+        mem.write8(ptr.add(output, destination), gray)
+        mem.write8(ptr.add(output, destination + 1), gray)
+        mem.write8(ptr.add(output, destination + 2), gray)
+        mem.write8(ptr.add(output, destination + 3), 255)
+      end
+      if color_type == 2 then
+        mem.write8(ptr.add(output, destination), mem.read8(ptr.add(raw, source_pixel)))
+        mem.write8(ptr.add(output, destination + 1), mem.read8(ptr.add(raw, source_pixel + 1)))
+        mem.write8(ptr.add(output, destination + 2), mem.read8(ptr.add(raw, source_pixel + 2)))
+        mem.write8(ptr.add(output, destination + 3), 255)
+      end
+      if color_type == 4 then
+        gray: u64 is mem.read8(ptr.add(raw, source_pixel))
+        mem.write8(ptr.add(output, destination), gray)
+        mem.write8(ptr.add(output, destination + 1), gray)
+        mem.write8(ptr.add(output, destination + 2), gray)
+        mem.write8(ptr.add(output, destination + 3), mem.read8(ptr.add(raw, source_pixel + 1)))
+      end
+      if color_type == 6 then
+        mem.write8(ptr.add(output, destination), mem.read8(ptr.add(raw, source_pixel)))
+        mem.write8(ptr.add(output, destination + 1), mem.read8(ptr.add(raw, source_pixel + 1)))
+        mem.write8(ptr.add(output, destination + 2), mem.read8(ptr.add(raw, source_pixel + 2)))
+        mem.write8(ptr.add(output, destination + 3), mem.read8(ptr.add(raw, source_pixel + 3)))
+      end
+      column += 1
+    end
+    row += 1
+  end
+  return (width << 32) | height
+end

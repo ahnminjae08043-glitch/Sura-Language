@@ -100,6 +100,16 @@ func nvme_zero(buffer: ptr, byte_count: u64) do
   return true
 end
 
+func nvme_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
 func nvme_physical_range_valid(address: u64, byte_count: u64) do
   if address == 0 or byte_count == 0 then return false
   return address <= u64("0xffffffffffffffff") - (byte_count - 1)
@@ -480,28 +490,54 @@ func nvme_issue_io(disk: ptr[NvmeDiskContext], opcode: u64, lba: u64, count: u64
   return nvme_submit(disk.queue, command_id, 0)
 end
 
+func nvme_transfer_blocks(disk: ptr[NvmeDiskContext], lba: u64, count: u64, buffer: ptr, write_operation: bool) do
+  if disk == 0 or disk.controller == 0 or disk.dma == 0 then return 1
+  if disk.sector_size == 0 or count == 0 or buffer == 0 then return 1
+  if lba >= disk.sector_count or count > disk.sector_count - lba then return 1
+  controller: ptr[NvmeController] is disk.controller
+  dma: ptr[NvmeDma] is disk.dma
+  maximum_bytes: u64 is controller.max_transfer_bytes
+  if maximum_bytes > dma.data_bytes then maximum_bytes is dma.data_bytes
+  maximum_sectors: u64 is maximum_bytes / disk.sector_size
+  if maximum_sectors == 0 then return 1
+  if maximum_sectors > 65536 then maximum_sectors is 65536
+
+  completed: u64 is 0
+  while completed < count do
+    chunk_sectors: u64 is count - completed
+    if chunk_sectors > maximum_sectors then chunk_sectors is maximum_sectors
+    chunk_bytes: u64 is chunk_sectors * disk.sector_size
+    if chunk_bytes / chunk_sectors != disk.sector_size then return 1
+    caller_chunk: ptr is ptr.add(buffer, completed * disk.sector_size)
+    if write_operation then
+      if not nvme_copy(dma.data_virtual, caller_chunk, chunk_bytes) then return 1
+    end
+    opcode: u64 is 2
+    if write_operation then opcode is 1
+    if not nvme_issue_io(disk, opcode, lba + completed, chunk_sectors, dma.data_physical, chunk_bytes) then
+      if write_operation then disk.last_error is 3
+      if not write_operation then disk.last_error is 2
+      return 2
+    end
+    if not write_operation then
+      if not nvme_copy(caller_chunk, dma.data_virtual, chunk_bytes) then return 1
+    end
+    completed += chunk_sectors
+  end
+  return 0
+end
+
 func nvme_read_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
   disk: ptr[NvmeDiskContext] is context_address
-  if disk == 0 or disk.sector_size == 0 or count == 0 then return 1
-  if count > u64("0xffffffffffffffff") / disk.sector_size then return 1
-  byte_count: u64 is count * disk.sector_size
-  physical: u64 is nvme_translate_dma(disk, buffer, byte_count)
-  if physical == 0 then return 1
-  if nvme_issue_io(disk, 2, lba, count, physical, byte_count) then return 0
-  disk.last_error is 2
-  return 2
+  return nvme_transfer_blocks(disk, lba, count, buffer, false)
 end
 
 func nvme_write_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
   disk: ptr[NvmeDiskContext] is context_address
   if disk == 0 or disk.read_only != 0 then return 2
-  if disk.sector_size == 0 or count == 0 then return 1
-  if count > u64("0xffffffffffffffff") / disk.sector_size then return 1
-  byte_count: u64 is count * disk.sector_size
-  physical: u64 is nvme_translate_dma(disk, buffer, byte_count)
-  if physical == 0 then return 1
-  if nvme_issue_io(disk, 1, lba, count, physical, byte_count) then return 0
-  disk.last_error is 3
+  status: u64 is nvme_transfer_blocks(disk, lba, count, buffer, true)
+  if status == 0 then return 0
+  if status == 1 then return 1
   return 3
 end
 

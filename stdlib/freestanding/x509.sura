@@ -1,0 +1,491 @@
+# Bounded X.509 certificate parsing for the freestanding Sura TLS client.
+#
+# Parsing never implies trust. Callers must separately verify signatures,
+# chain linkage, validity time, hostname, key usage, and a trusted root.
+
+import "der.sura"
+
+struct X509Certificate do
+  der: ptr
+  der_bytes: u64
+  tbs: ptr
+  tbs_bytes: u64
+  signature: ptr
+  signature_bytes: u64
+  signature_algorithm: u64
+  issuer: ptr
+  issuer_bytes: u64
+  subject: ptr
+  subject_bytes: u64
+  not_before: ptr
+  not_before_bytes: u64
+  not_before_tag: u64
+  not_after: ptr
+  not_after_bytes: u64
+  not_after_tag: u64
+  modulus: ptr
+  modulus_bytes: u64
+  exponent: u64
+  san: ptr
+  san_bytes: u64
+  is_ca: u64
+  has_basic_constraints: u64
+  key_usage: u64
+  has_key_usage: u64
+  has_san: u64
+end
+
+struct X509Workspace do
+  reader0: ptr
+  reader1: ptr
+  reader2: ptr
+  reader3: ptr
+  element0: ptr
+  element1: ptr
+  element2: ptr
+  element3: ptr
+  element4: ptr
+  element5: ptr
+  initialized: u64
+end
+
+struct X509Buffers do
+  reader0: ptr
+  reader1: ptr
+  reader2: ptr
+  reader3: ptr
+  element0: ptr
+  element1: ptr
+  element2: ptr
+  element3: ptr
+  element4: ptr
+  element5: ptr
+end
+
+struct X509DateTime do
+  year: u64
+  month: u64
+  day: u64
+  hour: u64
+  minute: u64
+  second: u64
+  value: u64
+end
+
+x509_oid_rsa_encryption is static.bytes([42, 134, 72, 134, 247, 13, 1, 1, 1], 1)
+x509_oid_sha256_rsa is static.bytes([42, 134, 72, 134, 247, 13, 1, 1, 11], 1)
+x509_oid_sha384_rsa is static.bytes([42, 134, 72, 134, 247, 13, 1, 1, 12], 1)
+x509_oid_rsa_pss is static.bytes([42, 134, 72, 134, 247, 13, 1, 1, 10], 1)
+x509_oid_subject_alt_name is static.bytes([85, 29, 17], 1)
+x509_oid_basic_constraints is static.bytes([85, 29, 19], 1)
+x509_oid_key_usage is static.bytes([85, 29, 15], 1)
+
+func x509_workspace_init(workspace: ptr[X509Workspace], buffers: ptr[X509Buffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.reader0 == 0 or buffers.reader1 == 0 or buffers.reader2 == 0 or buffers.reader3 == 0 then return false
+  if buffers.element0 == 0 or buffers.element1 == 0 or buffers.element2 == 0 then return false
+  if buffers.element3 == 0 or buffers.element4 == 0 or buffers.element5 == 0 then return false
+  workspace.reader0 is buffers.reader0
+  workspace.reader1 is buffers.reader1
+  workspace.reader2 is buffers.reader2
+  workspace.reader3 is buffers.reader3
+  workspace.element0 is buffers.element0
+  workspace.element1 is buffers.element1
+  workspace.element2 is buffers.element2
+  workspace.element3 is buffers.element3
+  workspace.element4 is buffers.element4
+  workspace.element5 is buffers.element5
+  workspace.initialized is 1
+  return true
+end
+
+func x509_clear_certificate(certificate: ptr[X509Certificate]) do
+  if certificate == 0 then return false
+  certificate.der is 0
+  certificate.der_bytes is 0
+  certificate.tbs is 0
+  certificate.tbs_bytes is 0
+  certificate.signature is 0
+  certificate.signature_bytes is 0
+  certificate.signature_algorithm is 0
+  certificate.issuer is 0
+  certificate.issuer_bytes is 0
+  certificate.subject is 0
+  certificate.subject_bytes is 0
+  certificate.not_before is 0
+  certificate.not_before_bytes is 0
+  certificate.not_before_tag is 0
+  certificate.not_after is 0
+  certificate.not_after_bytes is 0
+  certificate.not_after_tag is 0
+  certificate.modulus is 0
+  certificate.modulus_bytes is 0
+  certificate.exponent is 0
+  certificate.san is 0
+  certificate.san_bytes is 0
+  certificate.is_ca is 0
+  certificate.has_basic_constraints is 0
+  certificate.key_usage is 0
+  certificate.has_key_usage is 0
+  certificate.has_san is 0
+  return true
+end
+
+func x509_decimal_pair(input: ptr, offset: u64) do
+  first: u64 is mem.read8(ptr.add(input, offset))
+  second: u64 is mem.read8(ptr.add(input, offset + 1))
+  if first < 48 or first > 57 or second < 48 or second > 57 then return 100
+  return (first - 48) * 10 + second - 48
+end
+
+func x509_is_leap_year(year: u64) do
+  if year % 400 == 0 then return true
+  if year % 100 == 0 then return false
+  return year % 4 == 0
+end
+
+func x509_days_in_month(year: u64, month: u64) do
+  if month == 1 or month == 3 or month == 5 or month == 7 then return 31
+  if month == 8 or month == 10 or month == 12 then return 31
+  if month == 4 or month == 6 or month == 9 or month == 11 then return 30
+  if month == 2 then
+    if x509_is_leap_year(year) then return 29
+    return 28
+  end
+  return 0
+end
+
+func x509_datetime_value(year: u64, month: u64, day: u64, hour: u64, minute: u64, second: u64) do
+  if year < 1950 or year > 9999 then return 0
+  days: u64 is x509_days_in_month(year, month)
+  if days == 0 or day == 0 or day > days then return 0
+  if hour > 23 or minute > 59 or second > 59 then return 0
+  value: u64 is year
+  value is value * 100 + month
+  value is value * 100 + day
+  value is value * 100 + hour
+  value is value * 100 + minute
+  return value * 100 + second
+end
+
+func x509_time_parse(input: ptr, input_bytes: u64, tag: u64, result: ptr[X509DateTime]) do
+  if input == 0 or result == 0 then return false
+  year: u64 is 0
+  cursor: u64 is 0
+  if tag == 23 then
+    if input_bytes != 13 then return false
+    short_year: u64 is x509_decimal_pair(input, 0)
+    if short_year > 99 then return false
+    if short_year >= 50 then
+      year is 1900 + short_year
+    else
+      year is 2000 + short_year
+    end
+    cursor is 2
+  else
+    if tag != 24 or input_bytes != 15 then return false
+    century: u64 is x509_decimal_pair(input, 0)
+    short_year: u64 is x509_decimal_pair(input, 2)
+    if century > 99 or short_year > 99 then return false
+    year is century * 100 + short_year
+    cursor is 4
+  end
+  month: u64 is x509_decimal_pair(input, cursor)
+  day: u64 is x509_decimal_pair(input, cursor + 2)
+  hour: u64 is x509_decimal_pair(input, cursor + 4)
+  minute: u64 is x509_decimal_pair(input, cursor + 6)
+  second: u64 is x509_decimal_pair(input, cursor + 8)
+  if month > 99 or day > 99 or hour > 99 or minute > 99 or second > 99 then return false
+  if mem.read8(ptr.add(input, cursor + 10)) != 90 then return false
+  value: u64 is x509_datetime_value(year, month, day, hour, minute, second)
+  if value == 0 then return false
+  result.year is year
+  result.month is month
+  result.day is day
+  result.hour is hour
+  result.minute is minute
+  result.second is second
+  result.value is value
+  return true
+end
+
+func x509_certificate_time_valid(certificate: ptr[X509Certificate], current_time: u64, scratch: ptr[X509DateTime]) do
+  if certificate == 0 or scratch == 0 or current_time == 0 then return false
+  if not x509_time_parse(certificate.not_before, certificate.not_before_bytes, certificate.not_before_tag, scratch) then return false
+  not_before: u64 is scratch.value
+  if not x509_time_parse(certificate.not_after, certificate.not_after_bytes, certificate.not_after_tag, scratch) then return false
+  not_after: u64 is scratch.value
+  if not_before > not_after then return false
+  return current_time >= not_before and current_time <= not_after
+end
+
+func x509_algorithm_identifier(element: ptr[DerElement], reader: ptr[DerReader], child: ptr[DerElement]) do
+  if element == 0 or element.tag != 48 or reader == 0 or child == 0 then return 0
+  if not der_enter(element, reader) then return 0
+  if not der_expect(reader, child, 6) then return 0
+  algorithm: u64 is 0
+  if der_oid_equal(child, x509_oid_sha256_rsa, 9) then algorithm is 1
+  if der_oid_equal(child, x509_oid_rsa_encryption, 9) then algorithm is 2
+  if der_oid_equal(child, x509_oid_rsa_pss, 9) then algorithm is 3
+  if der_oid_equal(child, x509_oid_sha384_rsa, 9) then algorithm is 4
+  if algorithm == 0 then return 0
+  if not der_reader_finished(reader) then
+    if not der_expect(reader, child, 5) or child.content_bytes != 0 then return 0
+  end
+  if not der_reader_finished(reader) then return 0
+  return algorithm
+end
+
+func x509_parse_validity(element: ptr[DerElement], workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  if element == 0 or element.tag != 48 then return false
+  reader: ptr[DerReader] is workspace.reader2
+  first: ptr[DerElement] is workspace.element3
+  second: ptr[DerElement] is workspace.element4
+  if not der_enter(element, reader) then return false
+  if not der_read_element(reader, first) then return false
+  if first.tag != 23 and first.tag != 24 then return false
+  if not der_read_element(reader, second) then return false
+  if second.tag != 23 and second.tag != 24 then return false
+  if not der_reader_finished(reader) then return false
+  certificate.not_before is first.content
+  certificate.not_before_bytes is first.content_bytes
+  certificate.not_before_tag is first.tag
+  certificate.not_after is second.content
+  certificate.not_after_bytes is second.content_bytes
+  certificate.not_after_tag is second.tag
+  return true
+end
+
+func x509_parse_spki(element: ptr[DerElement], workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  if element == 0 or element.tag != 48 then return false
+  reader: ptr[DerReader] is workspace.reader2
+  child: ptr[DerElement] is workspace.element3
+  nested: ptr[DerReader] is workspace.reader3
+  value: ptr[DerElement] is workspace.element4
+  if not der_enter(element, reader) then return false
+  if not der_expect(reader, child, 48) then return false
+  if x509_algorithm_identifier(child, nested, value) != 2 then return false
+  if not der_expect(reader, child, 3) or not der_reader_finished(reader) then return false
+  if child.content_bytes < 2 or mem.read8(child.content) != 0 then return false
+  if not der_reader_init(nested, ptr.add(child.content, 1), child.content_bytes - 1) then return false
+  if not der_expect(nested, value, 48) or not der_reader_finished(nested) then return false
+  if not der_enter(value, reader) then return false
+  if not der_expect(reader, child, 2) then return false
+  if child.content_bytes < 129 or child.content_bytes > 513 then return false
+  modulus: ptr is child.content
+  modulus_bytes: u64 is child.content_bytes
+  if mem.read8(modulus) == 0 then
+    if modulus_bytes < 2 or (mem.read8(ptr.add(modulus, 1)) & 128) == 0 then return false
+    modulus is ptr.add(modulus, 1)
+    modulus_bytes -= 1
+  else
+    if (mem.read8(modulus) & 128) != 0 then return false
+  end
+  if modulus_bytes < 128 or modulus_bytes > 512 then return false
+  if not der_expect(reader, child, 2) or not der_reader_finished(reader) then return false
+  exponent: u64 is der_positive_integer_u64(child)
+  if exponent != 65537 then return false
+  certificate.modulus is modulus
+  certificate.modulus_bytes is modulus_bytes
+  certificate.exponent is exponent
+  return true
+end
+
+func x509_parse_basic_constraints(value: ptr[DerElement], workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  reader: ptr[DerReader] is workspace.reader3
+  child: ptr[DerElement] is workspace.element5
+  if not der_reader_init(reader, value.content, value.content_bytes) then return false
+  if not der_expect(reader, child, 48) or not der_reader_finished(reader) then return false
+  if not der_enter(child, reader) then return false
+  certificate.is_ca is 0
+  if not der_reader_finished(reader) then
+    if not der_read_element(reader, child) then return false
+    if child.tag == 1 then
+      if child.content_bytes != 1 then return false
+      if mem.read8(child.content) != 0 and mem.read8(child.content) != 255 then return false
+      if mem.read8(child.content) == 255 then
+        certificate.is_ca is 1
+      end
+    else
+      if child.tag != 2 then return false
+    end
+  end
+  if not der_reader_finished(reader) then
+    if not der_expect(reader, child, 2) then return false
+  end
+  if not der_reader_finished(reader) then return false
+  certificate.has_basic_constraints is 1
+  return true
+end
+
+func x509_parse_key_usage(value: ptr[DerElement], workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  reader: ptr[DerReader] is workspace.reader3
+  child: ptr[DerElement] is workspace.element5
+  if not der_reader_init(reader, value.content, value.content_bytes) then return false
+  if not der_expect(reader, child, 3) or not der_reader_finished(reader) then return false
+  if child.content_bytes < 2 or child.content_bytes > 3 then return false
+  unused: u64 is mem.read8(child.content)
+  if unused > 7 then return false
+  usage: u64 is mem.read8(ptr.add(child.content, 1)) << 8
+  if child.content_bytes == 3 then usage is usage | mem.read8(ptr.add(child.content, 2))
+  certificate.key_usage is usage
+  certificate.has_key_usage is 1
+  return true
+end
+
+func x509_parse_extensions(element: ptr[DerElement], workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  if element == 0 or element.tag != 163 then return false
+  outer: ptr[DerReader] is workspace.reader2
+  sequence: ptr[DerElement] is workspace.element3
+  extension: ptr[DerElement] is workspace.element4
+  if not der_enter(element, outer) then return false
+  if not der_expect(outer, sequence, 48) or not der_reader_finished(outer) then return false
+  if not der_enter(sequence, outer) then return false
+  while not der_reader_finished(outer) do
+    if not der_expect(outer, extension, 48) then return false
+    inner: ptr[DerReader] is workspace.reader3
+    oid: ptr[DerElement] is workspace.element5
+    if not der_enter(extension, inner) then return false
+    if not der_expect(inner, oid, 6) then return false
+    kind: u64 is 0
+    if der_oid_equal(oid, x509_oid_subject_alt_name, 3) then kind is 1
+    if der_oid_equal(oid, x509_oid_basic_constraints, 3) then kind is 2
+    if der_oid_equal(oid, x509_oid_key_usage, 3) then kind is 3
+    critical: u64 is 0
+    if not der_reader_finished(inner) and mem.read8(ptr.add(inner.input, inner.cursor)) == 1 then
+      if not der_expect(inner, sequence, 1) or sequence.content_bytes != 1 then return false
+      if mem.read8(sequence.content) != 0 and mem.read8(sequence.content) != 255 then return false
+      if mem.read8(sequence.content) == 255 then critical is 1
+    end
+    if not der_expect(inner, sequence, 4) or not der_reader_finished(inner) then return false
+    if kind == 0 and critical != 0 then return false
+    if kind == 1 then
+      if certificate.has_san != 0 then return false
+      certificate.san is sequence.content
+      certificate.san_bytes is sequence.content_bytes
+      certificate.has_san is 1
+    end
+    if kind == 2 then
+      if certificate.has_basic_constraints != 0 then return false
+      if not x509_parse_basic_constraints(sequence, workspace, certificate) then return false
+    end
+    if kind == 3 then
+      if certificate.has_key_usage != 0 then return false
+      if not x509_parse_key_usage(sequence, workspace, certificate) then return false
+    end
+  end
+  return true
+end
+
+func x509_parse(certificate_der: ptr, certificate_bytes: u64, workspace: ptr[X509Workspace], certificate: ptr[X509Certificate]) do
+  if certificate_der == 0 or certificate_bytes < 128 or workspace == 0 or workspace.initialized == 0 then return false
+  if certificate == 0 or not x509_clear_certificate(certificate) then return false
+  outer: ptr[DerReader] is workspace.reader0
+  certificate_sequence: ptr[DerElement] is workspace.element0
+  if not der_reader_init(outer, certificate_der, certificate_bytes) then return false
+  if not der_expect(outer, certificate_sequence, 48) or not der_reader_finished(outer) then return false
+  body: ptr[DerReader] is workspace.reader1
+  tbs: ptr[DerElement] is workspace.element1
+  algorithm: ptr[DerElement] is workspace.element2
+  signature: ptr[DerElement] is workspace.element3
+  if not der_enter(certificate_sequence, body) then return false
+  if not der_expect(body, tbs, 48) then return false
+  if not der_expect(body, algorithm, 48) then return false
+  outer_algorithm: u64 is x509_algorithm_identifier(algorithm, outer, signature)
+  if outer_algorithm != 1 and outer_algorithm != 4 then return false
+  if not der_expect(body, signature, 3) or not der_reader_finished(body) then return false
+  if signature.content_bytes < 129 or mem.read8(signature.content) != 0 then return false
+  certificate.der is certificate_der
+  certificate.der_bytes is certificate_bytes
+  certificate.tbs is tbs.encoded
+  certificate.tbs_bytes is tbs.encoded_bytes
+  certificate.signature is ptr.add(signature.content, 1)
+  certificate.signature_bytes is signature.content_bytes - 1
+  certificate.signature_algorithm is outer_algorithm
+
+  if not der_enter(tbs, body) then return false
+  field: ptr[DerElement] is workspace.element2
+  if not der_read_element(body, field) then return false
+  if field.tag == 160 then
+    if not der_enter(field, outer) then return false
+    if not der_expect(outer, algorithm, 2) or not der_reader_finished(outer) then return false
+    if der_positive_integer_u64(algorithm) != 2 then return false
+    if not der_read_element(body, field) then return false
+  end
+  if field.tag != 2 or field.content_bytes == 0 or (mem.read8(field.content) & 128) != 0 then return false
+  if not der_expect(body, field, 48) then return false
+  if x509_algorithm_identifier(field, outer, algorithm) != outer_algorithm then return false
+  if not der_expect(body, field, 48) then return false
+  certificate.issuer is field.encoded
+  certificate.issuer_bytes is field.encoded_bytes
+  if not der_expect(body, field, 48) then return false
+  if not x509_parse_validity(field, workspace, certificate) then return false
+  if not der_expect(body, field, 48) then return false
+  certificate.subject is field.encoded
+  certificate.subject_bytes is field.encoded_bytes
+  if not der_expect(body, field, 48) then return false
+  if not x509_parse_spki(field, workspace, certificate) then return false
+  extensions_seen: u64 is 0
+  while not der_reader_finished(body) do
+    if not der_read_element(body, field) then return false
+    if field.tag == 163 then
+      if extensions_seen != 0 then return false
+      if not x509_parse_extensions(field, workspace, certificate) then return false
+      extensions_seen is 1
+    else
+      if field.tag != 129 and field.tag != 130 then return false
+    end
+  end
+  return certificate.modulus != 0 and certificate.not_before != 0 and certificate.not_after != 0
+end
+
+func x509_ascii_lower(value: u64) do
+  if value >= 65 and value <= 90 then return value + 32
+  return value
+end
+
+func x509_dns_name_matches(pattern: ptr, pattern_bytes: u64, hostname: ptr, hostname_bytes: u64) do
+  if pattern == 0 or hostname == 0 or pattern_bytes == 0 or hostname_bytes == 0 then return false
+  wildcard: bool is pattern_bytes > 2 and mem.read8(pattern) == 42 and mem.read8(ptr.add(pattern, 1)) == 46
+  if not wildcard then
+    if pattern_bytes != hostname_bytes then return false
+    index: u64 is 0
+    while index < pattern_bytes do
+      if x509_ascii_lower(mem.read8(ptr.add(pattern, index))) != x509_ascii_lower(mem.read8(ptr.add(hostname, index))) then return false
+      index += 1
+    end
+    return true
+  end
+  suffix_bytes: u64 is pattern_bytes - 1
+  if hostname_bytes <= suffix_bytes then return false
+  prefix_bytes: u64 is hostname_bytes - suffix_bytes
+  index: u64 is 0
+  while index < prefix_bytes do
+    if mem.read8(ptr.add(hostname, index)) == 46 then return false
+    index += 1
+  end
+  index is 0
+  while index < suffix_bytes do
+    if x509_ascii_lower(mem.read8(ptr.add(pattern, 1 + index))) != x509_ascii_lower(mem.read8(ptr.add(hostname, prefix_bytes + index))) then return false
+    index += 1
+  end
+  return true
+end
+
+func x509_hostname_matches(certificate: ptr[X509Certificate], hostname: ptr, hostname_bytes: u64, workspace: ptr[X509Workspace]) do
+  if certificate == 0 or certificate.has_san == 0 or certificate.san == 0 then return false
+  if hostname == 0 or hostname_bytes == 0 or workspace == 0 then return false
+  reader: ptr[DerReader] is workspace.reader0
+  sequence: ptr[DerElement] is workspace.element0
+  name: ptr[DerElement] is workspace.element1
+  if not der_reader_init(reader, certificate.san, certificate.san_bytes) then return false
+  if not der_expect(reader, sequence, 48) or not der_reader_finished(reader) then return false
+  if not der_enter(sequence, reader) then return false
+  while not der_reader_finished(reader) do
+    if not der_read_element(reader, name) then return false
+    if name.tag == 130 then
+      if x509_dns_name_matches(name.content, name.content_bytes, hostname, hostname_bytes) then return true
+    end
+  end
+  return false
+end

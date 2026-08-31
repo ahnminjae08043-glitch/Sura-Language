@@ -1,0 +1,248 @@
+# Polling modern VirtIO PCI GPU driver for the QEMU x86-64 OS path.
+#
+# The transport uses one caller-owned, page-aligned 12-KiB split queue and two
+# 4-KiB command buffers. Scanout pixels live in a separate caller-owned
+# identity-mapped backing region.
+
+import "virtio_pci.sura"
+
+struct VirtioGpuContext do
+  transport: ptr[VirtioPciTransport]
+  queue: ptr
+  queue_physical: u64
+  queue_size: u64
+  request: ptr
+  request_physical: u64
+  response: ptr
+  response_physical: u64
+  backing: ptr
+  backing_physical: u64
+  backing_bytes: u64
+  last_used: u64
+  width: u64
+  height: u64
+  scanout_id: u64
+  resource_id: u64
+  ready: u64
+end
+
+func virtio_gpu_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func virtio_gpu_clear(context: ptr[VirtioGpuContext]) do
+  if context == 0 then return false
+  context.transport is 0
+  context.queue is 0
+  context.queue_physical is 0
+  context.queue_size is 0
+  context.request is 0
+  context.request_physical is 0
+  context.response is 0
+  context.response_physical is 0
+  context.backing is 0
+  context.backing_physical is 0
+  context.backing_bytes is 0
+  context.last_used is 0
+  context.width is 0
+  context.height is 0
+  context.scanout_id is 0
+  context.resource_id is 0
+  context.ready is 0
+  return true
+end
+
+func virtio_gpu_find_pci(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  # Modern PCI ID is 0x1040 + VirtIO device ID 16.
+  return pci_find_vendor(6900, 4176, device)
+end
+
+func virtio_gpu_power_of_two(value: u64) do
+  if value == 0 then return false
+  return (value & (value - 1)) == 0
+end
+
+func virtio_gpu_init(context: ptr[VirtioGpuContext], transport: ptr[VirtioPciTransport], device: ptr[PciDevice], dma_virtual: ptr, dma_physical: u64, dma_bytes: u64) do
+  if context == 0 or transport == 0 or device == 0 or dma_virtual == 0 then return false
+  if dma_bytes < 24576 or (dma_physical & 4095) != 0 then return false
+  virtio_gpu_clear(context)
+  if not virtio_gpu_find_pci(device) then return false
+
+  context.transport is transport
+  context.queue is dma_virtual
+  context.queue_physical is dma_physical
+  context.request is ptr.add(dma_virtual, 16384)
+  context.request_physical is dma_physical + 16384
+  context.response is ptr.add(dma_virtual, 20480)
+  context.response_physical is dma_physical + 20480
+
+  if not virtio_pci_init_control_queue(transport, device, context.queue, context.queue_physical, 12288) then return false
+  context.queue_size is transport.queue_size
+  context.ready is 1
+  return true
+end
+
+func virtio_gpu_submit(context: ptr[VirtioGpuContext], request_bytes: u64, response_bytes: u64, expected_type: u64, spin_limit: u64) do
+  if context == 0 or context.ready == 0 or spin_limit == 0 then return false
+  if request_bytes < 24 or request_bytes > 4096 then return false
+  if response_bytes < 24 or response_bytes > 4096 then return false
+  if not virtio_gpu_zero(context.response, response_bytes) then return false
+
+  first: ptr is context.queue
+  second: ptr is ptr.add(context.queue, 16)
+  mem.write64(first, context.request_physical)
+  mem.write32(ptr.add(first, 8), request_bytes)
+  mem.write16(ptr.add(first, 12), 1)
+  mem.write16(ptr.add(first, 14), 1)
+  mem.write64(second, context.response_physical)
+  mem.write32(ptr.add(second, 8), response_bytes)
+  mem.write16(ptr.add(second, 12), 2)
+  mem.write16(ptr.add(second, 14), 0)
+
+  available: ptr is ptr.add(context.queue, 4096)
+  available_index: u64 is mem.read16(ptr.add(available, 2))
+  mem.write16(ptr.add(available, 4 + (available_index % context.queue_size) * 2), 0)
+  atomic.fence()
+  mem.write16(ptr.add(available, 2), (available_index + 1) & 65535)
+  atomic.fence()
+  transport: ptr[VirtioPciTransport] is context.transport
+  if not virtio_pci_notify_queue_zero(transport) then return false
+
+  used: ptr is ptr.add(context.queue, 8192)
+  spins: u64 is 0
+  while spins < spin_limit do
+    used_index: u64 is mem.read16(ptr.add(used, 2))
+    if used_index != context.last_used then
+      slot: u64 is context.last_used % context.queue_size
+      element: ptr is ptr.add(used, 4 + slot * 8)
+      descriptor: u64 is mem.read32(element)
+      written: u64 is mem.read32(ptr.add(element, 4))
+      context.last_used is used_index
+      if descriptor != 0 or written < 24 or written > response_bytes then return false
+      response_type: u64 is mem.read32(context.response)
+      if response_type != expected_type then return false
+      return true
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func virtio_gpu_get_display_info(context: ptr[VirtioGpuContext], spin_limit: u64) do
+  if context == 0 or context.ready == 0 then return false
+  if not virtio_gpu_zero(context.request, 24) then return false
+  mem.write32(context.request, 256)
+  if not virtio_gpu_submit(context, 24, 408, 4353, spin_limit) then return false
+
+  scanout: u64 is 0
+  while scanout < 16 do
+    mode: ptr is ptr.add(context.response, 24 + scanout * 24)
+    width: u64 is mem.read32(ptr.add(mode, 8))
+    height: u64 is mem.read32(ptr.add(mode, 12))
+    enabled: u64 is mem.read32(ptr.add(mode, 16))
+    if enabled != 0 and width > 0 and height > 0 and width <= 8192 and height <= 8192 then
+      context.width is width
+      context.height is height
+      context.scanout_id is scanout
+      return true
+    end
+    scanout += 1
+  end
+  return false
+end
+
+func virtio_gpu_resource_create_2d(context: ptr[VirtioGpuContext], resource_id: u64, spin_limit: u64) do
+  if context == 0 or resource_id == 0 then return false
+  if context.width == 0 or context.height == 0 then return false
+  if not virtio_gpu_zero(context.request, 40) then return false
+  mem.write32(context.request, 257)
+  mem.write32(ptr.add(context.request, 24), resource_id)
+  # VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM.
+  mem.write32(ptr.add(context.request, 28), 2)
+  mem.write32(ptr.add(context.request, 32), context.width)
+  mem.write32(ptr.add(context.request, 36), context.height)
+  if not virtio_gpu_submit(context, 40, 24, 4352, spin_limit) then return false
+  context.resource_id is resource_id
+  return true
+end
+
+func virtio_gpu_attach_backing(context: ptr[VirtioGpuContext], backing: ptr, physical: u64, byte_count: u64, spin_limit: u64) do
+  if context == 0 or context.resource_id == 0 or backing == 0 then return false
+  if physical == 0 or byte_count == 0 or byte_count > 4294967295 then return false
+  if not virtio_gpu_zero(context.request, 48) then return false
+  mem.write32(context.request, 262)
+  mem.write32(ptr.add(context.request, 24), context.resource_id)
+  mem.write32(ptr.add(context.request, 28), 1)
+  mem.write64(ptr.add(context.request, 32), physical)
+  mem.write32(ptr.add(context.request, 40), byte_count)
+  if not virtio_gpu_submit(context, 48, 24, 4352, spin_limit) then return false
+  context.backing is backing
+  context.backing_physical is physical
+  context.backing_bytes is byte_count
+  return true
+end
+
+func virtio_gpu_set_scanout(context: ptr[VirtioGpuContext], spin_limit: u64) do
+  if context == 0 or context.resource_id == 0 or context.backing == 0 then return false
+  if not virtio_gpu_zero(context.request, 48) then return false
+  mem.write32(context.request, 259)
+  mem.write32(ptr.add(context.request, 32), context.width)
+  mem.write32(ptr.add(context.request, 36), context.height)
+  mem.write32(ptr.add(context.request, 40), context.scanout_id)
+  mem.write32(ptr.add(context.request, 44), context.resource_id)
+  return virtio_gpu_submit(context, 48, 24, 4352, spin_limit)
+end
+
+func virtio_gpu_present(context: ptr[VirtioGpuContext], x: u64, y: u64, width: u64, height: u64, spin_limit: u64) do
+  if context == 0 or context.resource_id == 0 or context.backing == 0 then return false
+  if width == 0 or height == 0 or x >= context.width or y >= context.height then return false
+  if width > context.width - x or height > context.height - y then return false
+
+  if not virtio_gpu_zero(context.request, 56) then return false
+  mem.write32(context.request, 261)
+  mem.write32(ptr.add(context.request, 24), x)
+  mem.write32(ptr.add(context.request, 28), y)
+  mem.write32(ptr.add(context.request, 32), width)
+  mem.write32(ptr.add(context.request, 36), height)
+  mem.write64(ptr.add(context.request, 40), (y * context.width + x) * 4)
+  mem.write32(ptr.add(context.request, 48), context.resource_id)
+  if not virtio_gpu_submit(context, 56, 24, 4352, spin_limit) then return false
+
+  if not virtio_gpu_zero(context.request, 48) then return false
+  mem.write32(context.request, 260)
+  mem.write32(ptr.add(context.request, 24), x)
+  mem.write32(ptr.add(context.request, 28), y)
+  mem.write32(ptr.add(context.request, 32), width)
+  mem.write32(ptr.add(context.request, 36), height)
+  mem.write32(ptr.add(context.request, 40), context.resource_id)
+  return virtio_gpu_submit(context, 48, 24, 4352, spin_limit)
+end
+
+func virtio_gpu_release(context: ptr[VirtioGpuContext], spin_limit: u64) do
+  if context == 0 or context.resource_id == 0 then return false
+  if not virtio_gpu_zero(context.request, 32) then return false
+  mem.write32(context.request, 258)
+  mem.write32(ptr.add(context.request, 24), context.resource_id)
+  if not virtio_gpu_submit(context, 32, 24, 4352, spin_limit) then return false
+  context.resource_id is 0
+  context.backing is 0
+  context.backing_physical is 0
+  context.backing_bytes is 0
+  return true
+end
+
+func virtio_gpu_stop(context: ptr[VirtioGpuContext]) do
+  if context == 0 or context.transport == 0 then return false
+  transport: ptr[VirtioPciTransport] is context.transport
+  if not virtio_pci_stop(transport) then return false
+  context.ready is 0
+  return true
+end

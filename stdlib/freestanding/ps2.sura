@@ -1,8 +1,12 @@
 # Polling Intel 8042 / PS/2 keyboard and mouse support for x86-64 kernels.
 #
 # Keyboard bytes are decoded as translated Set-1 scan codes. Mouse packets use
-# the standard three-byte relative format. The caller owns all state and polls
-# the controller; this module does not install IRQ handlers.
+# the standard three-byte relative format or IntelliMouse four-byte wheel
+# format. The caller owns all state and polls the controller; this module does
+# not install IRQ handlers.
+
+import "key_event.sura"
+import "pointer_event.sura"
 
 struct Ps2KeyboardState do
   left_shift: u64
@@ -14,6 +18,16 @@ struct Ps2KeyboardState do
   key_code: u64
   ascii: u64
   pressed: u64
+  released: u64
+  repeated: u64
+  left_ctrl: u64
+  right_ctrl: u64
+  left_alt: u64
+  right_alt: u64
+  modifiers: u64
+  sequence: u64
+  pressed_low: u64
+  pressed_high: u64
 end
 
 struct Ps2MouseState do
@@ -28,6 +42,12 @@ struct Ps2MouseState do
   packet_index: u64
   packet0: u64
   packet1: u64
+  packet2: u64
+  packet_bytes: u64
+  delta_x: i64
+  delta_y: i64
+  wheel: i64
+  sequence: u64
 end
 
 ps2_keymap_base is static.bytes([0, 27, 49, 50, 51, 52, 53, 54, 55, 56, 57, 48, 45, 61, 8, 9, 113, 119, 101, 114, 116, 121, 117, 105, 111, 112, 91, 93, 10, 0, 97, 115, 100, 102, 103, 104, 106, 107, 108, 59, 39, 96, 0, 92, 122, 120, 99, 118, 98, 110, 109, 44, 46, 47, 0, 42, 0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1)
@@ -44,29 +64,79 @@ func ps2_keyboard_reset(state: ptr[Ps2KeyboardState]) do
   state.key_code is 0
   state.ascii is 0
   state.pressed is 0
+  state.released is 0
+  state.repeated is 0
+  state.left_ctrl is 0
+  state.right_ctrl is 0
+  state.left_alt is 0
+  state.right_alt is 0
+  state.modifiers is 0
+  state.sequence is 0
+  state.pressed_low is 0
+  state.pressed_high is 0
   return true
 end
 
 func ps2_keyboard_ascii(state: ptr[Ps2KeyboardState], code: u64) do
-  if state == 0 or code >= 128 then return 0
-  shifted: u64 is 0
-  if state.left_shift != 0 or state.right_shift != 0 then shifted is 1
-  base: u64 is mem.read8(ptr.add(ps2_keymap_base, code))
-  if base >= 97 and base <= 122 and state.caps_lock != 0 then
-    if shifted == 0 then
-      shifted is 1
-    else
-      shifted is 0
-    end
+  if state == 0 then return 0
+  return key_event_us_ascii(code, state.modifiers, true)
+end
+
+func ps2_keyboard_modifiers(state: ptr[Ps2KeyboardState]) do
+  if state == 0 then return 0
+  modifiers: u64 is 0
+  if state.left_shift != 0 or state.right_shift != 0 then modifiers is modifiers | key_event_modifier_shift()
+  if state.left_ctrl != 0 or state.right_ctrl != 0 then modifiers is modifiers | key_event_modifier_ctrl()
+  if state.left_alt != 0 or state.right_alt != 0 then modifiers is modifiers | key_event_modifier_alt()
+  if state.caps_lock != 0 then modifiers is modifiers | key_event_modifier_caps()
+  return modifiers
+end
+
+func ps2_keyboard_key_down(state: ptr[Ps2KeyboardState], code: u64) do
+  if state == 0 or code >= 128 then return false
+  if code < 64 then return (state.pressed_low & (1 << code)) != 0
+  return (state.pressed_high & (1 << (code - 64))) != 0
+end
+
+func ps2_keyboard_set_key_down(state: ptr[Ps2KeyboardState], code: u64, down: bool) do
+  if state == 0 or code >= 128 then return false
+  if code < 64 then
+    mask: u64 is 1 << code
+    if down then state.pressed_low is state.pressed_low | mask else state.pressed_low is state.pressed_low & ~mask
+  else
+    mask: u64 is 1 << (code - 64)
+    if down then state.pressed_high is state.pressed_high | mask else state.pressed_high is state.pressed_high & ~mask
   end
-  if shifted != 0 then return mem.read8(ptr.add(ps2_keymap_shift, code))
-  return base
+  return true
+end
+
+func ps2_keyboard_finish_event(state: ptr[Ps2KeyboardState]) do
+  state.modifiers is ps2_keyboard_modifiers(state)
+  if state.sequence != u64("0xffffffffffffffff") then state.sequence += 1
+  if state.pressed != 0 then state.ascii is ps2_keyboard_ascii(state, state.key_code)
+  return true
+end
+
+func ps2_keyboard_to_event(state: ptr[Ps2KeyboardState], event: ptr[KeyEvent]) do
+  if state == 0 or event == 0 then return false
+  key_event_clear(event)
+  event.physical_key is state.key_code
+  event.scan_code is state.scan_code
+  event.unicode is state.ascii
+  event.pressed is state.pressed
+  event.released is state.released
+  event.repeated is state.repeated
+  event.modifiers is state.modifiers
+  event.sequence is state.sequence
+  return true
 end
 
 func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
   if state == 0 or value > 255 then return false
   state.ascii is 0
   state.pressed is 0
+  state.released is 0
+  state.repeated is 0
 
   if state.skip_bytes > 0 then
     state.skip_bytes -= 1
@@ -81,6 +151,15 @@ func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
     state.extended is 1
     return false
   end
+  # Dedicated make codes used by Korean 106-key keyboards.
+  if value == 241 or value == 242 then
+    state.scan_code is value
+    if value == 242 then state.key_code is key_event_key_hangul() else state.key_code is key_event_key_hanja()
+    state.pressed is 1
+    ps2_keyboard_finish_event(state)
+    state.ascii is 0
+    return true
+  end
 
   released: u64 is 0
   code: u64 is value
@@ -92,6 +171,15 @@ func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
   state.key_code is code
   if state.extended != 0 then state.key_code is code + 256
   state.extended is 0
+  was_down: bool is ps2_keyboard_key_down(state, code)
+  if released != 0 then
+    state.released is 1
+    ps2_keyboard_set_key_down(state, code, false)
+  else
+    state.pressed is 1
+    if was_down then state.repeated is 1
+    ps2_keyboard_set_key_down(state, code, true)
+  end
 
   if code == 42 then
     if released == 0 then
@@ -99,7 +187,7 @@ func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
     else
       state.left_shift is 0
     end
-    if released == 0 then state.pressed is 1
+    ps2_keyboard_finish_event(state)
     return true
   end
   if code == 54 then
@@ -108,22 +196,35 @@ func ps2_keyboard_feed(state: ptr[Ps2KeyboardState], value: u64) do
     else
       state.right_shift is 0
     end
-    if released == 0 then state.pressed is 1
+    ps2_keyboard_finish_event(state)
     return true
   end
-  if code == 58 and released == 0 then
+  if code == 29 then
+    if state.key_code >= 256 then
+      if released == 0 then state.right_ctrl is 1 else state.right_ctrl is 0
+    else
+      if released == 0 then state.left_ctrl is 1 else state.left_ctrl is 0
+    end
+    ps2_keyboard_finish_event(state)
+    return true
+  end
+  if code == 56 then
+    if state.key_code >= 256 then
+      if released == 0 then state.right_alt is 1 else state.right_alt is 0
+    else
+      if released == 0 then state.left_alt is 1 else state.left_alt is 0
+    end
+    ps2_keyboard_finish_event(state)
+    return true
+  end
+  if code == 58 and released == 0 and state.repeated == 0 then
     if state.caps_lock == 0 then
       state.caps_lock is 1
     else
       state.caps_lock is 0
     end
-    state.pressed is 1
-    return true
   end
-  if released != 0 then return false
-
-  state.pressed is 1
-  state.ascii is ps2_keyboard_ascii(state, code)
+  ps2_keyboard_finish_event(state)
   return true
 end
 
@@ -140,6 +241,12 @@ func ps2_mouse_reset(state: ptr[Ps2MouseState], width: u64, height: u64) do
   state.packet_index is 0
   state.packet0 is 0
   state.packet1 is 0
+  state.packet2 is 0
+  state.packet_bytes is 3
+  state.delta_x is 0
+  state.delta_y is 0
+  state.wheel is 0
+  state.sequence is 0
   return true
 end
 
@@ -156,10 +263,20 @@ func ps2_mouse_feed(state: ptr[Ps2MouseState], value: u64) do
     state.packet_index is 2
     return false
   end
+  if state.packet_index == 2 and state.packet_bytes == 4 then
+    state.packet2 is value
+    state.packet_index is 3
+    return false
+  end
 
   first: u64 is state.packet0
   second: u64 is state.packet1
   third: u64 is value
+  fourth: u64 is 0
+  if state.packet_bytes == 4 then
+    third is state.packet2
+    fourth is value
+  end
   state.packet_index is 0
   delta_x: i64 is second
   delta_y: i64 is third
@@ -188,6 +305,27 @@ func ps2_mouse_feed(state: ptr[Ps2MouseState], value: u64) do
   state.buttons is new_buttons
   state.pressed is changed & new_buttons
   state.released is changed & old_buttons
+  state.delta_x is state.x - old_x
+  state.delta_y is state.y - old_y
+  state.wheel is fourth & 15
+  if state.wheel >= 8 then state.wheel -= 16
+  if state.sequence != u64("0xffffffffffffffff") then state.sequence += 1
+  return true
+end
+
+func ps2_mouse_to_event(state: ptr[Ps2MouseState], event: ptr[PointerEvent]) do
+  if state == 0 or event == 0 then return false
+  pointer_event_clear(event)
+  event.x is state.x
+  event.y is state.y
+  event.delta_x is state.delta_x
+  event.delta_y is state.delta_y
+  event.wheel is state.wheel
+  event.buttons is state.buttons
+  event.pressed is state.pressed
+  event.released is state.released
+  event.moved is state.moved
+  event.sequence is state.sequence
   return true
 end
 
@@ -246,6 +384,27 @@ func ps2_device_command(value: u64, mouse: bool) do
   end
   if not ps2_controller_data(value) then return false
   return ps2_read_port(mouse, 200000) == 250
+end
+
+func ps2_mouse_set_sample_rate(rate: u64) do
+  if rate > 255 then return false
+  if not ps2_device_command(243, true) then return false
+  return ps2_device_command(rate, true)
+end
+
+func ps2_mouse_enable_wheel(state: ptr[Ps2MouseState]) do
+  if state == 0 then return false
+  if not ps2_device_command(245, true) then return false
+  if not ps2_mouse_set_sample_rate(200) then return false
+  if not ps2_mouse_set_sample_rate(100) then return false
+  if not ps2_mouse_set_sample_rate(80) then return false
+  if not ps2_device_command(242, true) then return false
+  device_id: u64 is ps2_read_port(true, 200000)
+  if not ps2_device_command(244, true) then return false
+  if device_id != 3 and device_id != 4 then return false
+  state.packet_index is 0
+  state.packet_bytes is 4
+  return true
 end
 
 func ps2_controller_init() do

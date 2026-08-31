@@ -1,9 +1,10 @@
 # Polling legacy VirtIO PCI network driver for the QEMU x86-64 OS path.
 #
 # QEMU is started with virtio-net-pci,disable-modern=on. The caller supplies
-# one 64-KiB page-aligned, identity-mapped DMA region below the legacy PFN
+# one 160-KiB page-aligned, identity-mapped DMA region below the legacy PFN
 # limit. Queue size 256 is required so the fixed split-ring layout stays
-# deterministic.
+# deterministic. Sixty-four posted RX buffers absorb a bounded burst while
+# the guest authenticates a full TLS record in software.
 
 import "pci.sura"
 
@@ -83,7 +84,7 @@ end
 func virtio_net_post_receive_buffers(context: ptr[VirtioNetContext]) do
   if context == 0 or context.rx_queue == 0 or context.rx_buffers == 0 then return false
   descriptor: u64 is 0
-  while descriptor < 8 do
+  while descriptor < 64 do
     entry: ptr is ptr.add(context.rx_queue, descriptor * 16)
     mem.write64(entry, context.rx_buffers_physical + descriptor * 2048)
     mem.write32(ptr.add(entry, 8), 2048)
@@ -94,12 +95,12 @@ func virtio_net_post_receive_buffers(context: ptr[VirtioNetContext]) do
   available: ptr is ptr.add(context.rx_queue, 4096)
   mem.write16(available, 0)
   descriptor is 0
-  while descriptor < 8 do
+  while descriptor < 64 do
     mem.write16(ptr.add(available, 4 + descriptor * 2), descriptor)
     descriptor += 1
   end
   atomic.fence()
-  mem.write16(ptr.add(available, 2), 8)
+  mem.write16(ptr.add(available, 2), 64)
   atomic.fence()
   io.out16(context.io_base + 16, 0)
   return true
@@ -107,7 +108,7 @@ end
 
 func virtio_net_init(context: ptr[VirtioNetContext], device: ptr[PciDevice], dma_virtual: ptr, dma_physical: u64, dma_bytes: u64) do
   if context == 0 or device == 0 or dma_virtual == 0 then return false
-  if dma_bytes < 65536 or (dma_physical & 4095) != 0 then return false
+  if dma_bytes < 163840 or (dma_physical & 4095) != 0 then return false
   virtio_net_clear(context)
   if not virtio_net_find_pci(device) then return false
   if not pci_enable_command(device.bdf, 5) then return false
@@ -135,8 +136,8 @@ func virtio_net_init(context: ptr[VirtioNetContext], device: ptr[PciDevice], dma
   context.tx_queue_physical is dma_physical + 12288
   context.rx_buffers is ptr.add(dma_virtual, 24576)
   context.rx_buffers_physical is dma_physical + 24576
-  context.tx_buffer is ptr.add(dma_virtual, 40960)
-  context.tx_buffer_physical is dma_physical + 40960
+  context.tx_buffer is ptr.add(dma_virtual, 155648)
+  context.tx_buffer_physical is dma_physical + 155648
   if not virtio_net_queue_setup(io_base, 0, context.rx_queue, context.rx_queue_physical) then
     io.out8(io_base + 18, 128)
     return false
@@ -219,7 +220,7 @@ func virtio_net_receive(context: ptr[VirtioNetContext], output: ptr, capacity: u
   element: ptr is ptr.add(used, 4 + slot * 8)
   descriptor: u64 is mem.read32(element)
   total_bytes: u64 is mem.read32(ptr.add(element, 4))
-  if descriptor >= 8 or total_bytes < 10 or total_bytes > 2048 then return 0
+  if descriptor >= 64 or total_bytes < 10 or total_bytes > 2048 then return 0
   frame_bytes: u64 is total_bytes - 10
   if frame_bytes > capacity then frame_bytes is capacity
   source: ptr is ptr.add(context.rx_buffers, descriptor * 2048 + 10)

@@ -13,6 +13,7 @@ os_icon_notes is static.utf8("....................BBBBBBBB.......BWWWWWWWB......
 os_icon_calc is static.utf8("....................OOOOOOOO.......OYYYYYYYYO......OYWWWWWWYO......OYWWWWWWYO......OYYYYYYYYO......OYOOYYOOYO......OYOOYYOOYO......OYYYYYYYYO......OYOOYYOOYO......OYOOYYOOYO......OYYYYYYYYO......OYOOYYOOYO.......OOOOOOOO....................................")
 os_icon_web is static.utf8(".....................BBBBBB........BBLLLLLLBB.....BLLLBLLBLLLB...BLLLLBLLBLLLLB..BBBBBBBBBBBBBB..BLLLLBLLBLLLLB..BLLLLBLLBLLLLB..BBBBBBBBBBBBBB..BLLLLBLLBLLLLB..BLLLLBLLBLLLLB...BLLLBLLBLLLB.....BBLLLLLLBB........BBBBBB.....................................")
 os_icon_terminal is static.utf8("..................GGGGGGGGGGGG...GNNNNNNNNNNNNG..GNLLLLLLLLLLNG..GNLWWLLLLLLLNG..GNLLWWLLLLLLNG..GNLLLWWLLLLLNG..GNLLLLWWLLLLNG..GNLLLLLLLLLLNG..GNLLLLLLWWLLNG..GNLLLLLLWWLLNG..GNLLLLLLLLLLNG..GNNNNNNNNNNNNG...GGGGGGGGGGGG..................................")
+os_icon_doom is static.utf8("..................OOOOOOOOOO......ONNNNNNNNO......ONNWWWWNNNO.....ONNWWWWWNNO.....ONNWWNNWWNO.....ONNWWNNWWNO.....ONNWWNNWWNO.....ONNWWNNWWNO.....ONNWWNNWWNO.....ONNWWNNWWNO.....ONNWWWWWNNO.....ONNWWWWNNNO.....ONNNNNNNNO......OOOOOOOOOO....................")
 
 func os_icon_palette(surface: ptr[FramebufferSurface], code: u64) do
   if surface == 0 then return 0

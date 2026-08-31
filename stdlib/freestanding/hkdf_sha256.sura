@@ -1,0 +1,207 @@
+# HMAC-SHA256 and HKDF-SHA256 for the freestanding Sura target.
+#
+# Storage is caller-owned and fixed-capacity. The implementation follows the
+# extract-then-expand construction in RFC 5869.
+
+import "sha256.sura"
+
+struct HmacSha256Workspace do
+  state: ptr
+  block: ptr
+  schedule: ptr
+  key_block: ptr
+  inner_digest: ptr
+  message: ptr
+  message_capacity: u64
+  initialized: u64
+end
+
+struct HmacSha256Buffers do
+  state: ptr
+  block: ptr
+  schedule: ptr
+  key_block: ptr
+  inner_digest: ptr
+  message: ptr
+  message_capacity: u64
+end
+
+struct HkdfSha256ExpandRequest do
+  prk: ptr
+  prk_bytes: u64
+  info: ptr
+  info_bytes: u64
+  output: ptr
+  output_bytes: u64
+end
+
+struct Tls13HkdfExpandLabelRequest do
+  secret: ptr
+  secret_bytes: u64
+  label: ptr
+  label_bytes: u64
+  context: ptr
+  context_bytes: u64
+  output: ptr
+  output_bytes: u64
+  info: ptr
+  info_capacity: u64
+  expand_request: ptr
+end
+
+tls13_hkdf_label_prefix is static.bytes([116, 108, 115, 49, 51, 32], 1)
+
+func crypto_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func crypto_bytes_equal(left: ptr, right: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if left == 0 or right == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(left, index)) ^ mem.read8(ptr.add(right, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func hmac_sha256_workspace_init(workspace: ptr[HmacSha256Workspace], buffers: ptr[HmacSha256Buffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.state == 0 or buffers.block == 0 or buffers.schedule == 0 then return false
+  if buffers.key_block == 0 or buffers.inner_digest == 0 then return false
+  if buffers.message == 0 or buffers.message_capacity == 0 then return false
+  workspace.state is buffers.state
+  workspace.block is buffers.block
+  workspace.schedule is buffers.schedule
+  workspace.key_block is buffers.key_block
+  workspace.inner_digest is buffers.inner_digest
+  workspace.message is buffers.message
+  workspace.message_capacity is buffers.message_capacity
+  workspace.initialized is 1
+  if not sha256_clear(workspace.key_block, 64) then return false
+  if not sha256_clear(workspace.inner_digest, 32) then return false
+  return sha256_clear(workspace.message, workspace.message_capacity)
+end
+
+func hmac_sha256(workspace: ptr[HmacSha256Workspace], key: ptr, key_bytes: u64, message: ptr, message_bytes: u64, output: ptr) do
+  if workspace == 0 or workspace.initialized == 0 or output == 0 then return false
+  if key_bytes != 0 and key == 0 then return false
+  if message_bytes != 0 and message == 0 then return false
+  hash_state: ptr[Sha256State] is workspace.state
+  if hash_state == 0 then return false
+  if not sha256_clear(workspace.key_block, 64) then return false
+  if key_bytes > 64 then
+    if not sha256_digest(key, key_bytes, workspace.inner_digest, hash_state, workspace.block, workspace.schedule) then return false
+    if not crypto_copy(workspace.key_block, workspace.inner_digest, 32) then return false
+  end
+  if key_bytes <= 64 then
+    if not crypto_copy(workspace.key_block, key, key_bytes) then return false
+  end
+
+  index: u64 is 0
+  while index < 64 do
+    mem.write8(ptr.add(workspace.key_block, index), mem.read8(ptr.add(workspace.key_block, index)) ^ 54)
+    index += 1
+  end
+  if not sha256_init(hash_state, workspace.block, workspace.schedule) then return false
+  if not sha256_update(hash_state, workspace.key_block, 64) then return false
+  if not sha256_update(hash_state, message, message_bytes) then return false
+  if not sha256_final(hash_state, workspace.inner_digest) then return false
+
+  index is 0
+  while index < 64 do
+    original: u64 is mem.read8(ptr.add(workspace.key_block, index)) ^ 54
+    mem.write8(ptr.add(workspace.key_block, index), original ^ 92)
+    index += 1
+  end
+  if not sha256_init(hash_state, workspace.block, workspace.schedule) then return false
+  if not sha256_update(hash_state, workspace.key_block, 64) then return false
+  if not sha256_update(hash_state, workspace.inner_digest, 32) then return false
+  if not sha256_final(hash_state, output) then return false
+  return sha256_clear(workspace.key_block, 64)
+end
+
+func hkdf_sha256_extract(workspace: ptr[HmacSha256Workspace], salt: ptr, salt_bytes: u64, input_key: ptr, input_key_bytes: u64, prk: ptr) do
+  if workspace == 0 or workspace.initialized == 0 or prk == 0 then return false
+  if input_key_bytes != 0 and input_key == 0 then return false
+  if salt_bytes == 0 then
+    if workspace.message_capacity < 32 then return false
+    if not sha256_clear(workspace.message, 32) then return false
+    return hmac_sha256(workspace, workspace.message, 32, input_key, input_key_bytes, prk)
+  end
+  if salt == 0 then return false
+  return hmac_sha256(workspace, salt, salt_bytes, input_key, input_key_bytes, prk)
+end
+
+func hkdf_sha256_expand(workspace: ptr[HmacSha256Workspace], request: ptr[HkdfSha256ExpandRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.prk == 0 or request.prk_bytes == 0 then return false
+  if request.output_bytes == 0 then return true
+  if request.output == 0 or request.output_bytes > 8160 then return false
+  if request.info_bytes != 0 and request.info == 0 then return false
+  if request.info_bytes > workspace.message_capacity then return false
+  if request.info_bytes + 33 > workspace.message_capacity then return false
+
+  block_index: u64 is 1
+  output_offset: u64 is 0
+  previous_bytes: u64 is 0
+  while output_offset < request.output_bytes do
+    cursor: u64 is 0
+    if previous_bytes != 0 then
+      if not crypto_copy(workspace.message, workspace.inner_digest, previous_bytes) then return false
+      cursor is previous_bytes
+    end
+    if not crypto_copy(ptr.add(workspace.message, cursor), request.info, request.info_bytes) then return false
+    cursor is cursor + request.info_bytes
+    mem.write8(ptr.add(workspace.message, cursor), block_index)
+    cursor += 1
+    if not hmac_sha256(workspace, request.prk, request.prk_bytes, workspace.message, cursor, workspace.inner_digest) then return false
+    take: u64 is request.output_bytes - output_offset
+    if take > 32 then take is 32
+    if not crypto_copy(ptr.add(request.output, output_offset), workspace.inner_digest, take) then return false
+    output_offset is output_offset + take
+    previous_bytes is 32
+    block_index += 1
+  end
+  return true
+end
+
+func tls13_hkdf_expand_label(workspace: ptr[HmacSha256Workspace], request: ptr[Tls13HkdfExpandLabelRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.secret == 0 or request.secret_bytes == 0 then return false
+  if request.label_bytes != 0 and request.label == 0 then return false
+  if request.context_bytes != 0 and request.context == 0 then return false
+  if request.output_bytes != 0 and request.output == 0 then return false
+  if request.output_bytes > 65535 or request.label_bytes > 249 or request.context_bytes > 255 then return false
+  if request.info == 0 or request.expand_request == 0 then return false
+  full_label_bytes: u64 is request.label_bytes + 6
+  info_bytes: u64 is 2 + 1 + full_label_bytes + 1 + request.context_bytes
+  if info_bytes > request.info_capacity then return false
+
+  mem.write8(request.info, (request.output_bytes >> 8) & 255)
+  mem.write8(ptr.add(request.info, 1), request.output_bytes & 255)
+  mem.write8(ptr.add(request.info, 2), full_label_bytes)
+  if not crypto_copy(ptr.add(request.info, 3), tls13_hkdf_label_prefix, 6) then return false
+  if not crypto_copy(ptr.add(request.info, 9), request.label, request.label_bytes) then return false
+  context_length_offset: u64 is 9 + request.label_bytes
+  mem.write8(ptr.add(request.info, context_length_offset), request.context_bytes)
+  if not crypto_copy(ptr.add(request.info, context_length_offset + 1), request.context, request.context_bytes) then return false
+
+  expand: ptr[HkdfSha256ExpandRequest] is request.expand_request
+  expand.prk is request.secret
+  expand.prk_bytes is request.secret_bytes
+  expand.info is request.info
+  expand.info_bytes is info_bytes
+  expand.output is request.output
+  expand.output_bytes is request.output_bytes
+  return hkdf_sha256_expand(workspace, expand)
+end

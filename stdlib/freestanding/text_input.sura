@@ -1,0 +1,392 @@
+# Unicode text input and bounded two-set Korean composition.
+#
+# The caller feeds ASCII key values after keyboard layout/Shift processing.
+# Results contain committed Unicode scalar values plus the current composition
+# preview. Storage, cursor movement, rendering, and IME mode UI remain caller
+# responsibilities.
+
+import "key_event.sura"
+
+struct TextInputState do
+  hangul: u64
+  initial: u64
+  medial: u64
+  final: u64
+end
+
+struct TextInputResult do
+  committed0: u64
+  committed1: u64
+  committed_count: u64
+  composing: u64
+  changed: u64
+end
+
+text_input_initial_compat is static.u64([12593, 12594, 12596, 12599, 12600, 12601, 12609, 12610, 12611, 12613, 12614, 12615, 12616, 12617, 12618, 12619, 12620, 12621, 12622], 8)
+
+func text_input_result_clear(result: ptr[TextInputResult]) do
+  if result == 0 then return false
+  result.committed0 is 0
+  result.committed1 is 0
+  result.committed_count is 0
+  result.composing is 0
+  result.changed is 0
+  return true
+end
+
+func text_input_reset(state: ptr[TextInputState]) do
+  if state == 0 then return false
+  state.hangul is 0
+  state.initial is 0
+  state.medial is 0
+  state.final is 0
+  return true
+end
+
+func text_input_initial_compatibility(initial: u64) do
+  if initial == 0 or initial > 19 then return 0
+  return mem.read64(ptr.index(text_input_initial_compat, initial - 1, 8))
+end
+
+func text_input_medial_compatibility(medial: u64) do
+  if medial == 0 or medial > 21 then return 0
+  return 12623 + medial - 1
+end
+
+func text_input_composing(state: ptr[TextInputState]) do
+  if state == 0 then return 0
+  if state.initial != 0 and state.medial != 0 then
+    return 44032 + (((state.initial - 1) * 21 + (state.medial - 1)) * 28) + state.final
+  end
+  if state.initial != 0 then return text_input_initial_compatibility(state.initial)
+  if state.medial != 0 then return text_input_medial_compatibility(state.medial)
+  return 0
+end
+
+func text_input_append_result(result: ptr[TextInputResult], codepoint: u64) do
+  if result == 0 or codepoint == 0 or codepoint > 1114111 then return false
+  if codepoint >= 55296 and codepoint <= 57343 then return false
+  if result.committed_count == 0 then
+    result.committed0 is codepoint
+    result.committed_count is 1
+    return true
+  end
+  if result.committed_count == 1 then
+    result.committed1 is codepoint
+    result.committed_count is 2
+    return true
+  end
+  return false
+end
+
+func text_input_commit(state: ptr[TextInputState], result: ptr[TextInputResult]) do
+  if state == 0 or result == 0 then return false
+  codepoint: u64 is text_input_composing(state)
+  if codepoint != 0 and not text_input_append_result(result, codepoint) then return false
+  state.initial is 0
+  state.medial is 0
+  state.final is 0
+  result.composing is 0
+  result.changed is 1
+  return true
+end
+
+# Return a one-based modern choseong index or zero.
+func text_input_key_initial(value: u64) do
+  if value == 114 then return 1
+  if value == 82 then return 2
+  if value == 115 then return 3
+  if value == 101 then return 4
+  if value == 69 then return 5
+  if value == 102 then return 6
+  if value == 97 then return 7
+  if value == 113 then return 8
+  if value == 81 then return 9
+  if value == 116 then return 10
+  if value == 84 then return 11
+  if value == 100 then return 12
+  if value == 119 then return 13
+  if value == 87 then return 14
+  if value == 99 then return 15
+  if value == 122 then return 16
+  if value == 120 then return 17
+  if value == 118 then return 18
+  if value == 103 then return 19
+  return 0
+end
+
+# Return a one-based modern jungseong index or zero.
+func text_input_key_medial(value: u64) do
+  if value == 107 then return 1
+  if value == 111 then return 2
+  if value == 105 then return 3
+  if value == 79 then return 4
+  if value == 106 then return 5
+  if value == 112 then return 6
+  if value == 117 then return 7
+  if value == 80 then return 8
+  if value == 104 then return 9
+  if value == 121 then return 13
+  if value == 110 then return 14
+  if value == 98 then return 18
+  if value == 109 then return 19
+  if value == 108 then return 21
+  return 0
+end
+
+func text_input_initial_final(initial: u64) do
+  if initial == 1 then return 1
+  if initial == 2 then return 2
+  if initial == 3 then return 4
+  if initial == 6 then return 8
+  if initial == 7 then return 16
+  if initial == 8 then return 17
+  if initial == 10 then return 19
+  if initial == 11 then return 20
+  if initial == 12 then return 21
+  if initial == 13 then return 22
+  if initial == 15 then return 23
+  if initial == 16 then return 24
+  if initial == 17 then return 25
+  if initial == 18 then return 26
+  if initial == 19 then return 27
+  return 0
+end
+
+func text_input_final_initial(final: u64) do
+  if final == 1 then return 1
+  if final == 2 then return 2
+  if final == 4 then return 3
+  if final == 8 then return 6
+  if final == 16 then return 7
+  if final == 17 then return 8
+  if final == 19 then return 10
+  if final == 20 then return 11
+  if final == 21 then return 12
+  if final == 22 then return 13
+  if final == 23 then return 15
+  if final == 24 then return 16
+  if final == 25 then return 17
+  if final == 26 then return 18
+  if final == 27 then return 19
+  return 0
+end
+
+func text_input_combine_medial(first: u64, second: u64) do
+  if first == 9 and second == 1 then return 10
+  if first == 9 and second == 2 then return 11
+  if first == 9 and second == 21 then return 12
+  if first == 14 and second == 5 then return 15
+  if first == 14 and second == 6 then return 16
+  if first == 14 and second == 21 then return 17
+  if first == 19 and second == 21 then return 20
+  return 0
+end
+
+func text_input_base_medial(value: u64) do
+  if value == 10 or value == 11 or value == 12 then return 9
+  if value == 15 or value == 16 or value == 17 then return 14
+  if value == 20 then return 19
+  return 0
+end
+
+func text_input_combine_final(first: u64, second: u64) do
+  if first == 1 and second == 19 then return 3
+  if first == 4 and second == 22 then return 5
+  if first == 4 and second == 27 then return 6
+  if first == 8 and second == 1 then return 9
+  if first == 8 and second == 16 then return 10
+  if first == 8 and second == 17 then return 11
+  if first == 8 and second == 19 then return 12
+  if first == 8 and second == 25 then return 13
+  if first == 8 and second == 26 then return 14
+  if first == 8 and second == 27 then return 15
+  if first == 17 and second == 19 then return 18
+  return 0
+end
+
+func text_input_split_final_first(value: u64) do
+  if value == 3 then return 1
+  if value == 5 or value == 6 then return 4
+  if value >= 9 and value <= 15 then return 8
+  if value == 18 then return 17
+  return 0
+end
+
+func text_input_split_final_initial(value: u64) do
+  if value == 3 then return 10
+  if value == 5 then return 13
+  if value == 6 then return 19
+  if value == 9 then return 1
+  if value == 10 then return 7
+  if value == 11 then return 8
+  if value == 12 then return 10
+  if value == 13 then return 17
+  if value == 14 then return 18
+  if value == 15 then return 19
+  if value == 18 then return 10
+  return 0
+end
+
+func text_input_feed_consonant(state: ptr[TextInputState], initial: u64, result: ptr[TextInputResult]) do
+  if state.initial == 0 and state.medial == 0 then
+    state.initial is initial
+  else if state.initial != 0 and state.medial == 0 then
+    text_input_commit(state, result)
+    state.initial is initial
+  else if state.initial == 0 then
+    text_input_commit(state, result)
+    state.initial is initial
+  else
+    new_final: u64 is text_input_initial_final(initial)
+    if state.final == 0 and new_final != 0 then
+      state.final is new_final
+    else if state.final != 0 and new_final != 0 and text_input_combine_final(state.final, new_final) != 0 then
+      state.final is text_input_combine_final(state.final, new_final)
+    else
+      text_input_commit(state, result)
+      state.initial is initial
+    end
+  end
+  result.composing is text_input_composing(state)
+  result.changed is 1
+  return true
+end
+
+func text_input_feed_vowel(state: ptr[TextInputState], medial: u64, result: ptr[TextInputResult]) do
+  if state.medial == 0 then
+    state.medial is medial
+  else if state.initial != 0 and state.final != 0 then
+    retained: u64 is text_input_split_final_first(state.final)
+    moved: u64 is text_input_split_final_initial(state.final)
+    if moved == 0 then moved is text_input_final_initial(state.final)
+    state.final is retained
+    text_input_append_result(result, text_input_composing(state))
+    state.initial is moved
+    state.medial is medial
+    state.final is 0
+  else
+    combined: u64 is text_input_combine_medial(state.medial, medial)
+    if combined != 0 then
+      state.medial is combined
+    else
+      text_input_commit(state, result)
+      state.medial is medial
+    end
+  end
+  result.composing is text_input_composing(state)
+  result.changed is 1
+  return true
+end
+
+func text_input_feed_ascii(state: ptr[TextInputState], value: u64, result: ptr[TextInputResult]) do
+  if state == 0 or result == 0 or value > 127 then return false
+  text_input_result_clear(result)
+  if state.hangul == 0 then
+    text_input_commit(state, result)
+    if value != 0 then text_input_append_result(result, value)
+    result.changed is 1
+    return true
+  end
+  initial: u64 is text_input_key_initial(value)
+  if initial != 0 then return text_input_feed_consonant(state, initial, result)
+  medial: u64 is text_input_key_medial(value)
+  if medial != 0 then return text_input_feed_vowel(state, medial, result)
+  text_input_commit(state, result)
+  if value != 0 then text_input_append_result(result, value)
+  result.changed is 1
+  return true
+end
+
+func text_input_backspace(state: ptr[TextInputState], result: ptr[TextInputResult]) do
+  if state == 0 or result == 0 then return false
+  text_input_result_clear(result)
+  if state.final != 0 then
+    retained: u64 is text_input_split_final_first(state.final)
+    state.final is retained
+  else if state.medial != 0 then
+    base: u64 is text_input_base_medial(state.medial)
+    state.medial is base
+  else if state.initial != 0 then
+    state.initial is 0
+  else
+    return false
+  end
+  result.composing is text_input_composing(state)
+  result.changed is 1
+  return true
+end
+
+func text_input_set_hangul(state: ptr[TextInputState], enabled: bool, result: ptr[TextInputResult]) do
+  if state == 0 or result == 0 then return false
+  text_input_result_clear(result)
+  if (enabled and state.hangul != 0) or (not enabled and state.hangul == 0) then
+    result.composing is text_input_composing(state)
+    return true
+  end
+  text_input_commit(state, result)
+  if enabled then state.hangul is 1 else state.hangul is 0
+  result.changed is 1
+  return true
+end
+
+# Feed one physical key event. Korean mapping uses key position plus Shift and
+# intentionally ignores Caps Lock; English uses the driver's Unicode value.
+func text_input_feed_key_event(state: ptr[TextInputState], event: ptr[KeyEvent], result: ptr[TextInputResult]) do
+  if state == 0 or event == 0 or result == 0 then return false
+  text_input_result_clear(result)
+  if event.pressed == 0 then
+    result.composing is text_input_composing(state)
+    return true
+  end
+  if event.physical_key == key_event_key_hangul() then
+    return text_input_set_hangul(state, state.hangul == 0, result)
+  end
+  if (event.modifiers & (key_event_modifier_ctrl() | key_event_modifier_alt())) != 0 then
+    result.composing is text_input_composing(state)
+    return true
+  end
+  if event.physical_key == 14 then
+    if text_input_backspace(state, result) then return true
+    result.composing is 0
+    return true
+  end
+
+  value: u64 is event.unicode
+  if state.hangul != 0 then
+    value is key_event_us_ascii(event.physical_key, event.modifiers, false)
+  end
+  if value == 0 or value > 127 then
+    result.composing is text_input_composing(state)
+    return true
+  end
+  return text_input_feed_ascii(state, value, result)
+end
+
+func text_input_utf8_write(codepoint: u64, output: ptr, capacity: u64) do
+  if output == 0 or capacity == 0 or codepoint > 1114111 then return 0
+  if codepoint >= 55296 and codepoint <= 57343 then return 0
+  if codepoint <= 127 then
+    mem.write8(output, codepoint)
+    return 1
+  end
+  if codepoint <= 2047 then
+    if capacity < 2 then return 0
+    mem.write8(output, 192 | (codepoint >> 6))
+    mem.write8(ptr.add(output, 1), 128 | (codepoint & 63))
+    return 2
+  end
+  if codepoint <= 65535 then
+    if capacity < 3 then return 0
+    mem.write8(output, 224 | (codepoint >> 12))
+    mem.write8(ptr.add(output, 1), 128 | ((codepoint >> 6) & 63))
+    mem.write8(ptr.add(output, 2), 128 | (codepoint & 63))
+    return 3
+  end
+  if capacity < 4 then return 0
+  mem.write8(output, 240 | (codepoint >> 18))
+  mem.write8(ptr.add(output, 1), 128 | ((codepoint >> 12) & 63))
+  mem.write8(ptr.add(output, 2), 128 | ((codepoint >> 6) & 63))
+  mem.write8(ptr.add(output, 3), 128 | (codepoint & 63))
+  return 4
+end

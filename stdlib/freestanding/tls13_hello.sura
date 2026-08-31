@@ -1,0 +1,253 @@
+# TLS 1.3 ClientHello builder and ServerHello parser.
+#
+# The client offers TLS_AES_128_GCM_SHA256, X25519, TLS 1.3, common SHA-256
+# signature schemes, SNI, and HTTP/1.1 ALPN. The parser accepts only the
+# matching TLS 1.3 cipher/group and rejects malformed lengths, duplicates of
+# required extensions, HelloRetryRequest, and all-zero X25519 shares.
+
+struct Tls13ClientHelloRequest do
+  hostname: ptr
+  hostname_bytes: u64
+  random: ptr
+  session_id: ptr
+  session_id_bytes: u64
+  public_key: ptr
+  record: ptr
+  record_capacity: u64
+  record_bytes: u64
+  handshake: ptr
+  handshake_bytes: u64
+end
+
+struct Tls13ServerHelloRequest do
+  record: ptr
+  record_bytes: u64
+  expected_session_id: ptr
+  expected_session_id_bytes: u64
+  public_key: ptr
+  handshake: ptr
+  handshake_bytes: u64
+  cipher_suite: u64
+  named_group: u64
+end
+
+tls13_client_signature_schemes is static.bytes([4, 3, 8, 4, 8, 5, 8, 6, 8, 9, 4, 1, 5, 1, 6, 1], 1)
+tls13_hello_retry_request_random is static.bytes([207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145, 194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156], 1)
+tls13_alpn_http11 is static.bytes([104, 116, 116, 112, 47, 49, 46, 49], 1)
+
+func tls13_hello_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
+    index += 1
+  end
+  return true
+end
+
+func tls13_hello_equal(left: ptr, right: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if left == 0 or right == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(left, index)) ^ mem.read8(ptr.add(right, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func tls13_hello_write_u16(output: ptr, value: u64) do
+  if output == 0 or value > 65535 then return false
+  mem.write8(output, (value >> 8) & 255)
+  mem.write8(ptr.add(output, 1), value & 255)
+  return true
+end
+
+func tls13_hello_write_u24(output: ptr, value: u64) do
+  if output == 0 or value > 16777215 then return false
+  mem.write8(output, (value >> 16) & 255)
+  mem.write8(ptr.add(output, 1), (value >> 8) & 255)
+  mem.write8(ptr.add(output, 2), value & 255)
+  return true
+end
+
+func tls13_hello_read_u16(input: ptr) do
+  if input == 0 then return 0
+  return (mem.read8(input) << 8) | mem.read8(ptr.add(input, 1))
+end
+
+func tls13_hello_read_u24(input: ptr) do
+  if input == 0 then return 0
+  return (mem.read8(input) << 16) | (mem.read8(ptr.add(input, 1)) << 8) | mem.read8(ptr.add(input, 2))
+end
+
+func tls13_client_hello_write_extension_header(record: ptr, cursor: u64, extension_type: u64, extension_bytes: u64) do
+  if record == 0 or extension_type > 65535 or extension_bytes > 65535 then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor), extension_type) then return false
+  return tls13_hello_write_u16(ptr.add(record, cursor + 2), extension_bytes)
+end
+
+func tls13_client_hello_build(request: ptr[Tls13ClientHelloRequest]) do
+  if request == 0 or request.record == 0 then return false
+  if request.hostname == 0 or request.hostname_bytes == 0 or request.hostname_bytes > 253 then return false
+  if request.random == 0 or request.public_key == 0 then return false
+  if request.session_id_bytes > 32 then return false
+  if request.session_id_bytes != 0 and request.session_id == 0 then return false
+  input_index: u64 is 0
+  public_nonzero: u64 is 0
+  while input_index < request.hostname_bytes do
+    hostname_byte: u64 is mem.read8(ptr.add(request.hostname, input_index))
+    if hostname_byte <= 32 or hostname_byte >= 127 then return false
+    input_index += 1
+  end
+  input_index is 0
+  while input_index < 32 do
+    public_nonzero is public_nonzero | mem.read8(ptr.add(request.public_key, input_index))
+    input_index += 1
+  end
+  if public_nonzero == 0 then return false
+  extension_bytes: u64 is 103 + request.hostname_bytes
+  handshake_bytes: u64 is 47 + request.session_id_bytes + extension_bytes
+  record_bytes: u64 is 5 + handshake_bytes
+  if request.record_capacity < record_bytes or handshake_bytes > 16384 then return false
+  record: ptr is request.record
+  mem.write8(record, 22)
+  mem.write8(ptr.add(record, 1), 3)
+  mem.write8(ptr.add(record, 2), 1)
+  if not tls13_hello_write_u16(ptr.add(record, 3), handshake_bytes) then return false
+  mem.write8(ptr.add(record, 5), 1)
+  if not tls13_hello_write_u24(ptr.add(record, 6), handshake_bytes - 4) then return false
+  cursor: u64 is 9
+  mem.write8(ptr.add(record, cursor), 3)
+  mem.write8(ptr.add(record, cursor + 1), 3)
+  cursor += 2
+  if not tls13_hello_copy(ptr.add(record, cursor), request.random, 32) then return false
+  cursor += 32
+  mem.write8(ptr.add(record, cursor), request.session_id_bytes)
+  cursor += 1
+  if not tls13_hello_copy(ptr.add(record, cursor), request.session_id, request.session_id_bytes) then return false
+  cursor is cursor + request.session_id_bytes
+  if not tls13_hello_write_u16(ptr.add(record, cursor), 2) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 2), 4865) then return false
+  cursor += 4
+  mem.write8(ptr.add(record, cursor), 1)
+  mem.write8(ptr.add(record, cursor + 1), 0)
+  cursor += 2
+  if not tls13_hello_write_u16(ptr.add(record, cursor), extension_bytes) then return false
+  cursor += 2
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 0, 5 + request.hostname_bytes) then return false
+  cursor += 4
+  if not tls13_hello_write_u16(ptr.add(record, cursor), 3 + request.hostname_bytes) then return false
+  mem.write8(ptr.add(record, cursor + 2), 0)
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 3), request.hostname_bytes) then return false
+  if not tls13_hello_copy(ptr.add(record, cursor + 5), request.hostname, request.hostname_bytes) then return false
+  cursor is cursor + 5 + request.hostname_bytes
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 10, 4) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 4), 2) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 6), 29) then return false
+  cursor += 8
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 13, 18) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 4), 16) then return false
+  if not tls13_hello_copy(ptr.add(record, cursor + 6), tls13_client_signature_schemes, 16) then return false
+  cursor += 22
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 43, 3) then return false
+  mem.write8(ptr.add(record, cursor + 4), 2)
+  mem.write8(ptr.add(record, cursor + 5), 3)
+  mem.write8(ptr.add(record, cursor + 6), 4)
+  cursor += 7
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 51, 38) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 4), 36) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 6), 29) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 8), 32) then return false
+  if not tls13_hello_copy(ptr.add(record, cursor + 10), request.public_key, 32) then return false
+  cursor += 42
+
+  if not tls13_client_hello_write_extension_header(record, cursor, 16, 11) then return false
+  if not tls13_hello_write_u16(ptr.add(record, cursor + 4), 9) then return false
+  mem.write8(ptr.add(record, cursor + 6), 8)
+  if not tls13_hello_copy(ptr.add(record, cursor + 7), tls13_alpn_http11, 8) then return false
+  cursor += 15
+  if cursor != record_bytes then return false
+  request.record_bytes is record_bytes
+  request.handshake is ptr.add(record, 5)
+  request.handshake_bytes is handshake_bytes
+  return true
+end
+
+func tls13_server_hello_parse(request: ptr[Tls13ServerHelloRequest]) do
+  if request == 0 or request.record == 0 or request.public_key == 0 then return false
+  if request.record_bytes < 49 or request.record_bytes > 16389 then return false
+  record: ptr is request.record
+  if mem.read8(record) != 22 then return false
+  if mem.read8(ptr.add(record, 1)) != 3 or mem.read8(ptr.add(record, 2)) != 3 then return false
+  handshake_bytes: u64 is tls13_hello_read_u16(ptr.add(record, 3))
+  if handshake_bytes + 5 != request.record_bytes or handshake_bytes < 44 then return false
+  handshake: ptr is ptr.add(record, 5)
+  if mem.read8(handshake) != 2 then return false
+  if tls13_hello_read_u24(ptr.add(handshake, 1)) + 4 != handshake_bytes then return false
+  cursor: u64 is 4
+  if mem.read8(ptr.add(handshake, cursor)) != 3 or mem.read8(ptr.add(handshake, cursor + 1)) != 3 then return false
+  cursor += 2
+  if cursor + 32 > handshake_bytes then return false
+  if tls13_hello_equal(ptr.add(handshake, cursor), tls13_hello_retry_request_random, 32) then return false
+  cursor += 32
+  if cursor >= handshake_bytes then return false
+  session_bytes: u64 is mem.read8(ptr.add(handshake, cursor))
+  cursor += 1
+  if session_bytes > 32 or cursor + session_bytes + 5 > handshake_bytes then return false
+  if session_bytes != request.expected_session_id_bytes then return false
+  if not tls13_hello_equal(ptr.add(handshake, cursor), request.expected_session_id, session_bytes) then return false
+  cursor is cursor + session_bytes
+  cipher_suite: u64 is tls13_hello_read_u16(ptr.add(handshake, cursor))
+  if cipher_suite != 4865 then return false
+  cursor += 2
+  if mem.read8(ptr.add(handshake, cursor)) != 0 then return false
+  cursor += 1
+  extensions_bytes: u64 is tls13_hello_read_u16(ptr.add(handshake, cursor))
+  cursor += 2
+  if cursor + extensions_bytes != handshake_bytes then return false
+  extensions_end: u64 is cursor + extensions_bytes
+  saw_version: u64 is 0
+  saw_key_share: u64 is 0
+  while cursor < extensions_end do
+    if cursor + 4 > extensions_end then return false
+    extension_type: u64 is tls13_hello_read_u16(ptr.add(handshake, cursor))
+    extension_bytes: u64 is tls13_hello_read_u16(ptr.add(handshake, cursor + 2))
+    cursor += 4
+    if cursor + extension_bytes > extensions_end then return false
+    if extension_type != 43 and extension_type != 51 then return false
+    if extension_type == 43 then
+      if saw_version != 0 or extension_bytes != 2 then return false
+      if mem.read8(ptr.add(handshake, cursor)) != 3 or mem.read8(ptr.add(handshake, cursor + 1)) != 4 then return false
+      saw_version is 1
+    end
+    if extension_type == 51 then
+      if saw_key_share != 0 or extension_bytes != 36 then return false
+      if tls13_hello_read_u16(ptr.add(handshake, cursor)) != 29 then return false
+      if tls13_hello_read_u16(ptr.add(handshake, cursor + 2)) != 32 then return false
+      if not tls13_hello_copy(request.public_key, ptr.add(handshake, cursor + 4), 32) then return false
+      nonzero: u64 is 0
+      index: u64 is 0
+      while index < 32 do
+        nonzero is nonzero | mem.read8(ptr.add(request.public_key, index))
+        index += 1
+      end
+      if nonzero == 0 then return false
+      saw_key_share is 1
+    end
+    cursor is cursor + extension_bytes
+  end
+  if cursor != extensions_end or saw_version == 0 or saw_key_share == 0 then return false
+  request.handshake is handshake
+  request.handshake_bytes is handshake_bytes
+  request.cipher_suite is cipher_suite
+  request.named_group is 29
+  return true
+end

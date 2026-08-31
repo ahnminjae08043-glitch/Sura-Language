@@ -1,0 +1,39 @@
+# Allocation-free HTTP response body finalization for freestanding clients.
+#
+# The response must already have passed http1_response_inspect(). This helper
+# removes chunk framing, rejects unsupported Content-Encoding values, and
+# decompresses gzip bodies. The writable workspace must contain at least
+# capacity + 4096 bytes.
+
+import "http1.sura"
+import "gzip.sura"
+
+func http1_response_decode_content(buffer: ptr, length_pointer: ptr, capacity: u64, info: ptr[Http1ResponseInfo], workspace: ptr, workspace_bytes: u64) do
+  if buffer == 0 or length_pointer == 0 or info == 0 or workspace == 0 then return false
+  if capacity == 0 or workspace_bytes < capacity or workspace_bytes - capacity < 4096 then return false
+  bytes: u64 is mem.read64(length_pointer)
+  if bytes >= capacity then return false
+  if info.header_bytes > bytes or info.body_bytes > bytes - info.header_bytes then return false
+
+  if info.framing == 2 then
+    if not http1_response_dechunk(buffer, length_pointer, capacity, info) then return false
+    bytes is mem.read64(length_pointer)
+  end
+  if info.content_encoding == 2 then return false
+  if info.content_encoding == 1 then
+    if info.header_bytes >= capacity then return false
+    output_capacity: u64 is capacity - 1 - info.header_bytes
+    decoded_bytes: u64 is gzip_decompress(ptr.add(buffer, info.header_bytes), info.body_bytes, workspace, output_capacity, ptr.add(workspace, capacity), workspace_bytes - capacity)
+    if decoded_bytes == u64("0xffffffffffffffff") then return false
+    if not http1_copy_forward(ptr.add(buffer, info.header_bytes), workspace, decoded_bytes) then return false
+    bytes is info.header_bytes + decoded_bytes
+    mem.write64(length_pointer, bytes)
+    info.body_bytes is decoded_bytes
+    info.message_bytes is bytes
+    info.framing is 1
+    info.content_encoding is 0
+  end
+  if bytes >= capacity then return false
+  mem.write8(ptr.add(buffer, bytes), 0)
+  return true
+end

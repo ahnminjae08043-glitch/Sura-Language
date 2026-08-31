@@ -1,13 +1,15 @@
 # Single-CPU x86-64 ring-3 process lifecycle and interrupt scheduler.
 #
 # This library requires the standard Sura GDT selectors (kernel code 8, user
-# data 27, user code 35), a higher-half supervisor mapping shared by every
+# data 27, user code 35), supervisor-only kernel mappings shared by every
 # ProcessAddressSpace, one supervisor-only kernel stack per process, and a
-# caller-serialized physical allocator. It prepares process switching but does
-# not install an IDT, timer, system-call policy, or device drivers.
+# caller-serialized physical allocator. A production kernel normally keeps
+# those shared mappings in the higher half. This library prepares switching
+# but does not install an IDT, timer, system-call policy, or device drivers.
 
 import "preempt.sura"
 import "process_memory.sura"
+import "ipc.sura"
 
 struct UserInterruptFrame do
   r15: u64
@@ -33,7 +35,8 @@ struct UserInterruptFrame do
   ss: u64
 end
 
-# Process states: 0 unused, 1 runnable/running, 2 exited, 3 faulted.
+# Process states:
+# 0 unused, 1 runnable/running, 2 exited, 3 faulted, 4 blocked on an event.
 struct UserProcess do
   id: u64
   address_space: ptr[ProcessAddressSpace]
@@ -47,6 +50,9 @@ struct UserProcess do
   fault_address: u64
   fault_error: u64
   switches: u64
+  blocks: u64
+  wakes: u64
+  event_queue: ptr[IpcQueue]
 end
 
 struct UserProcessCreate do
@@ -57,6 +63,7 @@ struct UserProcessCreate do
   user_stack_pointer: u64
   argument: u64
   user_gs_base: ptr
+  event_queue: ptr[IpcQueue]
 end
 
 struct UserProcessSchedulerConfig do
@@ -77,8 +84,10 @@ struct UserProcessScheduler do
   process_count: u64
   runnable_count: u64
   next_id: u64
+  last_user: u64
   ticks: u64
   switches: u64
+  kernel_slices: u64
   tss: ptr
   kernel_root: ptr
   kernel_gs_base: ptr
@@ -115,6 +124,9 @@ func user_process_clear(process: ptr[UserProcess]) do
   process.fault_address is 0
   process.fault_error is 0
   process.switches is 0
+  process.blocks is 0
+  process.wakes is 0
+  process.event_queue is 0
   return true
 end
 
@@ -166,7 +178,9 @@ func user_process_scheduler_init(state: ptr[UserProcessScheduler], config: ptr[U
   if paging.root() != config.kernel_root then return false
   if config.idle_stack_base == 0 or config.idle_stack_size < 4096 then return false
   if not ptr.is_aligned(config.idle_stack_base, 16) then return false
-  if config.idle_stack_size > u64("0xffffffffffffffff") - config.idle_stack_base then return false
+  idle_stack_address: u64 is config.idle_stack_base
+  idle_stack_end: u64 is idle_stack_address + config.idle_stack_size
+  if idle_stack_end < idle_stack_address then return false
   if config.kernel_gs_base != 0 and not paging.is_canonical48(config.kernel_gs_base) then return false
 
   index: u64 is 0
@@ -185,8 +199,10 @@ func user_process_scheduler_init(state: ptr[UserProcessScheduler], config: ptr[U
   state.process_count is 0
   state.runnable_count is 0
   state.next_id is 1
+  state.last_user is config.capacity
   state.ticks is 0
   state.switches is 0
+  state.kernel_slices is 0
   state.tss is config.tss
   state.kernel_root is config.kernel_root
   state.kernel_gs_base is config.kernel_gs_base
@@ -217,10 +233,14 @@ func user_process_create(state: ptr[UserProcessScheduler], config: ptr[UserProce
   if space.root == 0 or space.root == state.kernel_root then return 0
   if config.kernel_stack_base == 0 or config.kernel_stack_size < 4096 then return 0
   if not ptr.is_aligned(config.kernel_stack_base, 16) then return 0
-  if config.kernel_stack_size > u64("0xffffffffffffffff") - config.kernel_stack_base then return 0
+  kernel_stack_address: u64 is config.kernel_stack_base
+  kernel_stack_end: u64 is kernel_stack_address + config.kernel_stack_size
+  if kernel_stack_end < kernel_stack_address then return 0
   if not user.is_address(config.entry) or not user.is_address(config.user_stack_pointer) then return 0
   if (config.user_stack_pointer & 15) != 8 then return 0
   if config.user_gs_base != 0 and not paging.is_canonical48(config.user_gs_base) then return 0
+  event_queue: ptr[IpcQueue] is config.event_queue
+  if event_queue != 0 and event_queue.initialized == 0 then return 0
 
   entry_mapping: ptr[ProcessMapping] is process_find_mapping(space, config.entry & ~4095)
   if not process_mapping_access_valid(space, entry_mapping, false) then return 0
@@ -254,9 +274,101 @@ func user_process_create(state: ptr[UserProcessScheduler], config: ptr[UserProce
   process.fault_address is 0
   process.fault_error is 0
   process.switches is 0
+  process.blocks is 0
+  process.wakes is 0
+  process.event_queue is event_queue
   state.process_count is state.process_count + 1
   state.runnable_count is state.runnable_count + 1
   return process.id
+end
+
+func user_process_current_id(state: ptr[UserProcessScheduler]) do
+  if state == 0 or state.initialized == 0 or state.current >= state.capacity then return 0
+  process: ptr[UserProcess] is user_process_at(state, state.current)
+  if process == 0 or process.state != 1 then return 0
+  return process.id
+end
+
+# Kernel-side event delivery. `sender_id` 0 is reserved for kernel events.
+# Nonzero senders and the target must name live processes in this scheduler.
+func user_process_post_event(state: ptr[UserProcessScheduler], sender_id: u64, target_id: u64, message: ptr[IpcMessage]) do
+  if state == 0 or message == 0 or state.initialized == 0 or target_id == 0 then return false
+  if message.kind == 0 then return false
+
+  if sender_id != 0 then
+    sender_index: u64 is user_process_find_index(state, sender_id)
+    if sender_index >= state.capacity then return false
+    sender: ptr[UserProcess] is user_process_at(state, sender_index)
+    if sender == 0 or sender.state != 1 then return false
+  end
+
+  target_index: u64 is user_process_find_index(state, target_id)
+  if target_index >= state.capacity then return false
+  target: ptr[UserProcess] is user_process_at(state, target_index)
+  if target == 0 or target.event_queue == 0 then return false
+  if target.state != 1 and target.state != 4 then return false
+  if target.state == 4 and not user.frame_valid(target.frame) then return false
+  if target.state == 4 and state.runnable_count >= state.process_count then return false
+  # Identities come from the trusted kernel call site, never from user input.
+  message.source is sender_id
+  message.target is target_id
+  if not ipc_queue_push(target.event_queue, message) then return false
+  # Posting and waking are one serialized operation on the current single CPU.
+  # This prevents the classic lost-wakeup race between an empty-queue check
+  # and a process becoming blocked.
+  if target.state == 4 then
+    target.state is 1
+    if target.wakes != u64("0xffffffffffffffff") then target.wakes += 1
+    if state.runnable_count != u64("0xffffffffffffffff") then
+      state.runnable_count += 1
+    end
+  end
+  return true
+end
+
+func user_process_receive_event(state: ptr[UserProcessScheduler], process_id: u64, output: ptr[IpcMessage]) do
+  if state == 0 or output == 0 or state.initialized == 0 or process_id == 0 then return false
+  index: u64 is user_process_find_index(state, process_id)
+  if index >= state.capacity then return false
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process == 0 or process.event_queue == 0 then return false
+  if process.state != 1 and process.state != 4 then return false
+  return ipc_queue_pop(process.event_queue, output)
+end
+
+# Blocks the current Ring-3 process only when its event queue is still empty.
+# The caller must pass the live software-interrupt frame so the process can
+# resume at the instruction after the wait when a later post wakes it.
+func user_process_block_current(state: ptr[UserProcessScheduler], frame: ptr) do
+  if state == 0 or state.initialized == 0 or frame == 0 then return false
+  if state.current >= state.capacity or not user_process_frame_from_user(frame) then return false
+  current: ptr[UserProcess] is user_process_at(state, state.current)
+  if current == 0 or current.state != 1 or current.event_queue == 0 then return false
+  queue: ptr[IpcQueue] is current.event_queue
+  if queue.count != 0 then return false
+  if state.runnable_count == 0 or state.runnable_count > state.process_count then return false
+  current.frame is frame
+  current.state is 4
+  if current.blocks != u64("0xffffffffffffffff") then current.blocks += 1
+  if state.runnable_count > 0 then state.runnable_count -= 1
+  return true
+end
+
+func user_process_wake(state: ptr[UserProcessScheduler], process_id: u64) do
+  if state == 0 or state.initialized == 0 or process_id == 0 then return false
+  index: u64 is user_process_find_index(state, process_id)
+  if index >= state.capacity then return false
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process == 0 then return false
+  if process.state == 1 then return true
+  if process.state != 4 or not user.frame_valid(process.frame) then return false
+  if state.runnable_count >= state.process_count then return false
+  process.state is 1
+  if process.wakes != u64("0xffffffffffffffff") then process.wakes += 1
+  if state.runnable_count != u64("0xffffffffffffffff") then
+    state.runnable_count += 1
+  end
+  return true
 end
 
 func user_process_candidate_valid(state: ptr[UserProcessScheduler], index: u64) do
@@ -274,6 +386,9 @@ func user_process_next_runnable(state: ptr[UserProcessScheduler]) do
   if state.current < state.capacity then
     index is state.current + 1
     if index >= state.capacity then index is 0
+  elif state.last_user < state.capacity then
+    index is state.last_user + 1
+    if index >= state.capacity then index is 0
   end
   scanned: u64 is 0
   while scanned < state.capacity do
@@ -283,6 +398,30 @@ func user_process_next_runnable(state: ptr[UserProcessScheduler]) do
     scanned += 1
   end
   return state.capacity
+end
+
+# Selects the saved Ring-0 service frame even while the current user process is
+# still runnable. A timer handler can use this to bound the time before the
+# kernel input/window loop runs again. The kernel later invokes the scheduler
+# entry gate to resume a runnable process after servicing devices and events.
+func user_process_select_kernel(state: ptr[UserProcessScheduler], interrupted_frame: ptr, timer_tick: bool) do
+  if state == 0 or state.initialized == 0 then return false
+  state.resume_kind is 0
+  state.resume_index is state.capacity
+  if state.current >= state.capacity then return false
+  if not user_process_frame_from_user(interrupted_frame) then return false
+  if not preempt.frame_valid(state.idle_frame) then return false
+  current: ptr[UserProcess] is user_process_at(state, state.current)
+  if current == 0 or current.state != 1 then return false
+
+  if timer_tick and state.ticks != u64("0xffffffffffffffff") then
+    state.ticks += 1
+  end
+  current.frame is interrupted_frame
+  state.resume_kind is 2
+  state.resume_index is state.capacity
+  if state.kernel_slices != u64("0xffffffffffffffff") then state.kernel_slices += 1
+  return true
 end
 
 # Called with interrupts disabled by a compiler-generated interrupt wrapper.
@@ -354,6 +493,7 @@ func user_process_activate_selected(state: ptr[UserProcessScheduler]) do
     cpu.tss_set_rsp(state.tss, 0, process.kernel_stack_top)
     percpu.set_kernel_base(process.user_gs_base)
     state.current is state.resume_index
+    state.last_user is state.resume_index
     state.switches is state.switches + 1
     process.switches is process.switches + 1
     return process.frame
@@ -398,6 +538,27 @@ func user_process_timer_interrupt(frame: ptr) interrupt do
   else
     resumed: bool is preempt.resume(target)
   end
+  user_process_fatal()
+end
+
+# Timer entry for a kernel-driven desktop/event loop. Unlike the round-robin
+# handler above, this deliberately returns from a runnable CPL-3 process to the
+# saved Ring-0 service frame. The kernel decides when to invoke vector 130 and
+# resume user work after polling or dispatching input.
+func user_process_kernel_slice_timer_interrupt(frame: ptr) interrupt do
+  global user_process_scheduler_active
+  if user_process_scheduler_active == 0 then
+    apic.eoi()
+    return
+  end
+  state: ptr[UserProcessScheduler] is user_process_scheduler_active
+  selected: bool is user_process_select_kernel(state, frame, true)
+  apic.eoi()
+  if not selected then return
+
+  target: ptr is user_process_activate_selected(state)
+  if target == 0 or state.resume_kind != 2 then user_process_fatal()
+  resumed: bool is preempt.resume(target)
   user_process_fatal()
 end
 
@@ -467,21 +628,45 @@ func user_process_yield() do
   return interrupt.invoke(130)
 end
 
-# This is a non-returning process-exit path for an interrupt or fast-system-call
-# dispatcher. The nested ring-0 interrupt abandons the exiting kernel frame.
-func user_process_exit_current(exit_code: u64) do
+func user_process_mark_exit_current(exit_code: u64) do
   global user_process_scheduler_active
   if user_process_scheduler_active == 0 then return false
   state: ptr[UserProcessScheduler] is user_process_scheduler_active
   if state.current >= state.capacity then return false
   current: ptr[UserProcess] is user_process_at(state, state.current)
-  if current.state != 1 then return false
+  if current == 0 or current.state != 1 then return false
   current.exit_code is exit_code
   current.state is 2
   if state.runnable_count > 0 then state.runnable_count is state.runnable_count - 1
+  return true
+end
+
+# This is a non-returning process-exit path for an interrupt or fast-system-call
+# dispatcher. The nested ring-0 interrupt abandons the exiting kernel frame.
+func user_process_exit_current(exit_code: u64) do
+  if not user_process_mark_exit_current(exit_code) then return false
   invoked: bool is interrupt.invoke(130)
   user_process_fatal()
   return invoked
+end
+
+# Kernel-side termination for a process that is not currently executing in
+# Ring 3. This is used after a timer has returned a non-yielding process to the
+# Ring-0 service continuation, or for an event-blocked process. The address
+# space and caller-owned stacks remain intact until user_process_reap.
+func user_process_terminate(state: ptr[UserProcessScheduler], process_id: u64, exit_code: u64) do
+  if state == 0 or state.initialized == 0 or process_id == 0 then return false
+  index: u64 is user_process_find_index(state, process_id)
+  if index >= state.capacity or index == state.current then return false
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process == 0 or process.state != 1 and process.state != 4 then return false
+  if process.state == 1 then
+    if state.runnable_count == 0 then return false
+    state.runnable_count -= 1
+  end
+  process.exit_code is exit_code
+  process.state is 2
+  return true
 end
 
 func user_process_state(state: ptr[UserProcessScheduler], process_id: u64) do

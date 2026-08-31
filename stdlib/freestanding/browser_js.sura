@@ -1,0 +1,561 @@
+# Allocation-free bytecode virtual machine foundation for browser JavaScript.
+#
+# This is intentionally independent of the HTML renderer. A later source
+# compiler can emit these instructions and a document host can expose bounded
+# DOM operations through host_callback. The caller owns the program, constants,
+# operand stack, globals, and scratch value.
+
+struct BrowserJsValue do
+  kind: u64
+  number: i64
+  data: ptr
+  bytes: u64
+end
+
+struct BrowserJsInstruction do
+  opcode: u64
+  a: u64
+  b: u64
+end
+
+struct BrowserJsProgram do
+  code: ptr
+  code_count: u64
+  constants: ptr
+  constant_count: u64
+  global_count: u64
+end
+
+struct BrowserJsVm do
+  program: ptr
+  stack: ptr
+  stack_capacity: u64
+  stack_count: u64
+  globals: ptr
+  global_capacity: u64
+  scratch: ptr
+  instruction_pointer: u64
+  instruction_limit: u64
+  instruction_count: u64
+  error: u64
+  host_context: ptr
+  host_callback: ptr
+end
+
+func browser_js_kind_undefined() do
+  return 0
+end
+
+func browser_js_kind_null() do
+  return 1
+end
+
+func browser_js_kind_boolean() do
+  return 2
+end
+
+func browser_js_kind_number() do
+  return 3
+end
+
+func browser_js_kind_string() do
+  return 4
+end
+
+func browser_js_op_halt() do
+  return 0
+end
+
+func browser_js_op_constant() do
+  return 1
+end
+
+func browser_js_op_undefined() do
+  return 2
+end
+
+func browser_js_op_null() do
+  return 3
+end
+
+func browser_js_op_true() do
+  return 4
+end
+
+func browser_js_op_false() do
+  return 5
+end
+
+func browser_js_op_get_global() do
+  return 6
+end
+
+func browser_js_op_set_global() do
+  return 7
+end
+
+func browser_js_op_pop() do
+  return 8
+end
+
+func browser_js_op_add() do
+  return 9
+end
+
+func browser_js_op_subtract() do
+  return 10
+end
+
+func browser_js_op_multiply() do
+  return 11
+end
+
+func browser_js_op_divide() do
+  return 12
+end
+
+func browser_js_op_modulo() do
+  return 13
+end
+
+func browser_js_op_negate() do
+  return 14
+end
+
+func browser_js_op_not() do
+  return 15
+end
+
+func browser_js_op_equal() do
+  return 16
+end
+
+func browser_js_op_not_equal() do
+  return 17
+end
+
+func browser_js_op_less() do
+  return 18
+end
+
+func browser_js_op_less_equal() do
+  return 19
+end
+
+func browser_js_op_greater() do
+  return 20
+end
+
+func browser_js_op_greater_equal() do
+  return 21
+end
+
+func browser_js_op_jump() do
+  return 22
+end
+
+func browser_js_op_jump_if_false() do
+  return 23
+end
+
+func browser_js_op_host_call() do
+  return 24
+end
+
+func browser_js_op_duplicate() do
+  return 25
+end
+
+func browser_js_error_none() do
+  return 0
+end
+
+func browser_js_error_state() do
+  return 1
+end
+
+func browser_js_error_instruction_limit() do
+  return 2
+end
+
+func browser_js_error_opcode() do
+  return 3
+end
+
+func browser_js_error_stack_underflow() do
+  return 4
+end
+
+func browser_js_error_stack_overflow() do
+  return 5
+end
+
+func browser_js_error_constant() do
+  return 6
+end
+
+func browser_js_error_global() do
+  return 7
+end
+
+func browser_js_error_type() do
+  return 8
+end
+
+func browser_js_error_divide_by_zero() do
+  return 9
+end
+
+func browser_js_error_jump() do
+  return 10
+end
+
+func browser_js_error_host() do
+  return 11
+end
+
+func browser_js_error_argument_count() do
+  return 12
+end
+
+func browser_js_error_integer_overflow() do
+  return 13
+end
+
+func browser_js_value_at(base: ptr, index: u64) do
+  if base == 0 then return 0
+  return ptr.add(base, index * 32)
+end
+
+func browser_js_instruction_at(program: ptr[BrowserJsProgram], index: u64) do
+  if program == 0 or program.code == 0 or index >= program.code_count then return 0
+  return ptr.add(program.code, index * 24)
+end
+
+func browser_js_value_clear(value: ptr[BrowserJsValue]) do
+  if value == 0 then return false
+  value.kind is browser_js_kind_undefined()
+  value.number is 0
+  value.data is 0
+  value.bytes is 0
+  return true
+end
+
+func browser_js_value_copy(destination: ptr[BrowserJsValue], source: ptr[BrowserJsValue]) do
+  if destination == 0 or source == 0 then return false
+  destination.kind is source.kind
+  destination.number is source.number
+  destination.data is source.data
+  destination.bytes is source.bytes
+  return true
+end
+
+func browser_js_value_number(value: ptr[BrowserJsValue], number: i64) do
+  if not browser_js_value_clear(value) then return false
+  value.kind is browser_js_kind_number()
+  value.number is number
+  return true
+end
+
+func browser_js_value_boolean(value: ptr[BrowserJsValue], enabled: bool) do
+  if not browser_js_value_clear(value) then return false
+  value.kind is browser_js_kind_boolean()
+  if enabled then value.number is 1
+  return true
+end
+
+func browser_js_value_string(value: ptr[BrowserJsValue], data: ptr, byte_count: u64) do
+  if value == 0 or (byte_count != 0 and data == 0) then return false
+  if not browser_js_value_clear(value) then return false
+  value.kind is browser_js_kind_string()
+  value.data is data
+  value.bytes is byte_count
+  return true
+end
+
+func browser_js_value_truthy(value: ptr[BrowserJsValue]) do
+  if value == 0 then return false
+  if value.kind == browser_js_kind_undefined() or value.kind == browser_js_kind_null() then return false
+  if value.kind == browser_js_kind_boolean() or value.kind == browser_js_kind_number() then return value.number != 0
+  if value.kind == browser_js_kind_string() then return value.bytes != 0
+  return false
+end
+
+func browser_js_string_equal(left: ptr[BrowserJsValue], right: ptr[BrowserJsValue]) do
+  if left == 0 or right == 0 or left.bytes != right.bytes then return false
+  index: u64 is 0
+  while index < left.bytes do
+    if mem.read8(ptr.add(left.data, index)) != mem.read8(ptr.add(right.data, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_js_value_equal(left: ptr[BrowserJsValue], right: ptr[BrowserJsValue]) do
+  if left == 0 or right == 0 or left.kind != right.kind then return false
+  if left.kind == browser_js_kind_undefined() or left.kind == browser_js_kind_null() then return true
+  if left.kind == browser_js_kind_boolean() or left.kind == browser_js_kind_number() then return left.number == right.number
+  if left.kind == browser_js_kind_string() then return browser_js_string_equal(left, right)
+  return false
+end
+
+func browser_js_fail(vm: ptr[BrowserJsVm], error: u64) do
+  if vm != 0 and vm.error == browser_js_error_none() then vm.error is error
+  return false
+end
+
+func browser_js_globals_clear(vm: ptr[BrowserJsVm]) do
+  if vm == 0 or vm.globals == 0 then return false
+  index: u64 is 0
+  while index < vm.global_capacity do
+    value: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, index)
+    if not browser_js_value_clear(value) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_js_vm_init(program: ptr[BrowserJsProgram], vm: ptr[BrowserJsVm]) do
+  if program == 0 or vm == 0 then return false
+  if program.code == 0 or program.code_count == 0 then return false
+  if program.constant_count != 0 and program.constants == 0 then return false
+  if vm.stack == 0 or vm.stack_capacity == 0 or vm.globals == 0 or vm.scratch == 0 then return false
+  if program.global_count > vm.global_capacity or vm.instruction_limit == 0 then return false
+  vm.program is program
+  vm.stack_count is 0
+  vm.instruction_pointer is 0
+  vm.instruction_count is 0
+  vm.error is browser_js_error_none()
+  if not browser_js_value_clear(vm.scratch) then return false
+  return browser_js_globals_clear(vm)
+end
+
+func browser_js_vm_restart(vm: ptr[BrowserJsVm]) do
+  if vm == 0 or vm.program == 0 or vm.instruction_limit == 0 then return false
+  vm.stack_count is 0
+  vm.instruction_pointer is 0
+  vm.instruction_count is 0
+  vm.error is browser_js_error_none()
+  return browser_js_value_clear(vm.scratch)
+end
+
+func browser_js_push(vm: ptr[BrowserJsVm], value: ptr[BrowserJsValue]) do
+  if vm == 0 or value == 0 then return false
+  if vm.stack_count >= vm.stack_capacity then return browser_js_fail(vm, browser_js_error_stack_overflow())
+  destination: ptr[BrowserJsValue] is browser_js_value_at(vm.stack, vm.stack_count)
+  if not browser_js_value_copy(destination, value) then return browser_js_fail(vm, browser_js_error_state())
+  vm.stack_count += 1
+  return true
+end
+
+func browser_js_push_simple(vm: ptr[BrowserJsVm], kind: u64, number: i64) do
+  if vm == 0 or vm.scratch == 0 then return false
+  value: ptr[BrowserJsValue] is vm.scratch
+  if not browser_js_value_clear(value) then return browser_js_fail(vm, browser_js_error_state())
+  value.kind is kind
+  value.number is number
+  return browser_js_push(vm, value)
+end
+
+func browser_js_pop(vm: ptr[BrowserJsVm], output: ptr[BrowserJsValue]) do
+  if vm == 0 or output == 0 then return false
+  if vm.stack_count == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+  vm.stack_count -= 1
+  source: ptr[BrowserJsValue] is browser_js_value_at(vm.stack, vm.stack_count)
+  return browser_js_value_copy(output, source)
+end
+
+func browser_js_peek(vm: ptr[BrowserJsVm], depth: u64) do
+  if vm == 0 or depth >= vm.stack_count then return 0
+  return browser_js_value_at(vm.stack, vm.stack_count - depth - 1)
+end
+
+func browser_js_binary_number(vm: ptr[BrowserJsVm], opcode: u64) do
+  if vm == 0 or vm.scratch == 0 then return false
+  if vm.stack_count < 2 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+  right: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+  left: ptr[BrowserJsValue] is browser_js_peek(vm, 1)
+  if left.kind != browser_js_kind_number() or right.kind != browser_js_kind_number() then return browser_js_fail(vm, browser_js_error_type())
+  result: i64 is 0
+  if opcode == browser_js_op_add() then
+    result is left.number + right.number
+  elif opcode == browser_js_op_subtract() then
+    result is left.number - right.number
+  elif opcode == browser_js_op_multiply() then
+    result is left.number * right.number
+  elif opcode == browser_js_op_divide() or opcode == browser_js_op_modulo() then
+    if right.number == 0 then return browser_js_fail(vm, browser_js_error_divide_by_zero())
+    if left.number == u64("0x8000000000000000") and right.number == -1 then return browser_js_fail(vm, browser_js_error_integer_overflow())
+    if opcode == browser_js_op_divide() then
+      result is left.number / right.number
+    else
+      result is left.number % right.number
+    end
+  else
+    return browser_js_fail(vm, browser_js_error_opcode())
+  end
+  vm.stack_count -= 2
+  if not browser_js_value_number(vm.scratch, result) then return browser_js_fail(vm, browser_js_error_state())
+  return browser_js_push(vm, vm.scratch)
+end
+
+func browser_js_compare_number(vm: ptr[BrowserJsVm], opcode: u64) do
+  if vm == 0 or vm.scratch == 0 then return false
+  if vm.stack_count < 2 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+  right: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+  left: ptr[BrowserJsValue] is browser_js_peek(vm, 1)
+  if left.kind != browser_js_kind_number() or right.kind != browser_js_kind_number() then return browser_js_fail(vm, browser_js_error_type())
+  matched: bool is false
+  if opcode == browser_js_op_less() then
+    matched is left.number < right.number
+  elif opcode == browser_js_op_less_equal() then
+    matched is left.number <= right.number
+  elif opcode == browser_js_op_greater() then
+    matched is left.number > right.number
+  elif opcode == browser_js_op_greater_equal() then
+    matched is left.number >= right.number
+  else
+    return browser_js_fail(vm, browser_js_error_opcode())
+  end
+  vm.stack_count -= 2
+  if not browser_js_value_boolean(vm.scratch, matched) then return browser_js_fail(vm, browser_js_error_state())
+  return browser_js_push(vm, vm.scratch)
+end
+
+func browser_js_compare_equal(vm: ptr[BrowserJsVm], invert: bool) do
+  if vm == 0 or vm.scratch == 0 then return false
+  if vm.stack_count < 2 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+  right: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+  left: ptr[BrowserJsValue] is browser_js_peek(vm, 1)
+  matched: bool is browser_js_value_equal(left, right)
+  if invert then matched is not matched
+  vm.stack_count -= 2
+  if not browser_js_value_boolean(vm.scratch, matched) then return browser_js_fail(vm, browser_js_error_state())
+  return browser_js_push(vm, vm.scratch)
+end
+
+func browser_js_host_call(vm: ptr[BrowserJsVm], instruction: ptr[BrowserJsInstruction]) do
+  if vm == 0 or instruction == 0 or vm.scratch == 0 then return false
+  argument_count: u64 is instruction.b
+  if argument_count > vm.stack_count then return browser_js_fail(vm, browser_js_error_argument_count())
+  if vm.host_callback == 0 then return browser_js_fail(vm, browser_js_error_host())
+  arguments: ptr is ptr.add(vm.stack, (vm.stack_count - argument_count) * 32)
+  if not browser_js_value_clear(vm.scratch) then return browser_js_fail(vm, browser_js_error_state())
+  status: u64 is call.indirect(vm.host_callback, vm.host_context, instruction.a, arguments, argument_count, vm.scratch)
+  if status != 0 then return browser_js_fail(vm, browser_js_error_host())
+  vm.stack_count -= argument_count
+  return browser_js_push(vm, vm.scratch)
+end
+
+func browser_js_execute(vm: ptr[BrowserJsVm]) do
+  if vm == 0 or vm.program == 0 then return false
+  program: ptr[BrowserJsProgram] is vm.program
+  while vm.instruction_pointer < program.code_count do
+    if vm.instruction_count >= vm.instruction_limit then return browser_js_fail(vm, browser_js_error_instruction_limit())
+    instruction: ptr[BrowserJsInstruction] is browser_js_instruction_at(program, vm.instruction_pointer)
+    if instruction == 0 then return browser_js_fail(vm, browser_js_error_state())
+    vm.instruction_pointer += 1
+    vm.instruction_count += 1
+    opcode: u64 is instruction.opcode
+    if opcode == browser_js_op_halt() then
+      return true
+    elif opcode == browser_js_op_constant() then
+      if instruction.a >= program.constant_count then return browser_js_fail(vm, browser_js_error_constant())
+      constant: ptr[BrowserJsValue] is browser_js_value_at(program.constants, instruction.a)
+      if not browser_js_push(vm, constant) then
+        return false
+      end
+    elif opcode == browser_js_op_undefined() then
+      if not browser_js_push_simple(vm, browser_js_kind_undefined(), 0) then
+        return false
+      end
+    elif opcode == browser_js_op_null() then
+      if not browser_js_push_simple(vm, browser_js_kind_null(), 0) then
+        return false
+      end
+    elif opcode == browser_js_op_true() then
+      if not browser_js_push_simple(vm, browser_js_kind_boolean(), 1) then
+        return false
+      end
+    elif opcode == browser_js_op_false() then
+      if not browser_js_push_simple(vm, browser_js_kind_boolean(), 0) then
+        return false
+      end
+    elif opcode == browser_js_op_get_global() then
+      if instruction.a >= program.global_count or instruction.a >= vm.global_capacity then return browser_js_fail(vm, browser_js_error_global())
+      global_value: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, instruction.a)
+      if not browser_js_push(vm, global_value) then
+        return false
+      end
+    elif opcode == browser_js_op_set_global() then
+      if instruction.a >= program.global_count or instruction.a >= vm.global_capacity then return browser_js_fail(vm, browser_js_error_global())
+      source: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+      if source == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      destination: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, instruction.a)
+      if not browser_js_value_copy(destination, source) then
+        return browser_js_fail(vm, browser_js_error_state())
+      end
+    elif opcode == browser_js_op_pop() then
+      if vm.stack_count == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      vm.stack_count -= 1
+    elif opcode >= browser_js_op_add() and opcode <= browser_js_op_modulo() then
+      if not browser_js_binary_number(vm, opcode) then
+        return false
+      end
+    elif opcode == browser_js_op_negate() then
+      operand: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+      if operand == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      if operand.kind != browser_js_kind_number() then return browser_js_fail(vm, browser_js_error_type())
+      if operand.number == u64("0x8000000000000000") then return browser_js_fail(vm, browser_js_error_integer_overflow())
+      operand.number is -operand.number
+    elif opcode == browser_js_op_not() then
+      operand: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+      if operand == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      truthy: bool is browser_js_value_truthy(operand)
+      if not browser_js_value_boolean(operand, not truthy) then
+        return browser_js_fail(vm, browser_js_error_state())
+      end
+    elif opcode == browser_js_op_equal() then
+      if not browser_js_compare_equal(vm, false) then
+        return false
+      end
+    elif opcode == browser_js_op_not_equal() then
+      if not browser_js_compare_equal(vm, true) then
+        return false
+      end
+    elif opcode >= browser_js_op_less() and opcode <= browser_js_op_greater_equal() then
+      if not browser_js_compare_number(vm, opcode) then
+        return false
+      end
+    elif opcode == browser_js_op_jump() then
+      if instruction.a >= program.code_count then return browser_js_fail(vm, browser_js_error_jump())
+      vm.instruction_pointer is instruction.a
+    elif opcode == browser_js_op_jump_if_false() then
+      condition: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+      if condition == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      take_jump: bool is not browser_js_value_truthy(condition)
+      vm.stack_count -= 1
+      if take_jump then
+        if instruction.a >= program.code_count then return browser_js_fail(vm, browser_js_error_jump())
+        vm.instruction_pointer is instruction.a
+      end
+    elif opcode == browser_js_op_host_call() then
+      if not browser_js_host_call(vm, instruction) then
+        return false
+      end
+    elif opcode == browser_js_op_duplicate() then
+      source: ptr[BrowserJsValue] is browser_js_peek(vm, 0)
+      if source == 0 then return browser_js_fail(vm, browser_js_error_stack_underflow())
+      if not browser_js_push(vm, source) then
+        return false
+      end
+    else
+      return browser_js_fail(vm, browser_js_error_opcode())
+    end
+  end
+  return browser_js_fail(vm, browser_js_error_jump())
+end
+
+func browser_js_result(vm: ptr[BrowserJsVm]) do
+  return browser_js_peek(vm, 0)
+end

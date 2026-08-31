@@ -1,6 +1,7 @@
-# Checked FAT32 reader and fixed-size existing-file writer.
+# Checked FAT32 short-name/LFN reader and writable allocation foundation.
 #
-# Names use the on-disk uppercase, space-padded 11-byte short-name form.
+# Short names use the on-disk uppercase, space-padded 11-byte form. Long-name
+# calls use caller-owned UTF-8, UTF-16, alias, and sector work buffers.
 # The caller supplies one aligned sector buffer at least bytes_per_sector long.
 
 import "block.sura"
@@ -29,6 +30,30 @@ struct Fat32DirEntry do
   file_size: u64
   directory_lba: u64
   directory_offset: u64
+  directory_cluster: u64
+  directory_index: u64
+  lfn_start_index: u64
+  lfn_entry_count: u64
+end
+
+# Caller-owned UTF-8/UTF-16 buffers used by long-file-name operations.
+# UTF-16 capacities are measured in 16-bit code units, not bytes.
+struct Fat32LongName do
+  utf8: ptr
+  utf8_length: u64
+  utf8_capacity: u64
+  input_utf16: ptr
+  input_utf16_capacity: u64
+  input_utf16_length: u64
+  disk_utf16: ptr
+  disk_utf16_capacity: u64
+  disk_utf16_length: u64
+  short_name: ptr
+  short_name_capacity: u64
+  excluded_lba: u64
+  excluded_offset: u64
+  sequence: u64
+  checksum: u64
 end
 
 func fat32_clear_volume(volume: ptr[Fat32Volume]) do
@@ -58,6 +83,10 @@ func fat32_clear_entry(entry: ptr[Fat32DirEntry]) do
   entry.file_size is 0
   entry.directory_lba is 0
   entry.directory_offset is 0
+  entry.directory_cluster is 0
+  entry.directory_index is 0
+  entry.lfn_start_index is 0
+  entry.lfn_entry_count is 0
   return true
 end
 
@@ -224,6 +253,7 @@ func fat32_find_short(volume: ptr[Fat32Volume], directory_cluster: u64, short_na
 
   cluster: u64 is directory_cluster
   visited: u64 is 0
+  slot_index: u64 is 0
   while visited < volume.cluster_count do
     cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
     if cluster_lba == 0 then return false
@@ -249,10 +279,15 @@ func fat32_find_short(volume: ptr[Fat32Volume], directory_cluster: u64, short_na
             result.file_size is mem.read32(ptr.add(entry_address, 28))
             result.directory_lba is lba
             result.directory_offset is offset
+            result.directory_cluster is directory_cluster
+            result.directory_index is slot_index
+            result.lfn_start_index is slot_index
+            result.lfn_entry_count is 0
             return true
           end
         end
         entry_index += 1
+        slot_index += 1
       end
       sector_index += 1
     end
@@ -294,6 +329,7 @@ func fat32_list_short(volume: ptr[Fat32Volume], directory_cluster: u64, ordinal:
   found: u64 is 0
   cluster: u64 is directory_cluster
   visited: u64 is 0
+  slot_index: u64 is 0
   while visited < volume.cluster_count do
     cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
     if cluster_lba == 0 then return false
@@ -319,11 +355,16 @@ func fat32_list_short(volume: ptr[Fat32Volume], directory_cluster: u64, ordinal:
             result.file_size is mem.read32(ptr.add(entry_address, 28))
             result.directory_lba is lba
             result.directory_offset is offset
+            result.directory_cluster is directory_cluster
+            result.directory_index is slot_index
+            result.lfn_start_index is slot_index
+            result.lfn_entry_count is 0
             return fat32_copy_short_name(entry_address, short_name)
           end
           found += 1
         end
         entry_index += 1
+        slot_index += 1
       end
       sector_index += 1
     end
@@ -426,4 +467,1473 @@ func fat32_overwrite_file(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], in
     visited += 1
   end
   return false
+end
+
+# Writes one 28-bit FAT entry to every FAT copy while preserving the reserved
+# high nibble. The caller performs the final device flush.
+func fat32_write_fat_entry(volume: ptr[Fat32Volume], cluster: u64, value: u64, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 or volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 or not fat32_cluster_valid(volume, cluster) then return false
+  byte_offset: u64 is cluster * 4
+  fat_sector: u64 is byte_offset / volume.bytes_per_sector
+  entry_offset: u64 is byte_offset % volume.bytes_per_sector
+  if fat_sector >= volume.sectors_per_fat then return false
+  copy: u64 is 0
+  while copy < volume.fat_count do
+    lba: u64 is volume.fat_start_lba + copy * volume.sectors_per_fat + fat_sector
+    if not block_read(volume.device, lba, 1, sector_buffer) then return false
+    previous: u64 is mem.read32(ptr.add(sector_buffer, entry_offset))
+    updated: u64 is (previous & u64("0xf0000000")) | (value & 268435455)
+    mem.write32(ptr.add(sector_buffer, entry_offset), updated)
+    if not block_write(volume.device, lba, 1, sector_buffer) then return false
+    copy += 1
+  end
+  return true
+end
+
+func fat32_zero_cluster(volume: ptr[Fat32Volume], cluster: u64, sector_buffer: ptr) do
+  if not fat32_cluster_valid(volume, cluster) or sector_buffer == 0 then return false
+  index: u64 is 0
+  while index < volume.bytes_per_sector do
+    mem.write8(ptr.add(sector_buffer, index), 0)
+    index += 1
+  end
+  lba: u64 is fat32_cluster_lba(volume, cluster)
+  if lba == 0 then return false
+  sector: u64 is 0
+  while sector < volume.sectors_per_cluster do
+    if not block_write(volume.device, lba + sector, 1, sector_buffer) then return false
+    sector += 1
+  end
+  return true
+end
+
+# Allocates and zeroes one cluster. When previous_cluster is nonzero, the new
+# cluster is linked after it only after its own EOC marker is durable in both
+# FAT copies. A failed link may leak one orphan cluster but never exposes an
+# uninitialized cluster through an existing chain.
+func fat32_allocate_cluster(volume: ptr[Fat32Volume], previous_cluster: u64, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 or volume.device == 0 then return 0
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 then return 0
+  if previous_cluster != 0 and not fat32_cluster_valid(volume, previous_cluster) then return 0
+  cluster: u64 is 2
+  while cluster <= volume.max_cluster do
+    if fat32_read_fat_entry(volume, cluster, sector_buffer) == 0 then
+      if not fat32_zero_cluster(volume, cluster, sector_buffer) then return 0
+      if not fat32_write_fat_entry(volume, cluster, 268435455, sector_buffer) then return 0
+      if previous_cluster != 0 then
+        if not fat32_write_fat_entry(volume, previous_cluster, cluster, sector_buffer) then return 0
+      end
+      return cluster
+    end
+    cluster += 1
+  end
+  return 0
+end
+
+func fat32_free_chain(volume: ptr[Fat32Volume], first_cluster: u64, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 then return false
+  if first_cluster == 0 then return true
+  if not fat32_cluster_valid(volume, first_cluster) then return false
+  cluster: u64 is first_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if next_cluster == 0 then return false
+    if not fat32_write_fat_entry(volume, cluster, 0, sector_buffer) then return false
+    if fat32_is_end_of_chain(next_cluster) then return true
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_cluster_at(volume: ptr[Fat32Volume], first_cluster: u64, ordinal: u64, sector_buffer: ptr) do
+  if not fat32_cluster_valid(volume, first_cluster) or ordinal >= volume.cluster_count then return 0
+  cluster: u64 is first_cluster
+  index: u64 is 0
+  while index < ordinal do
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) or not fat32_cluster_valid(volume, next_cluster) then return 0
+    cluster is next_cluster
+    index += 1
+  end
+  return cluster
+end
+
+func fat32_update_entry(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or file == 0 or sector_buffer == 0 or file.valid == 0 then return false
+  if file.file_size > u64("0xffffffff") then return false
+  if file.directory_offset + 32 > volume.bytes_per_sector then return false
+  if not block_read(volume.device, file.directory_lba, 1, sector_buffer) then return false
+  entry: ptr is ptr.add(sector_buffer, file.directory_offset)
+  first: u64 is mem.read8(entry)
+  attributes: u64 is mem.read8(ptr.add(entry, 11))
+  if first == 0 or first == 229 or attributes == 15 or (attributes & 8) != 0 then return false
+  mem.write16(ptr.add(entry, 20), (file.first_cluster >> 16) & 65535)
+  mem.write16(ptr.add(entry, 26), file.first_cluster & 65535)
+  mem.write32(ptr.add(entry, 28), file.file_size)
+  return block_write(volume.device, file.directory_lba, 1, sector_buffer)
+end
+
+func fat32_zero_file_range(volume: ptr[Fat32Volume], first_cluster: u64, offset: u64, byte_count: u64, sector_buffer: ptr) do
+  if byte_count == 0 then return true
+  cluster_bytes: u64 is fat32_cluster_bytes(volume)
+  if cluster_bytes == 0 or not fat32_cluster_valid(volume, first_cluster) then return false
+  cluster_ordinal: u64 is offset / cluster_bytes
+  in_cluster: u64 is offset % cluster_bytes
+  cluster: u64 is fat32_cluster_at(volume, first_cluster, cluster_ordinal, sector_buffer)
+  if cluster == 0 then return false
+  remaining: u64 is byte_count
+  while remaining > 0 do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    if cluster_lba == 0 then return false
+    sector_index: u64 is in_cluster / volume.bytes_per_sector
+    sector_offset: u64 is in_cluster % volume.bytes_per_sector
+    while sector_index < volume.sectors_per_cluster and remaining > 0 do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      take: u64 is volume.bytes_per_sector - sector_offset
+      if take > remaining then take is remaining
+      index: u64 is 0
+      while index < take do
+        mem.write8(ptr.add(sector_buffer, sector_offset + index), 0)
+        index += 1
+      end
+      if not block_write(volume.device, lba, 1, sector_buffer) then return false
+      remaining -= take
+      sector_index += 1
+      sector_offset is 0
+    end
+    if remaining > 0 then
+      next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+      if fat32_is_end_of_chain(next_cluster) or not fat32_cluster_valid(volume, next_cluster) then return false
+      cluster is next_cluster
+      in_cluster is 0
+    end
+  end
+  return true
+end
+
+# Resizes one existing regular file to at most 4 GiB - 1. Growth allocates and
+# zeroes clusters before publishing the new size. Shrink publishes the smaller
+# size before unlinking and freeing the now-unreachable tail, so interruption
+# can leak space but cannot leave metadata pointing at a freed chain.
+func fat32_resize_file(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], new_size: u64, sector_buffer: ptr) do
+  if volume == 0 or file == 0 or sector_buffer == 0 or file.valid == 0 then return false
+  if volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 then return false
+  if (file.attributes & 17) != 0 or new_size > u64("0xffffffff") then return false
+  old_size: u64 is file.file_size
+  if new_size == old_size then return true
+  old_needed: u64 is fat32_required_clusters(volume, old_size)
+  new_needed: u64 is fat32_required_clusters(volume, new_size)
+  if old_needed > 0 then
+    if not fat32_chain_has_bytes(volume, file.first_cluster, old_size, sector_buffer) then
+      return false
+    end
+  else
+    if file.first_cluster != 0 then return false
+  end
+
+  if new_needed > old_needed then
+    first_cluster: u64 is file.first_cluster
+    previous: u64 is 0
+    if old_needed > 0 then
+      previous is fat32_cluster_at(volume, first_cluster, old_needed - 1, sector_buffer)
+      if previous == 0 then return false
+    end
+    count: u64 is old_needed
+    while count < new_needed do
+      allocated: u64 is fat32_allocate_cluster(volume, previous, sector_buffer)
+      if allocated == 0 then return false
+      if first_cluster == 0 then first_cluster is allocated
+      previous is allocated
+      count += 1
+    end
+    if not fat32_zero_file_range(volume, first_cluster, old_size, new_size - old_size, sector_buffer) then return false
+    old_first: u64 is file.first_cluster
+    file.first_cluster is first_cluster
+    file.file_size is new_size
+    if not fat32_update_entry(volume, file, sector_buffer) then
+      file.first_cluster is old_first
+      file.file_size is old_size
+      return false
+    end
+    return block_flush(volume.device)
+  end
+
+  if new_needed == old_needed then
+    if new_size > old_size then
+      if not fat32_zero_file_range(volume, file.first_cluster, old_size, new_size - old_size, sector_buffer) then return false
+    end
+    file.file_size is new_size
+    if not fat32_update_entry(volume, file, sector_buffer) then
+      file.file_size is old_size
+      return false
+    end
+    return block_flush(volume.device)
+  end
+
+  old_first: u64 is file.first_cluster
+  if new_needed == 0 then
+    file.first_cluster is 0
+    file.file_size is 0
+    if not fat32_update_entry(volume, file, sector_buffer) then
+      file.first_cluster is old_first
+      file.file_size is old_size
+      return false
+    end
+    if not block_flush(volume.device) then return false
+    if not fat32_free_chain(volume, old_first, sector_buffer) then return false
+    return block_flush(volume.device)
+  end
+
+  new_last: u64 is fat32_cluster_at(volume, old_first, new_needed - 1, sector_buffer)
+  if new_last == 0 then return false
+  tail: u64 is fat32_read_fat_entry(volume, new_last, sector_buffer)
+  if fat32_is_end_of_chain(tail) or not fat32_cluster_valid(volume, tail) then return false
+  file.file_size is new_size
+  if not fat32_update_entry(volume, file, sector_buffer) then
+    file.file_size is old_size
+    return false
+  end
+  if not block_flush(volume.device) then return false
+  if not fat32_write_fat_entry(volume, new_last, 268435455, sector_buffer) then return false
+  if not fat32_free_chain(volume, tail, sector_buffer) then return false
+  return block_flush(volume.device)
+end
+
+func fat32_read_range(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], offset: u64, output: ptr, byte_count: u64, sector_buffer: ptr) do
+  if volume == 0 or file == 0 or sector_buffer == 0 then return false
+  if file.valid == 0 or (file.attributes & 16) != 0 then return false
+  if byte_count == 0 then return offset <= file.file_size
+  if output == 0 or offset > file.file_size or byte_count > file.file_size - offset then return false
+  cluster_bytes: u64 is fat32_cluster_bytes(volume)
+  if cluster_bytes == 0 then return false
+  cluster: u64 is fat32_cluster_at(volume, file.first_cluster, offset / cluster_bytes, sector_buffer)
+  if cluster == 0 then return false
+  in_cluster: u64 is offset % cluster_bytes
+  remaining: u64 is byte_count
+  output_offset: u64 is 0
+  while remaining > 0 do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is in_cluster / volume.bytes_per_sector
+    sector_offset: u64 is in_cluster % volume.bytes_per_sector
+    while sector_index < volume.sectors_per_cluster and remaining > 0 do
+      if not block_read(volume.device, cluster_lba + sector_index, 1, sector_buffer) then return false
+      take: u64 is volume.bytes_per_sector - sector_offset
+      if take > remaining then take is remaining
+      if not fat32_copy_bytes(ptr.add(output, output_offset), ptr.add(sector_buffer, sector_offset), take) then return false
+      output_offset += take
+      remaining -= take
+      sector_index += 1
+      sector_offset is 0
+    end
+    if remaining > 0 then
+      next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+      if fat32_is_end_of_chain(next_cluster) or not fat32_cluster_valid(volume, next_cluster) then return false
+      cluster is next_cluster
+      in_cluster is 0
+    end
+  end
+  return true
+end
+
+func fat32_write_range(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], offset: u64, input: ptr, byte_count: u64, sector_buffer: ptr) do
+  if volume == 0 or file == 0 or sector_buffer == 0 or volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 or file.valid == 0 or (file.attributes & 17) != 0 then return false
+  if byte_count == 0 then return offset <= file.file_size
+  if input == 0 or offset > file.file_size or byte_count > file.file_size - offset then return false
+  cluster_bytes: u64 is fat32_cluster_bytes(volume)
+  if cluster_bytes == 0 then return false
+  cluster: u64 is fat32_cluster_at(volume, file.first_cluster, offset / cluster_bytes, sector_buffer)
+  if cluster == 0 then return false
+  in_cluster: u64 is offset % cluster_bytes
+  remaining: u64 is byte_count
+  input_offset: u64 is 0
+  while remaining > 0 do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is in_cluster / volume.bytes_per_sector
+    sector_offset: u64 is in_cluster % volume.bytes_per_sector
+    while sector_index < volume.sectors_per_cluster and remaining > 0 do
+      lba: u64 is cluster_lba + sector_index
+      take: u64 is volume.bytes_per_sector - sector_offset
+      if take > remaining then take is remaining
+      if sector_offset != 0 or take != volume.bytes_per_sector then
+        if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      end
+      if not fat32_copy_bytes(ptr.add(sector_buffer, sector_offset), ptr.add(input, input_offset), take) then return false
+      if not block_write(volume.device, lba, 1, sector_buffer) then return false
+      input_offset += take
+      remaining -= take
+      sector_index += 1
+      sector_offset is 0
+    end
+    if remaining > 0 then
+      next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+      if fat32_is_end_of_chain(next_cluster) or not fat32_cluster_valid(volume, next_cluster) then return false
+      cluster is next_cluster
+      in_cluster is 0
+    end
+  end
+  return block_flush(volume.device)
+end
+
+func fat32_short_character_valid(value: u64) do
+  if value >= 65 and value <= 90 then return true
+  if value >= 48 and value <= 57 then return true
+  if value == 33 or value == 35 or value == 36 or value == 37 or value == 38 then return true
+  if value == 39 or value == 40 or value == 41 or value == 45 or value == 64 then return true
+  if value == 94 or value == 95 or value == 96 or value == 123 or value == 125 or value == 126 then return true
+  return false
+end
+
+func fat32_short_name_valid(short_name: ptr) do
+  if short_name == 0 or mem.read8(short_name) == 32 then return false
+  index: u64 is 0
+  padded: bool is false
+  while index < 11 do
+    if index == 8 then padded is false
+    value: u64 is mem.read8(ptr.add(short_name, index))
+    if value == 32 then
+      padded is true
+    else
+      if padded or not fat32_short_character_valid(value) then return false
+    end
+    index += 1
+  end
+  return true
+end
+
+# Finds a reusable directory entry. If the existing chain is full, one zeroed
+# directory cluster is appended and its first slot is returned.
+func fat32_find_free_slot(volume: ptr[Fat32Volume], directory_cluster: u64, result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or result == 0 or sector_buffer == 0 then return false
+  fat32_clear_entry(result)
+  if not fat32_cluster_valid(volume, directory_cluster) then return false
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  slot_index: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      entry_index: u64 is 0
+      entries_per_sector: u64 is volume.bytes_per_sector / 32
+      while entry_index < entries_per_sector do
+        offset: u64 is entry_index * 32
+        first: u64 is mem.read8(ptr.add(sector_buffer, offset))
+        if first == 0 or first == 229 then
+          result.directory_lba is lba
+          result.directory_offset is offset
+          result.directory_cluster is directory_cluster
+          result.directory_index is slot_index
+          result.lfn_start_index is slot_index
+          result.lfn_entry_count is 0
+          return true
+        end
+        entry_index += 1
+        slot_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then
+      allocated: u64 is fat32_allocate_cluster(volume, cluster, sector_buffer)
+      if allocated == 0 then return false
+      result.directory_lba is fat32_cluster_lba(volume, allocated)
+      result.directory_offset is 0
+      result.directory_cluster is directory_cluster
+      result.directory_index is slot_index
+      result.lfn_start_index is slot_index
+      result.lfn_entry_count is 0
+      return result.directory_lba != 0
+    end
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_write_short_entry(volume: ptr[Fat32Volume], entry: ptr[Fat32DirEntry], short_name: ptr, sector_buffer: ptr) do
+  if volume == 0 or entry == 0 or short_name == 0 or sector_buffer == 0 then return false
+  if not fat32_short_name_valid(short_name) or entry.file_size > u64("0xffffffff") then return false
+  if entry.directory_offset + 32 > volume.bytes_per_sector then return false
+  if not block_read(volume.device, entry.directory_lba, 1, sector_buffer) then return false
+  address: ptr is ptr.add(sector_buffer, entry.directory_offset)
+  first: u64 is mem.read8(address)
+  if first != 0 and first != 229 then return false
+  index: u64 is 0
+  while index < 32 do
+    mem.write8(ptr.add(address, index), 0)
+    index += 1
+  end
+  if not fat32_copy_bytes(address, short_name, 11) then return false
+  mem.write8(ptr.add(address, 11), entry.attributes)
+  mem.write16(ptr.add(address, 20), (entry.first_cluster >> 16) & 65535)
+  mem.write16(ptr.add(address, 26), entry.first_cluster & 65535)
+  mem.write32(ptr.add(address, 28), entry.file_size)
+  if not block_write(volume.device, entry.directory_lba, 1, sector_buffer) then return false
+  entry.valid is 1
+  return true
+end
+
+func fat32_initialize_directory(volume: ptr[Fat32Volume], cluster: u64, parent_cluster: u64, sector_buffer: ptr) do
+  if not fat32_cluster_valid(volume, cluster) or not fat32_cluster_valid(volume, parent_cluster) then return false
+  if not fat32_zero_cluster(volume, cluster, sector_buffer) then return false
+  index: u64 is 0
+  while index < volume.bytes_per_sector do
+    mem.write8(ptr.add(sector_buffer, index), 0)
+    index += 1
+  end
+  mem.write8(sector_buffer, 46)
+  index is 1
+  while index < 11 do
+    mem.write8(ptr.add(sector_buffer, index), 32)
+    index += 1
+  end
+  mem.write8(ptr.add(sector_buffer, 11), 16)
+  mem.write16(ptr.add(sector_buffer, 20), (cluster >> 16) & 65535)
+  mem.write16(ptr.add(sector_buffer, 26), cluster & 65535)
+  second: ptr is ptr.add(sector_buffer, 32)
+  mem.write8(second, 46)
+  mem.write8(ptr.add(second, 1), 46)
+  index is 2
+  while index < 11 do
+    mem.write8(ptr.add(second, index), 32)
+    index += 1
+  end
+  mem.write8(ptr.add(second, 11), 16)
+  mem.write16(ptr.add(second, 20), (parent_cluster >> 16) & 65535)
+  mem.write16(ptr.add(second, 26), parent_cluster & 65535)
+  return block_write(volume.device, fat32_cluster_lba(volume, cluster), 1, sector_buffer)
+end
+
+func fat32_create_short(volume: ptr[Fat32Volume], directory_cluster: u64, short_name: ptr, directory: bool, result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or result == 0 or sector_buffer == 0 or not fat32_short_name_valid(short_name) then return false
+  if volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 then return false
+  if fat32_find_short(volume, directory_cluster, short_name, result, sector_buffer) then return false
+  if not fat32_find_free_slot(volume, directory_cluster, result, sector_buffer) then return false
+  result.attributes is 32
+  result.first_cluster is 0
+  result.file_size is 0
+  if directory then
+    result.attributes is 16
+    result.first_cluster is fat32_allocate_cluster(volume, 0, sector_buffer)
+    if result.first_cluster == 0 then return false
+    if not fat32_initialize_directory(volume, result.first_cluster, directory_cluster, sector_buffer) then
+      fat32_free_chain(volume, result.first_cluster, sector_buffer)
+      return false
+    end
+  end
+  if not fat32_write_short_entry(volume, result, short_name, sector_buffer) then
+    if result.first_cluster != 0 then fat32_free_chain(volume, result.first_cluster, sector_buffer)
+    return false
+  end
+  return block_flush(volume.device)
+end
+
+func fat32_directory_empty(volume: ptr[Fat32Volume], directory_cluster: u64, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 or not fat32_cluster_valid(volume, directory_cluster) then return false
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      if not block_read(volume.device, cluster_lba + sector_index, 1, sector_buffer) then return false
+      entry_index: u64 is 0
+      entries_per_sector: u64 is volume.bytes_per_sector / 32
+      while entry_index < entries_per_sector do
+        address: ptr is ptr.add(sector_buffer, entry_index * 32)
+        first: u64 is mem.read8(address)
+        if first == 0 then return true
+        attributes: u64 is mem.read8(ptr.add(address, 11))
+        if first != 229 and attributes != 15 and (attributes & 8) == 0 then
+          dot: bool is first == 46 and mem.read8(ptr.add(address, 1)) == 32
+          dotdot: bool is first == 46 and mem.read8(ptr.add(address, 1)) == 46 and mem.read8(ptr.add(address, 2)) == 32
+          if not dot and not dotdot then return false
+        end
+        entry_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then return true
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_short_exists_other(volume: ptr[Fat32Volume], directory_cluster: u64, short_name: ptr, excluded_lba: u64, excluded_offset: u64, sector_buffer: ptr) do
+  if volume == 0 or short_name == 0 or sector_buffer == 0 then return true
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return true
+      entry_index: u64 is 0
+      entries_per_sector: u64 is volume.bytes_per_sector / 32
+      while entry_index < entries_per_sector do
+        offset: u64 is entry_index * 32
+        address: ptr is ptr.add(sector_buffer, offset)
+        first: u64 is mem.read8(address)
+        if first == 0 then return false
+        attributes: u64 is mem.read8(ptr.add(address, 11))
+        if first != 229 and attributes != 15 and (attributes & 8) == 0 then
+          if not (lba == excluded_lba and offset == excluded_offset) then
+            if fat32_short_name_equal(address, short_name) then return true
+          end
+        end
+        entry_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then return false
+    if not fat32_cluster_valid(volume, next_cluster) then return true
+    cluster is next_cluster
+    visited += 1
+  end
+  return true
+end
+
+func fat32_rename_short(volume: ptr[Fat32Volume], directory_cluster: u64, file: ptr[Fat32DirEntry], new_short_name: ptr, sector_buffer: ptr) do
+  if volume == 0 or file == 0 or new_short_name == 0 or sector_buffer == 0 then return false
+  if file.valid == 0 or not fat32_short_name_valid(new_short_name) then return false
+  if fat32_short_exists_other(volume, directory_cluster, new_short_name, file.directory_lba, file.directory_offset, sector_buffer) then return false
+  if not block_read(volume.device, file.directory_lba, 1, sector_buffer) then return false
+  address: ptr is ptr.add(sector_buffer, file.directory_offset)
+  first: u64 is mem.read8(address)
+  attributes: u64 is mem.read8(ptr.add(address, 11))
+  if first == 0 or first == 229 or attributes == 15 or (attributes & 8) != 0 then return false
+  if not fat32_copy_bytes(address, new_short_name, 11) then return false
+  if not block_write(volume.device, file.directory_lba, 1, sector_buffer) then return false
+  return block_flush(volume.device)
+end
+
+func fat32_delete_entry(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or file == 0 or sector_buffer == 0 or file.valid == 0 then return false
+  if volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 then return false
+  if (file.attributes & 16) != 0 then
+    if not fat32_directory_empty(volume, file.first_cluster, sector_buffer) then return false
+  end
+  if not block_read(volume.device, file.directory_lba, 1, sector_buffer) then return false
+  address: ptr is ptr.add(sector_buffer, file.directory_offset)
+  first: u64 is mem.read8(address)
+  if first == 0 or first == 229 then return false
+  mem.write8(address, 229)
+  if not block_write(volume.device, file.directory_lba, 1, sector_buffer) then return false
+  if not block_flush(volume.device) then return false
+  first_cluster: u64 is file.first_cluster
+  lfn_start: u64 is file.lfn_start_index
+  lfn_count: u64 is file.lfn_entry_count
+  directory_cluster: u64 is file.directory_cluster
+  lfn_deleted: bool is true
+  if lfn_count > 0 then
+    lfn_deleted is fat32_mark_slots_deleted(volume, directory_cluster, lfn_start, lfn_count, sector_buffer)
+  end
+  file.valid is 0
+  file.first_cluster is 0
+  file.file_size is 0
+  file.directory_lba is 0
+  file.directory_offset is 0
+  file.directory_cluster is 0
+  file.directory_index is 0
+  file.lfn_start_index is 0
+  file.lfn_entry_count is 0
+  if first_cluster != 0 then
+    if not fat32_free_chain(volume, first_cluster, sector_buffer) then return false
+  end
+  if not block_flush(volume.device) then return false
+  return lfn_deleted
+end
+
+func fat32_long_name_buffers_valid(name: ptr[Fat32LongName]) do
+  if name == 0 or name.utf8 == 0 or name.input_utf16 == 0 then return false
+  if name.disk_utf16 == 0 or name.short_name == 0 then return false
+  if name.utf8_length == 0 or name.utf8_length > name.utf8_capacity then return false
+  if name.input_utf16_capacity < 255 or name.disk_utf16_capacity < 260 then return false
+  if name.short_name_capacity < 11 then return false
+  return true
+end
+
+func fat32_long_codepoint_valid(codepoint: u64) do
+  if codepoint == 0 or codepoint < 32 or codepoint > 1114111 then return false
+  if codepoint >= 55296 and codepoint <= 57343 then return false
+  if codepoint == 34 or codepoint == 42 or codepoint == 47 or codepoint == 58 then return false
+  if codepoint == 60 or codepoint == 62 or codepoint == 63 or codepoint == 92 or codepoint == 124 then return false
+  return true
+end
+
+func fat32_utf8_decode(text: ptr, length: u64, index: u64, consumed: ptr) do
+  if consumed != 0 then mem.write64(consumed, 0)
+  if text == 0 or consumed == 0 or index >= length then return u64("0xffffffffffffffff")
+  first: u64 is mem.read8(ptr.add(text, index))
+  if first < 128 then
+    mem.write64(consumed, 1)
+    return first
+  end
+  if first >= 194 and first <= 223 then
+    if index + 1 >= length then return u64("0xffffffffffffffff")
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    if (second & 192) != 128 then return u64("0xffffffffffffffff")
+    mem.write64(consumed, 2)
+    return ((first & 31) << 6) | (second & 63)
+  end
+  if first >= 224 and first <= 239 then
+    if index + 2 >= length then return u64("0xffffffffffffffff")
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    third: u64 is mem.read8(ptr.add(text, index + 2))
+    if (second & 192) != 128 or (third & 192) != 128 then return u64("0xffffffffffffffff")
+    if first == 224 and second < 160 then return u64("0xffffffffffffffff")
+    if first == 237 and second >= 160 then return u64("0xffffffffffffffff")
+    mem.write64(consumed, 3)
+    return ((first & 15) << 12) | ((second & 63) << 6) | (third & 63)
+  end
+  if first >= 240 and first <= 244 then
+    if index + 3 >= length then return u64("0xffffffffffffffff")
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    third: u64 is mem.read8(ptr.add(text, index + 2))
+    fourth: u64 is mem.read8(ptr.add(text, index + 3))
+    if (second & 192) != 128 or (third & 192) != 128 or (fourth & 192) != 128 then return u64("0xffffffffffffffff")
+    if first == 240 and second < 144 then return u64("0xffffffffffffffff")
+    if first == 244 and second > 143 then return u64("0xffffffffffffffff")
+    mem.write64(consumed, 4)
+    return ((first & 7) << 18) | ((second & 63) << 12) | ((third & 63) << 6) | (fourth & 63)
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func fat32_long_name_to_utf16(name: ptr[Fat32LongName], consumed: ptr) do
+  if not fat32_long_name_buffers_valid(name) or consumed == 0 then return false
+  input_index: u64 is 0
+  output_index: u64 is 0
+  last_codepoint: u64 is 0
+  while input_index < name.utf8_length do
+    codepoint: u64 is fat32_utf8_decode(name.utf8, name.utf8_length, input_index, consumed)
+    byte_count: u64 is mem.read64(consumed)
+    if codepoint == u64("0xffffffffffffffff") or byte_count == 0 then return false
+    if not fat32_long_codepoint_valid(codepoint) then return false
+    if codepoint <= 65535 then
+      if output_index >= 255 or output_index >= name.input_utf16_capacity then return false
+      mem.write16(ptr.add(name.input_utf16, output_index * 2), codepoint)
+      output_index += 1
+    else
+      if output_index + 1 >= 255 or output_index + 1 >= name.input_utf16_capacity then return false
+      adjusted: u64 is codepoint - 65536
+      mem.write16(ptr.add(name.input_utf16, output_index * 2), 55296 | (adjusted >> 10))
+      mem.write16(ptr.add(name.input_utf16, (output_index + 1) * 2), 56320 | (adjusted & 1023))
+      output_index += 2
+    end
+    last_codepoint is codepoint
+    input_index += byte_count
+  end
+  if output_index == 0 or last_codepoint == 32 or last_codepoint == 46 then return false
+  if output_index == 1 and mem.read16(name.input_utf16) == 46 then return false
+  if output_index == 2 and mem.read16(name.input_utf16) == 46 and mem.read16(ptr.add(name.input_utf16, 2)) == 46 then return false
+  name.input_utf16_length is output_index
+  return true
+end
+
+func fat32_lfn_unit(entry: ptr, position: u64) do
+  if entry == 0 or position >= 13 then return 65535
+  if position < 5 then return mem.read16(ptr.add(entry, 1 + position * 2))
+  if position < 11 then return mem.read16(ptr.add(entry, 14 + (position - 5) * 2))
+  return mem.read16(ptr.add(entry, 28 + (position - 11) * 2))
+end
+
+func fat32_lfn_set_unit(entry: ptr, position: u64, value: u64) do
+  if entry == 0 or position >= 13 then return false
+  if position < 5 then
+    mem.write16(ptr.add(entry, 1 + position * 2), value)
+  elif position < 11 then
+    mem.write16(ptr.add(entry, 14 + (position - 5) * 2), value)
+  else
+    mem.write16(ptr.add(entry, 28 + (position - 11) * 2), value)
+  end
+  return true
+end
+
+func fat32_lfn_checksum(short_name: ptr) do
+  if short_name == 0 then return 0
+  checksum: u64 is 0
+  index: u64 is 0
+  while index < 11 do
+    checksum is (((checksum & 1) << 7) | (checksum >> 1))
+    checksum is (checksum + mem.read8(ptr.add(short_name, index))) & 255
+    index += 1
+  end
+  return checksum
+end
+
+func fat32_lfn_clear_disk(name: ptr[Fat32LongName]) do
+  if name == 0 or name.disk_utf16 == 0 then return false
+  index: u64 is 0
+  while index < name.disk_utf16_capacity do
+    mem.write16(ptr.add(name.disk_utf16, index * 2), 65535)
+    index += 1
+  end
+  name.disk_utf16_length is 0
+  return true
+end
+
+func fat32_lfn_copy_entry(name: ptr[Fat32LongName], entry: ptr, sequence: u64) do
+  if name == 0 or entry == 0 or sequence == 0 or sequence > 20 then return false
+  start: u64 is (sequence - 1) * 13
+  if start + 13 > name.disk_utf16_capacity then return false
+  index: u64 is 0
+  while index < 13 do
+    mem.write16(ptr.add(name.disk_utf16, (start + index) * 2), fat32_lfn_unit(entry, index))
+    index += 1
+  end
+  return true
+end
+
+func fat32_lfn_finish_disk(name: ptr[Fat32LongName], total_units: u64) do
+  if name == 0 or total_units == 0 or total_units > name.disk_utf16_capacity then return false
+  length: u64 is 0
+  terminated: bool is false
+  while length < total_units do
+    unit: u64 is mem.read16(ptr.add(name.disk_utf16, length * 2))
+    if unit == 0 then
+      terminated is true
+      break
+    end
+    if unit == 65535 then return false
+    if unit >= 55296 and unit <= 56319 then
+      if length + 1 >= total_units then return false
+      low: u64 is mem.read16(ptr.add(name.disk_utf16, (length + 1) * 2))
+      if low < 56320 or low > 57343 then return false
+      length += 2
+    elif unit >= 56320 and unit <= 57343 then
+      return false
+    else
+      if not fat32_long_codepoint_valid(unit) then return false
+      length += 1
+    end
+  end
+  if length == 0 or length > 255 then return false
+  if terminated then
+    padding: u64 is length + 1
+    while padding < total_units do
+      if mem.read16(ptr.add(name.disk_utf16, padding * 2)) != 65535 then return false
+      padding += 1
+    end
+  end
+  last: u64 is mem.read16(ptr.add(name.disk_utf16, (length - 1) * 2))
+  if last == 32 or last == 46 then return false
+  if length == 1 and mem.read16(name.disk_utf16) == 46 then return false
+  if length == 2 and mem.read16(name.disk_utf16) == 46 and mem.read16(ptr.add(name.disk_utf16, 2)) == 46 then return false
+  name.disk_utf16_length is length
+  return true
+end
+
+func fat32_long_names_equal(name: ptr[Fat32LongName]) do
+  if name == 0 or name.input_utf16_length != name.disk_utf16_length then return false
+  index: u64 is 0
+  while index < name.input_utf16_length do
+    left: u64 is mem.read16(ptr.add(name.input_utf16, index * 2))
+    right: u64 is mem.read16(ptr.add(name.disk_utf16, index * 2))
+    if left >= 97 and left <= 122 then left -= 32
+    if right >= 97 and right <= 122 then right -= 32
+    if left != right then return false
+    index += 1
+  end
+  return true
+end
+
+func fat32_utf8_write(codepoint: u64, output: ptr, capacity: u64) do
+  if output == 0 or capacity == 0 or not fat32_long_codepoint_valid(codepoint) then return 0
+  if codepoint <= 127 then
+    mem.write8(output, codepoint)
+    return 1
+  end
+  if codepoint <= 2047 then
+    if capacity < 2 then return 0
+    mem.write8(output, 192 | (codepoint >> 6))
+    mem.write8(ptr.add(output, 1), 128 | (codepoint & 63))
+    return 2
+  end
+  if codepoint <= 65535 then
+    if capacity < 3 then return 0
+    mem.write8(output, 224 | (codepoint >> 12))
+    mem.write8(ptr.add(output, 1), 128 | ((codepoint >> 6) & 63))
+    mem.write8(ptr.add(output, 2), 128 | (codepoint & 63))
+    return 3
+  end
+  if capacity < 4 then return 0
+  mem.write8(output, 240 | (codepoint >> 18))
+  mem.write8(ptr.add(output, 1), 128 | ((codepoint >> 12) & 63))
+  mem.write8(ptr.add(output, 2), 128 | ((codepoint >> 6) & 63))
+  mem.write8(ptr.add(output, 3), 128 | (codepoint & 63))
+  return 4
+end
+
+func fat32_disk_name_to_utf8(name: ptr[Fat32LongName]) do
+  if name == 0 or name.utf8 == 0 or name.disk_utf16 == 0 then return false
+  input_index: u64 is 0
+  output_index: u64 is 0
+  while input_index < name.disk_utf16_length do
+    first: u64 is mem.read16(ptr.add(name.disk_utf16, input_index * 2))
+    codepoint: u64 is first
+    consumed_units: u64 is 1
+    if first >= 55296 and first <= 56319 then
+      if input_index + 1 >= name.disk_utf16_length then return false
+      second: u64 is mem.read16(ptr.add(name.disk_utf16, (input_index + 1) * 2))
+      if second < 56320 or second > 57343 then return false
+      codepoint is 65536 + ((first - 55296) << 10) + (second - 56320)
+      consumed_units is 2
+    elif first >= 56320 and first <= 57343 then
+      return false
+    end
+    if output_index >= name.utf8_capacity then return false
+    written: u64 is fat32_utf8_write(codepoint, ptr.add(name.utf8, output_index), name.utf8_capacity - output_index)
+    if written == 0 then return false
+    output_index += written
+    input_index += consumed_units
+  end
+  name.utf8_length is output_index
+  if output_index < name.utf8_capacity then mem.write8(ptr.add(name.utf8, output_index), 0)
+  return true
+end
+
+func fat32_short_entry_to_utf8(entry: ptr, name: ptr[Fat32LongName]) do
+  if entry == 0 or name == 0 or name.utf8 == 0 then return false
+  output: u64 is 0
+  index: u64 is 0
+  while index < 8 and mem.read8(ptr.add(entry, index)) != 32 do
+    if output >= name.utf8_capacity then return false
+    mem.write8(ptr.add(name.utf8, output), mem.read8(ptr.add(entry, index)))
+    output += 1
+    index += 1
+  end
+  if mem.read8(ptr.add(entry, 8)) != 32 then
+    if output >= name.utf8_capacity then return false
+    mem.write8(ptr.add(name.utf8, output), 46)
+    output += 1
+    index is 8
+    while index < 11 and mem.read8(ptr.add(entry, index)) != 32 do
+      if output >= name.utf8_capacity then return false
+      mem.write8(ptr.add(name.utf8, output), mem.read8(ptr.add(entry, index)))
+      output += 1
+      index += 1
+    end
+  end
+  name.utf8_length is output
+  if output < name.utf8_capacity then mem.write8(ptr.add(name.utf8, output), 0)
+  return output > 0
+end
+
+func fat32_short_matches_long(entry: ptr, name: ptr[Fat32LongName]) do
+  if entry == 0 or name == 0 or name.input_utf16_length == 0 then return false
+  dot: u64 is u64("0xffffffffffffffff")
+  index: u64 is 0
+  while index < name.input_utf16_length do
+    unit: u64 is mem.read16(ptr.add(name.input_utf16, index * 2))
+    if unit == 46 then
+      if dot != u64("0xffffffffffffffff") then return false
+      dot is index
+    elif unit >= 128 then
+      return false
+    end
+    index += 1
+  end
+  base_length: u64 is name.input_utf16_length
+  extension_length: u64 is 0
+  if dot != u64("0xffffffffffffffff") then
+    if dot == 0 or dot + 1 >= name.input_utf16_length then return false
+    base_length is dot
+    extension_length is name.input_utf16_length - dot - 1
+  end
+  if base_length == 0 or base_length > 8 or extension_length > 3 then return false
+  index is 0
+  while index < 8 do
+    expected: u64 is 32
+    if index < base_length then
+      expected is mem.read16(ptr.add(name.input_utf16, index * 2))
+      if expected >= 97 and expected <= 122 then expected -= 32
+      if not fat32_short_character_valid(expected) then return false
+    end
+    if mem.read8(ptr.add(entry, index)) != expected then return false
+    index += 1
+  end
+  index is 0
+  while index < 3 do
+    expected: u64 is 32
+    if index < extension_length then
+      expected is mem.read16(ptr.add(name.input_utf16, (dot + 1 + index) * 2))
+      if expected >= 97 and expected <= 122 then expected -= 32
+      if not fat32_short_character_valid(expected) then return false
+    end
+    if mem.read8(ptr.add(entry, 8 + index)) != expected then return false
+    index += 1
+  end
+  return true
+end
+
+func fat32_alias_digit_count(value: u64) do
+  if value < 10 then return 1
+  if value < 100 then return 2
+  if value < 1000 then return 3
+  if value < 10000 then return 4
+  if value < 100000 then return 5
+  return 6
+end
+
+func fat32_generate_short_alias(volume: ptr[Fat32Volume], directory_cluster: u64, name: ptr[Fat32LongName], sector_buffer: ptr) do
+  if volume == 0 or name == 0 or sector_buffer == 0 or name.input_utf16_length == 0 then return false
+  if name.short_name == 0 or name.short_name_capacity < 11 then return false
+  last_dot: u64 is u64("0xffffffffffffffff")
+  index: u64 is 1
+  while index + 1 < name.input_utf16_length do
+    if mem.read16(ptr.add(name.input_utf16, index * 2)) == 46 then last_dot is index
+    index += 1
+  end
+  number: u64 is 1
+  while number <= 999999 do
+    index is 0
+    while index < 11 do
+      mem.write8(ptr.add(name.short_name, index), 32)
+      index += 1
+    end
+    digits: u64 is fat32_alias_digit_count(number)
+    base_limit: u64 is 7 - digits
+    source_limit: u64 is name.input_utf16_length
+    if last_dot != u64("0xffffffffffffffff") then source_limit is last_dot
+    output: u64 is 0
+    index is 0
+    while index < source_limit and output < base_limit do
+      unit: u64 is mem.read16(ptr.add(name.input_utf16, index * 2))
+      if unit >= 97 and unit <= 122 then unit -= 32
+      if unit < 128 and fat32_short_character_valid(unit) then
+        mem.write8(ptr.add(name.short_name, output), unit)
+        output += 1
+      end
+      index += 1
+    end
+    if output == 0 then
+      mem.write8(name.short_name, 83)
+      if base_limit > 1 then mem.write8(ptr.add(name.short_name, 1), 85)
+      if base_limit > 2 then mem.write8(ptr.add(name.short_name, 2), 82)
+      if base_limit > 3 then mem.write8(ptr.add(name.short_name, 3), 65)
+      output is base_limit
+      if output > 4 then output is 4
+    end
+    mem.write8(ptr.add(name.short_name, output), 126)
+    divisor: u64 is 1
+    digit_index: u64 is 1
+    while digit_index < digits do
+      divisor is divisor * 10
+      digit_index += 1
+    end
+    digit_index is 0
+    while digit_index < digits do
+      mem.write8(ptr.add(name.short_name, output + 1 + digit_index), 48 + ((number / divisor) % 10))
+      if divisor > 1 then divisor is divisor / 10
+      digit_index += 1
+    end
+    if last_dot != u64("0xffffffffffffffff") then
+      extension: u64 is 0
+      index is last_dot + 1
+      while index < name.input_utf16_length and extension < 3 do
+        unit: u64 is mem.read16(ptr.add(name.input_utf16, index * 2))
+        if unit >= 97 and unit <= 122 then unit -= 32
+        if unit < 128 and fat32_short_character_valid(unit) then
+          mem.write8(ptr.add(name.short_name, 8 + extension), unit)
+          extension += 1
+        end
+        index += 1
+      end
+    end
+    if not fat32_short_exists_other(volume, directory_cluster, name.short_name, name.excluded_lba, name.excluded_offset, sector_buffer) then return true
+    number += 1
+  end
+  return false
+end
+
+func fat32_directory_cluster_at(volume: ptr[Fat32Volume], first_cluster: u64, ordinal: u64, create: bool, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 or ordinal >= volume.cluster_count then return 0
+  if not fat32_cluster_valid(volume, first_cluster) then return 0
+  cluster: u64 is first_cluster
+  index: u64 is 0
+  while index < ordinal do
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then
+      if not create then return 0
+      next_cluster is fat32_allocate_cluster(volume, cluster, sector_buffer)
+      if next_cluster == 0 then return 0
+    end
+    if not fat32_cluster_valid(volume, next_cluster) then return 0
+    cluster is next_cluster
+    index += 1
+  end
+  return cluster
+end
+
+func fat32_directory_slot_lba(volume: ptr[Fat32Volume], directory_cluster: u64, slot_index: u64, create: bool, sector_buffer: ptr) do
+  if volume == 0 or sector_buffer == 0 then return 0
+  entries_per_sector: u64 is volume.bytes_per_sector / 32
+  if entries_per_sector == 0 then return 0
+  entries_per_cluster: u64 is entries_per_sector * volume.sectors_per_cluster
+  if entries_per_cluster == 0 then return 0
+  cluster_ordinal: u64 is slot_index / entries_per_cluster
+  within_cluster: u64 is slot_index % entries_per_cluster
+  cluster: u64 is fat32_directory_cluster_at(volume, directory_cluster, cluster_ordinal, create, sector_buffer)
+  if cluster == 0 then return 0
+  cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+  if cluster_lba == 0 then return 0
+  return cluster_lba + (within_cluster / entries_per_sector)
+end
+
+func fat32_find_free_run(volume: ptr[Fat32Volume], directory_cluster: u64, needed: u64, result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or result == 0 or sector_buffer == 0 or needed == 0 or needed > 21 then return false
+  fat32_clear_entry(result)
+  if not fat32_cluster_valid(volume, directory_cluster) then return false
+  entries_per_sector: u64 is volume.bytes_per_sector / 32
+  free_start: u64 is 0
+  free_count: u64 is 0
+  slot_index: u64 is 0
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      entry_index: u64 is 0
+      while entry_index < entries_per_sector do
+        first: u64 is mem.read8(ptr.add(sector_buffer, entry_index * 32))
+        if first == 0 then
+          if free_count == 0 then free_start is slot_index
+          short_index: u64 is free_start + needed - 1
+          short_lba: u64 is fat32_directory_slot_lba(volume, directory_cluster, short_index, true, sector_buffer)
+          if short_lba == 0 then return false
+          result.directory_cluster is directory_cluster
+          result.directory_index is short_index
+          result.directory_lba is short_lba
+          result.directory_offset is (short_index % entries_per_sector) * 32
+          result.lfn_start_index is free_start
+          result.lfn_entry_count is needed - 1
+          return true
+        end
+        if first == 229 then
+          if free_count == 0 then free_start is slot_index
+          free_count += 1
+          if free_count >= needed then
+            result.directory_cluster is directory_cluster
+            result.directory_index is free_start + needed - 1
+            result.directory_lba is fat32_directory_slot_lba(volume, directory_cluster, result.directory_index, false, sector_buffer)
+            result.directory_offset is (result.directory_index % entries_per_sector) * 32
+            result.lfn_start_index is free_start
+            result.lfn_entry_count is needed - 1
+            return result.directory_lba != 0
+          end
+        else
+          free_count is 0
+        end
+        slot_index += 1
+        entry_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then
+      if free_count == 0 then free_start is slot_index
+      short_index: u64 is free_start + needed - 1
+      short_lba: u64 is fat32_directory_slot_lba(volume, directory_cluster, short_index, true, sector_buffer)
+      if short_lba == 0 then return false
+      result.directory_cluster is directory_cluster
+      result.directory_index is short_index
+      result.directory_lba is short_lba
+      result.directory_offset is (short_index % entries_per_sector) * 32
+      result.lfn_start_index is free_start
+      result.lfn_entry_count is needed - 1
+      return true
+    end
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_write_lfn_slot(volume: ptr[Fat32Volume], directory_cluster: u64, slot_index: u64, name: ptr[Fat32LongName], sector_buffer: ptr) do
+  if volume == 0 or name == 0 or sector_buffer == 0 then return false
+  lba: u64 is fat32_directory_slot_lba(volume, directory_cluster, slot_index, false, sector_buffer)
+  if lba == 0 then return false
+  entries_per_sector: u64 is volume.bytes_per_sector / 32
+  offset: u64 is (slot_index % entries_per_sector) * 32
+  if not block_read(volume.device, lba, 1, sector_buffer) then return false
+  entry: ptr is ptr.add(sector_buffer, offset)
+  first: u64 is mem.read8(entry)
+  if first != 0 and first != 229 then return false
+  index: u64 is 0
+  while index < 32 do
+    mem.write8(ptr.add(entry, index), 0)
+    index += 1
+  end
+  mem.write8(entry, name.sequence)
+  mem.write8(ptr.add(entry, 11), 15)
+  mem.write8(ptr.add(entry, 12), 0)
+  mem.write8(ptr.add(entry, 13), name.checksum)
+  mem.write16(ptr.add(entry, 26), 0)
+  sequence: u64 is name.sequence & 31
+  start: u64 is (sequence - 1) * 13
+  index is 0
+  while index < 13 do
+    source_index: u64 is start + index
+    unit: u64 is 65535
+    if source_index < name.input_utf16_length then
+      unit is mem.read16(ptr.add(name.input_utf16, source_index * 2))
+    elif source_index == name.input_utf16_length then
+      unit is 0
+    end
+    if not fat32_lfn_set_unit(entry, index, unit) then return false
+    index += 1
+  end
+  return block_write(volume.device, lba, 1, sector_buffer)
+end
+
+func fat32_mark_slots_deleted(volume: ptr[Fat32Volume], directory_cluster: u64, start_index: u64, count: u64, sector_buffer: ptr) do
+  if count == 0 then return true
+  if volume == 0 or sector_buffer == 0 then return false
+  entries_per_sector: u64 is volume.bytes_per_sector / 32
+  index: u64 is 0
+  while index < count do
+    slot_index: u64 is start_index + index
+    lba: u64 is fat32_directory_slot_lba(volume, directory_cluster, slot_index, false, sector_buffer)
+    if lba == 0 then return false
+    offset: u64 is (slot_index % entries_per_sector) * 32
+    if not block_read(volume.device, lba, 1, sector_buffer) then return false
+    entry: ptr is ptr.add(sector_buffer, offset)
+    if mem.read8(entry) != 0 and mem.read8(entry) != 229 then
+      mem.write8(entry, 229)
+      if not block_write(volume.device, lba, 1, sector_buffer) then return false
+    end
+    index += 1
+  end
+  return true
+end
+
+func fat32_publish_long(volume: ptr[Fat32Volume], directory_cluster: u64, name: ptr[Fat32LongName], result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or name == 0 or result == 0 or sector_buffer == 0 then return false
+  if name.input_utf16_length == 0 or name.input_utf16_length > 255 then return false
+  if not fat32_generate_short_alias(volume, directory_cluster, name, sector_buffer) then return false
+  attributes: u64 is result.attributes
+  first_cluster: u64 is result.first_cluster
+  file_size: u64 is result.file_size
+  lfn_count: u64 is (name.input_utf16_length + 12) / 13
+  if not fat32_find_free_run(volume, directory_cluster, lfn_count + 1, result, sector_buffer) then return false
+  result.attributes is attributes
+  result.first_cluster is first_cluster
+  result.file_size is file_size
+  name.checksum is fat32_lfn_checksum(name.short_name)
+  index: u64 is 0
+  while index < lfn_count do
+    sequence: u64 is lfn_count - index
+    if index == 0 then sequence is sequence | 64
+    name.sequence is sequence
+    if not fat32_write_lfn_slot(volume, directory_cluster, result.lfn_start_index + index, name, sector_buffer) then
+      fat32_mark_slots_deleted(volume, directory_cluster, result.lfn_start_index, index, sector_buffer)
+      return false
+    end
+    index += 1
+  end
+  if not fat32_write_short_entry(volume, result, name.short_name, sector_buffer) then
+    fat32_mark_slots_deleted(volume, directory_cluster, result.lfn_start_index, lfn_count, sector_buffer)
+    return false
+  end
+  result.lfn_entry_count is lfn_count
+  return block_flush(volume.device)
+end
+
+func fat32_find_long(volume: ptr[Fat32Volume], directory_cluster: u64, name: ptr[Fat32LongName], result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or name == 0 or result == 0 or sector_buffer == 0 then return false
+  fat32_clear_entry(result)
+  consumed: u64 is 0
+  if not fat32_long_name_to_utf16(name, addr_of(consumed)) then return false
+  if not fat32_cluster_valid(volume, directory_cluster) then return false
+  chain_active: bool is false
+  chain_expected: u64 is 0
+  chain_total: u64 is 0
+  chain_checksum: u64 is 0
+  chain_start: u64 is 0
+  slot_index: u64 is 0
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      entry_index: u64 is 0
+      entries_per_sector: u64 is volume.bytes_per_sector / 32
+      while entry_index < entries_per_sector do
+        offset: u64 is entry_index * 32
+        entry: ptr is ptr.add(sector_buffer, offset)
+        first: u64 is mem.read8(entry)
+        if first == 0 then return false
+        attributes: u64 is mem.read8(ptr.add(entry, 11))
+        if first == 229 then
+          chain_active is false
+        elif attributes == 15 then
+          sequence: u64 is first & 31
+          last: bool is (first & 64) != 0
+          valid: bool is sequence >= 1 and sequence <= 20
+          if mem.read8(ptr.add(entry, 12)) != 0 or mem.read16(ptr.add(entry, 26)) != 0 then valid is false
+          if last then
+            chain_active is valid and fat32_lfn_clear_disk(name)
+            chain_expected is sequence
+            chain_total is sequence
+            chain_checksum is mem.read8(ptr.add(entry, 13))
+            chain_start is slot_index
+          else
+            if not chain_active or chain_expected == 0 or sequence != chain_expected then valid is false
+            if mem.read8(ptr.add(entry, 13)) != chain_checksum then valid is false
+          end
+          if valid and chain_active then
+            if not fat32_lfn_copy_entry(name, entry, sequence) then
+              chain_active is false
+            else
+              chain_expected is sequence - 1
+            end
+          else
+            chain_active is false
+          end
+        else
+          visible: bool is (attributes & 8) == 0
+          excluded: bool is lba == name.excluded_lba and offset == name.excluded_offset
+          if visible and not excluded and fat32_short_matches_long(entry, name) then
+            high: u64 is mem.read16(ptr.add(entry, 20))
+            low: u64 is mem.read16(ptr.add(entry, 26))
+            result.valid is 1
+            result.attributes is attributes
+            result.first_cluster is ((high << 16) | low) & 268435455
+            result.file_size is mem.read32(ptr.add(entry, 28))
+            result.directory_lba is lba
+            result.directory_offset is offset
+            result.directory_cluster is directory_cluster
+            result.directory_index is slot_index
+            result.lfn_start_index is slot_index
+            result.lfn_entry_count is 0
+            return true
+          end
+          if visible and chain_active and chain_expected == 0 then
+            if fat32_lfn_checksum(entry) == chain_checksum and fat32_lfn_finish_disk(name, chain_total * 13) then
+              if not excluded and fat32_long_names_equal(name) then
+                high: u64 is mem.read16(ptr.add(entry, 20))
+                low: u64 is mem.read16(ptr.add(entry, 26))
+                result.valid is 1
+                result.attributes is attributes
+                result.first_cluster is ((high << 16) | low) & 268435455
+                result.file_size is mem.read32(ptr.add(entry, 28))
+                result.directory_lba is lba
+                result.directory_offset is offset
+                result.directory_cluster is directory_cluster
+                result.directory_index is slot_index
+                result.lfn_start_index is chain_start
+                result.lfn_entry_count is chain_total
+                return true
+              end
+            end
+          end
+          chain_active is false
+        end
+        slot_index += 1
+        entry_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then return false
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_list_long(volume: ptr[Fat32Volume], directory_cluster: u64, ordinal: u64, result: ptr[Fat32DirEntry], name: ptr[Fat32LongName], sector_buffer: ptr) do
+  if volume == 0 or result == 0 or name == 0 or sector_buffer == 0 then return false
+  fat32_clear_entry(result)
+  if name.utf8 == 0 or name.disk_utf16 == 0 or name.utf8_capacity == 0 then return false
+  chain_active: bool is false
+  chain_expected: u64 is 0
+  chain_total: u64 is 0
+  chain_checksum: u64 is 0
+  chain_start: u64 is 0
+  found: u64 is 0
+  slot_index: u64 is 0
+  cluster: u64 is directory_cluster
+  visited: u64 is 0
+  while visited < volume.cluster_count do
+    cluster_lba: u64 is fat32_cluster_lba(volume, cluster)
+    sector_index: u64 is 0
+    while sector_index < volume.sectors_per_cluster do
+      lba: u64 is cluster_lba + sector_index
+      if not block_read(volume.device, lba, 1, sector_buffer) then return false
+      entry_index: u64 is 0
+      entries_per_sector: u64 is volume.bytes_per_sector / 32
+      while entry_index < entries_per_sector do
+        offset: u64 is entry_index * 32
+        entry: ptr is ptr.add(sector_buffer, offset)
+        first: u64 is mem.read8(entry)
+        if first == 0 then return false
+        attributes: u64 is mem.read8(ptr.add(entry, 11))
+        if first == 229 then
+          chain_active is false
+        elif attributes == 15 then
+          sequence: u64 is first & 31
+          last: bool is (first & 64) != 0
+          valid: bool is sequence >= 1 and sequence <= 20
+          if mem.read8(ptr.add(entry, 12)) != 0 or mem.read16(ptr.add(entry, 26)) != 0 then valid is false
+          if last then
+            chain_active is valid and fat32_lfn_clear_disk(name)
+            chain_expected is sequence
+            chain_total is sequence
+            chain_checksum is mem.read8(ptr.add(entry, 13))
+            chain_start is slot_index
+          else
+            if not chain_active or chain_expected == 0 or sequence != chain_expected then valid is false
+            if mem.read8(ptr.add(entry, 13)) != chain_checksum then valid is false
+          end
+          if valid and chain_active then
+            if not fat32_lfn_copy_entry(name, entry, sequence) then
+              chain_active is false
+            else
+              chain_expected is sequence - 1
+            end
+          else
+            chain_active is false
+          end
+        else
+          visible: bool is (attributes & 8) == 0
+          if visible and first == 46 then
+            second: u64 is mem.read8(ptr.add(entry, 1))
+            if second == 32 or second == 46 then visible is false
+          end
+          if visible then
+            if found == ordinal then
+              high: u64 is mem.read16(ptr.add(entry, 20))
+              low: u64 is mem.read16(ptr.add(entry, 26))
+              result.valid is 1
+              result.attributes is attributes
+              result.first_cluster is ((high << 16) | low) & 268435455
+              result.file_size is mem.read32(ptr.add(entry, 28))
+              result.directory_lba is lba
+              result.directory_offset is offset
+              result.directory_cluster is directory_cluster
+              result.directory_index is slot_index
+              result.lfn_start_index is slot_index
+              result.lfn_entry_count is 0
+              valid_long: bool is chain_active and chain_expected == 0
+              if valid_long then valid_long is fat32_lfn_checksum(entry) == chain_checksum
+              if valid_long then valid_long is fat32_lfn_finish_disk(name, chain_total * 13)
+              if valid_long then
+                result.lfn_start_index is chain_start
+                result.lfn_entry_count is chain_total
+                return fat32_disk_name_to_utf8(name)
+              end
+              return fat32_short_entry_to_utf8(entry, name)
+            end
+            found += 1
+          end
+          chain_active is false
+        end
+        slot_index += 1
+        entry_index += 1
+      end
+      sector_index += 1
+    end
+    next_cluster: u64 is fat32_read_fat_entry(volume, cluster, sector_buffer)
+    if fat32_is_end_of_chain(next_cluster) then return false
+    if not fat32_cluster_valid(volume, next_cluster) then return false
+    cluster is next_cluster
+    visited += 1
+  end
+  return false
+end
+
+func fat32_create_long(volume: ptr[Fat32Volume], directory_cluster: u64, name: ptr[Fat32LongName], directory: bool, result: ptr[Fat32DirEntry], sector_buffer: ptr) do
+  if volume == 0 or name == 0 or result == 0 or sector_buffer == 0 then return false
+  if volume.device == 0 then return false
+  device: ptr[BlockDevice] is volume.device
+  if device.read_only != 0 then return false
+  name.excluded_lba is u64("0xffffffffffffffff")
+  name.excluded_offset is u64("0xffffffffffffffff")
+  if fat32_find_long(volume, directory_cluster, name, result, sector_buffer) then return false
+  result.attributes is 32
+  result.first_cluster is 0
+  result.file_size is 0
+  if directory then
+    result.attributes is 16
+    result.first_cluster is fat32_allocate_cluster(volume, 0, sector_buffer)
+    if result.first_cluster == 0 then return false
+    if not fat32_initialize_directory(volume, result.first_cluster, directory_cluster, sector_buffer) then
+      fat32_free_chain(volume, result.first_cluster, sector_buffer)
+      return false
+    end
+  end
+  if not fat32_publish_long(volume, directory_cluster, name, result, sector_buffer) then
+    if result.first_cluster != 0 then fat32_free_chain(volume, result.first_cluster, sector_buffer)
+    return false
+  end
+  return true
+end
+
+func fat32_rename_long(volume: ptr[Fat32Volume], file: ptr[Fat32DirEntry], name: ptr[Fat32LongName], sector_buffer: ptr) do
+  if volume == 0 or file == 0 or name == 0 or sector_buffer == 0 or file.valid == 0 then return false
+  old_attributes: u64 is file.attributes
+  old_first_cluster: u64 is file.first_cluster
+  old_file_size: u64 is file.file_size
+  old_lba: u64 is file.directory_lba
+  old_offset: u64 is file.directory_offset
+  old_directory_cluster: u64 is file.directory_cluster
+  old_directory_index: u64 is file.directory_index
+  old_lfn_start: u64 is file.lfn_start_index
+  old_lfn_count: u64 is file.lfn_entry_count
+  if not fat32_cluster_valid(volume, old_directory_cluster) then return false
+  name.excluded_lba is old_lba
+  name.excluded_offset is old_offset
+  duplicate: bool is fat32_find_long(volume, old_directory_cluster, name, file, sector_buffer)
+  file.valid is 1
+  file.attributes is old_attributes
+  file.first_cluster is old_first_cluster
+  file.file_size is old_file_size
+  file.directory_lba is old_lba
+  file.directory_offset is old_offset
+  file.directory_cluster is old_directory_cluster
+  file.directory_index is old_directory_index
+  file.lfn_start_index is old_lfn_start
+  file.lfn_entry_count is old_lfn_count
+  if duplicate then return false
+  if not fat32_publish_long(volume, old_directory_cluster, name, file, sector_buffer) then return false
+  if not block_read(volume.device, old_lba, 1, sector_buffer) then return false
+  old_entry: ptr is ptr.add(sector_buffer, old_offset)
+  if mem.read8(old_entry) == 0 or mem.read8(old_entry) == 229 then return false
+  mem.write8(old_entry, 229)
+  if not block_write(volume.device, old_lba, 1, sector_buffer) then return false
+  if not fat32_mark_slots_deleted(volume, old_directory_cluster, old_lfn_start, old_lfn_count, sector_buffer) then return false
+  return block_flush(volume.device)
 end

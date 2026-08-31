@@ -1,0 +1,569 @@
+# Allocation-free bounded CSS box geometry and basic flow layout.
+#
+# This consumes HtmlDomDocument nodes and CssComputedStyle values. It creates
+# one box for each visible element or text node in caller-owned storage.
+# Block children flow vertically. Inline children share one line until their
+# measured width no longer fits, then continue on the next line.
+
+import "css_style.sura"
+
+struct CssBox do
+  node_index: u64
+  parent_box: u64
+  first_child: u64
+  last_child: u64
+  next_sibling: u64
+  display: u64
+  x: u64
+  y: u64
+  width: u64
+  height: u64
+  content_x: u64
+  content_y: u64
+  content_width: u64
+  content_height: u64
+  outer_width: u64
+  outer_height: u64
+  line_height: u64
+  flags: u64
+end
+
+struct CssBoxLayoutState do
+  document: ptr
+  styles: ptr
+  boxes: ptr
+  capacity: u64
+  count: u64
+  viewport_width: u64
+  viewport_height: u64
+  depth: u64
+end
+
+css_box_layout_state is static.struct(CssBoxLayoutState)
+
+func css_box_at(state: ptr[CssBoxLayoutState], index: u64) do
+  if state == 0 or index >= state.count then return 0
+  return ptr.add(state.boxes, index * 144)
+end
+
+func css_box_add(state: ptr[CssBoxLayoutState], node_index: u64, parent_box: u64) do
+  if state == 0 or state.count >= state.capacity then return u64("0xffffffffffffffff")
+  index: u64 is state.count
+  state.count is state.count + 1
+  box: ptr[CssBox] is css_box_at(state, index)
+  field: u64 is 0
+  while field < 18 do
+    mem.write64(ptr.add(box, field * 8), 0)
+    field += 1
+  end
+  box.node_index is node_index
+  box.parent_box is parent_box
+  box.first_child is u64("0xffffffffffffffff")
+  box.last_child is u64("0xffffffffffffffff")
+  box.next_sibling is u64("0xffffffffffffffff")
+  if parent_box != u64("0xffffffffffffffff") then
+    parent: ptr[CssBox] is css_box_at(state, parent_box)
+    if parent == 0 then return u64("0xffffffffffffffff")
+    if parent.first_child == u64("0xffffffffffffffff") then
+      parent.first_child is index
+    else
+      previous: ptr[CssBox] is css_box_at(state, parent.last_child)
+      previous.next_sibling is index
+    end
+    parent.last_child is index
+  end
+  return index
+end
+
+func css_box_shift_subtree(state: ptr[CssBoxLayoutState], box_index: u64, offset_x: u64, offset_y: u64) do
+  box: ptr[CssBox] is css_box_at(state, box_index)
+  if box == 0 then return false
+  box.x += offset_x
+  box.y += offset_y
+  box.content_x += offset_x
+  box.content_y += offset_y
+  child: u64 is box.first_child
+  while child != u64("0xffffffffffffffff") do
+    if not css_box_shift_subtree(state, child, offset_x, offset_y) then return false
+    child_box: ptr[CssBox] is css_box_at(state, child)
+    child is child_box.next_sibling
+  end
+  return true
+end
+
+func css_box_text_units(input: ptr, start: u64, length: u64) do
+  units: u64 is 0
+  cursor: u64 is 0
+  pending_space: bool is false
+  while cursor < length do
+    byte: u64 is mem.read8(ptr.add(input, start + cursor))
+    if html_dom_space(byte) then
+      if units != 0 then
+        pending_space is true
+      end
+    else
+      if (byte & 192) != 128 then
+        if pending_space then units += 1
+        units += 1
+        pending_space is false
+      end
+    end
+    cursor += 1
+  end
+  return units
+end
+
+func css_box_text_width(state: ptr[CssBoxLayoutState], node: ptr[HtmlDomNode], style: ptr[CssComputedStyle]) do
+  if state == 0 or state.document == 0 or node == 0 or style == 0 then return 0
+  document: ptr[HtmlDomDocument] is state.document
+  units: u64 is css_box_text_units(document.input, node.source_start, node.source_bytes)
+  font_size: u64 is css_font_size_resolve(style.font_size, state.viewport_width)
+  glyph_width: u64 is (font_size * 3 + 4) / 5
+  if glyph_width == 0 then glyph_width is 1
+  if units > 4096 or glyph_width > 4096 then return 4096
+  width: u64 is units * glyph_width
+  if width > 4096 then return 4096
+  return width
+end
+
+func css_box_margin_value(value: u64) do
+  if value == u64("0xffffffffffffffff") then return 0
+  return value
+end
+
+func css_box_offset_add(base: u64, encoded_offset: u64, subtract: bool) do
+  result: i64 is base
+  offset: i64 is encoded_offset
+  if subtract then result -= offset else result += offset
+  if result < 0 then return 0
+  if result > 4096 then return 4096
+  return result
+end
+
+func css_box_position_container(state: ptr[CssBoxLayoutState], parent_box: u64) do
+  cursor: u64 is parent_box
+  depth: u64 is 0
+  while cursor != u64("0xffffffffffffffff") and depth < 64 do
+    box: ptr[CssBox] is css_box_at(state, cursor)
+    if box == 0 then return u64("0xffffffffffffffff")
+    style: ptr[CssComputedStyle] is ptr.add(state.styles, box.node_index * 288)
+    if style.position != 0 then return cursor
+    cursor is box.parent_box
+    depth += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func css_box_measure_inline(state: ptr[CssBoxLayoutState], node_index: u64) do
+  node: ptr[HtmlDomNode] is html_dom_node(state.document, node_index)
+  if node == 0 then return 0
+  style: ptr[CssComputedStyle] is ptr.add(state.styles, node_index * 288)
+  if style.display == 0 then return 0
+  if node.kind == 2 then return css_box_text_width(state, node, style)
+  margin_left: u64 is css_box_margin_value(style.margin_left)
+  margin_right: u64 is css_box_margin_value(style.margin_right)
+  horizontal: u64 is margin_left + style.border_left + style.padding_left + style.padding_right + style.border_right + margin_right
+  resolved_width: u64 is css_dimension_resolve(style.width, state.viewport_width, state.viewport_width, state.viewport_height)
+  if resolved_width != u64("0xffffffffffffffff") then
+    if style.box_sizing == 1 then return margin_left + resolved_width + margin_right
+    return horizontal + resolved_width
+  end
+  content: u64 is 0
+  child: u64 is node.first_child
+  while child != u64("0xffffffffffffffff") do
+    child_width: u64 is css_box_measure_inline(state, child)
+    if content + child_width > 4096 then return 4096
+    content += child_width
+    child_node: ptr[HtmlDomNode] is html_dom_node(state.document, child)
+    child is child_node.next_sibling
+  end
+  return horizontal + content
+end
+
+func css_box_layout_node(state: ptr[CssBoxLayoutState], node_index: u64, parent_box: u64, flow_x: u64, flow_y: u64, available_width: u64) do
+  if state == 0 or state.depth >= 64 then return u64("0xffffffffffffffff")
+  node: ptr[HtmlDomNode] is html_dom_node(state.document, node_index)
+  if node == 0 then return u64("0xffffffffffffffff")
+  style: ptr[CssComputedStyle] is ptr.add(state.styles, node_index * 288)
+  if style.display == 0 then return u64("0xfffffffffffffffe")
+  state.depth is state.depth + 1
+  box_index: u64 is css_box_add(state, node_index, parent_box)
+  if box_index == u64("0xffffffffffffffff") then
+    state.depth is state.depth - 1
+    return box_index
+  end
+  box: ptr[CssBox] is css_box_at(state, box_index)
+  box.display is style.display
+  resolved_font_size: u64 is css_font_size_resolve(style.font_size, state.viewport_width)
+  box.line_height is css_line_height_resolve(style.line_height, resolved_font_size)
+
+  if node.kind == 2 then
+    box.x is flow_x
+    box.y is flow_y
+    intrinsic_width: u64 is css_box_text_width(state, node, style)
+    box.width is intrinsic_width
+    if box.width > available_width then box.width is available_width
+    lines: u64 is 1
+    if available_width != 0 and intrinsic_width > available_width then
+      lines is (intrinsic_width + available_width - 1) / available_width
+    end
+    box.height is box.line_height * lines
+    box.content_x is box.x
+    box.content_y is box.y
+    box.content_width is box.width
+    box.content_height is box.height
+    box.outer_width is box.width
+    box.outer_height is box.height
+    box.flags is 1
+    state.depth is state.depth - 1
+    return box_index
+  end
+
+  horizontal_edges: u64 is style.border_left + style.padding_left + style.padding_right + style.border_right
+  vertical_edges: u64 is style.border_top + style.padding_top + style.padding_bottom + style.border_bottom
+  margin_left_auto: bool is style.margin_left == u64("0xffffffffffffffff")
+  margin_right_auto: bool is style.margin_right == u64("0xffffffffffffffff")
+  margin_left: u64 is css_box_margin_value(style.margin_left)
+  margin_right: u64 is css_box_margin_value(style.margin_right)
+  margin_top: u64 is css_box_margin_value(style.margin_top)
+  margin_bottom: u64 is css_box_margin_value(style.margin_bottom)
+  horizontal_margins: u64 is margin_left + margin_right
+  resolved_width: u64 is css_dimension_resolve(style.width, available_width, state.viewport_width, state.viewport_height)
+  resolved_height: u64 is css_dimension_resolve(style.height, state.viewport_height, state.viewport_width, state.viewport_height)
+  resolved_min_width: u64 is css_dimension_resolve(style.min_width, available_width, state.viewport_width, state.viewport_height)
+  resolved_max_width: u64 is css_dimension_resolve(style.max_width, available_width, state.viewport_width, state.viewport_height)
+  resolved_min_height: u64 is css_dimension_resolve(style.min_height, state.viewport_height, state.viewport_width, state.viewport_height)
+  resolved_max_height: u64 is css_dimension_resolve(style.max_height, state.viewport_height, state.viewport_width, state.viewport_height)
+  content_width: u64 is 0
+  border_width: u64 is 0
+  if resolved_width == u64("0xffffffffffffffff") then
+    if style.display == 1 or style.display == 4 or style.display == 5 then
+      if available_width > horizontal_margins + horizontal_edges then
+        content_width is available_width - horizontal_margins - horizontal_edges
+      end
+    else
+      measured: u64 is css_box_measure_inline(state, node_index)
+      if measured > horizontal_margins + horizontal_edges then content_width is measured - horizontal_margins - horizontal_edges
+      if content_width + horizontal_edges + horizontal_margins > available_width then
+        if available_width > horizontal_margins + horizontal_edges then content_width is available_width - horizontal_margins - horizontal_edges
+      end
+    end
+    border_width is content_width + horizontal_edges
+  else
+    if style.box_sizing == 1 then
+      border_width is resolved_width
+      if border_width > horizontal_edges then
+        content_width is border_width - horizontal_edges
+      end
+    else
+      content_width is resolved_width
+      border_width is content_width + horizontal_edges
+    end
+  end
+  min_border_width: u64 is resolved_min_width
+  if style.box_sizing == 0 and min_border_width != u64("0xffffffffffffffff") then min_border_width += horizontal_edges
+  if min_border_width != u64("0xffffffffffffffff") and border_width < min_border_width then
+    border_width is min_border_width
+    content_width is 0
+    if border_width > horizontal_edges then content_width is border_width - horizontal_edges
+  end
+  max_border_width: u64 is resolved_max_width
+  if style.box_sizing == 0 and max_border_width != u64("0xffffffffffffffff") then max_border_width += horizontal_edges
+  if max_border_width != u64("0xffffffffffffffff") and border_width > max_border_width then
+    border_width is max_border_width
+    content_width is 0
+    if border_width > horizontal_edges then content_width is border_width - horizontal_edges
+  end
+  if available_width > border_width + horizontal_margins then
+    auto_space: u64 is available_width - border_width - horizontal_margins
+    if margin_left_auto and margin_right_auto then
+      margin_left is auto_space / 2
+      margin_right is auto_space - margin_left
+    elif margin_left_auto then
+      margin_left is auto_space
+    elif margin_right_auto then
+      margin_right is auto_space
+    end
+  end
+  position_x: u64 is flow_x + margin_left
+  position_y: u64 is flow_y + margin_top
+  if style.position == 1 then
+    if style.left != u64("0xffffffffffffffff") then position_x is css_box_offset_add(position_x, style.left, false)
+    if style.left == u64("0xffffffffffffffff") and style.right != u64("0xffffffffffffffff") then position_x is css_box_offset_add(position_x, style.right, true)
+    if style.top != u64("0xffffffffffffffff") then position_y is css_box_offset_add(position_y, style.top, false)
+    if style.top == u64("0xffffffffffffffff") and style.bottom != u64("0xffffffffffffffff") then position_y is css_box_offset_add(position_y, style.bottom, true)
+  end
+  if style.position >= 2 then
+    container_x: u64 is 0
+    container_y: u64 is 0
+    container_width: u64 is state.viewport_width
+    container_height: u64 is state.viewport_height
+    if style.position == 2 then
+      container_index: u64 is css_box_position_container(state, parent_box)
+      if container_index != u64("0xffffffffffffffff") then
+        container: ptr[CssBox] is css_box_at(state, container_index)
+        container_x is container.content_x
+        container_y is container.content_y
+        container_width is container.content_width
+        container_height is container.content_height
+      end
+    end
+    position_x is container_x + margin_left
+    position_y is container_y + margin_top
+    if style.left != u64("0xffffffffffffffff") then
+      position_x is css_box_offset_add(container_x + margin_left, style.left, false)
+    elif style.right != u64("0xffffffffffffffff") and container_width >= border_width + margin_right then
+      position_x is css_box_offset_add(container_x + container_width - border_width - margin_right, style.right, true)
+    end
+    if style.top != u64("0xffffffffffffffff") then
+      position_y is css_box_offset_add(container_y + margin_top, style.top, false)
+    else
+      if style.bottom != u64("0xffffffffffffffff") and resolved_height != u64("0xffffffffffffffff") then
+        positioned_height: u64 is resolved_height
+        if style.box_sizing == 0 then positioned_height += vertical_edges
+        if container_height >= positioned_height + margin_bottom then
+          position_y is css_box_offset_add(container_y + container_height - positioned_height - margin_bottom, style.bottom, true)
+        end
+      end
+    end
+  end
+  box.x is position_x
+  box.y is position_y
+  box.width is border_width
+  box.content_x is box.x + style.border_left + style.padding_left
+  box.content_y is box.y + style.border_top + style.padding_top
+  box.content_width is content_width
+
+  cursor_x: u64 is box.content_x
+  cursor_y: u64 is box.content_y
+  current_line_height: u64 is 0
+  flex_seen: u64 is 0
+  flex_between: u64 is style.gap_column
+  flex_cross_height: u64 is 0
+  if resolved_height != u64("0xffffffffffffffff") then
+    flex_cross_height is resolved_height
+    if style.box_sizing == 1 then
+      if flex_cross_height > vertical_edges then
+        flex_cross_height -= vertical_edges
+      else
+        flex_cross_height is 0
+      end
+    end
+  end
+  if style.display == 4 and style.flex_direction == 0 then
+    flex_count: u64 is 0
+    flex_width: u64 is 0
+    measure_child: u64 is node.first_child
+    while measure_child != u64("0xffffffffffffffff") do
+      measure_style: ptr[CssComputedStyle] is ptr.add(state.styles, measure_child * 288)
+      if measure_style.display != 0 and measure_style.position < 2 then
+        measured: u64 is css_box_measure_inline(state, measure_child)
+        if flex_width + measured > 4096 then
+          flex_width is 4096
+        else
+          flex_width += measured
+        end
+        flex_count += 1
+      end
+      measure_node: ptr[HtmlDomNode] is html_dom_node(state.document, measure_child)
+      measure_child is measure_node.next_sibling
+    end
+    base_gaps: u64 is 0
+    if flex_count > 1 then base_gaps is style.gap_column * (flex_count - 1)
+    occupied: u64 is flex_width + base_gaps
+    remaining_space: u64 is 0
+    if occupied < box.content_width then remaining_space is box.content_width - occupied
+    if style.flex_wrap == 0 then
+      if style.justify_content == 1 then cursor_x += remaining_space / 2
+      if style.justify_content == 2 then cursor_x += remaining_space
+      if style.justify_content == 3 and flex_count > 1 then flex_between += remaining_space / (flex_count - 1)
+      if style.justify_content == 4 and flex_count != 0 then
+        around: u64 is remaining_space / flex_count
+        cursor_x += around / 2
+        flex_between += around
+      end
+      if style.justify_content == 5 then
+        evenly: u64 is remaining_space / (flex_count + 1)
+        cursor_x += evenly
+        flex_between += evenly
+      end
+    end
+  end
+  grid_columns: u64 is style.grid_columns
+  if grid_columns == 0 then grid_columns is 1
+  if grid_columns > 16 then grid_columns is 16
+  grid_cell_width: u64 is box.content_width
+  if style.display == 5 and grid_columns > 1 then
+    total_grid_gap: u64 is style.gap_column * (grid_columns - 1)
+    if total_grid_gap < box.content_width then grid_cell_width is (box.content_width - total_grid_gap) / grid_columns
+  end
+  grid_seen: u64 is 0
+  grid_row_height: u64 is 0
+  block_seen: u64 is 0
+  child: u64 is node.first_child
+  while child != u64("0xffffffffffffffff") do
+    child_node: ptr[HtmlDomNode] is html_dom_node(state.document, child)
+    child_style: ptr[CssComputedStyle] is ptr.add(state.styles, child * 288)
+    if child_style.display != 0 and child_style.position >= 2 then
+      positioned_x: u64 is 0
+      positioned_y: u64 is 0
+      positioned_width: u64 is state.viewport_width
+      if child_style.position == 2 then
+        positioned_container_index: u64 is css_box_position_container(state, box_index)
+        if positioned_container_index != u64("0xffffffffffffffff") then
+          positioned_container: ptr[CssBox] is css_box_at(state, positioned_container_index)
+          positioned_x is positioned_container.content_x
+          positioned_y is positioned_container.content_y
+          positioned_width is positioned_container.content_width
+        end
+      end
+      positioned_box_index: u64 is css_box_layout_node(state, child, box_index, positioned_x, positioned_y, positioned_width)
+      if positioned_box_index == u64("0xffffffffffffffff") then
+        state.depth is state.depth - 1
+        return positioned_box_index
+      end
+      child is child_node.next_sibling
+      continue
+    end
+    if style.display == 5 then
+      if child_style.display != 0 then
+        column_index: u64 is grid_seen % grid_columns
+        child_x: u64 is box.content_x + column_index * (grid_cell_width + style.gap_column)
+        child_box_index: u64 is css_box_layout_node(state, child, box_index, child_x, cursor_y, grid_cell_width)
+        if child_box_index == u64("0xffffffffffffffff") then
+          state.depth is state.depth - 1
+          return child_box_index
+        end
+        if child_box_index != u64("0xfffffffffffffffe") then
+          child_box: ptr[CssBox] is css_box_at(state, child_box_index)
+          if child_box.outer_height > grid_row_height then grid_row_height is child_box.outer_height
+          grid_seen += 1
+          if grid_seen % grid_columns == 0 then
+            cursor_y += grid_row_height + style.gap_row
+            grid_row_height is 0
+          end
+        end
+      end
+      child is child_node.next_sibling
+      continue
+    end
+    child_is_block: bool is child_style.display == 1 or child_style.display == 4 or child_style.display == 5
+    if style.display == 4 and style.flex_direction == 0 then child_is_block is false
+    if child_is_block then
+      if cursor_x != box.content_x then
+        cursor_y += current_line_height
+        cursor_x is box.content_x
+        current_line_height is 0
+      end
+      if style.display == 4 and style.flex_direction == 1 and block_seen != 0 then cursor_y += style.gap_row
+      child_box_index: u64 is css_box_layout_node(state, child, box_index, box.content_x, cursor_y, box.content_width)
+      if child_box_index == u64("0xffffffffffffffff") then
+        state.depth is state.depth - 1
+        return child_box_index
+      end
+      if child_box_index != u64("0xfffffffffffffffe") then
+        child_box: ptr[CssBox] is css_box_at(state, child_box_index)
+        cursor_y += child_box.outer_height
+        block_seen += 1
+      end
+    else
+      if child_style.display != 0 then
+        measured_width: u64 is css_box_measure_inline(state, child)
+        line_limit: u64 is box.content_x + box.content_width
+        if style.display == 4 and style.flex_direction == 0 and flex_seen != 0 then cursor_x += flex_between
+        can_wrap: bool is style.display != 4 or style.flex_wrap != 0
+        if can_wrap and cursor_x != box.content_x and cursor_x + measured_width > line_limit then
+          cursor_y += current_line_height
+          cursor_x is box.content_x
+          current_line_height is 0
+        end
+        remaining: u64 is 0
+        if line_limit > cursor_x then remaining is line_limit - cursor_x
+        child_box_index: u64 is css_box_layout_node(state, child, box_index, cursor_x, cursor_y, remaining)
+        if child_box_index == u64("0xffffffffffffffff") then
+          state.depth is state.depth - 1
+          return child_box_index
+        end
+        if child_box_index != u64("0xfffffffffffffffe") then
+          child_box: ptr[CssBox] is css_box_at(state, child_box_index)
+          if style.display == 4 and style.flex_direction == 0 and flex_cross_height > child_box.outer_height then
+            cross_offset: u64 is 0
+            if style.align_items == 2 then cross_offset is (flex_cross_height - child_box.outer_height) / 2
+            if style.align_items == 3 then cross_offset is flex_cross_height - child_box.outer_height
+            if cross_offset != 0 then
+              if not css_box_shift_subtree(state, child_box_index, 0, cross_offset) then
+                state.depth is state.depth - 1
+                return u64("0xffffffffffffffff")
+              end
+            end
+          end
+          cursor_x += child_box.outer_width
+          if child_box.outer_height > current_line_height then current_line_height is child_box.outer_height
+          if style.display == 4 and style.flex_direction == 0 then flex_seen += 1
+        end
+      end
+    end
+    child is child_node.next_sibling
+  end
+  if style.display == 5 then
+    if grid_row_height != 0 then
+      cursor_y += grid_row_height
+    end
+    if grid_seen != 0 and grid_row_height == 0 and cursor_y >= box.content_y + style.gap_row then
+      cursor_y -= style.gap_row
+    end
+  else
+    if cursor_x != box.content_x then cursor_y += current_line_height
+  end
+  used_height: u64 is cursor_y - box.content_y
+
+  if resolved_height == u64("0xffffffffffffffff") then
+    box.content_height is used_height
+    box.height is used_height + vertical_edges
+  else
+    if style.box_sizing == 1 then
+      box.height is resolved_height
+      if resolved_height > vertical_edges then
+        box.content_height is resolved_height - vertical_edges
+      end
+    else
+      box.content_height is resolved_height
+      box.height is resolved_height + vertical_edges
+    end
+  end
+  min_border_height: u64 is resolved_min_height
+  if style.box_sizing == 0 and min_border_height != u64("0xffffffffffffffff") then min_border_height += vertical_edges
+  if min_border_height != u64("0xffffffffffffffff") and box.height < min_border_height then
+    box.height is min_border_height
+    box.content_height is 0
+    if box.height > vertical_edges then box.content_height is box.height - vertical_edges
+  end
+  max_border_height: u64 is resolved_max_height
+  if style.box_sizing == 0 and max_border_height != u64("0xffffffffffffffff") then max_border_height += vertical_edges
+  if max_border_height != u64("0xffffffffffffffff") and box.height > max_border_height then
+    box.height is max_border_height
+    box.content_height is 0
+    if box.height > vertical_edges then box.content_height is box.height - vertical_edges
+  end
+  box.outer_width is margin_left + box.width + margin_right
+  box.outer_height is margin_top + box.height + margin_bottom
+  state.depth is state.depth - 1
+  return box_index
+end
+
+func css_box_layout(document: ptr[HtmlDomDocument], styles: ptr, boxes: ptr, box_capacity: u64, viewport_width: u64, viewport_height: u64) do
+  if document == 0 or styles == 0 or boxes == 0 or box_capacity == 0 then return 0
+  if document.node_count == 0 or viewport_width == 0 or viewport_height == 0 then return 0
+  state: ptr[CssBoxLayoutState] is css_box_layout_state
+  state.document is document
+  state.styles is styles
+  state.boxes is boxes
+  state.capacity is box_capacity
+  state.count is 0
+  state.viewport_width is viewport_width
+  state.viewport_height is viewport_height
+  state.depth is 0
+  root_box: u64 is css_box_layout_node(state, 0, u64("0xffffffffffffffff"), 0, 0, viewport_width)
+  if root_box == u64("0xffffffffffffffff") or root_box == u64("0xfffffffffffffffe") then return 0
+  return state.count
+end

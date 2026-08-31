@@ -1,0 +1,445 @@
+# Common fixed-capacity UI metadata for freestanding graphical applications.
+#
+# The library provides shared roles, focus order, pointer hit testing, button
+# activation, checkbox state, theme colors, DPI scaling, and accessibility
+# names. Rendering targets a caller-owned 32-bit app surface.
+
+struct UiTheme do
+  background: u64
+  panel: u64
+  text: u64
+  muted_text: u64
+  accent: u64
+  border: u64
+  control: u64
+  control_active: u64
+  dark: u64
+end
+
+struct UiNode do
+  id: u64
+  role: u64
+  x: i64
+  y: i64
+  width: u64
+  height: u64
+  visible: u64
+  enabled: u64
+  focused: u64
+  checked: u64
+  value: u64
+  label: ptr
+  label_bytes: u64
+  accessible_name: ptr
+  accessible_name_bytes: u64
+end
+
+struct UiNodeConfig do
+  id: u64
+  role: u64
+  x: i64
+  y: i64
+  width: u64
+  height: u64
+  label: ptr
+  label_bytes: u64
+  accessible_name: ptr
+  accessible_name_bytes: u64
+end
+
+struct UiSurface do
+  pixels: ptr
+  width: u64
+  height: u64
+  stride: u64
+end
+
+struct UiAccessibilityEvent do
+  sequence: u64
+  kind: u64
+  node_id: u64
+  role: u64
+  value: u64
+  checked: u64
+  focused: u64
+end
+
+struct UiContext do
+  nodes: ptr
+  capacity: u64
+  count: u64
+  focus_id: u64
+  scale_percent: u64
+  theme: ptr[UiTheme]
+  last_action: u64
+  accessibility_events: ptr
+  accessibility_capacity: u64
+  accessibility_head: u64
+  accessibility_tail: u64
+  accessibility_count: u64
+  accessibility_sequence: u64
+end
+
+func ui_role_button() -> u64 do
+  return 1
+end
+
+func ui_role_text_input() -> u64 do
+  return 2
+end
+
+func ui_role_list() -> u64 do
+  return 3
+end
+
+func ui_role_menu() -> u64 do
+  return 4
+end
+
+func ui_role_checkbox() -> u64 do
+  return 5
+end
+
+func ui_accessibility_focus_event() -> u64 do
+  return 1
+end
+
+func ui_accessibility_action_event() -> u64 do
+  return 2
+end
+
+func ui_accessibility_state_event() -> u64 do
+  return 3
+end
+
+func ui_theme_init(theme: ptr[UiTheme], dark: bool) do
+  if theme == 0 then return false
+  if dark then
+    theme.background is 986895
+    theme.panel is 2033980
+    theme.text is 15923196
+    theme.muted_text is 10267838
+    theme.accent is 16737827
+    theme.border is 4280930
+    theme.control is 2634033
+    theme.control_active is 10761092
+    theme.dark is 1
+  else
+    theme.background is 16185078
+    theme.panel is 16777215
+    theme.text is 1054740
+    theme.muted_text is 6318192
+    theme.accent is 15099472
+    theme.border is 12632256
+    theme.control is 15132390
+    theme.control_active is 13421772
+    theme.dark is 0
+  end
+  return true
+end
+
+func ui_node_at(context: ptr[UiContext], index: u64) do
+  if context == 0 or context.nodes == 0 or index >= context.capacity then return 0
+  return ptr.index(context.nodes, index, sizeof(UiNode))
+end
+
+func ui_node_reset(node: ptr[UiNode]) do
+  if node == 0 then return false
+  node.id is 0
+  node.role is 0
+  node.x is 0
+  node.y is 0
+  node.width is 0
+  node.height is 0
+  node.visible is 0
+  node.enabled is 0
+  node.focused is 0
+  node.checked is 0
+  node.value is 0
+  node.label is 0
+  node.label_bytes is 0
+  node.accessible_name is 0
+  node.accessible_name_bytes is 0
+  return true
+end
+
+func ui_init(context: ptr[UiContext], nodes: ptr, capacity: u64, theme: ptr[UiTheme], scale_percent: u64) do
+  if context == 0 or nodes == 0 or capacity == 0 or capacity > 256 then return false
+  if theme == 0 or scale_percent < 100 or scale_percent > 300 or scale_percent % 25 != 0 then return false
+  context.nodes is nodes
+  context.capacity is capacity
+  context.count is 0
+  context.focus_id is 0
+  context.scale_percent is scale_percent
+  context.theme is theme
+  context.last_action is 0
+  context.accessibility_events is 0
+  context.accessibility_capacity is 0
+  context.accessibility_head is 0
+  context.accessibility_tail is 0
+  context.accessibility_count is 0
+  context.accessibility_sequence is 0
+  index: u64 is 0
+  while index < capacity do
+    if not ui_node_reset(ui_node_at(context, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func ui_accessibility_bind(context: ptr[UiContext], events: ptr, capacity: u64) do
+  if context == 0 or events == 0 or capacity == 0 or capacity > 256 then return false
+  context.accessibility_events is events
+  context.accessibility_capacity is capacity
+  context.accessibility_head is 0
+  context.accessibility_tail is 0
+  context.accessibility_count is 0
+  context.accessibility_sequence is 0
+  index: u64 is 0
+  while index < capacity do
+    event: ptr[UiAccessibilityEvent] is ptr.index(events, index, sizeof(UiAccessibilityEvent))
+    event.sequence is 0
+    event.kind is 0
+    event.node_id is 0
+    event.role is 0
+    event.value is 0
+    event.checked is 0
+    event.focused is 0
+    index += 1
+  end
+  return true
+end
+
+func ui_accessibility_emit(context: ptr[UiContext], kind: u64, node: ptr[UiNode]) do
+  if context == 0 or node == 0 or context.accessibility_events == 0 then return true
+  if kind < ui_accessibility_focus_event() or kind > ui_accessibility_state_event() then return false
+  if context.accessibility_count == context.accessibility_capacity then
+    context.accessibility_head is (context.accessibility_head + 1) % context.accessibility_capacity
+    context.accessibility_count -= 1
+  end
+  event: ptr[UiAccessibilityEvent] is ptr.index(context.accessibility_events, context.accessibility_tail, sizeof(UiAccessibilityEvent))
+  context.accessibility_sequence += 1
+  if context.accessibility_sequence == 0 then context.accessibility_sequence is 1
+  event.sequence is context.accessibility_sequence
+  event.kind is kind
+  event.node_id is node.id
+  event.role is node.role
+  event.value is node.value
+  event.checked is node.checked
+  event.focused is node.focused
+  context.accessibility_tail is (context.accessibility_tail + 1) % context.accessibility_capacity
+  context.accessibility_count += 1
+  return true
+end
+
+func ui_accessibility_pop(context: ptr[UiContext], output: ptr[UiAccessibilityEvent]) do
+  if context == 0 or output == 0 or context.accessibility_count == 0 then return false
+  event: ptr[UiAccessibilityEvent] is ptr.index(context.accessibility_events, context.accessibility_head, sizeof(UiAccessibilityEvent))
+  output.sequence is event.sequence
+  output.kind is event.kind
+  output.node_id is event.node_id
+  output.role is event.role
+  output.value is event.value
+  output.checked is event.checked
+  output.focused is event.focused
+  context.accessibility_head is (context.accessibility_head + 1) % context.accessibility_capacity
+  context.accessibility_count -= 1
+  return true
+end
+
+func ui_find(context: ptr[UiContext], id: u64) do
+  if context == 0 or id == 0 then return 0
+  index: u64 is 0
+  while index < context.capacity do
+    node: ptr[UiNode] is ui_node_at(context, index)
+    if node.id == id then return node
+    index += 1
+  end
+  return 0
+end
+
+func ui_add(context: ptr[UiContext], config: ptr[UiNodeConfig]) do
+  if context == 0 or config == 0 or config.id == 0 then return false
+  if config.role < ui_role_button() or config.role > ui_role_checkbox() then return false
+  if config.width == 0 or config.height == 0 or ui_find(context, config.id) != 0 then return false
+  slot: ptr[UiNode] is 0
+  index: u64 is 0
+  while index < context.capacity do
+    candidate: ptr[UiNode] is ui_node_at(context, index)
+    if candidate.id == 0 and slot == 0 then slot is candidate
+    index += 1
+  end
+  if slot == 0 then return false
+  slot.id is config.id
+  slot.role is config.role
+  slot.x is config.x
+  slot.y is config.y
+  slot.width is config.width
+  slot.height is config.height
+  slot.visible is 1
+  slot.enabled is 1
+  slot.focused is 0
+  slot.checked is 0
+  slot.value is 0
+  slot.label is config.label
+  slot.label_bytes is config.label_bytes
+  slot.accessible_name is config.accessible_name
+  slot.accessible_name_bytes is config.accessible_name_bytes
+  context.count += 1
+  return true
+end
+
+func ui_contains(node: ptr[UiNode], x: i64, y: i64) do
+  if node == 0 or node.visible == 0 or node.enabled == 0 then return false
+  if x < node.x or y < node.y then return false
+  if x >= node.x + node.width or y >= node.y + node.height then return false
+  return true
+end
+
+func ui_hit_test(context: ptr[UiContext], x: i64, y: i64) do
+  if context == 0 then return 0
+  index: u64 is context.capacity
+  while index > 0 do
+    index -= 1
+    node: ptr[UiNode] is ui_node_at(context, index)
+    if ui_contains(node, x, y) then return node
+  end
+  return 0
+end
+
+func ui_focus(context: ptr[UiContext], id: u64) do
+  if context == 0 then return false
+  target: ptr[UiNode] is ui_find(context, id)
+  if target == 0 or target.visible == 0 or target.enabled == 0 then return false
+  index: u64 is 0
+  while index < context.capacity do
+    node: ptr[UiNode] is ui_node_at(context, index)
+    node.focused is 0
+    index += 1
+  end
+  target.focused is 1
+  context.focus_id is id
+  if not ui_accessibility_emit(context, ui_accessibility_focus_event(), target) then return false
+  return true
+end
+
+func ui_focus_next(context: ptr[UiContext]) do
+  if context == 0 or context.count == 0 then return false
+  start: u64 is 0
+  if context.focus_id != 0 then
+    index: u64 is 0
+    while index < context.capacity do
+      node: ptr[UiNode] is ui_node_at(context, index)
+      if node.id == context.focus_id then start is index + 1
+      index += 1
+    end
+  end
+  offset: u64 is 0
+  while offset < context.capacity do
+    candidate_index: u64 is (start + offset) % context.capacity
+    candidate: ptr[UiNode] is ui_node_at(context, candidate_index)
+    if candidate.id != 0 and candidate.visible != 0 and candidate.enabled != 0 then
+      return ui_focus(context, candidate.id)
+    end
+    offset += 1
+  end
+  return false
+end
+
+func ui_activate(context: ptr[UiContext], id: u64) do
+  if context == 0 then return 0
+  node: ptr[UiNode] is ui_find(context, id)
+  if node == 0 or node.visible == 0 or node.enabled == 0 then return 0
+  if not ui_focus(context, id) then return 0
+  if node.role == ui_role_checkbox() then
+    if node.checked == 0 then
+      node.checked is 1
+    else
+      node.checked is 0
+    end
+  end
+  node.value += 1
+  context.last_action is id
+  if not ui_accessibility_emit(context, ui_accessibility_action_event(), node) then return 0
+  return id
+end
+
+func ui_set_state(context: ptr[UiContext], id: u64, visible: bool, enabled: bool) do
+  if context == 0 or id == 0 then return false
+  node: ptr[UiNode] is ui_find(context, id)
+  if node == 0 then return false
+  if visible then node.visible is 1 else node.visible is 0
+  if enabled then node.enabled is 1 else node.enabled is 0
+  if node.visible == 0 or node.enabled == 0 then
+    if node.focused != 0 then
+      node.focused is 0
+      if context.focus_id == id then context.focus_id is 0
+    end
+  end
+  return ui_accessibility_emit(context, ui_accessibility_state_event(), node)
+end
+
+func ui_pointer_press(context: ptr[UiContext], x: i64, y: i64) do
+  node: ptr[UiNode] is ui_hit_test(context, x, y)
+  if node == 0 then return 0
+  return ui_activate(context, node.id)
+end
+
+func ui_accessible_node(context: ptr[UiContext], index: u64) do
+  if context == 0 then return 0
+  visible_index: u64 is 0
+  slot: u64 is 0
+  while slot < context.capacity do
+    node: ptr[UiNode] is ui_node_at(context, slot)
+    if node.id != 0 and node.visible != 0 then
+      if visible_index == index then return node
+      visible_index += 1
+    end
+    slot += 1
+  end
+  return 0
+end
+
+func ui_surface_fill(surface: ptr[UiSurface], x: i64, y: i64, width: u64, height: u64, color: u64) do
+  if surface == 0 or surface.pixels == 0 or width == 0 or height == 0 then return false
+  row: u64 is 0
+  while row < height do
+    destination_y: i64 is y + row
+    if destination_y >= 0 and destination_y < surface.height then
+      column: u64 is 0
+      while column < width do
+        destination_x: i64 is x + column
+        if destination_x >= 0 and destination_x < surface.width then
+          offset: u64 is (destination_y * surface.stride + destination_x) * 4
+          mem.write32(ptr.add(surface.pixels, offset), color)
+        end
+        column += 1
+      end
+    end
+    row += 1
+  end
+  return true
+end
+
+func ui_draw(context: ptr[UiContext], surface: ptr[UiSurface]) do
+  if context == 0 or surface == 0 then return false
+  theme: ptr[UiTheme] is context.theme
+  if theme == 0 then return false
+  if not ui_surface_fill(surface, 0, 0, surface.width, surface.height, theme.background) then return false
+  index: u64 is 0
+  while index < context.capacity do
+    node: ptr[UiNode] is ui_node_at(context, index)
+    if node.id != 0 and node.visible != 0 then
+      color: u64 is theme.control
+      if node.focused != 0 or node.checked != 0 then color is theme.control_active
+      if not ui_surface_fill(surface, node.x, node.y, node.width, node.height, color) then return false
+      border: u64 is theme.border
+      if not ui_surface_fill(surface, node.x, node.y, node.width, 1, border) then return false
+      if not ui_surface_fill(surface, node.x, node.y + node.height - 1, node.width, 1, border) then return false
+      if not ui_surface_fill(surface, node.x, node.y, 1, node.height, border) then return false
+      if not ui_surface_fill(surface, node.x + node.width - 1, node.y, 1, node.height, border) then return false
+    end
+    index += 1
+  end
+  return true
+end

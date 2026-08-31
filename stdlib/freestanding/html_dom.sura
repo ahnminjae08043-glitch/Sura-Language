@@ -1,0 +1,431 @@
+# Allocation-free bounded HTML DOM foundation for freestanding clients.
+#
+# The caller owns node and attribute arrays. Text and attribute values remain
+# slices of the immutable input buffer. Parsing is ASCII-case-insensitive for
+# tag and attribute names, preserves UTF-8 text bytes, skips comments and
+# declarations, accepts quoted and unquoted values, and performs bounded
+# ancestor recovery for closing tags.
+
+struct HtmlDomNode do
+  kind: u64
+  tag: u64
+  parent: u64
+  first_child: u64
+  last_child: u64
+  next_sibling: u64
+  source_start: u64
+  source_bytes: u64
+  attribute_first: u64
+  attribute_count: u64
+end
+
+struct HtmlDomAttribute do
+  name: u64
+  source_start: u64
+  source_bytes: u64
+  has_value: u64
+end
+
+struct HtmlDomDocument do
+  input: ptr
+  input_bytes: u64
+  nodes: ptr
+  node_capacity: u64
+  node_count: u64
+  attributes: ptr
+  attribute_capacity: u64
+  attribute_count: u64
+  current: u64
+end
+
+func html_dom_lower(value: u64) do
+  if value >= 65 and value <= 90 then return value + 32
+  return value
+end
+
+func html_dom_space(value: u64) do
+  return value == 9 or value == 10 or value == 12 or value == 13 or value == 32
+end
+
+func html_dom_name_byte(value: u64) do
+  value is html_dom_lower(value)
+  if value >= 97 and value <= 122 then return true
+  if value >= 48 and value <= 57 then return true
+  return value == 45 or value == 58 or value == 95
+end
+
+func html_dom_token_equal(input: ptr, start: u64, length: u64, expected: ptr, expected_bytes: u64) do
+  if input == 0 or expected == 0 or length != expected_bytes then return false
+  index: u64 is 0
+  while index < length do
+    if html_dom_lower(mem.read8(ptr.add(input, start + index))) != mem.read8(ptr.add(expected, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+html_dom_html is static.utf8("html")
+html_dom_head is static.utf8("head")
+html_dom_body is static.utf8("body")
+html_dom_div is static.utf8("div")
+html_dom_span is static.utf8("span")
+html_dom_style is static.utf8("style")
+html_dom_script is static.utf8("script")
+html_dom_noscript is static.utf8("noscript")
+html_dom_title is static.utf8("title")
+html_dom_meta is static.utf8("meta")
+html_dom_link is static.utf8("link")
+html_dom_img is static.utf8("img")
+html_dom_main is static.utf8("main")
+html_dom_nav is static.utf8("nav")
+html_dom_section is static.utf8("section")
+html_dom_header is static.utf8("header")
+html_dom_footer is static.utf8("footer")
+html_dom_form is static.utf8("form")
+html_dom_input is static.utf8("input")
+html_dom_button is static.utf8("button")
+html_dom_label is static.utf8("label")
+
+html_dom_attr_id is static.utf8("id")
+html_dom_attr_class is static.utf8("class")
+html_dom_attr_href is static.utf8("href")
+html_dom_attr_src is static.utf8("src")
+html_dom_attr_alt is static.utf8("alt")
+html_dom_attr_style is static.utf8("style")
+html_dom_attr_width is static.utf8("width")
+html_dom_attr_height is static.utf8("height")
+html_dom_attr_type is static.utf8("type")
+html_dom_attr_name is static.utf8("name")
+html_dom_attr_value is static.utf8("value")
+html_dom_attr_rel is static.utf8("rel")
+html_dom_attr_hidden is static.utf8("hidden")
+html_dom_attr_action is static.utf8("action")
+html_dom_attr_method is static.utf8("method")
+html_dom_attr_placeholder is static.utf8("placeholder")
+html_dom_attr_checked is static.utf8("checked")
+html_dom_attr_disabled is static.utf8("disabled")
+html_dom_attr_for is static.utf8("for")
+html_dom_attr_onclick is static.utf8("onclick")
+
+func html_dom_tag_code(input: ptr, start: u64, length: u64) do
+  if length == 1 then
+    value: u64 is html_dom_lower(mem.read8(ptr.add(input, start)))
+    if value == 112 then return 5
+    if value == 97 then return 12
+  end
+  if length == 2 then
+    first: u64 is html_dom_lower(mem.read8(ptr.add(input, start)))
+    second: u64 is mem.read8(ptr.add(input, start + 1))
+    if first == 104 and second >= 49 and second <= 54 then return 5 + second - 48
+    if first == 98 and html_dom_lower(second) == 114 then return 14
+    if first == 117 and html_dom_lower(second) == 108 then return 22
+    if first == 111 and html_dom_lower(second) == 108 then return 23
+    if first == 108 and html_dom_lower(second) == 105 then return 24
+  end
+  if html_dom_token_equal(input, start, length, html_dom_html, 4) then return 1
+  if html_dom_token_equal(input, start, length, html_dom_head, 4) then return 2
+  if html_dom_token_equal(input, start, length, html_dom_body, 4) then return 3
+  if html_dom_token_equal(input, start, length, html_dom_div, 3) then return 4
+  if html_dom_token_equal(input, start, length, html_dom_span, 4) then return 13
+  if html_dom_token_equal(input, start, length, html_dom_style, 5) then return 16
+  if html_dom_token_equal(input, start, length, html_dom_script, 6) then return 17
+  if html_dom_token_equal(input, start, length, html_dom_noscript, 8) then return 18
+  if html_dom_token_equal(input, start, length, html_dom_meta, 4) then return 19
+  if html_dom_token_equal(input, start, length, html_dom_link, 4) then return 20
+  if html_dom_token_equal(input, start, length, html_dom_title, 5) then return 21
+  if html_dom_token_equal(input, start, length, html_dom_img, 3) then return 15
+  if html_dom_token_equal(input, start, length, html_dom_section, 7) then return 25
+  if html_dom_token_equal(input, start, length, html_dom_header, 6) then return 26
+  if html_dom_token_equal(input, start, length, html_dom_footer, 6) then return 27
+  if html_dom_token_equal(input, start, length, html_dom_main, 4) then return 28
+  if html_dom_token_equal(input, start, length, html_dom_nav, 3) then return 29
+  if html_dom_token_equal(input, start, length, html_dom_form, 4) then return 30
+  if html_dom_token_equal(input, start, length, html_dom_input, 5) then return 31
+  if html_dom_token_equal(input, start, length, html_dom_button, 6) then return 32
+  if html_dom_token_equal(input, start, length, html_dom_label, 5) then return 33
+  return 0
+end
+
+func html_dom_attribute_code(input: ptr, start: u64, length: u64) do
+  if html_dom_token_equal(input, start, length, html_dom_attr_id, 2) then return 1
+  if html_dom_token_equal(input, start, length, html_dom_attr_class, 5) then return 2
+  if html_dom_token_equal(input, start, length, html_dom_attr_href, 4) then return 3
+  if html_dom_token_equal(input, start, length, html_dom_attr_src, 3) then return 4
+  if html_dom_token_equal(input, start, length, html_dom_attr_alt, 3) then return 5
+  if html_dom_token_equal(input, start, length, html_dom_attr_style, 5) then return 6
+  if html_dom_token_equal(input, start, length, html_dom_attr_width, 5) then return 7
+  if html_dom_token_equal(input, start, length, html_dom_attr_height, 6) then return 8
+  if html_dom_token_equal(input, start, length, html_dom_attr_type, 4) then return 9
+  if html_dom_token_equal(input, start, length, html_dom_attr_name, 4) then return 10
+  if html_dom_token_equal(input, start, length, html_dom_attr_value, 5) then return 11
+  if html_dom_token_equal(input, start, length, html_dom_attr_rel, 3) then return 12
+  if html_dom_token_equal(input, start, length, html_dom_attr_hidden, 6) then return 13
+  if html_dom_token_equal(input, start, length, html_dom_attr_action, 6) then return 14
+  if html_dom_token_equal(input, start, length, html_dom_attr_method, 6) then return 15
+  if html_dom_token_equal(input, start, length, html_dom_attr_placeholder, 11) then return 16
+  if html_dom_token_equal(input, start, length, html_dom_attr_checked, 7) then return 17
+  if html_dom_token_equal(input, start, length, html_dom_attr_disabled, 8) then return 18
+  if html_dom_token_equal(input, start, length, html_dom_attr_for, 3) then return 19
+  if html_dom_token_equal(input, start, length, html_dom_attr_onclick, 7) then return 20
+  return 0
+end
+
+func html_dom_void_tag(tag: u64) do
+  return tag == 14 or tag == 15 or tag == 19 or tag == 20 or tag == 31
+end
+
+func html_dom_node(document: ptr[HtmlDomDocument], index: u64) do
+  if document == 0 or index >= document.node_count then return 0
+  return ptr.add(document.nodes, index * 80)
+end
+
+func html_dom_attribute(document: ptr[HtmlDomDocument], index: u64) do
+  if document == 0 or index >= document.attribute_count then return 0
+  return ptr.add(document.attributes, index * 32)
+end
+
+func html_dom_append_node(document: ptr[HtmlDomDocument], kind: u64, tag: u64, start: u64, length: u64) do
+  if document == 0 or document.node_count >= document.node_capacity then return u64("0xffffffffffffffff")
+  index: u64 is document.node_count
+  document.node_count is document.node_count + 1
+  node: ptr[HtmlDomNode] is html_dom_node(document, index)
+  node.kind is kind
+  node.tag is tag
+  node.parent is document.current
+  node.first_child is u64("0xffffffffffffffff")
+  node.last_child is u64("0xffffffffffffffff")
+  node.next_sibling is u64("0xffffffffffffffff")
+  node.source_start is start
+  node.source_bytes is length
+  node.attribute_first is document.attribute_count
+  node.attribute_count is 0
+  parent: ptr[HtmlDomNode] is html_dom_node(document, document.current)
+  if parent.first_child == u64("0xffffffffffffffff") then
+    parent.first_child is index
+  else
+    previous: ptr[HtmlDomNode] is html_dom_node(document, parent.last_child)
+    previous.next_sibling is index
+  end
+  parent.last_child is index
+  return index
+end
+
+func html_dom_append_attribute(document: ptr[HtmlDomDocument], node_index: u64, name: u64, start: u64, length: u64, has_value: u64) do
+  if document.attribute_count >= document.attribute_capacity then return false
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 then return false
+  attribute: ptr[HtmlDomAttribute] is ptr.add(document.attributes, document.attribute_count * 32)
+  attribute.name is name
+  attribute.source_start is start
+  attribute.source_bytes is length
+  attribute.has_value is has_value
+  document.attribute_count is document.attribute_count + 1
+  node.attribute_count is node.attribute_count + 1
+  return true
+end
+
+func html_dom_find_attribute(document: ptr[HtmlDomDocument], node_index: u64, name: u64) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 then return 0
+  index: u64 is 0
+  while index < node.attribute_count do
+    attribute: ptr[HtmlDomAttribute] is html_dom_attribute(document, node.attribute_first + index)
+    if attribute.name == name then return attribute
+    index += 1
+  end
+  return 0
+end
+
+func html_dom_close(document: ptr[HtmlDomDocument], tag: u64) do
+  if document == 0 or tag == 0 then return true
+  current: u64 is document.current
+  while current != 0 and current != u64("0xffffffffffffffff") do
+    node: ptr[HtmlDomNode] is html_dom_node(document, current)
+    if node.tag == tag then
+      document.current is node.parent
+      return true
+    end
+    current is node.parent
+  end
+  return true
+end
+
+func html_dom_starts_comment(input: ptr, cursor: u64, bytes: u64) do
+  if cursor + 3 >= bytes then return false
+  return mem.read8(ptr.add(input, cursor)) == 33 and mem.read8(ptr.add(input, cursor + 1)) == 45 and mem.read8(ptr.add(input, cursor + 2)) == 45
+end
+
+func html_dom_raw_close_at(input: ptr, cursor: u64, input_bytes: u64, tag: u64) do
+  if input == 0 or cursor + 4 > input_bytes then return false
+  if mem.read8(ptr.add(input, cursor)) != 60 or mem.read8(ptr.add(input, cursor + 1)) != 47 then return false
+  name: ptr is html_dom_style
+  name_bytes: u64 is 5
+  if tag == 17 then
+    name is html_dom_script
+    name_bytes is 6
+  elif tag != 16 then
+    return false
+  end
+  if cursor + 2 + name_bytes >= input_bytes then return false
+  if not html_dom_token_equal(input, cursor + 2, name_bytes, name, name_bytes) then return false
+  following: u64 is mem.read8(ptr.add(input, cursor + 2 + name_bytes))
+  return following == 62 or html_dom_space(following)
+end
+
+func html_dom_parse(input: ptr, input_bytes: u64, document: ptr[HtmlDomDocument]) do
+  if input == 0 or document == 0 or document.nodes == 0 or document.attributes == 0 then return false
+  if input_bytes == 0 or input_bytes > 65535 or document.node_capacity == 0 then return false
+  document.input is input
+  document.input_bytes is input_bytes
+  document.node_count is 1
+  document.attribute_count is 0
+  document.current is 0
+  root: ptr[HtmlDomNode] is document.nodes
+  root.kind is 0
+  root.tag is 0
+  root.parent is u64("0xffffffffffffffff")
+  root.first_child is u64("0xffffffffffffffff")
+  root.last_child is u64("0xffffffffffffffff")
+  root.next_sibling is u64("0xffffffffffffffff")
+  root.source_start is 0
+  root.source_bytes is input_bytes
+  root.attribute_first is 0
+  root.attribute_count is 0
+
+  cursor: u64 is 0
+  while cursor < input_bytes do
+    current_node: ptr[HtmlDomNode] is html_dom_node(document, document.current)
+    raw_tag: u64 is 0
+    if current_node != 0 and current_node.kind == 1 and (current_node.tag == 16 or current_node.tag == 17) then raw_tag is current_node.tag
+    if raw_tag != 0 and not html_dom_raw_close_at(input, cursor, input_bytes, raw_tag) then
+      raw_start: u64 is cursor
+      while cursor < input_bytes and not html_dom_raw_close_at(input, cursor, input_bytes, raw_tag) do
+        cursor += 1
+      end
+      if cursor >= input_bytes then return false
+      if cursor > raw_start then
+        if html_dom_append_node(document, 2, 0, raw_start, cursor - raw_start) == u64("0xffffffffffffffff") then return false
+      end
+    end
+    if mem.read8(ptr.add(input, cursor)) != 60 then
+      start: u64 is cursor
+      while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) != 60 do
+        cursor += 1
+      end
+      if cursor > start then
+        if html_dom_append_node(document, 2, 0, start, cursor - start) == u64("0xffffffffffffffff") then return false
+      end
+    else
+      cursor += 1
+      if cursor >= input_bytes then return false
+      if html_dom_starts_comment(input, cursor, input_bytes) then
+        cursor += 3
+        found: bool is false
+        while cursor + 2 < input_bytes do
+          if mem.read8(ptr.add(input, cursor)) == 45 and mem.read8(ptr.add(input, cursor + 1)) == 45 and mem.read8(ptr.add(input, cursor + 2)) == 62 then
+            cursor += 3
+            found is true
+            break
+          end
+          cursor += 1
+        end
+        if not found then
+          return false
+        end
+      else
+        if mem.read8(ptr.add(input, cursor)) == 33 or mem.read8(ptr.add(input, cursor)) == 63 then
+          while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) != 62 do
+            cursor += 1
+          end
+          if cursor >= input_bytes then return false
+          cursor += 1
+        else
+          closing: bool is false
+          if mem.read8(ptr.add(input, cursor)) == 47 then
+            closing is true
+            cursor += 1
+          end
+          name_start: u64 is cursor
+          while cursor < input_bytes and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+            cursor += 1
+          end
+          if cursor == name_start then return false
+          tag: u64 is html_dom_tag_code(input, name_start, cursor - name_start)
+          if closing then
+            while cursor < input_bytes and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+              cursor += 1
+            end
+            if cursor >= input_bytes or mem.read8(ptr.add(input, cursor)) != 62 then return false
+            cursor += 1
+            html_dom_close(document, tag)
+          else
+            node_index: u64 is html_dom_append_node(document, 1, tag, name_start, cursor - name_start)
+            if node_index == u64("0xffffffffffffffff") then return false
+            self_closing: bool is false
+            tag_done: bool is false
+            while cursor < input_bytes and not tag_done do
+              while cursor < input_bytes and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+                cursor += 1
+              end
+              if cursor >= input_bytes then return false
+              value: u64 is mem.read8(ptr.add(input, cursor))
+              if value == 62 then
+                cursor += 1
+                tag_done is true
+              else
+                if value == 47 then
+                  if cursor + 1 >= input_bytes or mem.read8(ptr.add(input, cursor + 1)) != 62 then return false
+                  cursor += 2
+                  self_closing is true
+                  tag_done is true
+                else
+                  attribute_start: u64 is cursor
+                  while cursor < input_bytes and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+                    cursor += 1
+                  end
+                  if cursor == attribute_start then return false
+                  attribute_name: u64 is html_dom_attribute_code(input, attribute_start, cursor - attribute_start)
+                  while cursor < input_bytes and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+                    cursor += 1
+                  end
+                  value_start: u64 is cursor
+                  value_bytes: u64 is 0
+                  has_value: u64 is 0
+                  if cursor < input_bytes and mem.read8(ptr.add(input, cursor)) == 61 then
+                    has_value is 1
+                    cursor += 1
+                    while cursor < input_bytes and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+                      cursor += 1
+                    end
+                    if cursor >= input_bytes then return false
+                    quote: u64 is mem.read8(ptr.add(input, cursor))
+                    if quote == 34 or quote == 39 then
+                      cursor += 1
+                      value_start is cursor
+                      while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) != quote do
+                        cursor += 1
+                      end
+                      if cursor >= input_bytes then return false
+                      value_bytes is cursor - value_start
+                      cursor += 1
+                    else
+                      value_start is cursor
+                      while cursor < input_bytes and not html_dom_space(mem.read8(ptr.add(input, cursor))) and mem.read8(ptr.add(input, cursor)) != 62 do
+                        cursor += 1
+                      end
+                      value_bytes is cursor - value_start
+                      if value_bytes == 0 then return false
+                    end
+                  end
+                  if not html_dom_append_attribute(document, node_index, attribute_name, value_start, value_bytes, has_value) then return false
+                end
+              end
+            end
+            if not self_closing and not html_dom_void_tag(tag) then document.current is node_index
+          end
+        end
+      end
+    end
+  end
+  return true
+end

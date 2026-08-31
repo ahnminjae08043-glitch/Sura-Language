@@ -5,8 +5,20 @@
 # code while keeping device/filesystem logic separate from the desktop loop.
 
 import "../stdlib/freestanding/ahci.sura"
+import "../stdlib/freestanding/nvme.sura"
 import "../stdlib/freestanding/partition.sura"
 import "../stdlib/freestanding/fat32.sura"
+import "../stdlib/freestanding/surafs.sura"
+
+os_surafs_create_marker is static.utf8("SURA_OS_SURAFS_CREATE_OK")
+os_surafs_rename_marker is static.utf8("SURA_OS_SURAFS_RENAME_OK")
+os_surafs_delete_marker is static.utf8("SURA_OS_SURAFS_DELETE_OK")
+os_surafs_trash_marker is static.utf8("SURA_OS_SURAFS_TRASH_OK")
+os_surafs_save_as_marker is static.utf8("SURA_OS_SURAFS_SAVE_AS_OK")
+os_surafs_copy_marker is static.utf8("SURA_OS_FILES_COPY_READY")
+os_surafs_cut_marker is static.utf8("SURA_OS_FILES_CUT_READY")
+os_surafs_paste_marker is static.utf8("SURA_OS_FILES_PASTE_OK")
+os_surafs_copy_suffix is static.bytes([32, 45, 32, 67, 111, 112, 121], 1)
 
 func os_storage_format_short_name(source: ptr, destination: ptr) do
   if source == 0 or destination == 0 then return false
@@ -97,6 +109,68 @@ func os_storage_prepare_dma() do
   return true
 end
 
+func os_storage_prepare_nvme_dma() do
+  global os_storage_dma_data
+  if os_storage_dma_address == 0 then return false
+  dma: ptr[NvmeDma] is os_storage_nvme_dma
+  dma.admin_submission is os_storage_dma_address
+  dma.admin_submission_physical is os_storage_dma_address
+  dma.admin_completion is os_storage_dma_address + 4096
+  dma.admin_completion_physical is os_storage_dma_address + 4096
+  dma.admin_depth is 16
+  dma.io_submission is os_storage_dma_address + 8192
+  dma.io_submission_physical is os_storage_dma_address + 8192
+  dma.io_completion is os_storage_dma_address + 12288
+  dma.io_completion_physical is os_storage_dma_address + 12288
+  dma.io_depth is 16
+  dma.identify is os_storage_dma_address + 16384
+  dma.identify_physical is os_storage_dma_address + 16384
+  os_storage_dma_data is os_storage_dma_address + 20480
+  dma.data_virtual is os_storage_dma_data
+  dma.data_physical is os_storage_dma_data
+  dma.data_bytes is 65536
+  if not ptr.is_aligned(dma.admin_submission, 4096) then return false
+  if not ptr.is_aligned(dma.admin_completion, 4096) then return false
+  if not ptr.is_aligned(dma.io_submission, 4096) then return false
+  if not ptr.is_aligned(dma.io_completion, 4096) then return false
+  if not ptr.is_aligned(dma.identify, 4096) then return false
+  return ptr.is_aligned(dma.data_virtual, 4096)
+end
+
+func os_storage_start_nvme_device(device: ptr[BlockDevice]) do
+  if device == 0 or not os_storage_prepare_nvme_dma() then return false
+  pci: ptr[PciDevice] is os_storage_nvme_pci_device
+  controller: ptr[NvmeController] is os_storage_nvme_controller
+  if not nvme_pci_find(pci) then return false
+  if not nvme_pci_enable(pci) then return false
+  bar: u64 is nvme_pci_bar_physical(pci)
+  if bar == 0 or not nvme_controller_attach(controller, bar, 100000000) then return false
+  admin: ptr[NvmeQueue] is os_storage_nvme_admin_queue
+  io_queue: ptr[NvmeQueue] is os_storage_nvme_io_queue
+  disk: ptr[NvmeDiskContext] is os_storage_nvme_disk
+  if not nvme_initialize_disk(controller, os_storage_nvme_dma, admin, io_queue, disk, 1) then return false
+  return nvme_bind_block_device(device, disk)
+end
+
+func os_storage_start_ahci_device(device: ptr[BlockDevice]) do
+  global os_storage_port
+  if device == 0 or not os_storage_prepare_dma() then return false
+  pci: ptr[PciDevice] is os_storage_pci_device
+  controller: ptr[AhciController] is os_storage_controller
+  context: ptr[AhciContext] is os_storage_context
+  if not ahci_pci_find(pci) then return false
+  if not ahci_pci_enable(pci) then return false
+  abar: ptr is ahci_pci_bar_physical(pci)
+  if abar == 0 or not ahci_controller_attach(controller, abar) then return false
+  if not ahci_take_bios_ownership(controller, 1000000) then return false
+  if not ahci_mmio_write32(abar, 4, ahci_mmio_read32(abar, 4) | u64("0x80000000")) then return false
+  port: u64 is 1
+  if not ahci_port_active_sata(controller, port, os_storage_port_info) then return false
+  if not ahci_initialize_disk(device, controller, port, os_storage_dma, context, 1000000) then return false
+  os_storage_port is port
+  return true
+end
+
 func os_storage_zero(buffer: ptr, byte_count: u64) do
   if buffer == 0 then return false
   index: u64 is 0
@@ -139,10 +213,12 @@ func os_storage_save_settings() do
   mem.write64(ptr.add(buffer, 16), files.selected)
   # Reserved setting: 24-hour clock. The desktop currently always uses it.
   mem.write64(ptr.add(buffer, 24), 1)
+  mem.write64(ptr.add(buffer, 32), os_input_layout_hangul)
   return fat32_overwrite_file(os_storage_volume, entry, buffer, 512, os_storage_dma_data)
 end
 
 func os_storage_load_settings() do
+  global os_input_layout_hangul
   entry: ptr[Fat32DirEntry] is os_storage_settings_entry
   if not fat32_find_root_short(os_storage_volume, os_storage_settings_name, entry, os_storage_dma_data) then
     return false
@@ -157,6 +233,9 @@ func os_storage_load_settings() do
   selected: u64 is mem.read64(ptr.add(buffer, 16))
   if selected >= files.entry_count then selected is 0
   files.selected is selected
+  saved_layout: u64 is mem.read64(ptr.add(buffer, 32))
+  if saved_layout > 1 then saved_layout is 0
+  os_input_layout_hangul is saved_layout
   return true
 end
 
@@ -266,6 +345,644 @@ func os_storage_rebuild_path() do
   return true
 end
 
+func os_surafs_location_token() do
+  if os_surafs_mounted != 0 then return os_surafs_navigation_generation
+  return os_storage_directory_cluster
+end
+
+func os_surafs_set_active_path(path: ptr, path_length: u64) do
+  global os_surafs_active_file_length
+  if path == 0 or path_length == 0 or path_length >= 256 then return false
+  if not memfs_zero(os_surafs_active_file_path, 256) then return false
+  if not memfs_copy(os_surafs_active_file_path, path, path_length) then return false
+  os_surafs_active_file_length is path_length
+  return true
+end
+
+func os_surafs_editor_checksum(buffer: ptr, length: u64) do
+  if buffer == 0 then return 0
+  checksum: u64 is 0
+  index: u64 is 0
+  while index < length do
+    checksum += (index + 1) * mem.read8(ptr.add(buffer, index))
+    index += 1
+  end
+  return checksum
+end
+
+func os_surafs_seed_code_file() do
+  stat: ptr[VfsStat] is os_surafs_stat
+  if vfs_stat(os_surafs_vfs, os_surafs_code_path, 17, stat) then
+    return stat.kind == vfs_kind_file
+  end
+  if not vfs_create(os_surafs_vfs, os_surafs_code_path, 17, vfs_kind_file, 420) then return false
+  file: ptr[VfsFile] is os_surafs_file
+  if not vfs_open(os_surafs_vfs, os_surafs_code_path, 17, vfs_open_write, file) then
+    vfs_remove(os_surafs_vfs, os_surafs_code_path, 17, false)
+    return false
+  end
+  ok: bool is vfs_replace(file, os_surafs_code_sample, 62)
+  if ok then ok is vfs_flush(file)
+  close_ok: bool is vfs_close(file)
+  if not ok or not close_ok then
+    vfs_remove(os_surafs_vfs, os_surafs_code_path, 17, false)
+    return false
+  end
+  return true
+end
+
+func os_surafs_read_editor(path: ptr, path_length: u64) do
+  if os_surafs_mounted == 0 or path == 0 or path_length == 0 then return false
+  editor: ptr[TextEditorState] is os_text_editor_state
+  file: ptr[VfsFile] is os_surafs_file
+  if editor.buffer == 0 or editor.capacity < 2 then return false
+  if not vfs_open(os_surafs_vfs, path, path_length, vfs_open_read, file) then return false
+  if not memfs_zero(editor.buffer, editor.capacity) then
+    vfs_close(file)
+    return false
+  end
+  if not vfs_read(file, editor.buffer, editor.capacity - 1, os_surafs_io_count) then
+    vfs_close(file)
+    return false
+  end
+  count: u64 is mem.read64(os_surafs_io_count)
+  close_ok: bool is vfs_close(file)
+  if not close_ok or count >= editor.capacity then return false
+  mem.write8(ptr.add(editor.buffer, count), 0)
+  editor.length is count
+  editor.dirty is 0
+  editor.cursor is count
+  editor.selection_anchor is count
+  return os_surafs_set_active_path(path, path_length)
+end
+
+func os_surafs_save_editor(force: bool) do
+  global os_storage_write_reported, os_surafs_editor_save_reported
+  if os_surafs_mounted == 0 or os_surafs_active_file_length == 0 then return false
+  editor: ptr[TextEditorState] is os_text_editor_state
+  if editor.dirty == 0 and not force then return true
+  file: ptr[VfsFile] is os_surafs_file
+  if not vfs_open(os_surafs_vfs, os_surafs_active_file_path, os_surafs_active_file_length, vfs_open_write, file) then
+    return false
+  end
+  ok: bool is false
+  if file.replace_file != 0 then
+    ok is vfs_replace(file, editor.buffer, editor.length)
+  else
+    ok is true
+    if file.size != editor.length then ok is vfs_resize(file, editor.length)
+    if ok then ok is vfs_seek(file, 0)
+    if ok and editor.length != 0 then
+      ok is vfs_write(file, editor.buffer, editor.length, os_surafs_io_count)
+      if ok then ok is mem.read64(os_surafs_io_count) == editor.length
+    end
+  end
+  if ok then ok is vfs_flush(file)
+  close_ok: bool is vfs_close(file)
+  if not ok or not close_ok then return false
+  editor.dirty is 0
+  if os_storage_write_reported == 0 then
+    if not os_serial_cstr_line(os_storage_write_marker) then return false
+    if not os_serial_cstr_line(os_surafs_write_marker) then return false
+    os_storage_write_reported is 1
+  end
+  if not force and os_surafs_editor_save_reported == 0 then
+    if not os_serial_cstr_line(os_surafs_editor_save_marker) then return false
+    os_surafs_editor_save_reported is 1
+  end
+  return true
+end
+
+func os_surafs_save_as(name: ptr, name_length: u64) do
+  if os_surafs_mounted == 0 or os_surafs_active_file_length == 0 then return 0
+  if not memfs_utf8_component_valid(name, name_length, 64) then return 0
+  old_length: u64 is os_surafs_active_file_length
+  if not memfs_zero(os_surafs_selected_path, 256) then return 0
+  if not memfs_copy(os_surafs_selected_path, os_surafs_active_file_path, old_length) then return 0
+
+  leaf_offset: u64 is memfs_leaf_offset(os_surafs_selected_path, old_length)
+  if leaf_offset == u64("0xffffffffffffffff") then return 0
+  parent_length: u64 is 0
+  if leaf_offset != 0 then parent_length is leaf_offset - 1
+  directory: ptr is os_surafs_selected_path
+  directory_length: u64 is parent_length
+  if parent_length == 0 then
+    directory is os_surafs_root_path
+    directory_length is 1
+  end
+  destination_length: u64 is os_surafs_build_directory_child(os_surafs_operation_path, directory, directory_length, name, name_length)
+  if destination_length == 0 then return 0
+  if destination_length == old_length and memfs_bytes_equal(os_surafs_operation_path, os_surafs_selected_path, old_length) then
+    if not os_surafs_save_editor(true) then return 0
+    if not os_serial_cstr_line(os_surafs_save_as_marker) then return 0
+    return 1
+  end
+  if vfs_stat(os_surafs_vfs, os_surafs_operation_path, destination_length, os_surafs_stat) then return 2
+  if not vfs_create(os_surafs_vfs, os_surafs_operation_path, destination_length, vfs_kind_file, 420) then return 0
+  if not os_surafs_set_active_path(os_surafs_operation_path, destination_length) then
+    vfs_remove(os_surafs_vfs, os_surafs_operation_path, destination_length, false)
+    return 0
+  end
+  if not os_surafs_save_editor(true) then
+    vfs_remove(os_surafs_vfs, os_surafs_operation_path, destination_length, false)
+    os_surafs_set_active_path(os_surafs_selected_path, old_length)
+    return 0
+  end
+
+  same_directory: bool is os_surafs_current_path_length == directory_length
+  if same_directory then same_directory is memfs_bytes_equal(os_surafs_current_path, directory, directory_length)
+  if same_directory then
+    if not os_surafs_load_directory() then return 0
+    if not os_surafs_select_name(name, name_length) then return 0
+  end
+  if not os_serial_cstr_line(os_surafs_save_as_marker) then return 0
+  return 1
+end
+
+func os_surafs_build_selected_path(name: ptr, name_length: u64) do
+  return os_surafs_build_child_path(os_surafs_operation_path, name, name_length)
+end
+
+func os_surafs_build_directory_child(destination: ptr, directory: ptr, directory_length: u64, name: ptr, name_length: u64) do
+  if destination == 0 or directory == 0 or directory_length == 0 or name == 0 or name_length == 0 then return 0
+  separator: u64 is 1
+  if directory_length == 1 and mem.read8(directory) == 47 then separator is 0
+  if directory_length + separator + name_length >= 256 then return 0
+  if not memfs_zero(destination, 256) then return 0
+  if not memfs_copy(destination, directory, directory_length) then return 0
+  output: u64 is directory_length
+  if separator != 0 then
+    mem.write8(ptr.add(destination, output), 47)
+    output += 1
+  end
+  if not memfs_copy(ptr.add(destination, output), name, name_length) then return 0
+  return output + name_length
+end
+
+func os_surafs_build_child_path(destination: ptr, name: ptr, name_length: u64) do
+  return os_surafs_build_directory_child(destination, os_surafs_current_path, os_surafs_current_path_length, name, name_length)
+end
+
+func os_surafs_prepare_copy_workspace() do
+  workspace: ptr[VfsCopyWorkspace] is os_surafs_copy_workspace
+  workspace.source_paths is os_surafs_copy_source_paths
+  workspace.destination_paths is os_surafs_copy_destination_paths
+  workspace.source_lengths is os_surafs_copy_source_lengths
+  workspace.destination_lengths is os_surafs_copy_destination_lengths
+  workspace.ordinals is os_surafs_copy_ordinals
+  workspace.stack_capacity is 32
+  workspace.path_capacity is 256
+  workspace.entry_name is os_surafs_copy_entry_names
+  workspace.entry_name_capacity is 64
+  workspace.file_buffer is os_surafs_copy_buffer
+  workspace.file_buffer_capacity is 4096
+  workspace.source_file is os_surafs_copy_source_file
+  workspace.destination_file is os_surafs_copy_destination_file
+  workspace.source_count is os_surafs_copy_read_count
+  workspace.destination_count is os_surafs_copy_write_count
+  workspace.stat is os_surafs_copy_stat
+  workspace.entry is os_surafs_copy_entry
+  return vfs_copy_workspace_valid(workspace)
+end
+
+func os_surafs_active_path_after_move(source: ptr, source_length: u64, destination: ptr, destination_length: u64) do
+  if source == 0 or destination == 0 or source_length == 0 or destination_length == 0 then return false
+  if os_surafs_active_file_length < source_length then return true
+  if not memfs_bytes_equal(os_surafs_active_file_path, source, source_length) then return true
+  if os_surafs_active_file_length > source_length then
+    if mem.read8(ptr.add(os_surafs_active_file_path, source_length)) != 47 then return true
+  end
+  suffix_length: u64 is os_surafs_active_file_length - source_length
+  if destination_length + suffix_length >= 256 then return false
+  if not memfs_zero(os_surafs_selected_path, 256) then return false
+  if not memfs_copy(os_surafs_selected_path, destination, destination_length) then return false
+  if suffix_length != 0 then
+    if not memfs_copy(ptr.add(os_surafs_selected_path, destination_length), ptr.add(os_surafs_active_file_path, source_length), suffix_length) then return false
+  end
+  return os_surafs_set_active_path(os_surafs_selected_path, destination_length + suffix_length)
+end
+
+func os_surafs_copy_candidate_name(ordinal: u64) do
+  if os_surafs_clipboard_name_length == 0 or os_surafs_clipboard_name_length >= 64 then return 0
+  if ordinal > 99 then return 0
+  if not memfs_zero(os_surafs_paste_name, 64) then return 0
+  if ordinal == 0 then
+    if not memfs_copy(os_surafs_paste_name, os_surafs_clipboard_name, os_surafs_clipboard_name_length) then return 0
+    return os_surafs_clipboard_name_length
+  end
+
+  number_bytes: u64 is 0
+  if ordinal > 1 then
+    number_bytes is 2
+    if ordinal >= 10 then number_bytes is 3
+  end
+  if 7 + number_bytes >= 63 then return 0
+  maximum_name: u64 is 63 - 7 - number_bytes
+  copy_length: u64 is os_surafs_clipboard_name_length
+  if copy_length > maximum_name then
+    copy_length is maximum_name
+    while copy_length > 0 and (mem.read8(ptr.add(os_surafs_clipboard_name, copy_length)) & 192) == 128 do
+      copy_length -= 1
+    end
+  end
+  if copy_length == 0 then return 0
+  if not memfs_copy(os_surafs_paste_name, os_surafs_clipboard_name, copy_length) then return 0
+  if not memfs_copy(ptr.add(os_surafs_paste_name, copy_length), os_surafs_copy_suffix, 7) then return 0
+  output: u64 is copy_length + 7
+  if ordinal > 1 then
+    mem.write8(ptr.add(os_surafs_paste_name, output), 32)
+    output += 1
+    if ordinal >= 10 then
+      mem.write8(ptr.add(os_surafs_paste_name, output), 48 + (ordinal / 10))
+      output += 1
+    end
+    mem.write8(ptr.add(os_surafs_paste_name, output), 48 + (ordinal % 10))
+    output += 1
+  end
+  if not memfs_utf8_component_valid(os_surafs_paste_name, output, 64) then return 0
+  return output
+end
+
+func os_surafs_clipboard_selected(mode: u64) do
+  global os_surafs_clipboard_path_length, os_surafs_clipboard_name_length, os_surafs_clipboard_kind, os_surafs_clipboard_mode
+  if os_surafs_mounted == 0 or (mode != 1 and mode != 2) then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.selected >= os_storage_entry_count then return false
+  entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, files.selected, sizeof(VfsDirEntry))
+  if entry.valid == 0 or entry.name_length == 0 or entry.name_length >= 64 then return false
+  is_parent: bool is entry.name_length == 2 and mem.read8(entry.name) == 46 and mem.read8(ptr.add(entry.name, 1)) == 46
+  if is_parent then return false
+  path_length: u64 is os_surafs_build_child_path(os_surafs_selected_path, entry.name, entry.name_length)
+  if path_length == 0 then return false
+  if not memfs_zero(os_surafs_clipboard_path, 256) then return false
+  if not memfs_zero(os_surafs_clipboard_name, 64) then return false
+  if not memfs_copy(os_surafs_clipboard_path, os_surafs_selected_path, path_length) then return false
+  if not memfs_copy(os_surafs_clipboard_name, entry.name, entry.name_length) then return false
+  os_surafs_clipboard_path_length is path_length
+  os_surafs_clipboard_name_length is entry.name_length
+  os_surafs_clipboard_kind is entry.kind
+  os_surafs_clipboard_mode is mode
+  if mode == 1 then return os_serial_cstr_line(os_surafs_copy_marker)
+  return os_serial_cstr_line(os_surafs_cut_marker)
+end
+
+func os_surafs_clipboard_copy_selected() do
+  return os_surafs_clipboard_selected(1)
+end
+
+func os_surafs_clipboard_cut_selected() do
+  return os_surafs_clipboard_selected(2)
+end
+
+func os_surafs_paste_clipboard() do
+  global os_surafs_navigation_generation, os_surafs_clipboard_path_length, os_surafs_clipboard_name_length, os_surafs_clipboard_kind, os_surafs_clipboard_mode
+  if os_surafs_mounted == 0 or os_surafs_clipboard_path_length == 0 or os_surafs_clipboard_mode == 0 then return false
+  source_stat: ptr[VfsStat] is os_surafs_copy_stat
+  if not vfs_stat(os_surafs_vfs, os_surafs_clipboard_path, os_surafs_clipboard_path_length, source_stat) then return false
+  if source_stat.kind != os_surafs_clipboard_kind then return false
+
+  original_name_length: u64 is os_surafs_copy_candidate_name(0)
+  if original_name_length == 0 then return false
+  original_destination_length: u64 is os_surafs_build_child_path(os_surafs_operation_path, os_surafs_paste_name, original_name_length)
+  if original_destination_length == 0 then return false
+  if os_surafs_clipboard_mode == 2 and original_destination_length == os_surafs_clipboard_path_length then
+    if memfs_bytes_equal(os_surafs_operation_path, os_surafs_clipboard_path, original_destination_length) then return true
+  end
+
+  ordinal: u64 is 0
+  destination_length: u64 is 0
+  paste_name_length: u64 is 0
+  destination_found: bool is false
+  while ordinal <= 99 and not destination_found do
+    paste_name_length is os_surafs_copy_candidate_name(ordinal)
+    if paste_name_length == 0 then return false
+    destination_length is os_surafs_build_child_path(os_surafs_operation_path, os_surafs_paste_name, paste_name_length)
+    if destination_length == 0 then return false
+    if not vfs_stat(os_surafs_vfs, os_surafs_operation_path, destination_length, os_surafs_copy_stat) then
+      destination_found is true
+    else
+      ordinal += 1
+    end
+  end
+  if not destination_found then return false
+
+  if os_surafs_clipboard_mode == 1 then
+    if not os_surafs_prepare_copy_workspace() then return false
+    if not vfs_copy_tree(os_surafs_vfs, os_surafs_clipboard_path, os_surafs_clipboard_path_length, os_surafs_operation_path, destination_length, os_surafs_copy_workspace) then
+      return false
+    end
+  else
+    if not vfs_rename(os_surafs_vfs, os_surafs_clipboard_path, os_surafs_clipboard_path_length, os_surafs_operation_path, destination_length) then return false
+    if not os_surafs_active_path_after_move(os_surafs_clipboard_path, os_surafs_clipboard_path_length, os_surafs_operation_path, destination_length) then return false
+    os_surafs_clipboard_path_length is 0
+    os_surafs_clipboard_name_length is 0
+    os_surafs_clipboard_kind is 0
+    os_surafs_clipboard_mode is 0
+  end
+
+  os_surafs_navigation_generation += 1
+  if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+  if not os_surafs_load_directory() then return false
+  if not os_surafs_select_name(os_surafs_paste_name, paste_name_length) then return false
+  return os_serial_cstr_line(os_surafs_paste_marker)
+end
+
+func os_surafs_select_name(name: ptr, name_length: u64) do
+  global os_files_view_offset
+  if name == 0 or name_length == 0 then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  index: u64 is 0
+  while index < os_storage_entry_count do
+    entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, index, sizeof(VfsDirEntry))
+    if entry.valid != 0 and entry.name_length == name_length then
+      if memfs_bytes_equal(entry.name, name, name_length) then
+        files.selected is index
+        if index >= 6 then os_files_view_offset is index - 5
+        return true
+      end
+    end
+    index += 1
+  end
+  return false
+end
+
+func os_surafs_create_named(name: ptr, name_length: u64, kind: u64) do
+  global os_surafs_navigation_generation
+  if os_surafs_mounted == 0 then return false
+  if kind != vfs_kind_file and kind != vfs_kind_directory then return false
+  path_length: u64 is os_surafs_build_child_path(os_surafs_operation_path, name, name_length)
+  if path_length == 0 then return false
+  mode: u64 is 420
+  if kind == vfs_kind_directory then mode is 493
+  if not vfs_create(os_surafs_vfs, os_surafs_operation_path, path_length, kind, mode) then return false
+  os_surafs_navigation_generation += 1
+  if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+  if not os_surafs_load_directory() then return false
+  if not os_surafs_select_name(name, name_length) then return false
+  return os_serial_cstr_line(os_surafs_create_marker)
+end
+
+func os_surafs_rename_selected(name: ptr, name_length: u64) do
+  global os_surafs_navigation_generation
+  if os_surafs_mounted == 0 or name == 0 or name_length == 0 then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.selected >= os_storage_entry_count then return false
+  entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, files.selected, sizeof(VfsDirEntry))
+  if entry.valid == 0 then return false
+  old_name: ptr is entry.name
+  is_parent: bool is entry.name_length == 2 and mem.read8(old_name) == 46 and mem.read8(ptr.add(old_name, 1)) == 46
+  if is_parent then return false
+  old_length: u64 is os_surafs_build_child_path(os_surafs_selected_path, old_name, entry.name_length)
+  if old_length == 0 then return false
+  new_length: u64 is os_surafs_build_child_path(os_surafs_operation_path, name, name_length)
+  if new_length == 0 then return false
+  active_was_selected: bool is os_surafs_active_file_length == old_length
+  if active_was_selected then active_was_selected is memfs_bytes_equal(os_surafs_active_file_path, os_surafs_selected_path, old_length)
+  if not vfs_rename(os_surafs_vfs, os_surafs_selected_path, old_length, os_surafs_operation_path, new_length) then return false
+  if active_was_selected then
+    if not os_surafs_set_active_path(os_surafs_operation_path, new_length) then return false
+  end
+  os_surafs_navigation_generation += 1
+  if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+  if not os_surafs_load_directory() then return false
+  if not os_surafs_select_name(name, name_length) then return false
+  return os_serial_cstr_line(os_surafs_rename_marker)
+end
+
+func os_surafs_delete_selected() do
+  global os_surafs_active_file_length, os_surafs_navigation_generation
+  if os_surafs_mounted == 0 then return false
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.selected >= os_storage_entry_count then return false
+  entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, files.selected, sizeof(VfsDirEntry))
+  if entry.valid == 0 then return false
+  name: ptr is entry.name
+  is_parent: bool is entry.name_length == 2 and mem.read8(name) == 46 and mem.read8(ptr.add(name, 1)) == 46
+  if is_parent then return false
+  path_length: u64 is os_surafs_build_child_path(os_surafs_selected_path, name, entry.name_length)
+  if path_length == 0 then return false
+  deleted_active: bool is os_surafs_active_file_length == path_length
+  if deleted_active then deleted_active is memfs_bytes_equal(os_surafs_active_file_path, os_surafs_selected_path, path_length)
+
+  inside_trash: bool is os_surafs_current_path_length == 10
+  if inside_trash then inside_trash is memfs_bytes_equal(os_surafs_current_path, os_surafs_trash_path, 10)
+  if inside_trash then
+    if not vfs_remove(os_surafs_vfs, os_surafs_selected_path, path_length, true) then return false
+    if deleted_active then
+      editor: ptr[TextEditorState] is os_text_editor_state
+      os_surafs_active_file_length is 0
+      editor.length is 0
+      editor.dirty is 0
+      editor.cursor is 0
+      editor.selection_anchor is 0
+      if editor.buffer != 0 then mem.write8(editor.buffer, 0)
+    end
+    os_surafs_navigation_generation += 1
+    if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+    if not os_surafs_load_directory() then return false
+    return os_serial_cstr_line(os_surafs_delete_marker)
+  end
+
+  ordinal: u64 is 1
+  destination_length: u64 is 0
+  trash_name_length: u64 is 0
+  destination_found: bool is false
+  while ordinal <= 99 and not destination_found do
+    if not memfs_zero(os_files_name_buffer, 64) then return false
+    if entry.name_length >= 64 or not memfs_copy(os_files_name_buffer, name, entry.name_length) then return false
+    trash_name_length is entry.name_length
+    if ordinal > 1 then
+      if trash_name_length + 3 >= 64 then return false
+      mem.write8(ptr.add(os_files_name_buffer, trash_name_length), 32)
+      trash_name_length += 1
+      if ordinal >= 10 then
+        mem.write8(ptr.add(os_files_name_buffer, trash_name_length), 48 + (ordinal / 10))
+        trash_name_length += 1
+      end
+      mem.write8(ptr.add(os_files_name_buffer, trash_name_length), 48 + (ordinal % 10))
+      trash_name_length += 1
+    end
+    destination_length is os_surafs_build_directory_child(os_surafs_operation_path, os_surafs_trash_path, 10, os_files_name_buffer, trash_name_length)
+    if destination_length == 0 then return false
+    if not vfs_stat(os_surafs_vfs, os_surafs_operation_path, destination_length, os_surafs_stat) then
+      destination_found is true
+    else
+      ordinal += 1
+    end
+  end
+  if not destination_found then return false
+  if not vfs_rename(os_surafs_vfs, os_surafs_selected_path, path_length, os_surafs_operation_path, destination_length) then
+    return false
+  end
+  if deleted_active then
+    if not os_surafs_set_active_path(os_surafs_operation_path, destination_length) then return false
+  end
+  os_surafs_navigation_generation += 1
+  if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+  if not os_surafs_load_directory() then return false
+  return os_serial_cstr_line(os_surafs_trash_marker)
+end
+
+func os_surafs_load_directory() do
+  global os_files_view_offset, os_storage_entry_count
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  os_storage_entry_count is 0
+  os_files_view_offset is 0
+  if os_storage_directory_depth != 0 then
+    parent: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, 0, sizeof(VfsDirEntry))
+    parent_name: ptr is os_surafs_entry_names
+    if not memfs_zero(parent_name, 64) then return false
+    mem.write8(parent_name, 46)
+    mem.write8(ptr.add(parent_name, 1), 46)
+    parent.valid is 1
+    parent.kind is vfs_kind_directory
+    parent.size is 0
+    parent.mode is 493
+    parent.name is parent_name
+    parent.name_capacity is 64
+    parent.name_length is 2
+    parent.flags is 0
+    os_storage_entry_count is 1
+  end
+
+  ordinal: u64 is 0
+  while os_storage_entry_count < 32 do
+    entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, os_storage_entry_count, sizeof(VfsDirEntry))
+    name: ptr is ptr.add(os_surafs_entry_names, os_storage_entry_count * 64)
+    if not memfs_zero(name, 64) then return false
+    entry.name is name
+    entry.name_capacity is 64
+    if not vfs_list(os_surafs_vfs, os_surafs_current_path, os_surafs_current_path_length, ordinal, entry) then
+      break
+    end
+    os_storage_entry_count += 1
+    ordinal += 1
+  end
+  if os_storage_entry_count == 0 then return false
+  return file_explorer_init(files, os_storage_entry_count)
+end
+
+func os_surafs_load_root() do
+  global os_storage_directory_depth, os_surafs_current_path_length, os_surafs_navigation_generation
+  if not memfs_zero(os_surafs_current_path, 256) then return false
+  mem.write8(os_surafs_current_path, 47)
+  os_surafs_current_path_length is 1
+  os_storage_directory_depth is 0
+  if not memfs_zero(os_surafs_path_length_stack, 64) then return false
+  mem.write64(os_surafs_path_length_stack, 1)
+  os_surafs_navigation_generation += 1
+  if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+  return os_surafs_load_directory()
+end
+
+func os_surafs_open_selected() do
+  global os_storage_directory_depth, os_surafs_current_path_length, os_surafs_navigation_generation, os_surafs_file_open_reported
+  files: ptr[FileExplorerState] is os_file_explorer_state
+  if files.selected >= os_storage_entry_count then return false
+  entry: ptr[VfsDirEntry] is ptr.index(os_surafs_entries, files.selected, sizeof(VfsDirEntry))
+  if entry.valid == 0 then return false
+  name: ptr is entry.name
+  is_parent: bool is entry.name_length == 2 and mem.read8(name) == 46 and mem.read8(ptr.add(name, 1)) == 46
+  if entry.kind == vfs_kind_directory then
+    if is_parent then
+      if os_storage_directory_depth == 0 then return true
+      os_storage_directory_depth -= 1
+      os_surafs_current_path_length is mem.read64(ptr.add(os_surafs_path_length_stack, os_storage_directory_depth * 8))
+      mem.write8(ptr.add(os_surafs_current_path, os_surafs_current_path_length), 0)
+    else
+      if os_storage_directory_depth >= 7 then return false
+      previous_length: u64 is os_surafs_current_path_length
+      selected_length: u64 is os_surafs_build_selected_path(name, entry.name_length)
+      if selected_length == 0 then return false
+      if not memfs_zero(os_surafs_current_path, 256) then return false
+      if not memfs_copy(os_surafs_current_path, os_surafs_operation_path, selected_length) then return false
+      mem.write64(ptr.add(os_surafs_path_length_stack, os_storage_directory_depth * 8), previous_length)
+      os_storage_directory_depth += 1
+      os_surafs_current_path_length is selected_length
+      mem.write64(ptr.add(os_surafs_path_length_stack, os_storage_directory_depth * 8), selected_length)
+    end
+    os_surafs_navigation_generation += 1
+    if os_surafs_navigation_generation == 0 then os_surafs_navigation_generation is 1
+    return os_surafs_load_directory()
+  end
+  if entry.kind != vfs_kind_file then return false
+  selected_length: u64 is os_surafs_build_selected_path(name, entry.name_length)
+  if selected_length == 0 then return false
+  if not os_surafs_read_editor(os_surafs_operation_path, selected_length) then return false
+  if os_surafs_file_open_reported == 0 then
+    if not os_serial_cstr_line(os_surafs_file_open_marker) then return false
+    os_surafs_file_open_reported is 1
+  end
+  return os_activate_window(os_window_manager_state, 4) != 0
+end
+
+func os_surafs_start(device: ptr[BlockDevice], sector_buffer: ptr) do
+  global os_surafs_mounted, os_surafs_formatted, os_surafs_restored_length, os_surafs_restored_checksum
+  os_surafs_mounted is 0
+  os_surafs_formatted is 0
+  os_surafs_restored_length is 0
+  os_surafs_restored_checksum is 0
+  if not mbr_find_type(device, 127, 0, os_surafs_partition, sector_buffer) then return false
+  partition: ptr[DiskPartition] is os_surafs_partition
+  config: ptr[SuraFsConfig] is os_surafs_config
+  config.device is device
+  config.start_lba is partition.start_lba
+  config.bank_buffer is os_surafs_bank_buffer
+  config.bank_buffer_capacity is 262144
+  config.sector_buffer is os_surafs_sector_buffer
+  config.open_counts is os_surafs_open_counts
+  config.memory_filesystem is os_surafs_memory
+  config.memory_storage is os_surafs_storage
+  config.node_capacity is 32
+  config.name_stride is 64
+  config.data_stride is 4096
+
+  filesystem: ptr[SuraFs] is os_surafs_state
+  if not surafs_mount(filesystem, config) then
+    if not surafs_format(filesystem, config) then return false
+    os_surafs_formatted is 1
+  end
+  if not surafs_bind(filesystem, os_surafs_interface) then return false
+  if not vfs_init(os_surafs_vfs, os_surafs_mounts, 2) then return false
+  if not vfs_mount(os_surafs_vfs, os_surafs_root_path, 1, os_surafs_interface) then return false
+  os_surafs_mounted is 1
+
+  stat: ptr[VfsStat] is os_surafs_stat
+  if not vfs_stat(os_surafs_vfs, os_surafs_documents_path, 7, stat) then
+    if not vfs_create(os_surafs_vfs, os_surafs_documents_path, 7, vfs_kind_directory, 493) then return false
+  elif stat.kind != vfs_kind_directory then
+    return false
+  end
+  if not vfs_stat(os_surafs_vfs, os_surafs_trash_path, 10, stat) then
+    if not vfs_create(os_surafs_vfs, os_surafs_trash_path, 10, vfs_kind_directory, 493) then return false
+  elif stat.kind != vfs_kind_directory then
+    return false
+  end
+
+  notes_created: bool is false
+  if not vfs_stat(os_surafs_vfs, os_surafs_notes_path, 18, stat) then
+    if not vfs_create(os_surafs_vfs, os_surafs_notes_path, 18, vfs_kind_file, 420) then return false
+    notes_created is true
+  elif stat.kind != vfs_kind_file then
+    return false
+  end
+  if not os_surafs_seed_code_file() then return false
+  if not os_surafs_set_active_path(os_surafs_notes_path, 18) then return false
+  if notes_created then
+    if not os_surafs_save_editor(true) then
+      return false
+    end
+  else
+    if not os_surafs_read_editor(os_surafs_notes_path, 18) then
+      return false
+    end
+    editor: ptr[TextEditorState] is os_text_editor_state
+    os_surafs_restored_length is editor.length
+    os_surafs_restored_checksum is os_surafs_editor_checksum(editor.buffer, editor.length)
+  end
+  return os_surafs_load_root()
+end
+
 func os_storage_load_directory(directory_cluster: u64) do
   global os_storage_entry_count, os_storage_directory_cluster
   volume: ptr[Fat32Volume] is os_storage_volume
@@ -303,6 +1020,7 @@ end
 
 func os_storage_open_selected() do
   global os_storage_directory_depth, os_storage_directory_cluster
+  if os_surafs_mounted != 0 then return os_surafs_open_selected()
   files: ptr[FileExplorerState] is os_file_explorer_state
   if files.selected >= os_storage_entry_count then return false
   entry: ptr[Fat32DirEntry] is ptr.index(os_storage_root_entries, files.selected, sizeof(Fat32DirEntry))
@@ -330,13 +1048,13 @@ func os_storage_open_selected() do
   return os_storage_load_directory(os_storage_directory_cluster)
 end
 
-func os_storage_load_notes() do
+func os_storage_load_notes_fat() do
   volume: ptr[Fat32Volume] is os_storage_volume
   entry: ptr[Fat32DirEntry] is os_storage_notes_entry
   editor: ptr[TextEditorState] is os_text_editor_state
   if not fat32_find_root_short(volume, os_storage_notes_name, entry, os_storage_dma_data) then return false
-  if entry.file_size != 512 or editor.buffer == 0 or editor.capacity != 512 then return false
-  if not fat32_read_file(volume, entry, editor.buffer, editor.capacity, os_storage_dma_data) then return false
+  if entry.file_size != 512 or editor.buffer == 0 or editor.capacity < 512 then return false
+  if not fat32_read_file(volume, entry, editor.buffer, 512, os_storage_dma_data) then return false
   length: u64 is 0
   while length + 1 < editor.capacity and mem.read8(ptr.add(editor.buffer, length)) != 0 do
     length += 1
@@ -344,12 +1062,15 @@ func os_storage_load_notes() do
   mem.write8(ptr.add(editor.buffer, length), 0)
   editor.length is length
   editor.dirty is 0
+  editor.cursor is length
+  editor.selection_anchor is length
   return true
 end
 
 func os_storage_save_notes() do
   global os_storage_write_reported
   if os_storage_mounted == 0 then return false
+  if os_surafs_mounted != 0 then return os_surafs_save_editor(false)
   editor: ptr[TextEditorState] is os_text_editor_state
   if editor.dirty == 0 then return true
   if not fat32_overwrite_file(os_storage_volume, os_storage_notes_entry, editor.buffer, 512, os_storage_dma_data) then
@@ -364,29 +1085,22 @@ func os_storage_save_notes() do
 end
 
 func os_storage_start() do
-  global os_storage_mounted, os_storage_port, os_storage_status, os_storage_mbr_signature, os_storage_mbr_type, os_storage_mbr_start, os_storage_sector_count, os_storage_direct_read_status, os_storage_read_callback
+  global os_storage_mounted, os_surafs_mounted, os_storage_port, os_storage_status, os_storage_mbr_signature, os_storage_mbr_type, os_storage_mbr_start, os_storage_sector_count, os_storage_direct_read_status, os_storage_read_callback, os_storage_backend
   os_storage_mounted is 0
+  os_surafs_mounted is 0
   os_storage_port is 32
+  os_storage_backend is 0
   os_storage_status is 1
-  if not os_storage_prepare_dma() then return false
-
-  pci: ptr[PciDevice] is os_storage_pci_device
-  controller: ptr[AhciController] is os_storage_controller
-  context: ptr[AhciContext] is os_storage_context
   device: ptr[BlockDevice] is os_storage_block_device
   os_storage_status is 2
-  if not ahci_pci_find(pci) then return false
-  os_storage_status is 3
-  if not ahci_pci_enable(pci) then return false
-  abar: ptr is ahci_pci_bar_physical(pci)
-  os_storage_status is 4
-  if abar == 0 then return false
-  os_storage_status is 5
-  if not ahci_controller_attach(controller, abar) then return false
-  os_storage_status is 6
-  if not ahci_take_bios_ownership(controller, 1000000) then return false
-  os_storage_status is 7
-  if not ahci_mmio_write32(abar, 4, ahci_mmio_read32(abar, 4) | u64("0x80000000")) then return false
+  if os_storage_start_nvme_device(device) then
+    os_storage_backend is 2
+    os_storage_port is 64
+  else
+    os_storage_status is 3
+    if not os_storage_start_ahci_device(device) then return false
+    os_storage_backend is 1
+  end
 
   buffers: ptr[GptBuffers] is os_storage_gpt_buffers
   buffers.sector is os_storage_dma_data
@@ -394,15 +1108,11 @@ func os_storage_start() do
   buffers.entry is os_storage_gpt_entry_buffer
   buffers.entry_capacity is 256
 
-  port: u64 is 1
   os_storage_status is 100
-  if not ahci_port_active_sata(controller, port, os_storage_port_info) then return false
-  os_storage_status is 101
-  if not ahci_initialize_disk(device, controller, port, os_storage_dma, context, 1000000) then return false
-  os_storage_status is 102
   os_storage_sector_count is device.sector_count
   os_storage_read_callback is device.read_blocks
-  os_storage_direct_read_status is ahci_read_blocks(context, 0, 1, buffers.sector)
+  os_storage_direct_read_status is 1
+  if block_read(device, 0, 1, buffers.sector) then os_storage_direct_read_status is 0
   if os_storage_direct_read_status == 0 then
     os_storage_mbr_signature is mem.read16(ptr.add(buffers.sector, 510))
     os_storage_mbr_type is mem.read8(ptr.add(buffers.sector, 450))
@@ -418,12 +1128,15 @@ func os_storage_start() do
   if not fat32_mount(os_storage_volume, device, partition.start_lba, os_storage_dma_data) then return false
   os_storage_status is 104
   if not fat32_find_root_short(os_storage_volume, os_storage_marker_name, os_storage_probe_entry, os_storage_dma_data) then return false
-  os_storage_port is port
   os_storage_mounted is 1
   os_storage_status is 105
-  if not os_storage_load_root() then return false
+  if not os_storage_load_notes_fat() then return false
   os_storage_status is 106
-  if not os_storage_load_notes() then return false
+  surafs_ready: bool is os_surafs_start(device, buffers.sector)
+  if not surafs_ready then
+    os_surafs_mounted is 0
+    if not os_storage_load_root() then return false
+  end
   os_storage_status is 107
   if not os_storage_load_settings() then return false
   os_storage_status is 108

@@ -1,0 +1,224 @@
+# RSA SHA-256 signature verification for the freestanding Sura target.
+#
+# Implements the verification sides of RSASSA-PKCS1-v1_5 and RSASSA-PSS
+# (MGF1-SHA256, 32-byte salt) on top of rsa_public.sura. The accepted public
+# exponent is 65537. All mutable storage is caller-owned.
+
+import "rsa_public.sura"
+import "sha256.sura"
+
+struct RsaSha256Workspace do
+  rsa_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  message_hash: ptr
+  mgf_hash: ptr
+  mask: ptr
+  mask_capacity: u64
+  database: ptr
+  database_capacity: u64
+  hash_input: ptr
+  hash_input_capacity: u64
+  initialized: u64
+end
+
+struct RsaSha256Buffers do
+  rsa_workspace: ptr
+  sha_state: ptr
+  sha_block: ptr
+  sha_schedule: ptr
+  message_hash: ptr
+  mgf_hash: ptr
+  mask: ptr
+  mask_capacity: u64
+  database: ptr
+  database_capacity: u64
+  hash_input: ptr
+  hash_input_capacity: u64
+end
+
+struct RsaSha256VerifyRequest do
+  modulus: ptr
+  modulus_bytes: u64
+  exponent: u64
+  signature: ptr
+  signature_bytes: u64
+  message: ptr
+  message_bytes: u64
+end
+
+rsa_sha256_digest_info_prefix is static.bytes([48, 49, 48, 13, 6, 9, 96, 134, 72, 1, 101, 3, 4, 2, 1, 5, 0, 4, 32], 1)
+
+func rsa_sha256_bytes_equal(left: ptr, right: ptr, byte_count: u64) do
+  if byte_count == 0 then return true
+  if left == 0 or right == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(left, index)) ^ mem.read8(ptr.add(right, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func rsa_sha256_workspace_init(workspace: ptr[RsaSha256Workspace], buffers: ptr[RsaSha256Buffers]) do
+  if workspace == 0 or buffers == 0 then return false
+  if buffers.rsa_workspace == 0 or buffers.sha_state == 0 then return false
+  if buffers.sha_block == 0 or buffers.sha_schedule == 0 then return false
+  if buffers.message_hash == 0 or buffers.mgf_hash == 0 then return false
+  if buffers.mask == 0 or buffers.mask_capacity < 512 then return false
+  if buffers.database == 0 or buffers.database_capacity < 512 then return false
+  if buffers.hash_input == 0 or buffers.hash_input_capacity < 72 then return false
+  workspace.rsa_workspace is buffers.rsa_workspace
+  workspace.sha_state is buffers.sha_state
+  workspace.sha_block is buffers.sha_block
+  workspace.sha_schedule is buffers.sha_schedule
+  workspace.message_hash is buffers.message_hash
+  workspace.mgf_hash is buffers.mgf_hash
+  workspace.mask is buffers.mask
+  workspace.mask_capacity is buffers.mask_capacity
+  workspace.database is buffers.database
+  workspace.database_capacity is buffers.database_capacity
+  workspace.hash_input is buffers.hash_input
+  workspace.hash_input_capacity is buffers.hash_input_capacity
+  workspace.initialized is 1
+  return true
+end
+
+func rsa_sha256_prepare(workspace: ptr[RsaSha256Workspace], request: ptr[RsaSha256VerifyRequest]) do
+  if workspace == 0 or workspace.initialized == 0 or request == 0 then return false
+  if request.modulus == 0 or request.signature == 0 then return false
+  if request.modulus_bytes < 128 or request.modulus_bytes > 512 then return false
+  if request.signature_bytes != request.modulus_bytes or request.exponent != 65537 then return false
+  if request.message_bytes != 0 and request.message == 0 then return false
+  rsa: ptr[RsaPublicWorkspace] is workspace.rsa_workspace
+  state: ptr[Sha256State] is workspace.sha_state
+  if rsa == 0 or state == 0 then return false
+  if not rsa_public_load_modulus(rsa, request.modulus, request.modulus_bytes) then return false
+  if not rsa_public_exponent_65537(rsa, request.signature, request.signature_bytes) then return false
+  return sha256_digest(request.message, request.message_bytes, workspace.message_hash, state, workspace.sha_block, workspace.sha_schedule)
+end
+
+func rsa_sha256_mgf1(workspace: ptr[RsaSha256Workspace], seed: ptr, seed_bytes: u64, output_bytes: u64) do
+  if workspace == 0 or workspace.initialized == 0 or seed == 0 then return false
+  if seed_bytes + 4 > workspace.hash_input_capacity then return false
+  if output_bytes > workspace.mask_capacity then return false
+  index: u64 is 0
+  while index < seed_bytes do
+    mem.write8(ptr.add(workspace.hash_input, index), mem.read8(ptr.add(seed, index)))
+    index += 1
+  end
+  counter: u64 is 0
+  cursor: u64 is 0
+  state: ptr[Sha256State] is workspace.sha_state
+  while cursor < output_bytes do
+    mem.write8(ptr.add(workspace.hash_input, seed_bytes), (counter >> 24) & 255)
+    mem.write8(ptr.add(workspace.hash_input, seed_bytes + 1), (counter >> 16) & 255)
+    mem.write8(ptr.add(workspace.hash_input, seed_bytes + 2), (counter >> 8) & 255)
+    mem.write8(ptr.add(workspace.hash_input, seed_bytes + 3), counter & 255)
+    if not sha256_digest(workspace.hash_input, seed_bytes + 4, workspace.mgf_hash, state, workspace.sha_block, workspace.sha_schedule) then return false
+    take: u64 is output_bytes - cursor
+    if take > 32 then take is 32
+    index is 0
+    while index < take do
+      mem.write8(ptr.add(workspace.mask, cursor + index), mem.read8(ptr.add(workspace.mgf_hash, index)))
+      index += 1
+    end
+    cursor is cursor + take
+    counter += 1
+  end
+  return true
+end
+
+func rsa_sha256_modulus_bits(modulus: ptr, modulus_bytes: u64) do
+  if modulus == 0 or modulus_bytes == 0 then return 0
+  first: u64 is mem.read8(modulus)
+  if first == 0 then return 0
+  high_bits: u64 is 0
+  value: u64 is first
+  while value != 0 do
+    high_bits += 1
+    value is value >> 1
+  end
+  return (modulus_bytes - 1) * 8 + high_bits
+end
+
+func rsa_pkcs1_v15_sha256_verify(workspace: ptr[RsaSha256Workspace], request: ptr[RsaSha256VerifyRequest]) do
+  if not rsa_sha256_prepare(workspace, request) then return false
+  rsa: ptr[RsaPublicWorkspace] is workspace.rsa_workspace
+  encoded: ptr is rsa.encoded
+  encoded_bytes: u64 is rsa.modulus_bytes
+  if encoded_bytes < 62 then return false
+  if mem.read8(encoded) != 0 or mem.read8(ptr.add(encoded, 1)) != 1 then return false
+  cursor: u64 is 2
+  while cursor < encoded_bytes and mem.read8(ptr.add(encoded, cursor)) == 255 do
+    cursor += 1
+  end
+  if cursor < 10 or cursor >= encoded_bytes then return false
+  if mem.read8(ptr.add(encoded, cursor)) != 0 then return false
+  cursor += 1
+  if encoded_bytes - cursor != 51 then return false
+  if not rsa_sha256_bytes_equal(ptr.add(encoded, cursor), rsa_sha256_digest_info_prefix, 19) then return false
+  return rsa_sha256_bytes_equal(ptr.add(encoded, cursor + 19), workspace.message_hash, 32)
+end
+
+func rsa_pss_sha256_verify(workspace: ptr[RsaSha256Workspace], request: ptr[RsaSha256VerifyRequest]) do
+  if not rsa_sha256_prepare(workspace, request) then return false
+  rsa: ptr[RsaPublicWorkspace] is workspace.rsa_workspace
+  modulus_bits: u64 is rsa_sha256_modulus_bits(request.modulus, request.modulus_bytes)
+  if modulus_bits < 1024 then return false
+  encoded_bits: u64 is modulus_bits - 1
+  encoded_bytes: u64 is (encoded_bits + 7) / 8
+  if encoded_bytes < 66 or encoded_bytes > request.modulus_bytes then return false
+  encoded: ptr is rsa.encoded
+  if encoded_bytes < request.modulus_bytes then
+    skipped: u64 is request.modulus_bytes - encoded_bytes
+    index: u64 is 0
+    while index < skipped do
+      if mem.read8(ptr.add(encoded, index)) != 0 then return false
+      index += 1
+    end
+    encoded is ptr.add(encoded, skipped)
+  end
+  if mem.read8(ptr.add(encoded, encoded_bytes - 1)) != 188 then return false
+  database_bytes: u64 is encoded_bytes - 33
+  if database_bytes > workspace.database_capacity then return false
+  hash_value: ptr is ptr.add(encoded, database_bytes)
+  unused_bits: u64 is encoded_bytes * 8 - encoded_bits
+  if unused_bits > 7 then return false
+  if unused_bits != 0 then
+    forbidden_mask: u64 is (255 << (8 - unused_bits)) & 255
+    if (mem.read8(encoded) & forbidden_mask) != 0 then return false
+  end
+  if not rsa_sha256_mgf1(workspace, hash_value, 32, database_bytes) then return false
+  index: u64 is 0
+  while index < database_bytes do
+    mem.write8(ptr.add(workspace.database, index), mem.read8(ptr.add(encoded, index)) ^ mem.read8(ptr.add(workspace.mask, index)))
+    index += 1
+  end
+  if unused_bits != 0 then
+    mem.write8(workspace.database, mem.read8(workspace.database) & (255 >> unused_bits))
+  end
+  delimiter: u64 is database_bytes - 33
+  index is 0
+  while index < delimiter do
+    if mem.read8(ptr.add(workspace.database, index)) != 0 then return false
+    index += 1
+  end
+  if mem.read8(ptr.add(workspace.database, delimiter)) != 1 then return false
+  index is 0
+  while index < 8 do
+    mem.write8(ptr.add(workspace.hash_input, index), 0)
+    index += 1
+  end
+  index is 0
+  while index < 32 do
+    mem.write8(ptr.add(workspace.hash_input, 8 + index), mem.read8(ptr.add(workspace.message_hash, index)))
+    mem.write8(ptr.add(workspace.hash_input, 40 + index), mem.read8(ptr.add(workspace.database, delimiter + 1 + index)))
+    index += 1
+  end
+  state: ptr[Sha256State] is workspace.sha_state
+  if not sha256_digest(workspace.hash_input, 72, workspace.mgf_hash, state, workspace.sha_block, workspace.sha_schedule) then return false
+  return rsa_sha256_bytes_equal(workspace.mgf_hash, hash_value, 32)
+end

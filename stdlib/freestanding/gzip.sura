@@ -1,0 +1,464 @@
+# Allocation-free gzip and DEFLATE decoder for bounded freestanding clients.
+#
+# gzip_decompress() returns the decompressed byte count. On malformed input,
+# checksum failure, unsupported headers, output overflow, or insufficient
+# scratch space it returns 0xffffffffffffffff.
+#
+# The caller supplies at least 4096 writable scratch bytes. One gzip member is
+# accepted. DEFLATE stored, fixed-Huffman, and dynamic-Huffman blocks are
+# supported, including overlapping LZ77 copies.
+
+struct GzipInflateState do
+  input: ptr
+  input_bytes: u64
+  input_cursor: u64
+  bit_buffer: u64
+  bit_count: u64
+  output: ptr
+  output_capacity: u64
+  output_bytes: u64
+end
+
+gzip_code_length_order is static.bytes([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15], 1)
+gzip_length_base is static.u16([3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258], 2)
+gzip_length_extra is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0], 1)
+gzip_distance_base is static.u16([1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577], 2)
+gzip_distance_extra is static.bytes([0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13], 1)
+
+func gzip_read_u16_le(buffer: ptr, offset: u64) do
+  return mem.read8(ptr.add(buffer, offset)) | (mem.read8(ptr.add(buffer, offset + 1)) << 8)
+end
+
+func gzip_read_u32_le(buffer: ptr, offset: u64) do
+  value: u64 is mem.read8(ptr.add(buffer, offset))
+  value is value | (mem.read8(ptr.add(buffer, offset + 1)) << 8)
+  value is value | (mem.read8(ptr.add(buffer, offset + 2)) << 16)
+  value is value | (mem.read8(ptr.add(buffer, offset + 3)) << 24)
+  return value
+end
+
+func gzip_read_u32_be(buffer: ptr, offset: u64) do
+  value: u64 is mem.read8(ptr.add(buffer, offset)) << 24
+  value is value | (mem.read8(ptr.add(buffer, offset + 1)) << 16)
+  value is value | (mem.read8(ptr.add(buffer, offset + 2)) << 8)
+  value is value | mem.read8(ptr.add(buffer, offset + 3))
+  return value
+end
+
+func gzip_crc32(buffer: ptr, byte_count: u64) do
+  if buffer == 0 and byte_count != 0 then return 0
+  crc: u64 is u64("0xffffffff")
+  cursor: u64 is 0
+  while cursor < byte_count do
+    crc is crc ^ mem.read8(ptr.add(buffer, cursor))
+    bit: u64 is 0
+    while bit < 8 do
+      if (crc & 1) != 0 then
+        crc is (crc >> 1) ^ u64("0xedb88320")
+      else
+        crc is crc >> 1
+      end
+      bit += 1
+    end
+    cursor += 1
+  end
+  return (crc ^ u64("0xffffffff")) & u64("0xffffffff")
+end
+
+func gzip_adler32(buffer: ptr, byte_count: u64) do
+  if buffer == 0 and byte_count != 0 then return 0
+  first: u64 is 1
+  second: u64 is 0
+  cursor: u64 is 0
+  while cursor < byte_count do
+    block: u64 is byte_count - cursor
+    if block > 5552 then block is 5552
+    limit: u64 is cursor + block
+    while cursor < limit do
+      first += mem.read8(ptr.add(buffer, cursor))
+      second += first
+      cursor += 1
+    end
+    first is first % 65521
+    second is second % 65521
+  end
+  return ((second << 16) | first) & u64("0xffffffff")
+end
+
+func gzip_read_bits(state: ptr[GzipInflateState], count: u64, result: ptr) do
+  if state == 0 or result == 0 or count > 16 then return false
+  while state.bit_count < count do
+    if state.input_cursor >= state.input_bytes then return false
+    state.bit_buffer is state.bit_buffer | (mem.read8(ptr.add(state.input, state.input_cursor)) << state.bit_count)
+    state.input_cursor is state.input_cursor + 1
+    state.bit_count is state.bit_count + 8
+  end
+  if count == 0 then
+    mem.write64(result, 0)
+    return true
+  end
+  mask: u64 is (1 << count) - 1
+  mem.write64(result, state.bit_buffer & mask)
+  state.bit_buffer is state.bit_buffer >> count
+  state.bit_count is state.bit_count - count
+  return true
+end
+
+func gzip_huffman_build(lengths: ptr, number: u64, counts: ptr, symbols: ptr) do
+  if lengths == 0 or counts == 0 or symbols == 0 or number == 0 or number > 320 then return false
+  bit_length: u64 is 0
+  while bit_length < 16 do
+    mem.write64(ptr.add(counts, bit_length * 8), 0)
+    bit_length += 1
+  end
+  nonzero: u64 is 0
+  maximum: u64 is 0
+  symbol: u64 is 0
+  while symbol < number do
+    length: u64 is mem.read8(ptr.add(lengths, symbol))
+    if length > 15 then return false
+    if length != 0 then
+      mem.write64(ptr.add(counts, length * 8), mem.read64(ptr.add(counts, length * 8)) + 1)
+      nonzero += 1
+      if length > maximum then maximum is length
+    end
+    symbol += 1
+  end
+  if nonzero == 0 then return false
+
+  remaining: u64 is 1
+  bit_length is 1
+  while bit_length <= 15 do
+    remaining is remaining * 2
+    count: u64 is mem.read64(ptr.add(counts, bit_length * 8))
+    if count > remaining then return false
+    remaining is remaining - count
+    bit_length += 1
+  end
+  if remaining != 0 and (nonzero != 1 or maximum != 1) then return false
+
+  output: u64 is 0
+  bit_length is 1
+  while bit_length <= 15 do
+    symbol is 0
+    while symbol < number do
+      if mem.read8(ptr.add(lengths, symbol)) == bit_length then
+        mem.write64(ptr.add(symbols, output * 8), symbol)
+        output += 1
+      end
+      symbol += 1
+    end
+    bit_length += 1
+  end
+  return output == nonzero
+end
+
+func gzip_huffman_decode(state: ptr[GzipInflateState], counts: ptr, symbols: ptr, result: ptr) do
+  if state == 0 or counts == 0 or symbols == 0 or result == 0 then return false
+  code: u64 is 0
+  first: u64 is 0
+  index: u64 is 0
+  bit_length: u64 is 1
+  bit_value: u64 is 0
+  while bit_length <= 15 do
+    if not gzip_read_bits(state, 1, addr_of(bit_value)) then return false
+    code is code | bit_value
+    count: u64 is mem.read64(ptr.add(counts, bit_length * 8))
+    if code >= first and code - first < count then
+      mem.write64(result, mem.read64(ptr.add(symbols, (index + code - first) * 8)))
+      return true
+    end
+    index += count
+    first is (first + count) * 2
+    code is code * 2
+    bit_length += 1
+  end
+  return false
+end
+
+func gzip_fixed_tables(scratch: ptr) do
+  if scratch == 0 then return false
+  lengths: ptr is ptr.add(scratch, 3160)
+  symbol: u64 is 0
+  while symbol < 320 do
+    mem.write8(ptr.add(lengths, symbol), 0)
+    symbol += 1
+  end
+  symbol is 0
+  while symbol <= 143 do
+    mem.write8(ptr.add(lengths, symbol), 8)
+    symbol += 1
+  end
+  while symbol <= 255 do
+    mem.write8(ptr.add(lengths, symbol), 9)
+    symbol += 1
+  end
+  while symbol <= 279 do
+    mem.write8(ptr.add(lengths, symbol), 7)
+    symbol += 1
+  end
+  while symbol <= 287 do
+    mem.write8(ptr.add(lengths, symbol), 8)
+    symbol += 1
+  end
+  symbol is 0
+  while symbol < 32 do
+    mem.write8(ptr.add(lengths, 288 + symbol), 5)
+    symbol += 1
+  end
+  if not gzip_huffman_build(lengths, 288, ptr.add(scratch, 64), ptr.add(scratch, 192)) then return false
+  return gzip_huffman_build(ptr.add(lengths, 288), 32, ptr.add(scratch, 2496), ptr.add(scratch, 2624))
+end
+
+func gzip_dynamic_tables(state: ptr[GzipInflateState], scratch: ptr) do
+  if state == 0 or scratch == 0 then return false
+  value: u64 is 0
+  if not gzip_read_bits(state, 5, addr_of(value)) then return false
+  literal_count: u64 is value + 257
+  if literal_count > 286 then return false
+  if not gzip_read_bits(state, 5, addr_of(value)) then return false
+  distance_count: u64 is value + 1
+  if distance_count > 32 then return false
+  if not gzip_read_bits(state, 4, addr_of(value)) then return false
+  code_count: u64 is value + 4
+
+  lengths: ptr is ptr.add(scratch, 3160)
+  index: u64 is 0
+  while index < 320 do
+    mem.write8(ptr.add(lengths, index), 0)
+    index += 1
+  end
+  index is 0
+  while index < code_count do
+    if not gzip_read_bits(state, 3, addr_of(value)) then return false
+    order: u64 is mem.read8(ptr.add(gzip_code_length_order, index))
+    mem.write8(ptr.add(lengths, order), value)
+    index += 1
+  end
+  code_counts: ptr is ptr.add(scratch, 2880)
+  code_symbols: ptr is ptr.add(scratch, 3008)
+  if not gzip_huffman_build(lengths, 19, code_counts, code_symbols) then return false
+
+  index is 0
+  while index < 320 do
+    mem.write8(ptr.add(lengths, index), 0)
+    index += 1
+  end
+  total: u64 is literal_count + distance_count
+  index is 0
+  previous: u64 is 0
+  while index < total do
+    symbol: u64 is 0
+    if not gzip_huffman_decode(state, code_counts, code_symbols, addr_of(symbol)) then return false
+    if symbol <= 15 then
+      mem.write8(ptr.add(lengths, index), symbol)
+      previous is symbol
+      index += 1
+    else
+      repeat_count: u64 is 0
+      repeat_value: u64 is 0
+      if symbol == 16 then
+        if index == 0 then return false
+        if not gzip_read_bits(state, 2, addr_of(value)) then return false
+        repeat_count is value + 3
+        repeat_value is previous
+      end
+      if symbol == 17 then
+        if not gzip_read_bits(state, 3, addr_of(value)) then return false
+        repeat_count is value + 3
+        repeat_value is 0
+      end
+      if symbol == 18 then
+        if not gzip_read_bits(state, 7, addr_of(value)) then return false
+        repeat_count is value + 11
+        repeat_value is 0
+      end
+      if symbol < 16 or symbol > 18 or repeat_count > total - index then return false
+      repeated: u64 is 0
+      while repeated < repeat_count do
+        mem.write8(ptr.add(lengths, index), repeat_value)
+        index += 1
+        repeated += 1
+      end
+      previous is repeat_value
+    end
+  end
+  if mem.read8(ptr.add(lengths, 256)) == 0 then return false
+  index is distance_count
+  while index > 0 do
+    index -= 1
+    mem.write8(ptr.add(lengths, 288 + index), mem.read8(ptr.add(lengths, literal_count + index)))
+  end
+  index is literal_count
+  while index < 288 do
+    mem.write8(ptr.add(lengths, index), 0)
+    index += 1
+  end
+  if not gzip_huffman_build(lengths, 288, ptr.add(scratch, 64), ptr.add(scratch, 192)) then return false
+  return gzip_huffman_build(ptr.add(lengths, 288), distance_count, ptr.add(scratch, 2496), ptr.add(scratch, 2624))
+end
+
+func gzip_decode_compressed_block(state: ptr[GzipInflateState], scratch: ptr) do
+  if state == 0 or scratch == 0 then return false
+  while true do
+    symbol: u64 is 0
+    if not gzip_huffman_decode(state, ptr.add(scratch, 64), ptr.add(scratch, 192), addr_of(symbol)) then return false
+    if symbol < 256 then
+      if state.output_bytes >= state.output_capacity then return false
+      mem.write8(ptr.add(state.output, state.output_bytes), symbol)
+      state.output_bytes is state.output_bytes + 1
+    end
+    if symbol == 256 then return true
+    if symbol > 256 then
+      if symbol > 285 then return false
+      length_index: u64 is symbol - 257
+      length: u64 is mem.read16(ptr.add(gzip_length_base, length_index * 2))
+      extra: u64 is mem.read8(ptr.add(gzip_length_extra, length_index))
+      value: u64 is 0
+      if not gzip_read_bits(state, extra, addr_of(value)) then return false
+      length += value
+
+      distance_symbol: u64 is 0
+      if not gzip_huffman_decode(state, ptr.add(scratch, 2496), ptr.add(scratch, 2624), addr_of(distance_symbol)) then return false
+      if distance_symbol > 29 then return false
+      distance: u64 is mem.read16(ptr.add(gzip_distance_base, distance_symbol * 2))
+      extra is mem.read8(ptr.add(gzip_distance_extra, distance_symbol))
+      if not gzip_read_bits(state, extra, addr_of(value)) then return false
+      distance += value
+      if distance == 0 or distance > state.output_bytes then return false
+      if length > state.output_capacity - state.output_bytes then return false
+
+      copied: u64 is 0
+      while copied < length do
+        source: u64 is state.output_bytes - distance
+        mem.write8(ptr.add(state.output, state.output_bytes), mem.read8(ptr.add(state.output, source)))
+        state.output_bytes is state.output_bytes + 1
+        copied += 1
+      end
+    end
+  end
+end
+
+func gzip_decode_stored_block(state: ptr[GzipInflateState]) do
+  if state == 0 then return false
+  state.bit_buffer is 0
+  state.bit_count is 0
+  if state.input_cursor + 4 > state.input_bytes then return false
+  length: u64 is gzip_read_u16_le(state.input, state.input_cursor)
+  inverse: u64 is gzip_read_u16_le(state.input, state.input_cursor + 2)
+  state.input_cursor is state.input_cursor + 4
+  if (length ^ u64("0xffff")) != inverse then return false
+  if length > state.input_bytes - state.input_cursor then return false
+  if length > state.output_capacity - state.output_bytes then return false
+  cursor: u64 is 0
+  while cursor < length do
+    mem.write8(ptr.add(state.output, state.output_bytes), mem.read8(ptr.add(state.input, state.input_cursor)))
+    state.output_bytes is state.output_bytes + 1
+    state.input_cursor is state.input_cursor + 1
+    cursor += 1
+  end
+  return true
+end
+
+func gzip_inflate(state: ptr[GzipInflateState], scratch: ptr) do
+  if state == 0 or scratch == 0 then return false
+  final_block: bool is false
+  value: u64 is 0
+  while not final_block do
+    if not gzip_read_bits(state, 1, addr_of(value)) then return false
+    final_block is value != 0
+    if not gzip_read_bits(state, 2, addr_of(value)) then return false
+    block_type: u64 is value
+    if block_type == 0 then
+      if not gzip_decode_stored_block(state) then return false
+    end
+    if block_type == 1 then
+      if not gzip_fixed_tables(scratch) then return false
+      if not gzip_decode_compressed_block(state, scratch) then return false
+    end
+    if block_type == 2 then
+      if not gzip_dynamic_tables(state, scratch) then return false
+      if not gzip_decode_compressed_block(state, scratch) then return false
+    end
+    if block_type == 3 then return false
+  end
+  return state.input_cursor == state.input_bytes
+end
+
+func gzip_decompress(input: ptr, input_bytes: u64, output: ptr, output_capacity: u64, scratch: ptr, scratch_bytes: u64) do
+  invalid: u64 is u64("0xffffffffffffffff")
+  if input == 0 or output == 0 or scratch == 0 or scratch_bytes < 4096 then return invalid
+  if input_bytes < 18 then return invalid
+  if mem.read8(input) != 31 or mem.read8(ptr.add(input, 1)) != 139 then return invalid
+  if mem.read8(ptr.add(input, 2)) != 8 then return invalid
+  flags: u64 is mem.read8(ptr.add(input, 3))
+  if (flags & 224) != 0 then return invalid
+
+  trailer: u64 is input_bytes - 8
+  cursor: u64 is 10
+  if (flags & 4) != 0 then
+    if cursor + 2 > trailer then return invalid
+    extra_bytes: u64 is gzip_read_u16_le(input, cursor)
+    cursor += 2
+    if extra_bytes > trailer - cursor then return invalid
+    cursor += extra_bytes
+  end
+  if (flags & 8) != 0 then
+    while cursor < trailer and mem.read8(ptr.add(input, cursor)) != 0 do
+      cursor += 1
+    end
+    if cursor >= trailer then return invalid
+    cursor += 1
+  end
+  if (flags & 16) != 0 then
+    while cursor < trailer and mem.read8(ptr.add(input, cursor)) != 0 do
+      cursor += 1
+    end
+    if cursor >= trailer then return invalid
+    cursor += 1
+  end
+  if (flags & 2) != 0 then
+    if cursor + 2 > trailer then return invalid
+    if (gzip_crc32(input, cursor) & u64("0xffff")) != gzip_read_u16_le(input, cursor) then return invalid
+    cursor += 2
+  end
+  if cursor >= trailer then return invalid
+
+  state: ptr[GzipInflateState] is scratch
+  state.input is ptr.add(input, cursor)
+  state.input_bytes is trailer - cursor
+  state.input_cursor is 0
+  state.bit_buffer is 0
+  state.bit_count is 0
+  state.output is output
+  state.output_capacity is output_capacity
+  state.output_bytes is 0
+  if not gzip_inflate(state, scratch) then return invalid
+  if gzip_crc32(output, state.output_bytes) != gzip_read_u32_le(input, trailer) then return invalid
+  if (state.output_bytes & u64("0xffffffff")) != gzip_read_u32_le(input, trailer + 4) then return invalid
+  return state.output_bytes
+end
+
+func zlib_decompress(input: ptr, input_bytes: u64, output: ptr, output_capacity: u64, scratch: ptr, scratch_bytes: u64) do
+  invalid: u64 is u64("0xffffffffffffffff")
+  if input == 0 or output == 0 or scratch == 0 or scratch_bytes < 4096 then return invalid
+  if input_bytes < 6 then return invalid
+  compression: u64 is mem.read8(input)
+  flags: u64 is mem.read8(ptr.add(input, 1))
+  if (compression & 15) != 8 or (compression >> 4) > 7 then return invalid
+  if ((compression << 8) + flags) % 31 != 0 then return invalid
+  if (flags & 32) != 0 then return invalid
+
+  state: ptr[GzipInflateState] is scratch
+  state.input is ptr.add(input, 2)
+  state.input_bytes is input_bytes - 6
+  state.input_cursor is 0
+  state.bit_buffer is 0
+  state.bit_count is 0
+  state.output is output
+  state.output_capacity is output_capacity
+  state.output_bytes is 0
+  if not gzip_inflate(state, scratch) then return invalid
+  if gzip_adler32(output, state.output_bytes) != gzip_read_u32_be(input, input_bytes - 4) then return invalid
+  return state.output_bytes
+end

@@ -1,0 +1,303 @@
+# Conventional ACPI fixed-hardware power-off and reset foundation.
+#
+# The shutdown path reads FADT PM1 control registers and the static DSDT _S5
+# package. The reset path uses the FADT RESET_REG/RESET_VALUE pair. This layer
+# supports System I/O and System Memory Generic Address Structures and performs
+# no AML method execution.
+
+import "acpi.sura"
+
+struct AcpiPowerControl do
+  rsdp: ptr
+  fadt: ptr
+  dsdt: ptr
+  pm1a_space: u64
+  pm1a_address: u64
+  pm1b_space: u64
+  pm1b_address: u64
+  sleep_type_a: u64
+  sleep_type_b: u64
+  smi_command: u64
+  acpi_enable: u64
+  reset_space: u64
+  reset_address: u64
+  reset_value: u64
+  shutdown_ready: u64
+  reset_ready: u64
+end
+
+struct AmlPackageLength do
+  value: u64
+  bytes: u64
+end
+
+power_package_length_state is static.struct(AmlPackageLength)
+power_aml_consumed is static.zero(8, 8)
+power_sleep_type_a is static.zero(8, 8)
+power_sleep_type_b is static.zero(8, 8)
+
+func power_clear(control: ptr[AcpiPowerControl]) do
+  if control == 0 then return false
+  control.rsdp is 0
+  control.fadt is 0
+  control.dsdt is 0
+  control.pm1a_space is 0
+  control.pm1a_address is 0
+  control.pm1b_space is 0
+  control.pm1b_address is 0
+  control.sleep_type_a is 0
+  control.sleep_type_b is 0
+  control.smi_command is 0
+  control.acpi_enable is 0
+  control.reset_space is 0
+  control.reset_address is 0
+  control.reset_value is 0
+  control.shutdown_ready is 0
+  control.reset_ready is 0
+  return true
+end
+
+func power_gas_valid(gas: ptr, minimum_width: u64) do
+  if gas == 0 or minimum_width == 0 then return false
+  space: u64 is mem.read8(gas)
+  width: u64 is mem.read8(ptr.add(gas, 1))
+  bit_offset: u64 is mem.read8(ptr.add(gas, 2))
+  address: u64 is mem.read64(ptr.add(gas, 4))
+  if space > 1 or width < minimum_width or bit_offset != 0 or address == 0 then return false
+  return true
+end
+
+func power_read16(space: u64, address: u64) do
+  if address == 0 then return 65535
+  if space == 1 then return io.in16(address)
+  if space == 0 then
+    value: u64 is mem.read16(address)
+    atomic.load_fence()
+    return value
+  end
+  return 65535
+end
+
+func power_write16(space: u64, address: u64, value: u64) do
+  if address == 0 or value > 65535 then return false
+  if space == 1 then
+    io.out16(address, value)
+    return true
+  end
+  if space == 0 then
+    atomic.store_fence()
+    mem.write16(address, value)
+    atomic.store_fence()
+    return true
+  end
+  return false
+end
+
+func power_write8(space: u64, address: u64, value: u64) do
+  if address == 0 or value > 255 then return false
+  if space == 1 then
+    io.out8(address, value)
+    return true
+  end
+  if space == 0 then
+    atomic.store_fence()
+    mem.write8(address, value)
+    atomic.store_fence()
+    return true
+  end
+  return false
+end
+
+func power_aml_package_length(address: ptr, remaining: u64, result: ptr[AmlPackageLength]) do
+  if address == 0 or result == 0 or remaining == 0 then return false
+  lead: u64 is mem.read8(address)
+  following: u64 is lead >> 6
+  if following > 3 or remaining < following + 1 then return false
+  value: u64 is 0
+  if following == 0 then
+    value is lead & 63
+  else
+    value is lead & 15
+    index: u64 is 0
+    while index < following do
+      value is value | (mem.read8(ptr.add(address, index + 1)) << (4 + index * 8))
+      index += 1
+    end
+  end
+  if value < following + 1 or value > remaining then return false
+  result.value is value
+  result.bytes is following + 1
+  return true
+end
+
+func power_aml_integer(address: ptr, remaining: u64, consumed: ptr) do
+  if address == 0 or consumed == 0 or remaining == 0 then return u64("0xffffffffffffffff")
+  opcode: u64 is mem.read8(address)
+  if opcode == 0 then
+    mem.write64(consumed, 1)
+    return 0
+  end
+  if opcode == 1 then
+    mem.write64(consumed, 1)
+    return 1
+  end
+  if opcode == 255 then
+    mem.write64(consumed, 1)
+    return u64("0xffffffffffffffff")
+  end
+  if opcode == 10 and remaining >= 2 then
+    mem.write64(consumed, 2)
+    return mem.read8(ptr.add(address, 1))
+  end
+  if opcode == 11 and remaining >= 3 then
+    mem.write64(consumed, 3)
+    return mem.read16(ptr.add(address, 1))
+  end
+  if opcode == 12 and remaining >= 5 then
+    mem.write64(consumed, 5)
+    return mem.read32(ptr.add(address, 1))
+  end
+  if opcode == 14 and remaining >= 9 then
+    mem.write64(consumed, 9)
+    return mem.read64(ptr.add(address, 1))
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func power_find_s5(dsdt: ptr, type_a: ptr, type_b: ptr) do
+  if dsdt == 0 or type_a == 0 or type_b == 0 then return false
+  if not acpi_sdt_valid(dsdt, u64("0x54445344")) then return false
+  length: u64 is mem.read32(ptr.add(dsdt, 4))
+  if length < 48 then return false
+  package_length: ptr[AmlPackageLength] is power_package_length_state
+  consumed: ptr is power_aml_consumed
+
+  offset: u64 is 36
+  while offset + 7 < length do
+    candidate: ptr is ptr.add(dsdt, offset)
+    if mem.read32(candidate) == u64("0x5f35535f") then
+      name_valid: bool is offset >= 1 and mem.read8(ptr.add(dsdt, offset - 1)) == 8
+      if not name_valid and offset >= 2 then
+        name_valid is mem.read8(ptr.add(dsdt, offset - 2)) == 8 and mem.read8(ptr.add(dsdt, offset - 1)) == 92
+      end
+      package_op: u64 is offset + 4
+      if name_valid and mem.read8(ptr.add(dsdt, package_op)) == 18 then
+        available: u64 is length - package_op - 1
+        package: ptr[AmlPackageLength] is package_length
+        if power_aml_package_length(ptr.add(dsdt, package_op + 1), available, package) then
+          cursor: u64 is package_op + 1 + package.bytes
+          package_end: u64 is package_op + 1 + package.value
+          if package_end > length then package_end is length
+          if cursor < package_end and mem.read8(ptr.add(dsdt, cursor)) >= 2 then
+            cursor += 1
+            first: u64 is power_aml_integer(ptr.add(dsdt, cursor), package_end - cursor, consumed)
+            first_bytes: u64 is mem.read64(consumed)
+            if first != u64("0xffffffffffffffff") and first_bytes != 0 and cursor + first_bytes < package_end then
+              cursor += first_bytes
+              second: u64 is power_aml_integer(ptr.add(dsdt, cursor), package_end - cursor, consumed)
+              if second != u64("0xffffffffffffffff") and first <= 7 and second <= 7 then
+                mem.write64(type_a, first)
+                mem.write64(type_b, second)
+                return true
+              end
+            end
+          end
+        end
+      end
+    end
+    offset += 1
+  end
+  return false
+end
+
+func power_discover(system_table: ptr, control: ptr[AcpiPowerControl]) do
+  if system_table == 0 or control == 0 then return false
+  power_clear(control)
+  rsdp: ptr is acpi_find_rsdp(system_table)
+  if rsdp == 0 then return false
+  fadt: ptr is acpi_find_table(rsdp, u64("0x50434146"))
+  if fadt == 0 or not acpi_sdt_valid(fadt, u64("0x50434146")) then return false
+  length: u64 is mem.read32(ptr.add(fadt, 4))
+  if length < 116 then return false
+  control.rsdp is rsdp
+  control.fadt is fadt
+  control.smi_command is mem.read32(ptr.add(fadt, 48))
+  control.acpi_enable is mem.read8(ptr.add(fadt, 52))
+
+  dsdt: ptr is 0
+  if length >= 148 then dsdt is mem.read64(ptr.add(fadt, 140))
+  if dsdt == 0 then dsdt is mem.read32(ptr.add(fadt, 40))
+  if not acpi_sdt_valid(dsdt, u64("0x54445344")) then return false
+  control.dsdt is dsdt
+
+  if length >= 184 and power_gas_valid(ptr.add(fadt, 172), 16) then
+    gas_a: ptr is ptr.add(fadt, 172)
+    control.pm1a_space is mem.read8(gas_a)
+    control.pm1a_address is mem.read64(ptr.add(gas_a, 4))
+  else
+    control.pm1a_space is 1
+    control.pm1a_address is mem.read32(ptr.add(fadt, 64))
+  end
+  if length >= 196 and power_gas_valid(ptr.add(fadt, 184), 16) then
+    gas_b: ptr is ptr.add(fadt, 184)
+    control.pm1b_space is mem.read8(gas_b)
+    control.pm1b_address is mem.read64(ptr.add(gas_b, 4))
+  else
+    legacy_b: u64 is mem.read32(ptr.add(fadt, 68))
+    if legacy_b != 0 then
+      control.pm1b_space is 1
+      control.pm1b_address is legacy_b
+    end
+  end
+
+  sleep_a: ptr is power_sleep_type_a
+  sleep_b: ptr is power_sleep_type_b
+  if control.pm1a_address != 0 and power_find_s5(dsdt, sleep_a, sleep_b) then
+    control.sleep_type_a is mem.read64(sleep_a)
+    control.sleep_type_b is mem.read64(sleep_b)
+    control.shutdown_ready is 1
+  end
+
+  if length >= 129 and power_gas_valid(ptr.add(fadt, 116), 8) then
+    reset_gas: ptr is ptr.add(fadt, 116)
+    control.reset_space is mem.read8(reset_gas)
+    control.reset_address is mem.read64(ptr.add(reset_gas, 4))
+    control.reset_value is mem.read8(ptr.add(fadt, 128))
+    control.reset_ready is 1
+  end
+  return control.shutdown_ready != 0 or control.reset_ready != 0
+end
+
+func power_enable_acpi(control: ptr[AcpiPowerControl], spin_limit: u64) do
+  if control == 0 or control.pm1a_address == 0 then return false
+  if (power_read16(control.pm1a_space, control.pm1a_address) & 1) != 0 then return true
+  if control.smi_command == 0 or control.acpi_enable == 0 then return false
+  io.out8(control.smi_command, control.acpi_enable)
+  spins: u64 is 0
+  while spins < spin_limit do
+    if (power_read16(control.pm1a_space, control.pm1a_address) & 1) != 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func power_shutdown_s5(control: ptr[AcpiPowerControl]) do
+  if control == 0 or control.shutdown_ready == 0 then return false
+  current_a: u64 is power_read16(control.pm1a_space, control.pm1a_address)
+  if current_a == 65535 then return false
+  value_a: u64 is (current_a & (~u64("0x3c00"))) | (control.sleep_type_a << 10) | 8192
+  if not power_write16(control.pm1a_space, control.pm1a_address, value_a) then return false
+  if control.pm1b_address != 0 then
+    current_b: u64 is power_read16(control.pm1b_space, control.pm1b_address)
+    if current_b == 65535 then return false
+    value_b: u64 is (current_b & (~u64("0x3c00"))) | (control.sleep_type_b << 10) | 8192
+    if not power_write16(control.pm1b_space, control.pm1b_address, value_b) then return false
+  end
+  return true
+end
+
+func power_reset(control: ptr[AcpiPowerControl]) do
+  if control == 0 or control.reset_ready == 0 then return false
+  return power_write8(control.reset_space, control.reset_address, control.reset_value)
+end

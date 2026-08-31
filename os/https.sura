@@ -1,0 +1,903 @@
+# TLS 1.3 HTTPS client for the Sura OS Text Browser.
+#
+# The first interoperable profile is intentionally narrow and fail-closed:
+# TLS_AES_128_GCM_SHA256, X25519, RSA-PSS-RSAE-SHA256 CertificateVerify,
+# RSA/SHA-256 or RSA/SHA-384 certificate chains, HTTP/1.1 over IPv4, and four pinned RSA
+# trust anchors.
+
+import "../stdlib/freestanding/sha256.sura"
+import "../stdlib/freestanding/hkdf_sha256.sura"
+import "../stdlib/freestanding/aes128_gcm.sura"
+import "../stdlib/freestanding/x25519.sura"
+import "../stdlib/freestanding/entropy_x86.sura"
+import "../stdlib/freestanding/tls13_record.sura"
+import "../stdlib/freestanding/tls13_handshake.sura"
+import "../stdlib/freestanding/tls13_hello.sura"
+import "../stdlib/freestanding/tls13_messages.sura"
+import "../stdlib/freestanding/tls13_verify.sura"
+import "../stdlib/freestanding/x509_chain.sura"
+import "trust_store.sura"
+
+os_https_sha_state is static.struct(Sha256State)
+os_https_sha_block is static.zero(64, 16)
+os_https_sha_schedule is static.zero(512, 16)
+os_https_digest is static.zero(64, 16)
+os_https_hmac_workspace is static.struct(HmacSha256Workspace)
+os_https_hmac_buffers is static.struct(HmacSha256Buffers)
+os_https_hmac_key_block is static.zero(64, 16)
+os_https_hmac_inner_digest is static.zero(32, 16)
+os_https_hmac_message is static.zero(256, 16)
+
+os_https_handshake_workspace is static.struct(Tls13HandshakeWorkspace)
+os_https_handshake_buffers is static.struct(Tls13HandshakeBuffers)
+os_https_handshake_expand_spec is static.struct(Tls13HandshakeExpandSpec)
+os_https_handshake_label_request is static.struct(Tls13HkdfExpandLabelRequest)
+os_https_handshake_expand_request is static.struct(HkdfSha256ExpandRequest)
+os_https_handshake_label_info is static.zero(64, 16)
+os_https_handshake_zero is static.zero(32, 16)
+os_https_handshake_empty_hash is static.zero(32, 16)
+os_https_handshake_transcript_hash is static.zero(32, 16)
+os_https_handshake_request is static.struct(Tls13HandshakeRequest)
+os_https_handshake_secrets is static.struct(Tls13HandshakeSecrets)
+os_https_early_secret is static.zero(32, 16)
+os_https_initial_derived_secret is static.zero(32, 16)
+os_https_handshake_secret is static.zero(32, 16)
+os_https_client_handshake_traffic is static.zero(32, 16)
+os_https_server_handshake_traffic is static.zero(32, 16)
+os_https_client_handshake_key is static.zero(16, 16)
+os_https_client_handshake_iv is static.zero(12, 16)
+os_https_server_handshake_key is static.zero(16, 16)
+os_https_server_handshake_iv is static.zero(12, 16)
+os_https_client_finished_key is static.zero(32, 16)
+os_https_server_finished_key is static.zero(32, 16)
+
+os_https_application_request is static.struct(Tls13ApplicationRequest)
+os_https_application_secrets is static.struct(Tls13ApplicationSecrets)
+os_https_application_derived_secret is static.zero(32, 16)
+os_https_master_secret is static.zero(32, 16)
+os_https_client_application_traffic is static.zero(32, 16)
+os_https_server_application_traffic is static.zero(32, 16)
+os_https_client_application_key is static.zero(16, 16)
+os_https_client_application_iv is static.zero(12, 16)
+os_https_server_application_key is static.zero(16, 16)
+os_https_server_application_iv is static.zero(12, 16)
+
+os_https_x25519_workspace is static.struct(X25519Workspace)
+os_https_x25519_buffers is static.struct(X25519Buffers)
+os_https_x25519_a is static.zero(128, 16)
+os_https_x25519_b is static.zero(128, 16)
+os_https_x25519_c is static.zero(128, 16)
+os_https_x25519_d is static.zero(128, 16)
+os_https_x25519_e is static.zero(128, 16)
+os_https_x25519_f is static.zero(128, 16)
+os_https_x25519_x is static.zero(128, 16)
+os_https_x25519_scalar is static.zero(32, 16)
+os_https_x25519_product is static.zero(248, 16)
+os_https_x25519_reduce is static.zero(128, 16)
+os_https_client_private_key is static.zero(32, 16)
+os_https_x25519_basepoint is static.bytes([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1)
+os_https_client_public_key is static.zero(32, 16)
+os_https_server_public_key is static.zero(32, 16)
+os_https_shared_secret is static.zero(32, 16)
+os_https_client_random is static.zero(32, 16)
+
+os_https_aes_workspace is static.struct(Aes128GcmWorkspace)
+os_https_aes_buffers is static.struct(Aes128GcmBuffers)
+os_https_aes_round_keys is static.zero(176, 16)
+os_https_aes_state is static.zero(16, 16)
+os_https_aes_hash_subkey is static.zero(16, 16)
+os_https_aes_counter is static.zero(16, 16)
+os_https_aes_ghash is static.zero(16, 16)
+os_https_aes_multiply_z is static.zero(16, 16)
+os_https_aes_multiply_v is static.zero(16, 16)
+os_https_aes_scratch is static.zero(16, 16)
+os_https_aes_request is static.struct(Aes128GcmRequest)
+
+os_https_client_record_state is static.struct(Tls13RecordProtection)
+os_https_server_record_state is static.struct(Tls13RecordProtection)
+os_https_client_record_buffers is static.struct(Tls13RecordBuffers)
+os_https_server_record_buffers is static.struct(Tls13RecordBuffers)
+os_https_client_record_key is static.zero(16, 16)
+os_https_client_record_iv is static.zero(12, 16)
+os_https_client_record_nonce is static.zero(12, 16)
+os_https_server_record_key is static.zero(16, 16)
+os_https_server_record_iv is static.zero(12, 16)
+os_https_server_record_nonce is static.zero(12, 16)
+os_https_encrypt_request is static.struct(Tls13EncryptRequest)
+os_https_decrypt_request is static.struct(Tls13DecryptRequest)
+os_https_inner_plaintext is static.zero(16640, 16)
+os_https_record_output is static.zero(16645, 16)
+os_https_record_plaintext is static.zero(16640, 16)
+
+os_https_client_hello_request is static.struct(Tls13ClientHelloRequest)
+os_https_server_hello_request is static.struct(Tls13ServerHelloRequest)
+os_https_client_hello_record is static.zero(512, 16)
+
+os_https_rsa_workspace is static.struct(RsaPublicWorkspace)
+os_https_rsa_buffers is static.struct(RsaPublicBuffers)
+os_https_rsa_modulus is static.zero(1024, 16)
+os_https_rsa_operand is static.zero(1024, 16)
+os_https_rsa_base is static.zero(1024, 16)
+os_https_rsa_result is static.zero(1024, 16)
+os_https_rsa_r2 is static.zero(1024, 16)
+os_https_rsa_temporary is static.zero(2064, 16)
+os_https_rsa_encoded is static.zero(512, 16)
+os_https_rsa_sha_workspace is static.struct(RsaSha256Workspace)
+os_https_rsa_sha_buffers is static.struct(RsaSha256Buffers)
+os_https_rsa_sha_request is static.struct(RsaSha256VerifyRequest)
+os_https_rsa_message_hash is static.zero(32, 16)
+os_https_rsa_mgf_hash is static.zero(32, 16)
+os_https_rsa_mask is static.zero(512, 16)
+os_https_rsa_database is static.zero(512, 16)
+os_https_rsa_hash_input is static.zero(130, 16)
+os_https_rsa_sha384_workspace is static.struct(RsaSha384Workspace)
+os_https_rsa_sha384_buffers is static.struct(RsaSha384Buffers)
+os_https_rsa_sha384_request is static.struct(RsaSha384VerifyRequest)
+os_https_sha384_state is static.struct(Sha384State)
+os_https_sha384_block is static.zero(128, 16)
+os_https_sha384_schedule is static.zero(640, 16)
+os_https_rsa_sha384_message_hash is static.zero(48, 16)
+
+os_https_x509_workspace is static.struct(X509Workspace)
+os_https_x509_buffers is static.struct(X509Buffers)
+os_https_x509_reader0 is static.struct(DerReader)
+os_https_x509_reader1 is static.struct(DerReader)
+os_https_x509_reader2 is static.struct(DerReader)
+os_https_x509_reader3 is static.struct(DerReader)
+os_https_x509_element0 is static.struct(DerElement)
+os_https_x509_element1 is static.struct(DerElement)
+os_https_x509_element2 is static.struct(DerElement)
+os_https_x509_element3 is static.struct(DerElement)
+os_https_x509_element4 is static.struct(DerElement)
+os_https_x509_element5 is static.struct(DerElement)
+os_https_certificate0 is static.struct(X509Certificate)
+os_https_certificate1 is static.struct(X509Certificate)
+os_https_certificate2 is static.struct(X509Certificate)
+os_https_certificate3 is static.struct(X509Certificate)
+os_https_trusted_root0 is static.struct(X509Certificate)
+os_https_trusted_root1 is static.struct(X509Certificate)
+os_https_trusted_root2 is static.struct(X509Certificate)
+os_https_trusted_root3 is static.struct(X509Certificate)
+os_https_trusted_root4 is static.struct(X509Certificate)
+os_https_trusted_root5 is static.struct(X509Certificate)
+os_https_trusted_root6 is static.struct(X509Certificate)
+os_https_trusted_root7 is static.struct(X509Certificate)
+os_https_trusted_root8 is static.struct(X509Certificate)
+os_https_trusted_root9 is static.struct(X509Certificate)
+os_https_trusted_root10 is static.struct(X509Certificate)
+os_https_trusted_root11 is static.struct(X509Certificate)
+os_https_trusted_root12 is static.struct(X509Certificate)
+os_https_trusted_root13 is static.struct(X509Certificate)
+os_https_trusted_root14 is static.struct(X509Certificate)
+os_https_trusted_root15 is static.struct(X509Certificate)
+os_https_x509_time is static.struct(X509DateTime)
+os_https_x509_chain_request is static.struct(X509ChainVerifyRequest)
+os_https_certificate_pointers is static.zero(32, 16)
+os_https_trusted_root_pointers is static.zero(128, 16)
+os_https_certificate_list is static.struct(Tls13CertificateList)
+os_https_certificate_verify_message is static.struct(Tls13CertificateVerifyMessage)
+os_https_certificate_verify_request is static.struct(Tls13CertificateVerifyRequest)
+os_https_certificate_verify_input is static.zero(130, 16)
+os_https_rtc_time is static.struct(RtcTime)
+
+os_https_stream_buffer is static.zero(65536, 16)
+os_https_transcript_buffer is static.zero(32768, 16)
+os_https_finished_message is static.zero(36, 16)
+os_https_stream_length: u64 is 0
+os_https_current_record_bytes: u64 is 0
+os_https_transcript_length: u64 is 0
+os_https_handshake_cursor: u64 is 0
+os_https_last_error: u64 is 0
+os_https_receive_error: u64 is 0
+os_https_decrypt_failure_sequence: u64 is 0
+os_https_decrypt_failure_record_bytes: u64 is 0
+os_https_initialized: u64 is 0
+os_https_handshake_stage: u64 is 0
+os_https_async_state: u64 is 0
+os_https_async_deadline: u64 is 0
+os_https_async_record_count: u64 is 0
+os_https_prehandshaken: u64 is 0
+
+func os_https_trusted_root_at(index: u64) do
+  if index == 0 then return os_https_trusted_root0
+  if index == 1 then return os_https_trusted_root1
+  if index == 2 then return os_https_trusted_root2
+  if index == 3 then return os_https_trusted_root3
+  if index == 4 then return os_https_trusted_root4
+  if index == 5 then return os_https_trusted_root5
+  if index == 6 then return os_https_trusted_root6
+  if index == 7 then return os_https_trusted_root7
+  if index == 8 then return os_https_trusted_root8
+  if index == 9 then return os_https_trusted_root9
+  if index == 10 then return os_https_trusted_root10
+  if index == 11 then return os_https_trusted_root11
+  if index == 12 then return os_https_trusted_root12
+  if index == 13 then return os_https_trusted_root13
+  if index == 14 then return os_https_trusted_root14
+  if index == 15 then return os_https_trusted_root15
+  return 0
+end
+
+func os_https_crypto_init() do
+  global os_https_initialized
+  hmac_buffers: ptr[HmacSha256Buffers] is os_https_hmac_buffers
+  hmac_buffers.state is os_https_sha_state
+  hmac_buffers.block is os_https_sha_block
+  hmac_buffers.schedule is os_https_sha_schedule
+  hmac_buffers.key_block is os_https_hmac_key_block
+  hmac_buffers.inner_digest is os_https_hmac_inner_digest
+  hmac_buffers.message is os_https_hmac_message
+  hmac_buffers.message_capacity is 256
+  if not hmac_sha256_workspace_init(os_https_hmac_workspace, hmac_buffers) then return false
+
+  handshake_buffers: ptr[Tls13HandshakeBuffers] is os_https_handshake_buffers
+  handshake_buffers.hmac_workspace is os_https_hmac_workspace
+  handshake_buffers.sha_state is os_https_sha_state
+  handshake_buffers.sha_block is os_https_sha_block
+  handshake_buffers.sha_schedule is os_https_sha_schedule
+  handshake_buffers.label_request is os_https_handshake_label_request
+  handshake_buffers.expand_request is os_https_handshake_expand_request
+  handshake_buffers.expand_spec is os_https_handshake_expand_spec
+  handshake_buffers.label_info is os_https_handshake_label_info
+  handshake_buffers.label_info_capacity is 64
+  handshake_buffers.zero32 is os_https_handshake_zero
+  handshake_buffers.empty_hash is os_https_handshake_empty_hash
+  handshake_buffers.transcript_hash is os_https_handshake_transcript_hash
+  if not tls13_handshake_workspace_init(os_https_handshake_workspace, handshake_buffers) then return false
+
+  x25519_buffers: ptr[X25519Buffers] is os_https_x25519_buffers
+  x25519_buffers.field_a is os_https_x25519_a
+  x25519_buffers.field_b is os_https_x25519_b
+  x25519_buffers.field_c is os_https_x25519_c
+  x25519_buffers.field_d is os_https_x25519_d
+  x25519_buffers.field_e is os_https_x25519_e
+  x25519_buffers.field_f is os_https_x25519_f
+  x25519_buffers.field_x is os_https_x25519_x
+  x25519_buffers.scalar is os_https_x25519_scalar
+  x25519_buffers.product is os_https_x25519_product
+  x25519_buffers.reduce_m is os_https_x25519_reduce
+  if not x25519_workspace_init(os_https_x25519_workspace, x25519_buffers) then return false
+
+  aes_buffers: ptr[Aes128GcmBuffers] is os_https_aes_buffers
+  aes_buffers.round_keys is os_https_aes_round_keys
+  aes_buffers.state is os_https_aes_state
+  aes_buffers.hash_subkey is os_https_aes_hash_subkey
+  aes_buffers.counter is os_https_aes_counter
+  aes_buffers.ghash is os_https_aes_ghash
+  aes_buffers.multiply_z is os_https_aes_multiply_z
+  aes_buffers.multiply_v is os_https_aes_multiply_v
+  aes_buffers.scratch is os_https_aes_scratch
+  if not aes128_gcm_workspace_init(os_https_aes_workspace, aes_buffers) then return false
+
+  client_record_buffers: ptr[Tls13RecordBuffers] is os_https_client_record_buffers
+  client_record_buffers.key is os_https_client_record_key
+  client_record_buffers.iv is os_https_client_record_iv
+  client_record_buffers.nonce is os_https_client_record_nonce
+  client_record_buffers.aes_workspace is os_https_aes_workspace
+  server_record_buffers: ptr[Tls13RecordBuffers] is os_https_server_record_buffers
+  server_record_buffers.key is os_https_server_record_key
+  server_record_buffers.iv is os_https_server_record_iv
+  server_record_buffers.nonce is os_https_server_record_nonce
+  server_record_buffers.aes_workspace is os_https_aes_workspace
+
+  rsa_buffers: ptr[RsaPublicBuffers] is os_https_rsa_buffers
+  rsa_buffers.modulus is os_https_rsa_modulus
+  rsa_buffers.operand is os_https_rsa_operand
+  rsa_buffers.base is os_https_rsa_base
+  rsa_buffers.result is os_https_rsa_result
+  rsa_buffers.r2 is os_https_rsa_r2
+  rsa_buffers.temporary is os_https_rsa_temporary
+  rsa_buffers.encoded is os_https_rsa_encoded
+  rsa_buffers.encoded_capacity is 512
+  rsa_buffers.limb_capacity is 128
+  if not rsa_public_workspace_init(os_https_rsa_workspace, rsa_buffers) then return false
+  rsa_sha_buffers: ptr[RsaSha256Buffers] is os_https_rsa_sha_buffers
+  rsa_sha_buffers.rsa_workspace is os_https_rsa_workspace
+  rsa_sha_buffers.sha_state is os_https_sha_state
+  rsa_sha_buffers.sha_block is os_https_sha_block
+  rsa_sha_buffers.sha_schedule is os_https_sha_schedule
+  rsa_sha_buffers.message_hash is os_https_rsa_message_hash
+  rsa_sha_buffers.mgf_hash is os_https_rsa_mgf_hash
+  rsa_sha_buffers.mask is os_https_rsa_mask
+  rsa_sha_buffers.mask_capacity is 512
+  rsa_sha_buffers.database is os_https_rsa_database
+  rsa_sha_buffers.database_capacity is 512
+  rsa_sha_buffers.hash_input is os_https_rsa_hash_input
+  rsa_sha_buffers.hash_input_capacity is 130
+  if not rsa_sha256_workspace_init(os_https_rsa_sha_workspace, rsa_sha_buffers) then return false
+  rsa_sha384_buffers: ptr[RsaSha384Buffers] is os_https_rsa_sha384_buffers
+  rsa_sha384_buffers.rsa_workspace is os_https_rsa_workspace
+  rsa_sha384_buffers.sha_state is os_https_sha384_state
+  rsa_sha384_buffers.sha_block is os_https_sha384_block
+  rsa_sha384_buffers.sha_schedule is os_https_sha384_schedule
+  rsa_sha384_buffers.message_hash is os_https_rsa_sha384_message_hash
+  if not rsa_sha384_workspace_init(os_https_rsa_sha384_workspace, rsa_sha384_buffers) then return false
+
+  x509_buffers: ptr[X509Buffers] is os_https_x509_buffers
+  x509_buffers.reader0 is os_https_x509_reader0
+  x509_buffers.reader1 is os_https_x509_reader1
+  x509_buffers.reader2 is os_https_x509_reader2
+  x509_buffers.reader3 is os_https_x509_reader3
+  x509_buffers.element0 is os_https_x509_element0
+  x509_buffers.element1 is os_https_x509_element1
+  x509_buffers.element2 is os_https_x509_element2
+  x509_buffers.element3 is os_https_x509_element3
+  x509_buffers.element4 is os_https_x509_element4
+  x509_buffers.element5 is os_https_x509_element5
+  if not x509_workspace_init(os_https_x509_workspace, x509_buffers) then return false
+  if os_trust_root_count == 0 or os_trust_root_count > 16 then return false
+  root_index: u64 is 0
+  while root_index < os_trust_root_count do
+    root: ptr[X509Certificate] is os_https_trusted_root_at(root_index)
+    root_der: ptr is os_trust_root_der(root_index)
+    root_der_bytes: u64 is os_trust_root_der_bytes(root_index)
+    if root == 0 or root_der == 0 or root_der_bytes == 0 then return false
+    if not x509_parse(root_der, root_der_bytes, os_https_x509_workspace, root) then return false
+    mem.write64(ptr.add(os_https_trusted_root_pointers, root_index * 8), root)
+    root_index += 1
+  end
+  os_https_initialized is 1
+  return true
+end
+
+func os_https_reset_state() do
+  global os_https_stream_length, os_https_current_record_bytes
+  global os_https_transcript_length, os_https_handshake_cursor
+  global os_https_decrypt_failure_sequence, os_https_decrypt_failure_record_bytes
+  os_https_stream_length is 0
+  os_https_current_record_bytes is 0
+  os_https_transcript_length is 0
+  os_https_handshake_cursor is 0
+  os_https_decrypt_failure_sequence is 0
+  os_https_decrypt_failure_record_bytes is 0
+  return true
+end
+
+func os_https_stream_fill(context: ptr[VirtioNetContext], required_bytes: u64) do
+  global os_https_stream_length
+  if context == 0 or required_bytes > 65536 then return false
+  while os_https_stream_length < required_bytes do
+    received: u64 is os_network_tcp_receive_some(context, ptr.add(os_https_stream_buffer, os_https_stream_length), 65536 - os_https_stream_length, 80000000)
+    if received == 0 then return false
+    os_https_stream_length is os_https_stream_length + received
+  end
+  return true
+end
+
+func os_https_receive_outer_record(context: ptr[VirtioNetContext]) do
+  global os_https_current_record_bytes
+  os_https_current_record_bytes is 0
+  if not os_https_stream_fill(context, 5) then return false
+  record_bytes: u64 is (mem.read8(ptr.add(os_https_stream_buffer, 3)) << 8) | mem.read8(ptr.add(os_https_stream_buffer, 4))
+  if record_bytes == 0 or record_bytes > 16640 then return false
+  record_bytes += 5
+  if not os_https_stream_fill(context, record_bytes) then return false
+  os_https_current_record_bytes is record_bytes
+  return true
+end
+
+func os_https_stream_fill_poll(context: ptr[VirtioNetContext], required_bytes: u64, receive_budget: u64) do
+  global os_https_stream_length
+  if context == 0 or required_bytes > 65536 or receive_budget == 0 then return 2
+  if os_https_stream_length >= required_bytes then return 1
+  if os_https_stream_length >= 65536 then return 2
+  received: u64 is os_network_tcp_receive_poll(context, ptr.add(os_https_stream_buffer, os_https_stream_length), 65536 - os_https_stream_length, receive_budget)
+  if received != 0 then os_https_stream_length is os_https_stream_length + received
+  if os_https_stream_length >= required_bytes then return 1
+  if os_network_tcp_closed != 0 then return 2
+  return 0
+end
+
+func os_https_receive_outer_record_poll(context: ptr[VirtioNetContext], receive_budget: u64) do
+  global os_https_current_record_bytes
+  os_https_current_record_bytes is 0
+  header_status: u64 is os_https_stream_fill_poll(context, 5, receive_budget)
+  if header_status != 1 then return header_status
+  record_bytes: u64 is (mem.read8(ptr.add(os_https_stream_buffer, 3)) << 8) | mem.read8(ptr.add(os_https_stream_buffer, 4))
+  if record_bytes == 0 or record_bytes > 16640 then return 2
+  record_bytes += 5
+  record_status: u64 is os_https_stream_fill_poll(context, record_bytes, receive_budget)
+  if record_status != 1 then return record_status
+  os_https_current_record_bytes is record_bytes
+  return 1
+end
+
+func os_https_consume_outer_record() do
+  global os_https_stream_length, os_https_current_record_bytes
+  if os_https_current_record_bytes == 0 or os_https_current_record_bytes > os_https_stream_length then return false
+  remaining: u64 is os_https_stream_length - os_https_current_record_bytes
+  index: u64 is 0
+  while index < remaining do
+    mem.write8(ptr.add(os_https_stream_buffer, index), mem.read8(ptr.add(os_https_stream_buffer, os_https_current_record_bytes + index)))
+    index += 1
+  end
+  os_https_stream_length is remaining
+  os_https_current_record_bytes is 0
+  return true
+end
+
+func os_https_transcript_append(input: ptr, input_bytes: u64) do
+  global os_https_transcript_length
+  if input_bytes != 0 and input == 0 then return false
+  if input_bytes > 32768 - os_https_transcript_length then return false
+  if not tls13_record_copy(ptr.add(os_https_transcript_buffer, os_https_transcript_length), input, input_bytes) then return false
+  os_https_transcript_length is os_https_transcript_length + input_bytes
+  return true
+end
+
+func os_https_transcript_hash(prefix_bytes: u64, output: ptr) do
+  if output == 0 or prefix_bytes > os_https_transcript_length then return false
+  return sha256_digest(os_https_transcript_buffer, prefix_bytes, output, os_https_sha_state, os_https_sha_block, os_https_sha_schedule)
+end
+
+func os_https_current_time() do
+  time: ptr[RtcTime] is os_https_rtc_time
+  if not rtc_read(time) or time.valid == 0 then return 0
+  return x509_datetime_value(time.year, time.month, time.day, time.hour, time.minute, time.second)
+end
+
+func os_https_certificate_struct(index: u64) do
+  if index == 0 then return os_https_certificate0
+  if index == 1 then return os_https_certificate1
+  if index == 2 then return os_https_certificate2
+  if index == 3 then return os_https_certificate3
+  return 0
+end
+
+func os_https_certificate_data(index: u64) do
+  list: ptr[Tls13CertificateList] is os_https_certificate_list
+  if index == 0 then return list.certificate0
+  if index == 1 then return list.certificate1
+  if index == 2 then return list.certificate2
+  if index == 3 then return list.certificate3
+  return 0
+end
+
+func os_https_certificate_bytes(index: u64) do
+  list: ptr[Tls13CertificateList] is os_https_certificate_list
+  if index == 0 then return list.certificate0_bytes
+  if index == 1 then return list.certificate1_bytes
+  if index == 2 then return list.certificate2_bytes
+  if index == 3 then return list.certificate3_bytes
+  return 0
+end
+
+func os_https_validate_certificates(hostname: ptr, hostname_bytes: u64) do
+  if hostname == 0 or hostname_bytes == 0 then return false
+  list: ptr[Tls13CertificateList] is os_https_certificate_list
+  if list.certificate_count < 2 or list.certificate_count > 4 then return false
+  index: u64 is 0
+  while index < list.certificate_count do
+    if not os_browser_cooperative_yield() then return false
+    certificate: ptr[X509Certificate] is os_https_certificate_struct(index)
+    if certificate == 0 then return false
+    if not x509_parse(os_https_certificate_data(index), os_https_certificate_bytes(index), os_https_x509_workspace, certificate) then return false
+    mem.write64(ptr.add(os_https_certificate_pointers, index * 8), certificate)
+    index += 1
+  end
+  current_time: u64 is os_https_current_time()
+  if current_time == 0 then return false
+  chain: ptr[X509ChainVerifyRequest] is os_https_x509_chain_request
+  chain.certificates is os_https_certificate_pointers
+  chain.certificate_count is list.certificate_count
+  chain.trusted_roots is os_https_trusted_root_pointers
+  chain.trusted_root_count is os_trust_root_count
+  chain.hostname is hostname
+  chain.hostname_bytes is hostname_bytes
+  chain.current_time is current_time
+  chain.rsa_workspace is os_https_rsa_sha_workspace
+  chain.rsa_request is os_https_rsa_sha_request
+  chain.rsa_sha384_workspace is os_https_rsa_sha384_workspace
+  chain.rsa_sha384_request is os_https_rsa_sha384_request
+  chain.time_scratch is os_https_x509_time
+  if not os_browser_cooperative_yield() then return false
+  return x509_verify_chain(chain, os_https_x509_workspace)
+end
+
+func os_https_record_encrypt_send(context: ptr[VirtioNetContext], state: ptr[Tls13RecordProtection], content: ptr, content_bytes: u64, content_type: u64) do
+  if context == 0 or state == 0 then return false
+  encrypt: ptr[Tls13EncryptRequest] is os_https_encrypt_request
+  encrypt.content is content
+  encrypt.content_bytes is content_bytes
+  encrypt.content_type is content_type
+  encrypt.padding_bytes is 0
+  encrypt.inner_plaintext is os_https_inner_plaintext
+  encrypt.inner_capacity is 16640
+  encrypt.record is os_https_record_output
+  encrypt.record_capacity is 16645
+  encrypt.aes_request is os_https_aes_request
+  if not tls13_record_encrypt(state, encrypt) then return false
+  return os_network_tcp_send_stream(context, os_https_record_output, encrypt.record_bytes)
+end
+
+func os_https_record_decrypt(state: ptr[Tls13RecordProtection]) do
+  global os_https_decrypt_failure_sequence, os_https_decrypt_failure_record_bytes
+  if state == 0 or os_https_current_record_bytes == 0 then return false
+  decrypt: ptr[Tls13DecryptRequest] is os_https_decrypt_request
+  decrypt.record is os_https_stream_buffer
+  decrypt.record_bytes is os_https_current_record_bytes
+  decrypt.plaintext is os_https_record_plaintext
+  decrypt.plaintext_capacity is 16640
+  decrypt.aes_request is os_https_aes_request
+  if tls13_record_decrypt(state, decrypt) then return true
+  os_https_decrypt_failure_sequence is state.sequence
+  os_https_decrypt_failure_record_bytes is os_https_current_record_bytes
+  return false
+end
+
+func os_https_client_hello_start(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  if context == 0 or hostname == 0 or hostname_bytes == 0 then return false
+  if os_https_initialized == 0 and not os_https_crypto_init() then return false
+  if not os_https_reset_state() then return false
+  if not entropy_x86_fill(os_https_client_random, 32) then return false
+  if not entropy_x86_fill(os_https_client_private_key, 32) then return false
+  if not x25519(os_https_x25519_workspace, os_https_client_private_key, os_https_x25519_basepoint, os_https_client_public_key) then return false
+
+  client_hello: ptr[Tls13ClientHelloRequest] is os_https_client_hello_request
+  client_hello.hostname is hostname
+  client_hello.hostname_bytes is hostname_bytes
+  client_hello.random is os_https_client_random
+  client_hello.session_id is 0
+  client_hello.session_id_bytes is 0
+  client_hello.public_key is os_https_client_public_key
+  client_hello.record is os_https_client_hello_record
+  client_hello.record_capacity is 512
+  if not tls13_client_hello_build(client_hello) then return false
+  if not os_https_transcript_append(client_hello.handshake, client_hello.handshake_bytes) then return false
+  if not os_network_tcp_open(context, 443) then return false
+  if not os_network_tcp_send_stream(context, client_hello.record, client_hello.record_bytes) then return false
+  return true
+end
+
+func os_https_server_hello_finish() do
+  global os_https_handshake_cursor, os_https_handshake_stage
+  if mem.read8(os_https_stream_buffer) != 22 then return false
+  client_hello: ptr[Tls13ClientHelloRequest] is os_https_client_hello_request
+  server_hello: ptr[Tls13ServerHelloRequest] is os_https_server_hello_request
+  server_hello.record is os_https_stream_buffer
+  server_hello.record_bytes is os_https_current_record_bytes
+  server_hello.expected_session_id is 0
+  server_hello.expected_session_id_bytes is 0
+  server_hello.public_key is os_https_server_public_key
+  if not tls13_server_hello_parse(server_hello) then return false
+  if not os_https_transcript_append(server_hello.handshake, server_hello.handshake_bytes) then return false
+  if not x25519_shared_secret(os_https_x25519_workspace, os_https_client_private_key, os_https_server_public_key, os_https_shared_secret) then return false
+
+  secrets: ptr[Tls13HandshakeSecrets] is os_https_handshake_secrets
+  secrets.early_secret is os_https_early_secret
+  secrets.derived_secret is os_https_initial_derived_secret
+  secrets.handshake_secret is os_https_handshake_secret
+  secrets.client_traffic_secret is os_https_client_handshake_traffic
+  secrets.server_traffic_secret is os_https_server_handshake_traffic
+  secrets.client_key is os_https_client_handshake_key
+  secrets.client_iv is os_https_client_handshake_iv
+  secrets.server_key is os_https_server_handshake_key
+  secrets.server_iv is os_https_server_handshake_iv
+  secrets.client_finished_key is os_https_client_finished_key
+  secrets.server_finished_key is os_https_server_finished_key
+  handshake_request: ptr[Tls13HandshakeRequest] is os_https_handshake_request
+  handshake_request.client_hello is client_hello.handshake
+  handshake_request.client_hello_bytes is client_hello.handshake_bytes
+  handshake_request.server_hello is server_hello.handshake
+  handshake_request.server_hello_bytes is server_hello.handshake_bytes
+  handshake_request.shared_secret is os_https_shared_secret
+  handshake_request.shared_secret_bytes is 32
+  handshake_request.secrets is os_https_handshake_secrets
+  if not tls13_handshake_derive(os_https_handshake_workspace, handshake_request) then return false
+  if not tls13_record_init(os_https_client_record_state, os_https_client_record_buffers, os_https_client_handshake_key, os_https_client_handshake_iv) then return false
+  if not tls13_record_init(os_https_server_record_state, os_https_server_record_buffers, os_https_server_handshake_key, os_https_server_handshake_iv) then return false
+  if not os_https_consume_outer_record() then return false
+  os_https_handshake_cursor is os_https_transcript_length
+  os_https_handshake_stage is 0
+  return true
+end
+
+func os_https_prepare_handshake(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  if not os_https_client_hello_start(context, hostname, hostname_bytes) then return false
+  if not os_https_receive_outer_record(context) then return false
+  return os_https_server_hello_finish()
+end
+
+func os_https_complete_handshake(context: ptr[VirtioNetContext], finished_data: ptr) do
+  if context == 0 or finished_data == 0 then return false
+  if not os_https_transcript_hash(os_https_handshake_cursor, os_https_digest) then return false
+  if not tls13_finished_verify(os_https_hmac_workspace, os_https_server_finished_key, os_https_digest, finished_data, ptr.add(os_https_digest, 32)) then return false
+  server_finished_end: u64 is os_https_handshake_cursor + 36
+  if not os_https_transcript_hash(server_finished_end, os_https_digest) then return false
+
+  application_secrets: ptr[Tls13ApplicationSecrets] is os_https_application_secrets
+  application_secrets.derived_secret is os_https_application_derived_secret
+  application_secrets.master_secret is os_https_master_secret
+  application_secrets.client_traffic_secret is os_https_client_application_traffic
+  application_secrets.server_traffic_secret is os_https_server_application_traffic
+  application_secrets.client_key is os_https_client_application_key
+  application_secrets.client_iv is os_https_client_application_iv
+  application_secrets.server_key is os_https_server_application_key
+  application_secrets.server_iv is os_https_server_application_iv
+  application_request: ptr[Tls13ApplicationRequest] is os_https_application_request
+  application_request.handshake_secret is os_https_handshake_secret
+  application_request.transcript_hash is os_https_digest
+  application_request.secrets is os_https_application_secrets
+  if not tls13_application_derive(os_https_handshake_workspace, application_request) then return false
+
+  mem.write8(os_https_finished_message, 20)
+  mem.write8(ptr.add(os_https_finished_message, 1), 0)
+  mem.write8(ptr.add(os_https_finished_message, 2), 0)
+  mem.write8(ptr.add(os_https_finished_message, 3), 32)
+  if not tls13_finished_compute(os_https_hmac_workspace, os_https_client_finished_key, os_https_digest, ptr.add(os_https_finished_message, 4)) then return false
+  if not os_https_transcript_append(os_https_finished_message, 36) then return false
+  if not os_https_record_encrypt_send(context, os_https_client_record_state, os_https_finished_message, 36, 22) then return false
+  if not tls13_record_init(os_https_client_record_state, os_https_client_record_buffers, os_https_client_application_key, os_https_client_application_iv) then return false
+  if not tls13_record_init(os_https_server_record_state, os_https_server_record_buffers, os_https_server_application_key, os_https_server_application_iv) then return false
+  return true
+end
+
+func os_https_process_handshake_messages(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  global os_https_handshake_cursor, os_https_handshake_stage
+  while os_https_transcript_length - os_https_handshake_cursor >= 4 do
+    message: ptr is ptr.add(os_https_transcript_buffer, os_https_handshake_cursor)
+    body_bytes: u64 is tls13_message_u24(message, 1)
+    message_bytes: u64 is body_bytes + 4
+    if message_bytes > os_https_transcript_length - os_https_handshake_cursor then return true
+    message_type: u64 is mem.read8(message)
+    stage: u64 is os_https_handshake_stage
+    if stage == 0 then
+      if message_type != 8 or not tls13_encrypted_extensions_parse(message, message_bytes) then return false
+      os_https_handshake_stage is 1
+    end
+    if stage == 1 then
+      if message_type != 11 then return false
+      if not tls13_certificate_message_parse(message, message_bytes, os_https_certificate_list) then return false
+      if not os_https_validate_certificates(hostname, hostname_bytes) then return false
+      os_https_handshake_stage is 2
+    end
+    if stage == 2 then
+      if message_type != 15 then return false
+      if not os_https_transcript_hash(os_https_handshake_cursor, os_https_digest) then return false
+      parsed_verify: ptr[Tls13CertificateVerifyMessage] is os_https_certificate_verify_message
+      if not tls13_certificate_verify_message_parse(message, message_bytes, parsed_verify) then return false
+      verify: ptr[Tls13CertificateVerifyRequest] is os_https_certificate_verify_request
+      verify.certificate is os_https_certificate0
+      verify.signature_scheme is parsed_verify.signature_scheme
+      verify.signature is parsed_verify.signature
+      verify.signature_bytes is parsed_verify.signature_bytes
+      verify.transcript_hash is os_https_digest
+      verify.rsa_workspace is os_https_rsa_sha_workspace
+      verify.rsa_request is os_https_rsa_sha_request
+      verify.signed_message is os_https_certificate_verify_input
+      verify.signed_message_capacity is 130
+      if not tls13_certificate_verify_server(verify) then return false
+      os_https_handshake_stage is 3
+    end
+    if stage == 3 then
+      if message_type != 20 or message_bytes != 36 then return false
+      finished_data: ptr is tls13_finished_message_parse(message, message_bytes)
+      if finished_data == 0 then return false
+      if not os_https_complete_handshake(context, finished_data) then return false
+      os_https_handshake_stage is 4
+    end
+    if stage > 3 then return false
+    os_https_handshake_cursor is os_https_handshake_cursor + message_bytes
+    if os_https_handshake_stage == 4 then return true
+  end
+  return true
+end
+
+func os_https_receive_handshake(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  if context == 0 then return false
+  record_count: u64 is 0
+  while record_count < 32 and os_https_handshake_stage != 4 do
+    if not os_browser_cooperative_yield() then return false
+    if not os_https_receive_outer_record(context) then return false
+    outer_type: u64 is mem.read8(os_https_stream_buffer)
+    if outer_type == 20 then
+      if os_https_current_record_bytes != 6 or mem.read8(ptr.add(os_https_stream_buffer, 5)) != 1 then return false
+      if not os_https_consume_outer_record() then return false
+    end
+    if outer_type == 23 then
+      if not os_https_record_decrypt(os_https_server_record_state) then return false
+      decrypt: ptr[Tls13DecryptRequest] is os_https_decrypt_request
+      if decrypt.content_type == 21 then return false
+      if decrypt.content_type != 22 then return false
+      if not os_https_transcript_append(os_https_record_plaintext, decrypt.content_bytes) then return false
+      if not os_https_consume_outer_record() then return false
+      if not os_https_process_handshake_messages(context, hostname, hostname_bytes) then return false
+    end
+    if outer_type != 20 and outer_type != 23 then return false
+    record_count += 1
+  end
+  return os_https_handshake_stage == 4
+end
+
+func os_https_async_fail(context: ptr[VirtioNetContext]) do
+  global os_https_async_state, os_https_async_record_count, os_https_prehandshaken
+  os_https_async_state is 0
+  os_https_async_record_count is 0
+  os_https_prehandshaken is 0
+  if context != 0 then os_network_tcp_close(context)
+  return 2
+end
+
+func os_https_handshake_begin(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  global os_https_async_state, os_https_async_deadline, os_https_async_record_count, os_https_prehandshaken
+  os_https_async_state is 0
+  os_https_async_record_count is 0
+  os_https_prehandshaken is 0
+  if not os_https_client_hello_start(context, hostname, hostname_bytes) then
+    if context != 0 then os_network_tcp_close(context)
+    return false
+  end
+  base_mhz: u64 is 0
+  if cpu.cpuid_eax(0, 0) >= 22 then base_mhz is cpu.cpuid_eax(22, 0) & 65535
+  if base_mhz < 100 or base_mhz > 10000 then base_mhz is 2000
+  now: u64 is cpu.rdtsc()
+  os_https_async_deadline is now + base_mhz * 1000 * 15000
+  if os_https_async_deadline < now then os_https_async_deadline is u64("0xffffffffffffffff")
+  os_https_async_state is 1
+  return true
+end
+
+func os_https_handshake_cancel(context: ptr[VirtioNetContext]) do
+  global os_https_async_state, os_https_async_record_count, os_https_prehandshaken
+  active: bool is os_https_async_state != 0 or os_https_prehandshaken != 0
+  os_https_async_state is 0
+  os_https_async_record_count is 0
+  os_https_prehandshaken is 0
+  if active and context != 0 then return os_network_tcp_close(context)
+  return true
+end
+
+func os_https_handshake_record_process(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64) do
+  outer_type: u64 is mem.read8(os_https_stream_buffer)
+  if outer_type == 20 then
+    if os_https_current_record_bytes != 6 then return false
+    if mem.read8(ptr.add(os_https_stream_buffer, 5)) != 1 then return false
+    return os_https_consume_outer_record()
+  end
+  if outer_type != 23 then return false
+  if not os_https_record_decrypt(os_https_server_record_state) then return false
+  decrypt: ptr[Tls13DecryptRequest] is os_https_decrypt_request
+  if decrypt.content_type != 22 then return false
+  if not os_https_transcript_append(os_https_record_plaintext, decrypt.content_bytes) then return false
+  if not os_https_consume_outer_record() then return false
+  return os_https_process_handshake_messages(context, hostname, hostname_bytes)
+end
+
+func os_https_handshake_poll(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64, receive_budget: u64) do
+  global os_https_async_state, os_https_async_record_count, os_https_prehandshaken
+  if context == 0 or hostname == 0 or hostname_bytes == 0 then return os_https_async_fail(context)
+  if receive_budget == 0 or os_https_async_state == 0 then return 2
+  if cpu.rdtsc() >= os_https_async_deadline then return os_https_async_fail(context)
+  if os_https_async_record_count >= 32 then return os_https_async_fail(context)
+  record_status: u64 is os_https_receive_outer_record_poll(context, receive_budget)
+  if record_status == 0 then return 0
+  if record_status != 1 then return os_https_async_fail(context)
+  if os_https_async_state == 1 then
+    if not os_https_server_hello_finish() then return os_https_async_fail(context)
+    os_https_async_record_count += 1
+    os_https_async_state is 2
+    return 0
+  end
+  if os_https_async_state != 2 then return os_https_async_fail(context)
+  if not os_https_handshake_record_process(context, hostname, hostname_bytes) then return os_https_async_fail(context)
+  os_https_async_record_count += 1
+  if os_https_handshake_stage != 4 then return 0
+  os_https_async_state is 0
+  os_https_async_record_count is 0
+  os_https_prehandshaken is 1
+  return 1
+end
+
+func os_https_receive_http(context: ptr[VirtioNetContext]) do
+  global os_browser_length, os_https_receive_error
+  os_https_receive_error is 0
+  if context == 0 then
+    os_https_receive_error is 1
+    return false
+  end
+  os_browser_length is 0
+  if not net_zero(os_browser_buffer, 2097152) then
+    os_https_receive_error is 2
+    return false
+  end
+  record_count: u64 is 0
+  while record_count < 256 do
+    if not os_browser_cooperative_yield() then
+      os_https_receive_error is 10
+      return false
+    end
+    if not os_https_receive_outer_record(context) then
+      if os_network_tcp_closed != 0 then return os_network_http_finish(true)
+      os_https_receive_error is 3
+      return false
+    end
+    if mem.read8(os_https_stream_buffer) != 23 then
+      os_https_receive_error is 4
+      return false
+    end
+    if not os_https_record_decrypt(os_https_server_record_state) then
+      os_https_receive_error is 5
+      return false
+    end
+    decrypt: ptr[Tls13DecryptRequest] is os_https_decrypt_request
+    if decrypt.content_type == 23 then
+      if decrypt.content_bytes > 2097151 - os_browser_length then
+        os_https_receive_error is 6
+        return false
+      end
+      if not net_copy(ptr.add(os_browser_buffer, os_browser_length), os_https_record_plaintext, decrypt.content_bytes) then
+        os_https_receive_error is 7
+        return false
+      end
+      os_browser_length is os_browser_length + decrypt.content_bytes
+      mem.write8(ptr.add(os_browser_buffer, os_browser_length), 0)
+    end
+    if decrypt.content_type == 21 then
+      close_notify: bool is decrypt.content_bytes == 2
+      if close_notify then close_notify is mem.read8(ptr.add(os_https_record_plaintext, 1)) == 0
+      if not close_notify then
+        os_https_receive_error is 8
+        return false
+      end
+      if not os_https_consume_outer_record() then
+        os_https_receive_error is 9
+        return false
+      end
+      return os_network_http_finish(true)
+    end
+    if decrypt.content_type != 22 and decrypt.content_type != 23 then
+      os_https_receive_error is 10
+      return false
+    end
+    if not os_https_consume_outer_record() then
+      os_https_receive_error is 11
+      return false
+    end
+    response_state: u64 is http1_response_inspect(os_browser_buffer, os_browser_length, false, os_http_response_info)
+    if response_state == 2 then
+      os_https_receive_error is 12
+      return false
+    end
+    if response_state == 1 then
+      finished: bool is os_network_http_finish(false)
+      if not finished then os_https_receive_error is 13
+      return finished
+    end
+    record_count += 1
+  end
+  os_https_receive_error is 14
+  return false
+end
+
+func os_network_https_get(context: ptr[VirtioNetContext], hostname: ptr, hostname_bytes: u64, request: ptr, request_bytes: u64) do
+  global os_https_last_error, os_https_prehandshaken
+  os_https_last_error is 0
+  if context == 0 or hostname == 0 or hostname_bytes == 0 then
+    os_https_last_error is 1
+    return false
+  end
+  if request == 0 or request_bytes == 0 or request_bytes > 16383 then
+    os_https_last_error is 2
+    return false
+  end
+  if os_https_prehandshaken != 0 then
+    os_https_prehandshaken is 0
+  else
+    if not os_https_prepare_handshake(context, hostname, hostname_bytes) then
+      os_https_last_error is 3
+      return false
+    end
+    if not os_https_receive_handshake(context, hostname, hostname_bytes) then
+      os_https_last_error is 4
+      return false
+    end
+  end
+  if not os_https_record_encrypt_send(context, os_https_client_record_state, request, request_bytes, 23) then
+    os_https_last_error is 5
+    return false
+  end
+  received: bool is os_https_receive_http(context)
+  if not received then os_https_last_error is 6
+  closed: bool is os_network_tcp_close(context)
+  return received
+end

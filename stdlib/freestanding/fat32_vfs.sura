@@ -1,0 +1,433 @@
+# Fixed-capacity VFS adapter for the writable FAT32/LFN foundation.
+#
+# Relative paths contain canonical UTF-8 components separated by '/'. The
+# caller owns every handle and scratch buffer. Open files are exclusive so a
+# second handle cannot retain stale FAT metadata while the first resizes it.
+
+import "fat32.sura"
+import "vfs.sura"
+
+struct Fat32VfsHandle do
+  # The prefix deliberately matches Fat32DirEntry exactly.
+  valid: u64
+  attributes: u64
+  first_cluster: u64
+  file_size: u64
+  directory_lba: u64
+  directory_offset: u64
+  directory_cluster: u64
+  directory_index: u64
+  lfn_start_index: u64
+  lfn_entry_count: u64
+  owner: ptr
+  active: u64
+  open_flags: u64
+end
+
+struct Fat32Vfs do
+  volume: ptr[Fat32Volume]
+  sector_buffer: ptr
+  handles: ptr
+  handle_capacity: u64
+  scratch_entry: ptr[Fat32DirEntry]
+  long_name: ptr[Fat32LongName]
+  input_utf16: ptr
+  input_utf16_capacity: u64
+  disk_utf16: ptr
+  disk_utf16_capacity: u64
+  short_name: ptr
+  short_name_capacity: u64
+  initialized: u64
+end
+
+struct Fat32VfsConfig do
+  volume: ptr[Fat32Volume]
+  sector_buffer: ptr
+  handles: ptr
+  handle_capacity: u64
+  scratch_entry: ptr[Fat32DirEntry]
+  long_name: ptr[Fat32LongName]
+  input_utf16: ptr
+  input_utf16_capacity: u64
+  disk_utf16: ptr
+  disk_utf16_capacity: u64
+  short_name: ptr
+  short_name_capacity: u64
+end
+
+func fat32_vfs_handle_at(filesystem: ptr[Fat32Vfs], index: u64) do
+  if filesystem == 0 or index >= filesystem.handle_capacity then return 0
+  return ptr.index(filesystem.handles, index, sizeof(Fat32VfsHandle))
+end
+
+func fat32_vfs_clear_handle(handle: ptr[Fat32VfsHandle]) do
+  if handle == 0 then return false
+  handle.valid is 0
+  handle.attributes is 0
+  handle.first_cluster is 0
+  handle.file_size is 0
+  handle.directory_lba is 0
+  handle.directory_offset is 0
+  handle.directory_cluster is 0
+  handle.directory_index is 0
+  handle.lfn_start_index is 0
+  handle.lfn_entry_count is 0
+  handle.active is 0
+  handle.open_flags is 0
+  return true
+end
+
+func fat32_vfs_init(filesystem: ptr[Fat32Vfs], config: ptr[Fat32VfsConfig]) do
+  if filesystem == 0 or config == 0 then return false
+  if config.volume == 0 or config.sector_buffer == 0 or config.handles == 0 then return false
+  if config.scratch_entry == 0 or config.long_name == 0 then return false
+  if config.input_utf16 == 0 or config.disk_utf16 == 0 or config.short_name == 0 then return false
+  if config.handle_capacity == 0 or config.handle_capacity > 1024 then return false
+  if config.input_utf16_capacity < 255 or config.disk_utf16_capacity < 260 then return false
+  if config.short_name_capacity < 11 then return false
+  volume: ptr[Fat32Volume] is config.volume
+  if volume.device == 0 or not fat32_cluster_valid(volume, volume.root_cluster) then return false
+  filesystem.volume is config.volume
+  filesystem.sector_buffer is config.sector_buffer
+  filesystem.handles is config.handles
+  filesystem.handle_capacity is config.handle_capacity
+  filesystem.scratch_entry is config.scratch_entry
+  filesystem.long_name is config.long_name
+  filesystem.input_utf16 is config.input_utf16
+  filesystem.input_utf16_capacity is config.input_utf16_capacity
+  filesystem.disk_utf16 is config.disk_utf16
+  filesystem.disk_utf16_capacity is config.disk_utf16_capacity
+  filesystem.short_name is config.short_name
+  filesystem.short_name_capacity is config.short_name_capacity
+  filesystem.initialized is 1
+  index: u64 is 0
+  while index < filesystem.handle_capacity do
+    handle: ptr[Fat32VfsHandle] is fat32_vfs_handle_at(filesystem, index)
+    handle.owner is filesystem
+    if not fat32_vfs_clear_handle(handle) then return false
+    index += 1
+  end
+  return true
+end
+
+func fat32_vfs_configure_name(filesystem: ptr[Fat32Vfs], text: ptr, length: u64, output: ptr, output_capacity: u64) do
+  if filesystem == 0 or filesystem.initialized == 0 then return 0
+  name: ptr[Fat32LongName] is filesystem.long_name
+  name.utf8 is text
+  name.utf8_length is length
+  name.utf8_capacity is length
+  if output != 0 then
+    name.utf8 is output
+    name.utf8_length is 0
+    name.utf8_capacity is output_capacity
+  end
+  name.input_utf16 is filesystem.input_utf16
+  name.input_utf16_capacity is filesystem.input_utf16_capacity
+  name.input_utf16_length is 0
+  name.disk_utf16 is filesystem.disk_utf16
+  name.disk_utf16_capacity is filesystem.disk_utf16_capacity
+  name.disk_utf16_length is 0
+  name.short_name is filesystem.short_name
+  name.short_name_capacity is filesystem.short_name_capacity
+  name.excluded_lba is u64("0xffffffffffffffff")
+  name.excluded_offset is u64("0xffffffffffffffff")
+  name.sequence is 0
+  name.checksum is 0
+  return name
+end
+
+func fat32_vfs_relative_path_valid(path: ptr, path_length: u64, allow_root: bool) do
+  if path_length == 0 then return allow_root
+  if path == 0 or mem.read8(path) == 47 or mem.read8(ptr.add(path, path_length - 1)) == 47 then return false
+  start: u64 is 0
+  index: u64 is 0
+  while index <= path_length do
+    boundary: bool is index == path_length
+    if not boundary then boundary is mem.read8(ptr.add(path, index)) == 47
+    if boundary then
+      length: u64 is index - start
+      if length == 0 then return false
+      if length == 1 and mem.read8(ptr.add(path, start)) == 46 then return false
+      if length == 2 and mem.read8(ptr.add(path, start)) == 46 and mem.read8(ptr.add(path, start + 1)) == 46 then return false
+      start is index + 1
+    elif mem.read8(ptr.add(path, index)) == 0 then
+      return false
+    end
+    index += 1
+  end
+  return true
+end
+
+func fat32_vfs_resolve(filesystem: ptr[Fat32Vfs], path: ptr, path_length: u64, result: ptr[Fat32DirEntry]) do
+  if filesystem == 0 or result == 0 or filesystem.initialized == 0 then return false
+  fat32_clear_entry(result)
+  if not fat32_vfs_relative_path_valid(path, path_length, true) then return false
+  volume: ptr[Fat32Volume] is filesystem.volume
+  if path_length == 0 then
+    result.valid is 1
+    result.attributes is 16
+    result.first_cluster is volume.root_cluster
+    result.directory_cluster is volume.root_cluster
+    return true
+  end
+  directory_cluster: u64 is volume.root_cluster
+  start: u64 is 0
+  index: u64 is 0
+  while index <= path_length do
+    boundary: bool is index == path_length
+    if not boundary then boundary is mem.read8(ptr.add(path, index)) == 47
+    if boundary then
+      component_length: u64 is index - start
+      name: ptr[Fat32LongName] is fat32_vfs_configure_name(filesystem, ptr.add(path, start), component_length, 0, 0)
+      if name == 0 then return false
+      if not fat32_find_long(volume, directory_cluster, name, result, filesystem.sector_buffer) then return false
+      if index < path_length then
+        if (result.attributes & 16) == 0 or not fat32_cluster_valid(volume, result.first_cluster) then return false
+        directory_cluster is result.first_cluster
+      end
+      start is index + 1
+    end
+    index += 1
+  end
+  return true
+end
+
+func fat32_vfs_resolve_parent(filesystem: ptr[Fat32Vfs], path: ptr, path_length: u64, parent: ptr[Fat32DirEntry], leaf_offset: ptr) do
+  if filesystem == 0 or parent == 0 or leaf_offset == 0 then return false
+  if not fat32_vfs_relative_path_valid(path, path_length, false) then return false
+  offset: u64 is 0
+  index: u64 is 0
+  while index < path_length do
+    if mem.read8(ptr.add(path, index)) == 47 then offset is index + 1
+    index += 1
+  end
+  parent_length: u64 is 0
+  if offset != 0 then parent_length is offset - 1
+  if not fat32_vfs_resolve(filesystem, path, parent_length, parent) then return false
+  if (parent.attributes & 16) == 0 or not fat32_cluster_valid(filesystem.volume, parent.first_cluster) then return false
+  mem.write64(leaf_offset, offset)
+  return true
+end
+
+func fat32_vfs_free_handle(filesystem: ptr[Fat32Vfs]) do
+  index: u64 is 0
+  while index < filesystem.handle_capacity do
+    handle: ptr[Fat32VfsHandle] is fat32_vfs_handle_at(filesystem, index)
+    if handle.active == 0 then return handle
+    index += 1
+  end
+  return 0
+end
+
+func fat32_vfs_handle_conflict(filesystem: ptr[Fat32Vfs], entry: ptr[Fat32DirEntry]) do
+  if filesystem == 0 or entry == 0 then return true
+  index: u64 is 0
+  while index < filesystem.handle_capacity do
+    handle: ptr[Fat32VfsHandle] is fat32_vfs_handle_at(filesystem, index)
+    if handle.active != 0 and handle.directory_lba == entry.directory_lba and handle.directory_offset == entry.directory_offset then return true
+    index += 1
+  end
+  return false
+end
+
+func fat32_vfs_read_callback(handle_address: ptr, offset: u64, buffer: ptr, count: u64) do
+  handle: ptr[Fat32VfsHandle] is handle_address
+  if handle == 0 or handle.active == 0 or buffer == 0 then return u64("0xffffffffffffffff")
+  if (handle.attributes & 16) != 0 then return u64("0xffffffffffffffff")
+  if offset >= handle.file_size then return 0
+  available: u64 is handle.file_size - offset
+  if count > available then count is available
+  filesystem: ptr[Fat32Vfs] is handle.owner
+  entry: ptr[Fat32DirEntry] is handle
+  if not fat32_read_range(filesystem.volume, entry, offset, buffer, count, filesystem.sector_buffer) then return u64("0xffffffffffffffff")
+  return count
+end
+
+func fat32_vfs_write_callback(handle_address: ptr, offset: u64, buffer: ptr, count: u64) do
+  handle: ptr[Fat32VfsHandle] is handle_address
+  if handle == 0 or handle.active == 0 or buffer == 0 then return u64("0xffffffffffffffff")
+  if (handle.attributes & 17) != 0 then return u64("0xffffffffffffffff")
+  if offset > u64("0xffffffff") or count > u64("0xffffffff") - offset then return u64("0xffffffffffffffff")
+  filesystem: ptr[Fat32Vfs] is handle.owner
+  entry: ptr[Fat32DirEntry] is handle
+  end_offset: u64 is offset + count
+  if end_offset > handle.file_size then
+    if not fat32_resize_file(filesystem.volume, entry, end_offset, filesystem.sector_buffer) then return u64("0xffffffffffffffff")
+  end
+  if count != 0 then
+    if not fat32_write_range(filesystem.volume, entry, offset, buffer, count, filesystem.sector_buffer) then return u64("0xffffffffffffffff")
+  end
+  return count
+end
+
+func fat32_vfs_resize_callback(handle_address: ptr, size: u64) do
+  handle: ptr[Fat32VfsHandle] is handle_address
+  if handle == 0 or handle.active == 0 or (handle.attributes & 17) != 0 then return 1
+  filesystem: ptr[Fat32Vfs] is handle.owner
+  entry: ptr[Fat32DirEntry] is handle
+  if fat32_resize_file(filesystem.volume, entry, size, filesystem.sector_buffer) then return 0
+  return 1
+end
+
+func fat32_vfs_flush_callback(handle_address: ptr) do
+  handle: ptr[Fat32VfsHandle] is handle_address
+  if handle == 0 or handle.active == 0 then return 1
+  filesystem: ptr[Fat32Vfs] is handle.owner
+  volume: ptr[Fat32Volume] is filesystem.volume
+  if block_flush(volume.device) then return 0
+  return 1
+end
+
+func fat32_vfs_close_callback(handle_address: ptr) do
+  handle: ptr[Fat32VfsHandle] is handle_address
+  if handle == 0 or handle.active == 0 then return 1
+  handle.active is 0
+  handle.open_flags is 0
+  return 0
+end
+
+func fat32_vfs_open_callback(context: ptr, path: ptr, path_length: u64, flags: u64, file_address: ptr) do
+  filesystem: ptr[Fat32Vfs] is context
+  file: ptr[VfsFile] is file_address
+  if filesystem == 0 or file == 0 or filesystem.initialized == 0 then return 1
+  handle: ptr[Fat32VfsHandle] is fat32_vfs_free_handle(filesystem)
+  if handle == 0 then return 1
+  entry: ptr[Fat32DirEntry] is handle
+  found: bool is fat32_vfs_resolve(filesystem, path, path_length, entry)
+  if not found and (flags & vfs_open_create) != 0 then
+    leaf_offset: u64 is 0
+    parent: ptr[Fat32DirEntry] is filesystem.scratch_entry
+    if not fat32_vfs_resolve_parent(filesystem, path, path_length, parent, addr_of(leaf_offset)) then return 1
+    name: ptr[Fat32LongName] is fat32_vfs_configure_name(filesystem, ptr.add(path, leaf_offset), path_length - leaf_offset, 0, 0)
+    if name == 0 then return 1
+    found is fat32_create_long(filesystem.volume, parent.first_cluster, name, false, entry, filesystem.sector_buffer)
+  end
+  if not found or (entry.attributes & 16) != 0 then return 1
+  if fat32_vfs_handle_conflict(filesystem, entry) then return 1
+  if (flags & vfs_open_truncate) != 0 then
+    if (flags & vfs_open_write) == 0 then return 1
+    if not fat32_resize_file(filesystem.volume, entry, 0, filesystem.sector_buffer) then return 1
+  end
+  handle.owner is filesystem
+  handle.active is 1
+  handle.open_flags is flags
+  file.active is 1
+  file.handle is handle
+  file.size is handle.file_size
+  file.read_file is addr_of(fat32_vfs_read_callback)
+  file.write_file is addr_of(fat32_vfs_write_callback)
+  file.resize_file is addr_of(fat32_vfs_resize_callback)
+  file.flush_file is addr_of(fat32_vfs_flush_callback)
+  file.close_file is addr_of(fat32_vfs_close_callback)
+  return 0
+end
+
+func fat32_vfs_sync_callback(context: ptr) do
+  filesystem: ptr[Fat32Vfs] is context
+  if filesystem == 0 or filesystem.initialized == 0 then return 1
+  volume: ptr[Fat32Volume] is filesystem.volume
+  if block_flush(volume.device) then return 0
+  return 1
+end
+
+func fat32_vfs_stat_callback(context: ptr, path: ptr, path_length: u64, stat_address: ptr) do
+  filesystem: ptr[Fat32Vfs] is context
+  stat: ptr[VfsStat] is stat_address
+  if filesystem == 0 or stat == 0 then return 1
+  entry: ptr[Fat32DirEntry] is filesystem.scratch_entry
+  if not fat32_vfs_resolve(filesystem, path, path_length, entry) then return 1
+  stat.valid is 1
+  stat.kind is vfs_kind_file
+  stat.mode is 420
+  if (entry.attributes & 16) != 0 then
+    stat.kind is vfs_kind_directory
+    stat.mode is 493
+  end
+  stat.size is entry.file_size
+  stat.owner is 0
+  stat.group is 0
+  stat.created_time is 0
+  stat.modified_time is 0
+  stat.flags is entry.attributes
+  return 0
+end
+
+func fat32_vfs_create_callback(context: ptr, path: ptr, path_length: u64, kind: u64, mode: u64) do
+  filesystem: ptr[Fat32Vfs] is context
+  if filesystem == 0 or filesystem.initialized == 0 then return 1
+  if kind != vfs_kind_file and kind != vfs_kind_directory then return 1
+  leaf_offset: u64 is 0
+  parent: ptr[Fat32DirEntry] is filesystem.scratch_entry
+  if not fat32_vfs_resolve_parent(filesystem, path, path_length, parent, addr_of(leaf_offset)) then return 1
+  parent_cluster: u64 is parent.first_cluster
+  name: ptr[Fat32LongName] is fat32_vfs_configure_name(filesystem, ptr.add(path, leaf_offset), path_length - leaf_offset, 0, 0)
+  if name == 0 then return 1
+  directory: bool is kind == vfs_kind_directory
+  if fat32_create_long(filesystem.volume, parent_cluster, name, directory, parent, filesystem.sector_buffer) then return 0
+  return 1
+end
+
+func fat32_vfs_remove_callback(context: ptr, path: ptr, path_length: u64, recursive: bool) do
+  filesystem: ptr[Fat32Vfs] is context
+  if filesystem == 0 or path_length == 0 then return 1
+  entry: ptr[Fat32DirEntry] is filesystem.scratch_entry
+  if not fat32_vfs_resolve(filesystem, path, path_length, entry) then return 1
+  if fat32_vfs_handle_conflict(filesystem, entry) then return 1
+  if fat32_delete_entry(filesystem.volume, entry, filesystem.sector_buffer) then return 0
+  return 1
+end
+
+func fat32_vfs_rename_callback(context: ptr, old_path: ptr, old_length: u64, new_path: ptr, new_length: u64) do
+  filesystem: ptr[Fat32Vfs] is context
+  if filesystem == 0 or old_length == 0 or new_length == 0 then return 1
+  leaf_offset: u64 is 0
+  parent: ptr[Fat32DirEntry] is filesystem.scratch_entry
+  if not fat32_vfs_resolve_parent(filesystem, old_path, old_length, parent, addr_of(leaf_offset)) then return 1
+  old_parent_cluster: u64 is parent.first_cluster
+  if not fat32_vfs_resolve_parent(filesystem, new_path, new_length, parent, addr_of(leaf_offset)) then return 1
+  new_parent_cluster: u64 is parent.first_cluster
+  if old_parent_cluster != new_parent_cluster then return 1
+  if not fat32_vfs_resolve(filesystem, old_path, old_length, parent) then return 1
+  if fat32_vfs_handle_conflict(filesystem, parent) then return 1
+  name: ptr[Fat32LongName] is fat32_vfs_configure_name(filesystem, ptr.add(new_path, leaf_offset), new_length - leaf_offset, 0, 0)
+  if name == 0 then return 1
+  if fat32_rename_long(filesystem.volume, parent, name, filesystem.sector_buffer) then return 0
+  return 1
+end
+
+func fat32_vfs_list_callback(context: ptr, path: ptr, path_length: u64, ordinal: u64, entry_address: ptr) do
+  filesystem: ptr[Fat32Vfs] is context
+  entry: ptr[VfsDirEntry] is entry_address
+  if filesystem == 0 or entry == 0 or entry.name == 0 or entry.name_capacity == 0 then return 1
+  scratch: ptr[Fat32DirEntry] is filesystem.scratch_entry
+  if not fat32_vfs_resolve(filesystem, path, path_length, scratch) then return 1
+  if (scratch.attributes & 16) == 0 or not fat32_cluster_valid(filesystem.volume, scratch.first_cluster) then return 1
+  directory_cluster: u64 is scratch.first_cluster
+  name: ptr[Fat32LongName] is fat32_vfs_configure_name(filesystem, 0, 0, entry.name, entry.name_capacity)
+  if name == 0 then return 1
+  if not fat32_list_long(filesystem.volume, directory_cluster, ordinal, scratch, name, filesystem.sector_buffer) then return 1
+  entry.valid is 1
+  entry.kind is vfs_kind_file
+  entry.mode is 420
+  if (scratch.attributes & 16) != 0 then
+    entry.kind is vfs_kind_directory
+    entry.mode is 493
+  end
+  entry.size is scratch.file_size
+  entry.name_length is name.utf8_length
+  entry.flags is scratch.attributes
+  return 0
+end
+
+func fat32_vfs_bind(filesystem: ptr[Fat32Vfs], interface: ptr[VfsFileSystem]) do
+  if filesystem == 0 or filesystem.initialized == 0 or interface == 0 then return false
+  interface.context is filesystem
+  interface.open_file is addr_of(fat32_vfs_open_callback)
+  interface.sync_filesystem is addr_of(fat32_vfs_sync_callback)
+  interface.stat_path is addr_of(fat32_vfs_stat_callback)
+  interface.create_node is addr_of(fat32_vfs_create_callback)
+  interface.remove_node is addr_of(fat32_vfs_remove_callback)
+  interface.rename_node is addr_of(fat32_vfs_rename_callback)
+  interface.list_directory is addr_of(fat32_vfs_list_callback)
+  return true
+end

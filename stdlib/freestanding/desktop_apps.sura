@@ -14,6 +14,8 @@ struct TextEditorState do
   capacity: u64
   length: u64
   dirty: u64
+  cursor: u64
+  selection_anchor: u64
 end
 
 struct CalculatorState do
@@ -45,27 +47,153 @@ func text_editor_init(state: ptr[TextEditorState], buffer: ptr, capacity: u64) d
   state.capacity is capacity
   state.length is 0
   state.dirty is 0
+  state.cursor is 0
+  state.selection_anchor is 0
   mem.write8(buffer, 0)
+  return true
+end
+
+func text_editor_boundary(state: ptr[TextEditorState], index: u64) do
+  if state == 0 or state.buffer == 0 or index > state.length then return false
+  if index == 0 or index == state.length then return true
+  return (mem.read8(ptr.add(state.buffer, index)) & 192) != 128
+end
+
+func text_editor_selection_start(state: ptr[TextEditorState]) do
+  if state == 0 then return 0
+  if state.cursor < state.selection_anchor then return state.cursor
+  return state.selection_anchor
+end
+
+func text_editor_selection_end(state: ptr[TextEditorState]) do
+  if state == 0 then return 0
+  if state.cursor > state.selection_anchor then return state.cursor
+  return state.selection_anchor
+end
+
+func text_editor_has_selection(state: ptr[TextEditorState]) do
+  if state == 0 then return false
+  return state.cursor != state.selection_anchor
+end
+
+func text_editor_set_cursor(state: ptr[TextEditorState], index: u64, extend: bool) do
+  if not text_editor_boundary(state, index) then return false
+  if not extend then state.selection_anchor is index
+  state.cursor is index
+  return true
+end
+
+func text_editor_previous_index(state: ptr[TextEditorState], index: u64) do
+  if state == 0 or index == 0 or index > state.length then return 0
+  index -= 1
+  while index > 0 and (mem.read8(ptr.add(state.buffer, index)) & 192) == 128 do
+    index -= 1
+  end
+  return index
+end
+
+func text_editor_next_index(state: ptr[TextEditorState], index: u64) do
+  if state == 0 or index >= state.length then return state.length
+  index += 1
+  while index < state.length and (mem.read8(ptr.add(state.buffer, index)) & 192) == 128 do
+    index += 1
+  end
+  return index
+end
+
+func text_editor_move_left(state: ptr[TextEditorState], extend: bool) do
+  if state == 0 then return false
+  if not extend and text_editor_has_selection(state) then
+    return text_editor_set_cursor(state, text_editor_selection_start(state), false)
+  end
+  return text_editor_set_cursor(state, text_editor_previous_index(state, state.cursor), extend)
+end
+
+func text_editor_move_right(state: ptr[TextEditorState], extend: bool) do
+  if state == 0 then return false
+  if not extend and text_editor_has_selection(state) then
+    return text_editor_set_cursor(state, text_editor_selection_end(state), false)
+  end
+  return text_editor_set_cursor(state, text_editor_next_index(state, state.cursor), extend)
+end
+
+func text_editor_select_all(state: ptr[TextEditorState]) do
+  if state == 0 or state.buffer == 0 then return false
+  state.selection_anchor is 0
+  state.cursor is state.length
+  return true
+end
+
+func text_editor_copy_selection(state: ptr[TextEditorState], destination: ptr, capacity: u64) do
+  if state == 0 or destination == 0 or capacity == 0 then return 0
+  start: u64 is text_editor_selection_start(state)
+  finish: u64 is text_editor_selection_end(state)
+  if finish <= start or finish - start >= capacity then return 0
+  count: u64 is finish - start
+  index: u64 is 0
+  while index < count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(state.buffer, start + index)))
+    index += 1
+  end
+  mem.write8(ptr.add(destination, count), 0)
+  return count
+end
+
+func text_editor_delete_range(state: ptr[TextEditorState], start: u64, finish: u64) do
+  if state == 0 or state.buffer == 0 or start > finish or finish > state.length then return false
+  if not text_editor_boundary(state, start) or not text_editor_boundary(state, finish) then return false
+  if start == finish then
+    state.cursor is start
+    state.selection_anchor is start
+    return true
+  end
+  tail: u64 is state.length - finish
+  index: u64 is 0
+  while index <= tail do
+    mem.write8(ptr.add(state.buffer, start + index), mem.read8(ptr.add(state.buffer, finish + index)))
+    index += 1
+  end
+  state.length -= finish - start
+  state.cursor is start
+  state.selection_anchor is start
+  state.dirty is 1
+  return true
+end
+
+func text_editor_delete_selection(state: ptr[TextEditorState]) do
+  if state == 0 then return false
+  return text_editor_delete_range(state, text_editor_selection_start(state), text_editor_selection_end(state))
+end
+
+func text_editor_insert_byte(state: ptr[TextEditorState], value: u64) do
+  if state == 0 or state.buffer == 0 or value > 255 then return false
+  if state.length + 1 >= state.capacity then return false
+  index: u64 is state.length
+  while index > state.cursor do
+    mem.write8(ptr.add(state.buffer, index), mem.read8(ptr.add(state.buffer, index - 1)))
+    index -= 1
+  end
+  mem.write8(ptr.add(state.buffer, state.cursor), value)
+  state.cursor += 1
+  state.selection_anchor is state.cursor
+  state.length += 1
+  mem.write8(ptr.add(state.buffer, state.length), 0)
+  state.dirty is 1
   return true
 end
 
 func text_editor_input(state: ptr[TextEditorState], value: u64) do
   if state == 0 or state.buffer == 0 or value > 255 then return false
   if value == 8 or value == 127 then
-    if state.length == 0 then return true
-    state.length -= 1
-    mem.write8(ptr.add(state.buffer, state.length), 0)
-    state.dirty is 1
-    return true
+    if text_editor_has_selection(state) then return text_editor_delete_selection(state)
+    if state.cursor == 0 then return true
+    return text_editor_delete_range(state, text_editor_previous_index(state, state.cursor), state.cursor)
   end
-  if value == 13 then return true
-  if value != 10 and (value < 32 or value > 126) then return true
-  if state.length + 1 >= state.capacity then return false
-  mem.write8(ptr.add(state.buffer, state.length), value)
-  state.length += 1
-  mem.write8(ptr.add(state.buffer, state.length), 0)
-  state.dirty is 1
-  return true
+  if value != 10 and value != 13 and (value < 32 or value > 126) then return true
+  if text_editor_has_selection(state) and not text_editor_delete_selection(state) then return false
+  output: u64 is value
+  if output == 13 then output is 10
+  return text_editor_insert_byte(state, output)
 end
 
 func calculator_reset(state: ptr[CalculatorState]) do
@@ -187,5 +315,52 @@ func calculator_format(state: ptr[CalculatorState], buffer: ptr, capacity: u64) 
     output += 1
     index += 1
   end
+  return true
+end
+
+func calculator_append_unsigned(buffer: ptr, capacity: u64, offset: u64, value: u64) do
+  if buffer == 0 or capacity < 2 or offset >= capacity - 1 then return capacity
+  divisor: u64 is 1
+  while value / divisor >= 10 do
+    divisor is divisor * 10
+  end
+  while divisor != 0 do
+    if offset >= capacity - 1 then return capacity
+    mem.write8(ptr.add(buffer, offset), 48 + (value / divisor))
+    offset += 1
+    value is value % divisor
+    divisor is divisor / 10
+  end
+  return offset
+end
+
+func calculator_format_expression(state: ptr[CalculatorState], buffer: ptr, capacity: u64) do
+  if state == 0 or buffer == 0 or capacity < 6 then return false
+  if state.error != 0 then return calculator_format(state, buffer, capacity)
+  offset: u64 is calculator_append_unsigned(buffer, capacity, 0, state.left)
+  if offset >= capacity then return false
+  if state.operation != 0 then
+    if offset + 3 >= capacity then return false
+    mem.write8(ptr.add(buffer, offset), 32)
+    offset += 1
+    mem.write8(ptr.add(buffer, offset), state.operation)
+    offset += 1
+    mem.write8(ptr.add(buffer, offset), 32)
+    offset += 1
+    offset is calculator_append_unsigned(buffer, capacity, offset, state.right)
+    if offset >= capacity then return false
+  end
+  if state.has_result != 0 then
+    if offset + 3 >= capacity then return false
+    mem.write8(ptr.add(buffer, offset), 32)
+    offset += 1
+    mem.write8(ptr.add(buffer, offset), 61)
+    offset += 1
+    mem.write8(ptr.add(buffer, offset), 32)
+    offset += 1
+    offset is calculator_append_unsigned(buffer, capacity, offset, state.result)
+    if offset >= capacity then return false
+  end
+  mem.write8(ptr.add(buffer, offset), 0)
   return true
 end

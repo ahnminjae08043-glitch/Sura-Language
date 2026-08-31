@@ -1,0 +1,213 @@
+# SHA-384 for the freestanding Sura target.
+#
+# SHA-384 uses the SHA-512 compression function with different initial state
+# and a 48-byte result. The caller owns all mutable storage. This bounded
+# implementation accepts at most 2^61 - 1 input bytes, so the high half of the
+# SHA-512 128-bit length field is always zero.
+
+# Each SHA-512 round constant is stored as two unsigned 32-bit words. This
+# avoids depending on signed host parsing for integer literals above 2^63.
+sha384_round_constant_words is static.u64([1116352408, 3609767458, 1899447441, 602891725, 3049323471, 3964484399, 3921009573, 2173295548, 961987163, 4081628472, 1508970993, 3053834265, 2453635748, 2937671579, 2870763221, 3664609560, 3624381080, 2734883394, 310598401, 1164996542, 607225278, 1323610764, 1426881987, 3590304994, 1925078388, 4068182383, 2162078206, 991336113, 2614888103, 633803317, 3248222580, 3479774868, 3835390401, 2666613458, 4022224774, 944711139, 264347078, 2341262773, 604807628, 2007800933, 770255983, 1495990901, 1249150122, 1856431235, 1555081692, 3175218132, 1996064986, 2198950837, 2554220882, 3999719339, 2821834349, 766784016, 2952996808, 2566594879, 3210313671, 3203337956, 3336571891, 1034457026, 3584528711, 2466948901, 113926993, 3758326383, 338241895, 168717936, 666307205, 1188179964, 773529912, 1546045734, 1294757372, 1522805485, 1396182291, 2643833823, 1695183700, 2343527390, 1986661051, 1014477480, 2177026350, 1206759142, 2456956037, 344077627, 2730485921, 1290863460, 2820302411, 3158454273, 3259730800, 3505952657, 3345764771, 106217008, 3516065817, 3606008344, 3600352804, 1432725776, 4094571909, 1467031594, 275423344, 851169720, 430227734, 3100823752, 506948616, 1363258195, 659060556, 3750685593, 883997877, 3785050280, 958139571, 3318307427, 1322822218, 3812723403, 1537002063, 2003034995, 1747873779, 3602036899, 1955562222, 1575990012, 2024104815, 1125592928, 2227730452, 2716904306, 2361852424, 442776044, 2428436474, 593698344, 2756734187, 3733110249, 3204031479, 2999351573, 3329325298, 3815920427, 3391569614, 3928383900, 3515267271, 566280711, 3940187606, 3454069534, 4118630271, 4000239992, 116418474, 1914138554, 174292421, 2731055270, 289380356, 3203993006, 460393269, 320620315, 685471733, 587496836, 852142971, 1086792851, 1017036298, 365543100, 1126000580, 2618297676, 1288033470, 3409855158, 1501505948, 4234509866, 1607167915, 987167468, 1816402316, 1246189591], 8)
+
+struct Sha384State do
+  h0: u64
+  h1: u64
+  h2: u64
+  h3: u64
+  h4: u64
+  h5: u64
+  h6: u64
+  h7: u64
+  total_bytes: u64
+  block_bytes: u64
+  block: ptr
+  schedule: ptr
+  initialized: u64
+end
+
+func sha384_rotr(value: u64, count: u64) do
+  return (value >> count) | (value << (64 - count))
+end
+
+func sha384_read_u64_be(input: ptr) do
+  if input == 0 then return 0
+  value: u64 is 0
+  index: u64 is 0
+  while index < 8 do
+    value is (value << 8) | mem.read8(ptr.add(input, index))
+    index += 1
+  end
+  return value
+end
+
+func sha384_write_u64_be(output: ptr, value: u64) do
+  if output == 0 then return false
+  index: u64 is 0
+  while index < 8 do
+    shift: u64 is (7 - index) * 8
+    mem.write8(ptr.add(output, index), (value >> shift) & 255)
+    index += 1
+  end
+  return true
+end
+
+func sha384_clear(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func sha384_round_constant(index: u64) do
+  if index >= 80 then return 0
+  high: u64 is mem.read64(ptr.index(sha384_round_constant_words, index * 2, 8))
+  low: u64 is mem.read64(ptr.index(sha384_round_constant_words, index * 2 + 1, 8))
+  return (high << 32) | low
+end
+
+func sha384_init(state: ptr[Sha384State], block: ptr, schedule: ptr) do
+  if state == 0 or block == 0 or schedule == 0 then return false
+  state.h0 is u64("0xcbbb9d5dc1059ed8")
+  state.h1 is u64("0x629a292a367cd507")
+  state.h2 is u64("0x9159015a3070dd17")
+  state.h3 is u64("0x152fecd8f70e5939")
+  state.h4 is u64("0x67332667ffc00b31")
+  state.h5 is u64("0x8eb44a8768581511")
+  state.h6 is u64("0xdb0c2e0d64f98fa7")
+  state.h7 is u64("0x47b5481dbefa4fa4")
+  state.total_bytes is 0
+  state.block_bytes is 0
+  state.block is block
+  state.schedule is schedule
+  state.initialized is 1
+  if not sha384_clear(block, 128) then return false
+  return sha384_clear(schedule, 640)
+end
+
+func sha384_compress(state: ptr[Sha384State]) do
+  if state == 0 or state.initialized == 0 or state.block == 0 or state.schedule == 0 then return false
+  block: ptr is state.block
+  schedule: ptr is state.schedule
+  index: u64 is 0
+  while index < 16 do
+    mem.write64(ptr.index(schedule, index, 8), sha384_read_u64_be(ptr.index(block, index, 8)))
+    index += 1
+  end
+  while index < 80 do
+    word15: u64 is mem.read64(ptr.index(schedule, index - 15, 8))
+    word2: u64 is mem.read64(ptr.index(schedule, index - 2, 8))
+    sigma0: u64 is sha384_rotr(word15, 1) ^ sha384_rotr(word15, 8) ^ (word15 >> 7)
+    sigma1: u64 is sha384_rotr(word2, 19) ^ sha384_rotr(word2, 61) ^ (word2 >> 6)
+    next_word: u64 is mem.read64(ptr.index(schedule, index - 16, 8))
+    next_word is next_word + sigma0 + mem.read64(ptr.index(schedule, index - 7, 8)) + sigma1
+    mem.write64(ptr.index(schedule, index, 8), next_word)
+    index += 1
+  end
+
+  a: u64 is state.h0
+  b: u64 is state.h1
+  c: u64 is state.h2
+  d: u64 is state.h3
+  e: u64 is state.h4
+  f: u64 is state.h5
+  g: u64 is state.h6
+  h: u64 is state.h7
+  index is 0
+  while index < 80 do
+    sum1: u64 is sha384_rotr(e, 14) ^ sha384_rotr(e, 18) ^ sha384_rotr(e, 41)
+    choice: u64 is (e & f) ^ ((~e) & g)
+    temporary1: u64 is h + sum1 + choice + sha384_round_constant(index) + mem.read64(ptr.index(schedule, index, 8))
+    sum0: u64 is sha384_rotr(a, 28) ^ sha384_rotr(a, 34) ^ sha384_rotr(a, 39)
+    majority: u64 is (a & b) ^ (a & c) ^ (b & c)
+    temporary2: u64 is sum0 + majority
+    h is g
+    g is f
+    f is e
+    e is d + temporary1
+    d is c
+    c is b
+    b is a
+    a is temporary1 + temporary2
+    index += 1
+  end
+
+  state.h0 is state.h0 + a
+  state.h1 is state.h1 + b
+  state.h2 is state.h2 + c
+  state.h3 is state.h3 + d
+  state.h4 is state.h4 + e
+  state.h5 is state.h5 + f
+  state.h6 is state.h6 + g
+  state.h7 is state.h7 + h
+  state.block_bytes is 0
+  return sha384_clear(block, 128)
+end
+
+func sha384_update(state: ptr[Sha384State], input: ptr, input_bytes: u64) do
+  if state == 0 or state.initialized == 0 then return false
+  if input_bytes == 0 then return true
+  if input == 0 then return false
+  maximum_bytes: u64 is u64("0x1fffffffffffffff")
+  if state.total_bytes > maximum_bytes - input_bytes then return false
+  state.total_bytes is state.total_bytes + input_bytes
+  input_index: u64 is 0
+  while input_index < input_bytes do
+    available: u64 is 128 - state.block_bytes
+    remaining: u64 is input_bytes - input_index
+    take: u64 is remaining
+    if take > available then take is available
+    copied: u64 is 0
+    while copied < take do
+      mem.write8(ptr.add(state.block, state.block_bytes + copied), mem.read8(ptr.add(input, input_index + copied)))
+      copied += 1
+    end
+    state.block_bytes is state.block_bytes + take
+    input_index is input_index + take
+    if state.block_bytes == 128 then
+      if not sha384_compress(state) then return false
+    end
+  end
+  return true
+end
+
+func sha384_final(state: ptr[Sha384State], output: ptr) do
+  if state == 0 or state.initialized == 0 or output == 0 then return false
+  block: ptr is state.block
+  cursor: u64 is state.block_bytes
+  mem.write8(ptr.add(block, cursor), 128)
+  cursor += 1
+  if cursor > 112 then
+    while cursor < 128 do
+      mem.write8(ptr.add(block, cursor), 0)
+      cursor += 1
+    end
+    state.block_bytes is 128
+    if not sha384_compress(state) then return false
+    cursor is 0
+  end
+  while cursor < 120 do
+    mem.write8(ptr.add(block, cursor), 0)
+    cursor += 1
+  end
+  bit_length: u64 is state.total_bytes << 3
+  if not sha384_write_u64_be(ptr.add(block, 120), bit_length) then return false
+  state.block_bytes is 128
+  if not sha384_compress(state) then return false
+  if not sha384_write_u64_be(output, state.h0) then return false
+  if not sha384_write_u64_be(ptr.add(output, 8), state.h1) then return false
+  if not sha384_write_u64_be(ptr.add(output, 16), state.h2) then return false
+  if not sha384_write_u64_be(ptr.add(output, 24), state.h3) then return false
+  if not sha384_write_u64_be(ptr.add(output, 32), state.h4) then return false
+  if not sha384_write_u64_be(ptr.add(output, 40), state.h5) then return false
+  state.initialized is 0
+  return true
+end
+
+func sha384_digest(input: ptr, input_bytes: u64, output: ptr, state: ptr[Sha384State], block: ptr, schedule: ptr) do
+  if not sha384_init(state, block, schedule) then return false
+  if not sha384_update(state, input, input_bytes) then return false
+  return sha384_final(state, output)
+end

@@ -1,0 +1,538 @@
+# Small dependency-free geometric Hangul renderer for the framebuffer.
+#
+# It decomposes every modern precomposed Hangul syllable into choseong,
+# jungseong, and jongseong and draws recognizable line glyphs. This is a boot
+# font, not a typographic replacement for a licensed full Unicode font.
+
+import "font5x7.sura"
+
+font_hangul_color: u32 is 0
+
+func hangul_h(surface: ptr[FramebufferSurface], x: u64, y: u64, length: u64, color: u32) do
+  if length == 0 then return false
+  return fb_hline(surface, x, y, length, color)
+end
+
+func hangul_v(surface: ptr[FramebufferSurface], x: u64, y: u64, length: u64, color: u32) do
+  if length == 0 then return false
+  return fb_vline(surface, x, y, length, color)
+end
+
+func hangul_basic_consonant(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, kind: u64) do
+  if surface == 0 or width < 3 or height < 3 then return false
+  color: u32 is font_hangul_color
+  right: u64 is x + width - 1
+  bottom: u64 is y + height - 1
+  middle_y: u64 is y + height / 2
+  middle_x: u64 is x + width / 2
+
+  if kind == 0 then
+    hangul_h(surface, x, y, width, color)
+    hangul_v(surface, right, y, height, color)
+  elif kind == 2 then
+    hangul_v(surface, x, y, height, color)
+    hangul_h(surface, x, bottom, width, color)
+  elif kind == 3 then
+    hangul_v(surface, x, y, height, color)
+    hangul_h(surface, x, y, width, color)
+    hangul_h(surface, x, bottom, width, color)
+  elif kind == 5 then
+    hangul_h(surface, x, y, width, color)
+    hangul_v(surface, right, y, height / 2 + 1, color)
+    hangul_h(surface, x, middle_y, width, color)
+    hangul_v(surface, x, middle_y, height - height / 2, color)
+    hangul_h(surface, x, bottom, width, color)
+  elif kind == 6 then
+    fb_rect_outline(surface, x, y, width, height, color)
+  elif kind == 7 then
+    fb_rect_outline(surface, x, y, width, height, color)
+    hangul_h(surface, x, middle_y, width, color)
+  elif kind == 9 then
+    fb_line(surface, x, bottom, middle_x, y, color)
+    fb_line(surface, middle_x, y, right, bottom, color)
+  elif kind == 11 then
+    fb_rect_outline(surface, x, y, width, height, color)
+  elif kind == 12 then
+    hangul_h(surface, x, y, width, color)
+    fb_line(surface, x, bottom, middle_x, y + 1, color)
+    fb_line(surface, middle_x, y + 1, right, bottom, color)
+  elif kind == 14 then
+    hangul_h(surface, x + 1, y, width - 2, color)
+    hangul_h(surface, x, y + 2, width, color)
+    fb_line(surface, x, bottom, middle_x, y + 3, color)
+    fb_line(surface, middle_x, y + 3, right, bottom, color)
+  elif kind == 15 then
+    hangul_h(surface, x, y, width, color)
+    hangul_h(surface, x + 1, middle_y, width - 1, color)
+    hangul_v(surface, right, y, height, color)
+  elif kind == 16 then
+    hangul_h(surface, x, y, width, color)
+    hangul_h(surface, x, y + 2, width, color)
+    hangul_v(surface, middle_x, y + 2, height - 2, color)
+  elif kind == 17 then
+    hangul_h(surface, x, y, width, color)
+    hangul_h(surface, x, bottom, width, color)
+    hangul_v(surface, x + 1, y, height, color)
+    hangul_v(surface, right - 1, y, height, color)
+  else
+    hangul_h(surface, x + 1, y, width - 2, color)
+    hangul_h(surface, x, y + 2, width, color)
+    fb_rect_outline(surface, x + 1, y + 3, width - 2, height - 3, color)
+  end
+  return true
+end
+
+func hangul_initial(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, initial: u64) do
+  if initial == 1 or initial == 4 or initial == 8 or initial == 10 or initial == 13 then
+    base: u64 is 0
+    if initial == 4 then base is 3
+    if initial == 8 then base is 7
+    if initial == 10 then base is 9
+    if initial == 13 then base is 12
+    half: u64 is width / 2
+    if half < 3 then return hangul_basic_consonant(surface, x, y, width, height, base)
+    hangul_basic_consonant(surface, x, y, half, height, base)
+    hangul_basic_consonant(surface, x + half + 1, y, width - half - 1, height, base)
+    return true
+  end
+  return hangul_basic_consonant(surface, x, y, width, height, initial)
+end
+
+func hangul_vowel(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, vowel: u64) do
+  if surface == 0 or width < 3 or height < 3 then return false
+  color: u32 is font_hangul_color
+  right: u64 is x + width - 1
+  bottom: u64 is y + height - 1
+  middle_x: u64 is x + width / 2
+  middle_y: u64 is y + height / 2
+
+  if vowel <= 7 or vowel == 20 then
+    main_x: u64 is middle_x
+    if vowel == 1 or vowel == 3 or vowel == 5 or vowel == 7 then main_x is right - 1
+    hangul_v(surface, main_x, y, height, color)
+    if vowel != 20 then
+      arm_y: u64 is middle_y
+      if vowel == 2 or vowel == 3 or vowel == 6 or vowel == 7 then
+        hangul_h(surface, x, arm_y - 1, width, color)
+        hangul_h(surface, x, arm_y + 1, width, color)
+      else
+        hangul_h(surface, x, arm_y, width, color)
+      end
+      if vowel == 0 or vowel == 1 or vowel == 2 or vowel == 3 then
+        hangul_h(surface, main_x, arm_y, right - main_x + 1, color)
+      else
+        hangul_h(surface, x, arm_y, main_x - x + 1, color)
+      end
+    end
+  elif vowel == 8 or vowel == 12 then
+    hangul_h(surface, x, bottom, width, color)
+    hangul_v(surface, middle_x, y, height, color)
+    if vowel == 12 then hangul_v(surface, middle_x + 2, y, height, color)
+  elif vowel == 13 or vowel == 17 then
+    hangul_h(surface, x, y, width, color)
+    hangul_v(surface, middle_x, y, height, color)
+    if vowel == 17 then hangul_v(surface, middle_x + 2, y, height, color)
+  elif vowel == 18 then
+    hangul_h(surface, x, middle_y, width, color)
+  elif vowel == 19 then
+    hangul_h(surface, x, middle_y, width - 2, color)
+    hangul_v(surface, right, y, height, color)
+  elif vowel >= 9 and vowel <= 11 then
+    hangul_h(surface, x, bottom, width - 2, color)
+    hangul_v(surface, x + width / 3, y, height, color)
+    hangul_v(surface, right, y, height, color)
+    hangul_h(surface, x + width / 3, middle_y, right - (x + width / 3) + 1, color)
+  else
+    hangul_h(surface, x, y, width - 2, color)
+    hangul_v(surface, x + width / 3, y, height, color)
+    hangul_v(surface, right, y, height, color)
+    hangul_h(surface, x + width / 3, middle_y, right - (x + width / 3) + 1, color)
+  end
+  return true
+end
+
+func hangul_final_initial(final: u64) do
+  if final == 1 or final == 2 then return final - 1
+  if final == 4 then return 2
+  if final == 7 then return 3
+  if final == 8 then return 5
+  if final == 16 then return 6
+  if final == 17 then return 7
+  if final == 19 then return 9
+  if final == 20 then return 10
+  if final == 21 then return 11
+  if final == 22 then return 12
+  if final == 23 then return 14
+  if final == 24 then return 15
+  if final == 25 then return 16
+  if final == 26 then return 17
+  if final == 27 then return 18
+  return 0
+end
+
+func hangul_final(surface: ptr[FramebufferSurface], x: u64, y: u64, width: u64, height: u64, final: u64) do
+  second: u64 is 0
+  first: u64 is final
+  if final == 3 then
+    first is 1
+    second is 19
+  end
+  if final == 5 then
+    first is 4
+    second is 22
+  end
+  if final == 6 then
+    first is 4
+    second is 27
+  end
+  if final == 9 then
+    first is 8
+    second is 1
+  end
+  if final == 10 then
+    first is 8
+    second is 16
+  end
+  if final == 11 then
+    first is 8
+    second is 17
+  end
+  if final == 12 then
+    first is 8
+    second is 19
+  end
+  if final == 13 then
+    first is 8
+    second is 25
+  end
+  if final == 14 then
+    first is 8
+    second is 26
+  end
+  if final == 15 then
+    first is 8
+    second is 27
+  end
+  if final == 18 then
+    first is 17
+    second is 19
+  end
+  if second == 0 then
+    return hangul_initial(surface, x, y, width, height, hangul_final_initial(first))
+  end
+  half: u64 is width / 2
+  hangul_initial(surface, x, y, half, height, hangul_final_initial(first))
+  hangul_initial(surface, x + half + 1, y, width - half - 1, height, hangul_final_initial(second))
+  return true
+end
+
+func font_hangul_draw_syllable(surface: ptr[FramebufferSurface], x: u64, y: u64, codepoint: u64, color: u32) do
+  global font_hangul_color
+  if surface == 0 or codepoint < 44032 or codepoint > 55203 then return false
+  font_hangul_color is color
+  value: u64 is codepoint - 44032
+  initial: u64 is value / 588
+  vowel: u64 is (value / 28) % 21
+  final: u64 is value % 28
+  upper_height: u64 is 11
+  if final != 0 then upper_height is 10
+  vertical: bool is vowel <= 7 or vowel == 20
+  if vertical then
+    hangul_initial(surface, x, y, 8, upper_height, initial)
+    hangul_vowel(surface, x + 9, y, 5, upper_height, vowel)
+  else
+    hangul_initial(surface, x, y, 14, 6, initial)
+    hangul_vowel(surface, x, y + 7, 14, upper_height - 7, vowel)
+  end
+  if final != 0 then hangul_final(surface, x + 1, y + 11, 12, 4, final)
+  return true
+end
+
+func font_utf8_next(text: ptr, length: u64, index: u64, consumed: ptr) do
+  if text == 0 or consumed == 0 or index >= length then return 0
+  first: u64 is mem.read8(ptr.add(text, index))
+  mem.write64(consumed, 1)
+  if first < 128 then return first
+  if first >= 194 and first <= 223 and index + 1 < length then
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    if (second & 192) != 128 then return 63
+    mem.write64(consumed, 2)
+    return ((first & 31) << 6) | (second & 63)
+  end
+  if first >= 224 and first <= 239 and index + 2 < length then
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    third: u64 is mem.read8(ptr.add(text, index + 2))
+    if (second & 192) != 128 or (third & 192) != 128 then return 63
+    codepoint: u64 is ((first & 15) << 12) | ((second & 63) << 6) | (third & 63)
+    if codepoint >= 55296 and codepoint <= 57343 then return 63
+    mem.write64(consumed, 3)
+    return codepoint
+  end
+  if first >= 240 and first <= 244 and index + 3 < length then
+    second: u64 is mem.read8(ptr.add(text, index + 1))
+    third: u64 is mem.read8(ptr.add(text, index + 2))
+    fourth: u64 is mem.read8(ptr.add(text, index + 3))
+    if (second & 192) != 128 or (third & 192) != 128 or (fourth & 192) != 128 then return 63
+    codepoint: u64 is ((first & 7) << 18) | ((second & 63) << 12) | ((third & 63) << 6) | (fourth & 63)
+    if codepoint > 1114111 then return 63
+    mem.write64(consumed, 4)
+    return codepoint
+  end
+  return 63
+end
+
+font_utf8_consumed: u64 is 0
+
+func font_hangul_display_codepoint(codepoint: u64) do
+  if codepoint == 160 then return 32
+  if codepoint == 8216 or codepoint == 8217 then return 39
+  if codepoint == 8220 or codepoint == 8221 then return 34
+  if codepoint == 8211 or codepoint == 8212 then return 45
+  if codepoint == 8226 then return 42
+  if codepoint == 8230 or codepoint == 183 then return 46
+  if codepoint == 8592 then return 60
+  if codepoint == 8594 then return 62
+  if codepoint == 215 then return 120
+  if codepoint == 10003 then return 43
+  if codepoint == 169 then return 67
+  if codepoint == 174 then return 82
+  if codepoint == 8482 then return 84
+  return codepoint
+end
+
+func font_hangul_draw_utf8_text(surface: ptr[FramebufferSurface], x: u64, y: u64, text: ptr, length: u64, style: ptr[BitmapFontStyle]) do
+  global font_utf8_consumed
+  if surface == 0 or text == 0 or style == 0 or style.scale == 0 then return false
+  origin_x: u64 is x
+  cursor_x: u64 is x
+  cursor_y: u64 is y
+  index: u64 is 0
+  while index < length do
+    if mem.read8(ptr.add(text, index)) == 0 then return true
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 then return false
+    codepoint is font_hangul_display_codepoint(codepoint)
+    if codepoint == 10 then
+      cursor_x is origin_x
+      cursor_y += 17 * style.scale
+    elif codepoint >= 44032 and codepoint <= 55203 then
+      font_hangul_draw_syllable(surface, cursor_x, cursor_y, codepoint, style.foreground)
+      cursor_x += 15 * style.scale
+    else
+      font5x7_draw_char(surface, cursor_x, cursor_y, codepoint, style)
+      cursor_x += 6 * style.scale
+    end
+    index += font_utf8_consumed
+  end
+  return true
+end
+
+func font_hangul_utf8_width(text: ptr, length: u64, scale: u64) do
+  global font_utf8_consumed
+  if text == 0 or scale == 0 then return 0
+  width: u64 is 0
+  line_width: u64 is 0
+  index: u64 is 0
+  while index < length and mem.read8(ptr.add(text, index)) != 0 do
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 then return width
+    codepoint is font_hangul_display_codepoint(codepoint)
+    if codepoint == 10 then
+      if line_width > width then width is line_width
+      line_width is 0
+    elif codepoint >= 44032 and codepoint <= 55203 then
+      line_width += 15 * scale
+    else
+      line_width += 6 * scale
+    end
+    index += font_utf8_consumed
+  end
+  if line_width > width then width is line_width
+  return width
+end
+
+struct FontUtf8TextBox do
+  x: u64
+  y: u64
+  width: u64
+  line_height: u64
+  first_line: u64
+  max_lines: u64
+  cursor_x: u64
+  cursor_y: u64
+  cursor_line: u64
+  cursor_visible: u64
+  cursor_index: u64
+  selection_start: u64
+  selection_end: u64
+  selection_color: u32
+  syntax_map: ptr
+  syntax_keyword: u32
+  syntax_string: u32
+  syntax_comment: u32
+  syntax_number: u32
+end
+
+font_hangul_box_style is static.struct(BitmapFontStyle)
+
+func font_hangul_codepoint_advance(codepoint: u64, scale: u64) do
+  codepoint is font_hangul_display_codepoint(codepoint)
+  if codepoint >= 44032 and codepoint <= 55203 then return 15 * scale
+  return 6 * scale
+end
+
+func font_hangul_utf8_visual_lines(text: ptr, length: u64, width: u64, style: ptr[BitmapFontStyle]) do
+  global font_utf8_consumed
+  if text == 0 or style == 0 or style.scale == 0 or width == 0 then return 0
+  line: u64 is 0
+  line_width: u64 is 0
+  index: u64 is 0
+  while index < length and mem.read8(ptr.add(text, index)) != 0 do
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 then return 0
+    if codepoint == 10 then
+      line += 1
+      line_width is 0
+    else
+      advance: u64 is font_hangul_codepoint_advance(codepoint, style.scale)
+      if line_width != 0 and line_width + advance > width then
+        line += 1
+        line_width is 0
+      end
+      line_width += advance
+    end
+    index += font_utf8_consumed
+  end
+  return line + 1
+end
+
+func font_hangul_utf8_line_at(text: ptr, length: u64, width: u64, style: ptr[BitmapFontStyle], stop_index: u64) do
+  global font_utf8_consumed
+  if text == 0 or style == 0 or style.scale == 0 or width == 0 then return 0
+  if stop_index > length then stop_index is length
+  line: u64 is 0
+  line_width: u64 is 0
+  index: u64 is 0
+  while index < length and mem.read8(ptr.add(text, index)) != 0 do
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 then return line
+    if codepoint == 10 then
+      if index >= stop_index then return line
+      line += 1
+      line_width is 0
+    else
+      advance: u64 is font_hangul_codepoint_advance(codepoint, style.scale)
+      if line_width != 0 and line_width + advance > width then
+        line += 1
+        line_width is 0
+      end
+      if index >= stop_index then return line
+      line_width += advance
+    end
+    index += font_utf8_consumed
+  end
+  return line
+end
+
+func font_hangul_draw_utf8_box(surface: ptr[FramebufferSurface], text: ptr, length: u64, box: ptr[FontUtf8TextBox], style: ptr[BitmapFontStyle]) do
+  global font_utf8_consumed
+  if surface == 0 or text == 0 or box == 0 or style == 0 then return false
+  if style.scale == 0 or box.width == 0 or box.max_lines == 0 then return false
+  line_height: u64 is box.line_height
+  if line_height == 0 then line_height is 17 * style.scale
+  box.cursor_x is box.x
+  box.cursor_y is box.y
+  box.cursor_line is 0
+  box.cursor_visible is 0
+  cursor_index: u64 is box.cursor_index
+  if cursor_index > length then cursor_index is length
+  selection_start: u64 is box.selection_start
+  selection_end: u64 is box.selection_end
+  if selection_start > length then selection_start is length
+  if selection_end > length then selection_end is length
+  if selection_start > selection_end then
+    swap: u64 is selection_start
+    selection_start is selection_end
+    selection_end is swap
+  end
+
+  line: u64 is 0
+  line_width: u64 is 0
+  index: u64 is 0
+  cursor_set: bool is false
+  while index < length and mem.read8(ptr.add(text, index)) != 0 do
+    codepoint: u64 is font_utf8_next(text, length, index, addr_of(font_utf8_consumed))
+    if font_utf8_consumed == 0 then return false
+    codepoint is font_hangul_display_codepoint(codepoint)
+    if codepoint == 10 then
+      if index == cursor_index then
+        box.cursor_line is line
+        if line >= box.first_line and line < box.first_line + box.max_lines then
+          box.cursor_x is box.x + line_width
+          box.cursor_y is box.y + (line - box.first_line) * line_height
+          box.cursor_visible is 1
+        end
+        cursor_set is true
+      end
+      if index < selection_end and index + font_utf8_consumed > selection_start then
+        if line >= box.first_line and line < box.first_line + box.max_lines then
+          fb_fill_rect(surface, box.x + line_width, box.y + (line - box.first_line) * line_height, 6 * style.scale, 9 * style.scale, box.selection_color)
+        end
+      end
+      line += 1
+      line_width is 0
+    else
+      advance: u64 is font_hangul_codepoint_advance(codepoint, style.scale)
+      if line_width != 0 and line_width + advance > box.width then
+        line += 1
+        line_width is 0
+      end
+      if index == cursor_index then
+        box.cursor_line is line
+        if line >= box.first_line and line < box.first_line + box.max_lines then
+          box.cursor_x is box.x + line_width
+          box.cursor_y is box.y + (line - box.first_line) * line_height
+          box.cursor_visible is 1
+        end
+        cursor_set is true
+      end
+      if line >= box.first_line and line < box.first_line + box.max_lines then
+        draw_x: u64 is box.x + line_width
+        draw_y: u64 is box.y + (line - box.first_line) * line_height
+        if index < selection_end and index + font_utf8_consumed > selection_start then
+          fb_fill_rect(surface, draw_x, draw_y, advance, 9 * style.scale, box.selection_color)
+        end
+        draw_color: u32 is style.foreground
+        if box.syntax_map != 0 then
+          syntax_kind: u64 is mem.read8(ptr.add(box.syntax_map, index))
+          if syntax_kind == 1 then draw_color is box.syntax_keyword
+          if syntax_kind == 2 then draw_color is box.syntax_string
+          if syntax_kind == 3 then draw_color is box.syntax_comment
+          if syntax_kind == 4 then draw_color is box.syntax_number
+        end
+        if codepoint >= 44032 and codepoint <= 55203 then
+          font_hangul_draw_syllable(surface, draw_x, draw_y, codepoint, draw_color)
+        else
+          draw_style: ptr[BitmapFontStyle] is font_hangul_box_style
+          draw_style.foreground is draw_color
+          draw_style.background is style.background
+          draw_style.scale is style.scale
+          draw_style.opaque is style.opaque
+          font5x7_draw_char(surface, draw_x, draw_y, codepoint, draw_style)
+        end
+      end
+      line_width += advance
+    end
+    index += font_utf8_consumed
+  end
+
+  if not cursor_set then
+    box.cursor_line is line
+    if line >= box.first_line and line < box.first_line + box.max_lines then
+      box.cursor_x is box.x + line_width
+      box.cursor_y is box.y + (line - box.first_line) * line_height
+      box.cursor_visible is 1
+    end
+  end
+  return true
+end

@@ -1,0 +1,236 @@
+# Modern VirtIO PCI transport with one polling split virtqueue.
+#
+# The caller supplies identity-mapped DMA memory. PCI vendor capabilities are
+# parsed from configuration space and their BAR-relative common, notification,
+# ISR, and device configuration regions are accessed through MMIO.
+
+import "pci.sura"
+
+struct VirtioPciTransport do
+  bdf: u64
+  common: ptr
+  notify_base: ptr
+  isr: ptr
+  device_config: ptr
+  notify_multiplier: u64
+  queue_notify: ptr
+  queue_size: u64
+  device_features_low: u64
+  device_features_high: u64
+  ready: u64
+end
+
+func virtio_pci_mmio_read8(base: ptr, offset: u64) do
+  if base == 0 then return 255
+  value: u64 is mem.read8(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func virtio_pci_mmio_read16(base: ptr, offset: u64) do
+  if base == 0 or (offset & 1) != 0 then return 65535
+  value: u64 is mem.read16(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func virtio_pci_mmio_read32(base: ptr, offset: u64) do
+  if base == 0 or (offset & 3) != 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func virtio_pci_mmio_write8(base: ptr, offset: u64, value: u64) do
+  if base == 0 or value > 255 then return false
+  atomic.store_fence()
+  mem.write8(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func virtio_pci_mmio_write16(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 1) != 0 or value > 65535 then return false
+  atomic.store_fence()
+  mem.write16(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func virtio_pci_mmio_write32(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 3) != 0 then return false
+  atomic.store_fence()
+  mem.write32(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func virtio_pci_mmio_write64(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 7) != 0 then return false
+  if not virtio_pci_mmio_write32(base, offset, value & u64("0xffffffff")) then return false
+  return virtio_pci_mmio_write32(base, offset + 4, value >> 32)
+end
+
+func virtio_pci_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func virtio_pci_clear(transport: ptr[VirtioPciTransport]) do
+  if transport == 0 then return false
+  transport.bdf is 0
+  transport.common is 0
+  transport.notify_base is 0
+  transport.isr is 0
+  transport.device_config is 0
+  transport.notify_multiplier is 0
+  transport.queue_notify is 0
+  transport.queue_size is 0
+  transport.device_features_low is 0
+  transport.device_features_high is 0
+  transport.ready is 0
+  return true
+end
+
+func virtio_pci_capability_region(bdf: u64, capability: u64, minimum_length: u64) do
+  if capability < 64 or capability > 239 then return 0
+  if pci_read8(bdf, capability) != 9 then return 0
+  cap_length: u64 is pci_read8(bdf, capability + 2)
+  if cap_length < 16 or minimum_length > pci_read32(bdf, capability + 12) then return 0
+  bar_index: u64 is pci_read8(bdf, capability + 4)
+  if bar_index > 5 then return 0
+  bar_value: u64 is pci_bar_value(bdf, bar_index)
+  if bar_value == 0 or pci_bar_is_io(bar_value) then return 0
+  bar_address: u64 is pci_bar_address(bdf, bar_index)
+  region_offset: u64 is pci_read32(bdf, capability + 8)
+  if bar_address == 0 or bar_address > u64("0xffffffffffffffff") - region_offset then return 0
+  return bar_address + region_offset
+end
+
+func virtio_pci_map_capabilities(transport: ptr[VirtioPciTransport], device: ptr[PciDevice]) do
+  if transport == 0 or device == 0 then return false
+  if (pci_read16(device.bdf, 6) & 16) == 0 then return false
+  capability: u64 is pci_read8(device.bdf, 52) & 252
+  visited: u64 is 0
+  while capability >= 64 and capability <= 239 and visited < 48 do
+    if pci_read8(device.bdf, capability) == 9 then
+      cfg_type: u64 is pci_read8(device.bdf, capability + 3)
+      if cfg_type == 1 and transport.common == 0 then
+        transport.common is virtio_pci_capability_region(device.bdf, capability, 56)
+      end
+      if cfg_type == 2 and transport.notify_base == 0 and pci_read8(device.bdf, capability + 2) >= 20 then
+        transport.notify_base is virtio_pci_capability_region(device.bdf, capability, 2)
+        transport.notify_multiplier is pci_read32(device.bdf, capability + 16)
+      end
+      if cfg_type == 3 and transport.isr == 0 then
+        transport.isr is virtio_pci_capability_region(device.bdf, capability, 1)
+      end
+      if cfg_type == 4 and transport.device_config == 0 then
+        transport.device_config is virtio_pci_capability_region(device.bdf, capability, 16)
+      end
+    end
+    next_capability: u64 is pci_read8(device.bdf, capability + 1) & 252
+    if next_capability == capability then return false
+    capability is next_capability
+    visited += 1
+  end
+  if transport.common == 0 or transport.notify_base == 0 then return false
+  if transport.isr == 0 or transport.device_config == 0 then return false
+  return true
+end
+
+func virtio_pci_reset(transport: ptr[VirtioPciTransport], spin_limit: u64) do
+  if transport == 0 or transport.common == 0 or spin_limit == 0 then return false
+  if not virtio_pci_mmio_write8(transport.common, 20, 0) then return false
+  spins: u64 is 0
+  while spins < spin_limit do
+    if virtio_pci_mmio_read8(transport.common, 20) == 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func virtio_pci_negotiate_version_1(transport: ptr[VirtioPciTransport]) do
+  if transport == 0 or transport.common == 0 then return false
+  common: ptr is transport.common
+  if not virtio_pci_mmio_write8(common, 20, 1) then return false
+  if not virtio_pci_mmio_write8(common, 20, 3) then return false
+  virtio_pci_mmio_write32(common, 0, 0)
+  transport.device_features_low is virtio_pci_mmio_read32(common, 4)
+  virtio_pci_mmio_write32(common, 0, 1)
+  transport.device_features_high is virtio_pci_mmio_read32(common, 4)
+  if (transport.device_features_high & 1) == 0 then return false
+
+  virtio_pci_mmio_write32(common, 8, 0)
+  virtio_pci_mmio_write32(common, 12, 0)
+  virtio_pci_mmio_write32(common, 8, 1)
+  virtio_pci_mmio_write32(common, 12, 1)
+  if not virtio_pci_mmio_write8(common, 20, 11) then return false
+  return (virtio_pci_mmio_read8(common, 20) & 11) == 11
+end
+
+func virtio_pci_setup_queue_zero(transport: ptr[VirtioPciTransport], queue_virtual: ptr, queue_physical: u64, queue_bytes: u64) do
+  if transport == 0 or transport.common == 0 or queue_virtual == 0 then return false
+  if queue_bytes < 12288 or (queue_physical & 4095) != 0 then return false
+  common: ptr is transport.common
+  if not virtio_pci_mmio_write16(common, 22, 0) then return false
+  queue_size: u64 is virtio_pci_mmio_read16(common, 24)
+  if queue_size < 2 or queue_size > 256 or (queue_size & (queue_size - 1)) != 0 then
+    return false
+  end
+  if virtio_pci_mmio_read16(common, 28) != 0 then return false
+  if not virtio_pci_zero(queue_virtual, 12288) then return false
+  if not virtio_pci_mmio_write16(common, 26, 65535) then return false
+  if not virtio_pci_mmio_write64(common, 32, queue_physical) then return false
+  if not virtio_pci_mmio_write64(common, 40, queue_physical + 4096) then return false
+  if not virtio_pci_mmio_write64(common, 48, queue_physical + 8192) then return false
+  notify_offset: u64 is virtio_pci_mmio_read16(common, 30)
+  if notify_offset > u64("0xffffffffffffffff") / (transport.notify_multiplier + 1) then return false
+  notify_bytes: u64 is notify_offset * transport.notify_multiplier
+  transport.queue_notify is ptr.add(transport.notify_base, notify_bytes)
+  transport.queue_size is queue_size
+  if not virtio_pci_mmio_write16(common, 28, 1) then return false
+  return virtio_pci_mmio_read16(common, 28) == 1
+end
+
+func virtio_pci_init_control_queue(transport: ptr[VirtioPciTransport], device: ptr[PciDevice], queue_virtual: ptr, queue_physical: u64, queue_bytes: u64) do
+  if transport == 0 or device == 0 then return false
+  virtio_pci_clear(transport)
+  transport.bdf is device.bdf
+  if not pci_enable_command(device.bdf, 6) then return false
+  if not virtio_pci_map_capabilities(transport, device) then return false
+  if not virtio_pci_reset(transport, 1000000) then return false
+  if not virtio_pci_negotiate_version_1(transport) then
+    virtio_pci_mmio_write8(transport.common, 20, 128)
+    return false
+  end
+  if not virtio_pci_setup_queue_zero(transport, queue_virtual, queue_physical, queue_bytes) then
+    virtio_pci_mmio_write8(transport.common, 20, 128)
+    return false
+  end
+  if not virtio_pci_mmio_write8(transport.common, 20, 15) then return false
+  if (virtio_pci_mmio_read8(transport.common, 20) & 15) != 15 then return false
+  transport.ready is 1
+  return true
+end
+
+func virtio_pci_notify_queue_zero(transport: ptr[VirtioPciTransport]) do
+  if transport == 0 or transport.ready == 0 or transport.queue_notify == 0 then return false
+  atomic.store_fence()
+  mem.write16(transport.queue_notify, 0)
+  atomic.store_fence()
+  return true
+end
+
+func virtio_pci_stop(transport: ptr[VirtioPciTransport]) do
+  if transport == 0 or transport.common == 0 then return false
+  if not virtio_pci_reset(transport, 1000000) then return false
+  transport.ready is 0
+  return true
+end

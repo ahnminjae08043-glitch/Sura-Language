@@ -1,7 +1,8 @@
 # Fixed-capacity desktop window metadata and pointer interaction.
 #
 # Rendering and application contents remain caller-owned. This module manages
-# bounds, z-order, focus, title-bar dragging, and close-button hit testing.
+# bounds, z-order, focus, title-bar dragging, bottom-right resizing, and
+# close/minimize/maximize/fullscreen state.
 
 struct DesktopWindow do
   id: u64
@@ -14,6 +15,14 @@ struct DesktopWindow do
   active: u64
   draggable: u64
   closable: u64
+  resizable: u64
+  state: u64
+  min_width: u64
+  min_height: u64
+  restore_x: i64
+  restore_y: i64
+  restore_width: u64
+  restore_height: u64
 end
 
 struct WindowManager do
@@ -27,8 +36,25 @@ struct WindowManager do
   dragging_id: u64
   drag_offset_x: i64
   drag_offset_y: i64
+  resizing_id: u64
   next_z: u64
   last_closed_id: u64
+end
+
+func window_state_normal() -> u64 do
+  return 0
+end
+
+func window_state_minimized() -> u64 do
+  return 1
+end
+
+func window_state_maximized() -> u64 do
+  return 2
+end
+
+func window_state_fullscreen() -> u64 do
+  return 3
 end
 
 func window_reset(window: ptr[DesktopWindow]) do
@@ -43,6 +69,14 @@ func window_reset(window: ptr[DesktopWindow]) do
   window.active is 0
   window.draggable is 0
   window.closable is 0
+  window.resizable is 0
+  window.state is window_state_normal()
+  window.min_width is 0
+  window.min_height is 0
+  window.restore_x is 0
+  window.restore_y is 0
+  window.restore_width is 0
+  window.restore_height is 0
   return true
 end
 
@@ -64,6 +98,7 @@ func window_manager_init(manager: ptr[WindowManager], windows: ptr, capacity: u6
   manager.dragging_id is 0
   manager.drag_offset_x is 0
   manager.drag_offset_y is 0
+  manager.resizing_id is 0
   manager.next_z is 1
   manager.last_closed_id is 0
   index: u64 is 0
@@ -123,6 +158,14 @@ func window_manager_add(manager: ptr[WindowManager], id: u64, x: i64, y: i64, wi
   slot.active is 0
   slot.draggable is 1
   slot.closable is 1
+  slot.resizable is 1
+  slot.state is window_state_normal()
+  slot.min_width is 120
+  slot.min_height is 80
+  slot.restore_x is x
+  slot.restore_y is y
+  slot.restore_width is width
+  slot.restore_height is height
   manager.next_z += 1
   manager.count += 1
   window_manager_clamp(manager, slot)
@@ -198,6 +241,7 @@ func window_manager_close(manager: ptr[WindowManager], id: u64) do
   manager.last_closed_id is id
   if manager.count > 0 then manager.count -= 1
   if manager.dragging_id == id then manager.dragging_id is 0
+  if manager.resizing_id == id then manager.resizing_id is 0
   if manager.active_id == id then
     manager.active_id is 0
     window_manager_focus_top(manager)
@@ -211,12 +255,140 @@ func window_manager_show(manager: ptr[WindowManager], id: u64) do
   if window == 0 then return false
   if window.visible != 0 then return window_manager_focus(manager, id)
   if manager.count >= manager.capacity then return false
+  if window.state == window_state_minimized() then
+    window.x is window.restore_x
+    window.y is window.restore_y
+    window.width is window.restore_width
+    window.height is window.restore_height
+    window.state is window_state_normal()
+  end
   window.visible is 1
   window.active is 0
   manager.count += 1
   manager.last_closed_id is 0
   window_manager_clamp(manager, window)
   return window_manager_focus(manager, id)
+end
+
+func window_manager_save_restore(window: ptr[DesktopWindow]) do
+  if window == 0 or window.state != window_state_normal() then return false
+  window.restore_x is window.x
+  window.restore_y is window.y
+  window.restore_width is window.width
+  window.restore_height is window.height
+  return true
+end
+
+func window_manager_restore(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.state == window_state_normal() then
+    if window.visible == 0 then return window_manager_show(manager, id)
+    return window_manager_focus(manager, id)
+  end
+  was_hidden: bool is window.visible == 0
+  window.x is window.restore_x
+  window.y is window.restore_y
+  window.width is window.restore_width
+  window.height is window.restore_height
+  window.state is window_state_normal()
+  window.visible is 1
+  if was_hidden then manager.count += 1
+  if not window_manager_clamp(manager, window) then return false
+  return window_manager_focus(manager, id)
+end
+
+func window_manager_minimize(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 or window.visible == 0 then return false
+  if window.state == window_state_normal() then
+    if not window_manager_save_restore(window) then return false
+  end
+  window.state is window_state_minimized()
+  window.visible is 0
+  window.active is 0
+  if manager.count > 0 then manager.count -= 1
+  if manager.dragging_id == id then manager.dragging_id is 0
+  if manager.resizing_id == id then manager.resizing_id is 0
+  if manager.active_id == id then
+    manager.active_id is 0
+    window_manager_focus_top(manager)
+  end
+  return true
+end
+
+func window_manager_maximize(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.state != window_state_normal() then
+    if not window_manager_restore(manager, id) then return false
+  end
+  if not window_manager_save_restore(window) then return false
+  window.x is 0
+  window.y is 0
+  window.width is manager.desktop_width
+  window.height is manager.desktop_height - manager.taskbar_height
+  window.state is window_state_maximized()
+  window.visible is 1
+  return window_manager_focus(manager, id)
+end
+
+func window_manager_fullscreen(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.state != window_state_normal() then
+    if not window_manager_restore(manager, id) then return false
+  end
+  if not window_manager_save_restore(window) then return false
+  window.x is 0
+  window.y is 0
+  window.width is manager.desktop_width
+  window.height is manager.desktop_height
+  window.state is window_state_fullscreen()
+  window.visible is 1
+  return window_manager_focus(manager, id)
+end
+
+func window_manager_toggle_maximize(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.state == window_state_maximized() then
+    return window_manager_restore(manager, id)
+  end
+  return window_manager_maximize(manager, id)
+end
+
+func window_manager_toggle_fullscreen(manager: ptr[WindowManager], id: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 then return false
+  if window.state == window_state_fullscreen() then
+    return window_manager_restore(manager, id)
+  end
+  return window_manager_fullscreen(manager, id)
+end
+
+func window_manager_resize(manager: ptr[WindowManager], id: u64, width: u64, height: u64) do
+  if manager == 0 then return false
+  window: ptr[DesktopWindow] is window_manager_find(manager, id)
+  if window == 0 or window.visible == 0 or window.resizable == 0 then return false
+  if window.state != window_state_normal() then return false
+  if width < window.min_width then width is window.min_width
+  if height < window.min_height then height is window.min_height
+  maximum_width: u64 is manager.desktop_width - window.x
+  maximum_height: u64 is manager.desktop_height - manager.taskbar_height - window.y
+  if width > maximum_width then width is maximum_width
+  if height > maximum_height then height is maximum_height
+  window.width is width
+  window.height is height
+  window.restore_width is width
+  window.restore_height is height
+  return true
 end
 
 func window_manager_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) do
@@ -235,6 +407,11 @@ func window_manager_pointer_press(manager: ptr[WindowManager], x: i64, y: i64) d
     window_manager_close(manager, id)
     return id
   end
+  if window.resizable != 0 and window.state == window_state_normal() and local_x >= window.width - 12 and local_y >= window.height - 12 then
+    manager.resizing_id is window.id
+    manager.dragging_id is 0
+    return window.id
+  end
   if window.draggable != 0 and local_y < 38 then
     manager.dragging_id is window.id
     manager.drag_offset_x is local_x
@@ -245,7 +422,20 @@ end
 
 func window_manager_pointer_move(manager: ptr[WindowManager], x: i64, y: i64, left_down: u64) do
   if manager == 0 or left_down > 1 then return false
-  if left_down == 0 or manager.dragging_id == 0 then return true
+  if left_down == 0 then return true
+  if manager.resizing_id != 0 then
+    resize_window: ptr[DesktopWindow] is window_manager_find(manager, manager.resizing_id)
+    if resize_window == 0 or resize_window.visible == 0 then
+      manager.resizing_id is 0
+      return false
+    end
+    requested_width: u64 is resize_window.min_width
+    requested_height: u64 is resize_window.min_height
+    if x > resize_window.x then requested_width is x - resize_window.x + 1
+    if y > resize_window.y then requested_height is y - resize_window.y + 1
+    return window_manager_resize(manager, resize_window.id, requested_width, requested_height)
+  end
+  if manager.dragging_id == 0 then return true
   window: ptr[DesktopWindow] is window_manager_find(manager, manager.dragging_id)
   if window == 0 or window.visible == 0 then
     manager.dragging_id is 0
@@ -259,5 +449,6 @@ end
 func window_manager_pointer_release(manager: ptr[WindowManager]) do
   if manager == 0 then return false
   manager.dragging_id is 0
+  manager.resizing_id is 0
   return true
 end

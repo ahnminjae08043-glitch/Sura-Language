@@ -1,0 +1,1548 @@
+# Allocation-free bounded CSS computed-style foundation.
+#
+# Supported selectors include tag, .class, #id, compound, descendant, and
+# direct-child selectors. Supported properties cover display,
+# foreground/background colors, width/height, min/max dimensions, bounded
+# percentage/calc/viewport dimension values,
+# margin/padding/border-width longhands and 1-4 value shorthands, border and
+# side-border width extraction from compound shorthands, font-size,
+# line-height, box-sizing, static/relative/absolute/fixed positioning with
+# signed pixel offsets, flex alignment/wrapping/gaps, and bounded grid column
+# counts. Rules cascade by selector specificity and source order; inline style
+# wins with specificity 1000.
+
+import "html_dom.sura"
+
+struct CssComputedStyle do
+  display: u64
+  color: u64
+  background: u64
+  width: u64
+  height: u64
+  margin_top: u64
+  margin_right: u64
+  margin_bottom: u64
+  margin_left: u64
+  padding_top: u64
+  padding_right: u64
+  padding_bottom: u64
+  padding_left: u64
+  border_top: u64
+  border_right: u64
+  border_bottom: u64
+  border_left: u64
+  font_size: u64
+  line_height: u64
+  box_sizing: u64
+  justify_content: u64
+  align_items: u64
+  flex_wrap: u64
+  flex_direction: u64
+  gap_row: u64
+  gap_column: u64
+  grid_columns: u64
+  min_width: u64
+  max_width: u64
+  min_height: u64
+  max_height: u64
+  position: u64
+  top: u64
+  right: u64
+  bottom: u64
+  left: u64
+end
+
+struct CssRule do
+  selector_kind: u64
+  selector_tag: u64
+  selector_start: u64
+  selector_bytes: u64
+  specificity: u64
+  property_mask: u64
+end
+
+struct CssStylesheet do
+  input: ptr
+  input_bytes: u64
+  rules: ptr
+  styles: ptr
+  capacity: u64
+  count: u64
+end
+
+css_display_name is static.utf8("display")
+css_color_name is static.utf8("color")
+css_background_name is static.utf8("background")
+css_background_color_name is static.utf8("background-color")
+css_width_name is static.utf8("width")
+css_height_name is static.utf8("height")
+css_min_width_name is static.utf8("min-width")
+css_max_width_name is static.utf8("max-width")
+css_min_height_name is static.utf8("min-height")
+css_max_height_name is static.utf8("max-height")
+css_position_name is static.utf8("position")
+css_top_name is static.utf8("top")
+css_right_name is static.utf8("right")
+css_bottom_name is static.utf8("bottom")
+css_left_name is static.utf8("left")
+css_margin_name is static.utf8("margin")
+css_margin_top_name is static.utf8("margin-top")
+css_margin_right_name is static.utf8("margin-right")
+css_margin_bottom_name is static.utf8("margin-bottom")
+css_margin_left_name is static.utf8("margin-left")
+css_padding_name is static.utf8("padding")
+css_padding_top_name is static.utf8("padding-top")
+css_padding_right_name is static.utf8("padding-right")
+css_padding_bottom_name is static.utf8("padding-bottom")
+css_padding_left_name is static.utf8("padding-left")
+css_border_width_name is static.utf8("border-width")
+css_border_name is static.utf8("border")
+css_border_top_name is static.utf8("border-top")
+css_border_right_name is static.utf8("border-right")
+css_border_bottom_name is static.utf8("border-bottom")
+css_border_left_name is static.utf8("border-left")
+css_border_top_width_name is static.utf8("border-top-width")
+css_border_right_width_name is static.utf8("border-right-width")
+css_border_bottom_width_name is static.utf8("border-bottom-width")
+css_border_left_width_name is static.utf8("border-left-width")
+css_font_size_name is static.utf8("font-size")
+css_line_height_name is static.utf8("line-height")
+css_box_sizing_name is static.utf8("box-sizing")
+css_justify_content_name is static.utf8("justify-content")
+css_align_items_name is static.utf8("align-items")
+css_flex_wrap_name is static.utf8("flex-wrap")
+css_flex_direction_name is static.utf8("flex-direction")
+css_gap_name is static.utf8("gap")
+css_row_gap_name is static.utf8("row-gap")
+css_column_gap_name is static.utf8("column-gap")
+css_grid_template_columns_name is static.utf8("grid-template-columns")
+css_clamp_value is static.utf8("clamp(")
+css_auto_value is static.utf8("auto")
+css_none_value is static.utf8("none")
+css_block_value is static.utf8("block")
+css_inline_value is static.utf8("inline")
+css_inline_block_value is static.utf8("inline-block")
+css_flex_value is static.utf8("flex")
+css_inline_flex_value is static.utf8("inline-flex")
+css_grid_value is static.utf8("grid")
+css_inline_grid_value is static.utf8("inline-grid")
+css_border_box_value is static.utf8("border-box")
+css_content_box_value is static.utf8("content-box")
+css_transparent_value is static.utf8("transparent")
+css_start_value is static.utf8("start")
+css_flex_start_value is static.utf8("flex-start")
+css_center_value is static.utf8("center")
+css_end_value is static.utf8("end")
+css_flex_end_value is static.utf8("flex-end")
+css_space_between_value is static.utf8("space-between")
+css_space_around_value is static.utf8("space-around")
+css_space_evenly_value is static.utf8("space-evenly")
+css_stretch_value is static.utf8("stretch")
+css_nowrap_value is static.utf8("nowrap")
+css_wrap_value is static.utf8("wrap")
+css_row_value is static.utf8("row")
+css_column_value is static.utf8("column")
+css_static_value is static.utf8("static")
+css_relative_value is static.utf8("relative")
+css_absolute_value is static.utf8("absolute")
+css_fixed_value is static.utf8("fixed")
+css_media_name is static.utf8("media")
+css_media_min_width_name is static.utf8("min-width")
+css_media_max_width_name is static.utf8("max-width")
+css_media_min_height_name is static.utf8("min-height")
+css_media_max_height_name is static.utf8("max-height")
+css_media_print_value is static.utf8("print")
+css_media_not_value is static.utf8("not")
+
+func css_custom_name_equal(input: ptr, first_start: u64, first_bytes: u64, second_start: u64, second_bytes: u64) do
+  if input == 0 or first_bytes != second_bytes then return false
+  index: u64 is 0
+  while index < first_bytes do
+    if mem.read8(ptr.add(input, first_start + index)) != mem.read8(ptr.add(input, second_start + index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func css_custom_properties_resolve(input: ptr, input_bytes: u64, entries: ptr, entry_capacity: u64) do
+  if input == 0 or entries == 0 or input_bytes == 0 or entry_capacity == 0 then return 0
+  root_start: u64 is u64("0xffffffffffffffff")
+  root_limit: u64 is 0
+  cursor: u64 is 0
+  while cursor + 5 < input_bytes and root_start == u64("0xffffffffffffffff") do
+    root_match: bool is mem.read8(ptr.add(input, cursor)) == 58
+    if root_match then root_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 1))) == 114
+    if root_match then root_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 2))) == 111
+    if root_match then root_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 3))) == 111
+    if root_match then root_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 4))) == 116
+    if root_match then
+      block_start: u64 is css_trim_start(input, cursor + 5, input_bytes)
+      if block_start < input_bytes and mem.read8(ptr.add(input, block_start)) == 123 then
+        block_end: u64 is block_start + 1
+        while block_end < input_bytes and mem.read8(ptr.add(input, block_end)) != 125 do
+          block_end += 1
+        end
+        if block_end < input_bytes then
+          root_start is block_start + 1
+          root_limit is block_end
+        end
+      end
+    end
+    cursor += 1
+  end
+  if root_start == u64("0xffffffffffffffff") then return 0
+
+  count: u64 is 0
+  cursor is root_start
+  while cursor < root_limit and count < entry_capacity do
+    cursor is css_trim_start(input, cursor, root_limit)
+    while cursor < root_limit and mem.read8(ptr.add(input, cursor)) == 59 do
+      cursor += 1
+      cursor is css_trim_start(input, cursor, root_limit)
+    end
+    if cursor >= root_limit then break
+    name_start: u64 is cursor
+    while cursor < root_limit and mem.read8(ptr.add(input, cursor)) != 58 and mem.read8(ptr.add(input, cursor)) != 59 do
+      cursor += 1
+    end
+    if cursor >= root_limit or mem.read8(ptr.add(input, cursor)) != 58 then
+      while cursor < root_limit and mem.read8(ptr.add(input, cursor)) != 59 do
+        cursor += 1
+      end
+    else
+      name_limit: u64 is css_trim_limit(input, name_start, cursor)
+      cursor += 1
+      value_start: u64 is css_trim_start(input, cursor, root_limit)
+      while cursor < root_limit and mem.read8(ptr.add(input, cursor)) != 59 do
+        cursor += 1
+      end
+      value_limit: u64 is css_trim_limit(input, value_start, cursor)
+      custom_name: bool is name_limit >= name_start + 3
+      if custom_name then custom_name is mem.read8(ptr.add(input, name_start)) == 45 and mem.read8(ptr.add(input, name_start + 1)) == 45
+      if custom_name and value_limit > value_start then
+        entry: ptr is ptr.add(entries, count * 32)
+        mem.write64(entry, name_start)
+        mem.write64(ptr.add(entry, 8), name_limit - name_start)
+        mem.write64(ptr.add(entry, 16), value_start)
+        mem.write64(ptr.add(entry, 24), value_limit - value_start)
+        count += 1
+      end
+    end
+    if cursor < root_limit then cursor += 1
+  end
+
+  cursor is 0
+  while cursor + 5 < input_bytes do
+    function_match: bool is html_dom_lower(mem.read8(ptr.add(input, cursor))) == 118
+    if function_match then function_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 1))) == 97
+    if function_match then function_match is html_dom_lower(mem.read8(ptr.add(input, cursor + 2))) == 114
+    if function_match then function_match is mem.read8(ptr.add(input, cursor + 3)) == 40
+    if function_match then
+      close: u64 is cursor + 4
+      while close < input_bytes and mem.read8(ptr.add(input, close)) != 41 do
+        close += 1
+      end
+      if close < input_bytes then
+        variable_start: u64 is css_trim_start(input, cursor + 4, close)
+        variable_limit: u64 is variable_start
+        while variable_limit < close and mem.read8(ptr.add(input, variable_limit)) != 44 do
+          variable_limit += 1
+        end
+        variable_limit is css_trim_limit(input, variable_start, variable_limit)
+        entry_index: u64 is 0
+        replacement_start: u64 is 0
+        replacement_bytes: u64 is 0
+        while entry_index < count and replacement_bytes == 0 do
+          entry: ptr is ptr.add(entries, entry_index * 32)
+          name_start: u64 is mem.read64(entry)
+          name_bytes: u64 is mem.read64(ptr.add(entry, 8))
+          if css_custom_name_equal(input, variable_start, variable_limit - variable_start, name_start, name_bytes) then
+            replacement_start is mem.read64(ptr.add(entry, 16))
+            replacement_bytes is mem.read64(ptr.add(entry, 24))
+          end
+          entry_index += 1
+        end
+        expression_bytes: u64 is close + 1 - cursor
+        if replacement_bytes != 0 and replacement_bytes <= expression_bytes then
+          copy_index: u64 is 0
+          while copy_index < replacement_bytes do
+            mem.write8(ptr.add(input, cursor + copy_index), mem.read8(ptr.add(input, replacement_start + copy_index)))
+            copy_index += 1
+          end
+          while copy_index < expression_bytes do
+            mem.write8(ptr.add(input, cursor + copy_index), 32)
+            copy_index += 1
+          end
+          cursor is close
+        end
+      end
+    end
+    cursor += 1
+  end
+  return count
+end
+
+func css_trim_start(input: ptr, start: u64, limit: u64) do
+  while start < limit and html_dom_space(mem.read8(ptr.add(input, start))) do
+    start += 1
+  end
+  return start
+end
+
+func css_trim_limit(input: ptr, start: u64, limit: u64) do
+  while limit > start and html_dom_space(mem.read8(ptr.add(input, limit - 1))) do
+    limit -= 1
+  end
+  return limit
+end
+
+func css_hex(value: u64) do
+  if value >= 48 and value <= 57 then return value - 48
+  value is html_dom_lower(value)
+  if value >= 97 and value <= 102 then return value - 87
+  return 16
+end
+
+func css_color(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if html_dom_token_equal(input, start, limit - start, css_transparent_value, 11) then return u64("0x01000000")
+  if start >= limit or mem.read8(ptr.add(input, start)) != 35 then return u64("0xffffffffffffffff")
+  start += 1
+  digits: u64 is limit - start
+  if digits != 3 and digits != 4 and digits != 6 and digits != 8 then return u64("0xffffffffffffffff")
+  value: u64 is 0
+  index: u64 is 0
+  while index < digits do
+    digit: u64 is css_hex(mem.read8(ptr.add(input, start + index)))
+    if digit > 15 then return u64("0xffffffffffffffff")
+    value is value * 16 + digit
+    index += 1
+  end
+  if digits == 3 or digits == 4 then
+    if digits == 4 then value is value >> 4
+    red: u64 is (value >> 8) & 15
+    green: u64 is (value >> 4) & 15
+    blue: u64 is value & 15
+    value is (red * 17 << 16) | (green * 17 << 8) | blue * 17
+  end
+  if digits == 8 then value is value >> 8
+  return value
+end
+
+func css_background_color(input: ptr, start: u64, limit: u64) do
+  direct: u64 is css_color(input, start, limit)
+  if direct != u64("0xffffffffffffffff") then return direct
+  cursor: u64 is limit
+  while cursor > start do
+    cursor -= 1
+    if mem.read8(ptr.add(input, cursor)) == 35 then
+      color_limit: u64 is cursor + 1
+      while color_limit < limit and color_limit - cursor <= 8 and css_hex(mem.read8(ptr.add(input, color_limit))) <= 15 do
+        color_limit += 1
+      end
+      color: u64 is css_color(input, cursor, color_limit)
+      if color != u64("0xffffffffffffffff") then return color
+    end
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func css_length(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if html_dom_token_equal(input, start, limit - start, css_auto_value, 4) then return u64("0xffffffffffffffff")
+  if start == limit then return u64("0xfffffffffffffffe")
+  value: u64 is 0
+  digits: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if byte < 48 or byte > 57 then break
+    if value > 4096 then return u64("0xfffffffffffffffe")
+    value is value * 10 + byte - 48
+    digits += 1
+    cursor += 1
+  end
+  if digits == 0 or value > 4096 then return u64("0xfffffffffffffffe")
+  if cursor == limit then
+    if value == 0 then return 0
+    return u64("0xfffffffffffffffe")
+  end
+  if limit - cursor != 2 then return u64("0xfffffffffffffffe")
+  if html_dom_lower(mem.read8(ptr.add(input, cursor))) != 112 or html_dom_lower(mem.read8(ptr.add(input, cursor + 1))) != 120 then return u64("0xfffffffffffffffe")
+  return value
+end
+
+func css_dimension_number(input: ptr, start: u64, limit: u64) do
+  if start >= limit then return u64("0xfffffffffffffffe")
+  value: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if byte < 48 or byte > 57 then return u64("0xfffffffffffffffe")
+    if value > 4096 then return u64("0xfffffffffffffffe")
+    value is value * 10 + byte - 48
+    cursor += 1
+  end
+  if value > 4096 then return u64("0xfffffffffffffffe")
+  return value
+end
+
+func css_width_dimension(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  absolute: u64 is css_length(input, start, limit)
+  if absolute != u64("0xfffffffffffffffe") then return absolute
+  if limit > start + 1 and mem.read8(ptr.add(input, limit - 1)) == 37 then
+    percent: u64 is css_dimension_number(input, start, limit - 1)
+    if percent <= 1000 then return (1 << 56) | percent
+  end
+  if limit > start + 2 and html_dom_lower(mem.read8(ptr.add(input, limit - 2))) == 118 and html_dom_lower(mem.read8(ptr.add(input, limit - 1))) == 119 then
+    viewport_percent: u64 is css_dimension_number(input, start, limit - 2)
+    if viewport_percent <= 1000 then return (2 << 56) | viewport_percent
+  end
+  calc_match: bool is limit > start + 8
+  if calc_match then calc_match is html_dom_lower(mem.read8(ptr.add(input, start))) == 99
+  if calc_match then calc_match is html_dom_lower(mem.read8(ptr.add(input, start + 1))) == 97
+  if calc_match then calc_match is html_dom_lower(mem.read8(ptr.add(input, start + 2))) == 108
+  if calc_match then calc_match is html_dom_lower(mem.read8(ptr.add(input, start + 3))) == 99
+  if calc_match then calc_match is mem.read8(ptr.add(input, start + 4)) == 40 and mem.read8(ptr.add(input, limit - 1)) == 41
+  if calc_match then
+    inner_start: u64 is css_trim_start(input, start + 5, limit - 1)
+    minus: u64 is inner_start
+    while minus < limit - 1 and mem.read8(ptr.add(input, minus)) != 45 do
+      minus += 1
+    end
+    if minus < limit - 1 then
+      percent_limit: u64 is css_trim_limit(input, inner_start, minus)
+      if percent_limit > inner_start and mem.read8(ptr.add(input, percent_limit - 1)) == 37 then
+        percent: u64 is css_dimension_number(input, inner_start, percent_limit - 1)
+        subtract_start: u64 is css_trim_start(input, minus + 1, limit - 1)
+        subtract: u64 is css_length(input, subtract_start, limit - 1)
+        if percent <= 1000 and subtract < u64("0xfffffffffffffffe") then return (4 << 56) | (percent << 24) | subtract
+      end
+    end
+  end
+  return u64("0xfffffffffffffffe")
+end
+
+func css_height_dimension(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  absolute: u64 is css_length(input, start, limit)
+  if absolute != u64("0xfffffffffffffffe") then return absolute
+  if limit > start + 2 and html_dom_lower(mem.read8(ptr.add(input, limit - 2))) == 118 and html_dom_lower(mem.read8(ptr.add(input, limit - 1))) == 104 then
+    viewport_percent: u64 is css_dimension_number(input, start, limit - 2)
+    if viewport_percent <= 1000 then return (3 << 56) | viewport_percent
+  end
+  return u64("0xfffffffffffffffe")
+end
+
+func css_dimension_resolve(value: u64, basis: u64, viewport_width: u64, viewport_height: u64) do
+  if value >= u64("0xfffffffffffffffe") then return value
+  kind: u64 is value >> 56
+  if kind == 0 then return value
+  amount: u64 is value & u64("0x00ffffff")
+  if kind == 1 then return (basis * amount) / 100
+  if kind == 2 then return (viewport_width * amount) / 100
+  if kind == 3 then return (viewport_height * amount) / 100
+  if kind == 4 then
+    percent: u64 is (value >> 24) & u64("0x00ffffff")
+    subtract: u64 is value & u64("0x00ffffff")
+    resolved: u64 is (basis * percent) / 100
+    if subtract > resolved then return 0
+    return resolved - subtract
+  end
+  return u64("0xfffffffffffffffe")
+end
+
+# Font sizes preserve a bounded clamp(<px>, <vw>, <px>) expression until box
+# layout knows the actual viewport width. The high nibble 6 identifies the
+# packed clamp value. Unitless line-height multipliers use high nibble 7.
+func css_decimal_fixed(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if start >= limit then return u64("0xfffffffffffffffe")
+  cursor: u64 is start
+  whole: u64 is 0
+  whole_digits: u64 is 0
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if byte < 48 or byte > 57 then break
+    if whole > 4096 then return u64("0xfffffffffffffffe")
+    whole is whole * 10 + byte - 48
+    whole_digits += 1
+    cursor += 1
+  end
+  fraction: u64 is 0
+  fraction_digits: u64 is 0
+  if cursor < limit and mem.read8(ptr.add(input, cursor)) == 46 then
+    cursor += 1
+    while cursor < limit do
+      byte: u64 is mem.read8(ptr.add(input, cursor))
+      if byte < 48 or byte > 57 then break
+      if fraction_digits < 3 then
+        fraction is fraction * 10 + byte - 48
+        fraction_digits += 1
+      end
+      cursor += 1
+    end
+  end
+  if whole_digits == 0 and fraction_digits == 0 then return u64("0xfffffffffffffffe")
+  if cursor != limit or whole > 4096 then return u64("0xfffffffffffffffe")
+  while fraction_digits < 3 do
+    fraction is fraction * 10
+    fraction_digits += 1
+  end
+  return whole * 1000 + fraction
+end
+
+func css_font_size_length(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if limit - start < 15 then return css_length(input, start, limit)
+  prefix_match: bool is true
+  prefix_index: u64 is 0
+  while prefix_index < 6 do
+    if html_dom_lower(mem.read8(ptr.add(input, start + prefix_index))) != mem.read8(ptr.add(css_clamp_value, prefix_index)) then prefix_match is false
+    prefix_index += 1
+  end
+  if not prefix_match or mem.read8(ptr.add(input, limit - 1)) != 41 then return css_length(input, start, limit)
+  first_comma: u64 is u64("0xffffffffffffffff")
+  second_comma: u64 is u64("0xffffffffffffffff")
+  cursor: u64 is start + 6
+  while cursor + 1 < limit do
+    if mem.read8(ptr.add(input, cursor)) == 44 then
+      if first_comma == u64("0xffffffffffffffff") then first_comma is cursor else second_comma is cursor
+    end
+    cursor += 1
+  end
+  if first_comma == u64("0xffffffffffffffff") or second_comma == u64("0xffffffffffffffff") then return u64("0xfffffffffffffffe")
+  minimum: u64 is css_length(input, start + 6, first_comma)
+  maximum: u64 is css_length(input, second_comma + 1, limit - 1)
+  if minimum >= u64("0xfffffffffffffffe") or maximum >= u64("0xfffffffffffffffe") or minimum > 4095 or maximum > 4095 or minimum > maximum then return u64("0xfffffffffffffffe")
+  preferred_start: u64 is css_trim_start(input, first_comma + 1, second_comma)
+  preferred_limit: u64 is css_trim_limit(input, preferred_start, second_comma)
+  if preferred_limit - preferred_start < 3 then return u64("0xfffffffffffffffe")
+  unit_start: u64 is preferred_limit - 2
+  if html_dom_lower(mem.read8(ptr.add(input, unit_start))) != 118 or html_dom_lower(mem.read8(ptr.add(input, unit_start + 1))) != 119 then return u64("0xfffffffffffffffe")
+  preferred: u64 is css_decimal_fixed(input, preferred_start, unit_start)
+  if preferred == u64("0xfffffffffffffffe") or preferred > u64("0xffffffff") then return u64("0xfffffffffffffffe")
+  return u64("0x6200000000000000") | (preferred << 24) | (maximum << 12) | minimum
+end
+
+func css_line_height_length(input: ptr, start: u64, limit: u64) do
+  pixels: u64 is css_length(input, start, limit)
+  if pixels != u64("0xfffffffffffffffe") then return pixels
+  multiplier: u64 is css_decimal_fixed(input, start, limit)
+  if multiplier == u64("0xfffffffffffffffe") or multiplier > u64("0x0fffffffffffffff") then return u64("0xfffffffffffffffe")
+  return u64("0x7000000000000000") | multiplier
+end
+
+func css_font_size_resolve(value: u64, viewport_width: u64) do
+  if (value >> 60) != 6 then return value
+  minimum: u64 is value & 4095
+  maximum: u64 is (value >> 12) & 4095
+  unit: u64 is (value >> 56) & 15
+  preferred_fixed: u64 is (value >> 24) & u64("0xffffffff")
+  preferred: u64 is minimum
+  if unit == 2 then preferred is (viewport_width * preferred_fixed + 50000) / 100000
+  if preferred < minimum then preferred is minimum
+  if preferred > maximum then preferred is maximum
+  return preferred
+end
+
+func css_line_height_resolve(value: u64, font_size: u64) do
+  if (value >> 60) != 7 then return value
+  multiplier: u64 is value & u64("0x0fffffffffffffff")
+  result: u64 is (font_size * multiplier + 500) / 1000
+  if result == 0 then result is 1
+  return result
+end
+
+func css_border_shorthand_width(input: ptr, start: u64, limit: u64) do
+  cursor: u64 is css_trim_start(input, start, limit)
+  while cursor < limit do
+    token_limit: u64 is cursor
+    while token_limit < limit and not html_dom_space(mem.read8(ptr.add(input, token_limit))) do
+      token_limit += 1
+    end
+    if html_dom_token_equal(input, cursor, token_limit - cursor, css_none_value, 4) then return 0
+    width: u64 is css_length(input, cursor, token_limit)
+    if width < u64("0xfffffffffffffffe") then return width
+    cursor is css_trim_start(input, token_limit, limit)
+  end
+  return u64("0xfffffffffffffffe")
+end
+
+func css_position_offset(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if html_dom_token_equal(input, start, limit - start, css_auto_value, 4) then return u64("0xffffffffffffffff")
+  negative: bool is start < limit and mem.read8(ptr.add(input, start)) == 45
+  if negative then start += 1
+  magnitude: u64 is css_length(input, start, limit)
+  if magnitude >= u64("0xfffffffffffffffe") then return u64("0xfffffffffffffffe")
+  if negative and magnitude != 0 then return 0 - magnitude
+  return magnitude
+end
+
+func css_style_clear(style: ptr[CssComputedStyle]) do
+  if style == 0 then return false
+  index: u64 is 0
+  while index < 36 do
+    mem.write64(ptr.add(style, index * 8), 0)
+    index += 1
+  end
+  return true
+end
+
+func css_apply_gap(input: ptr, start: u64, limit: u64, style: ptr[CssComputedStyle]) do
+  cursor: u64 is css_trim_start(input, start, limit)
+  first_limit: u64 is cursor
+  while first_limit < limit and not html_dom_space(mem.read8(ptr.add(input, first_limit))) do
+    first_limit += 1
+  end
+  first: u64 is css_length(input, cursor, first_limit)
+  if first >= u64("0xfffffffffffffffe") then return 0
+  cursor is css_trim_start(input, first_limit, limit)
+  second: u64 is first
+  if cursor < limit then
+    second is css_length(input, cursor, limit)
+    if second >= u64("0xfffffffffffffffe") then return 0
+  end
+  style.gap_row is first
+  style.gap_column is second
+  return (1 << 24) | (1 << 25)
+end
+
+func css_grid_column_count(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if start >= limit then return 0
+  if limit - start >= 8 then
+    repeat_match: bool is html_dom_lower(mem.read8(ptr.add(input, start))) == 114
+    if repeat_match then repeat_match is html_dom_lower(mem.read8(ptr.add(input, start + 1))) == 101
+    if repeat_match then repeat_match is html_dom_lower(mem.read8(ptr.add(input, start + 2))) == 112
+    if repeat_match then repeat_match is html_dom_lower(mem.read8(ptr.add(input, start + 3))) == 101
+    if repeat_match then repeat_match is html_dom_lower(mem.read8(ptr.add(input, start + 4))) == 97
+    if repeat_match then repeat_match is html_dom_lower(mem.read8(ptr.add(input, start + 5))) == 116
+    if repeat_match then repeat_match is mem.read8(ptr.add(input, start + 6)) == 40
+    if repeat_match then
+      cursor: u64 is start + 7
+      count: u64 is 0
+      digits: u64 is 0
+      while cursor < limit do
+        byte: u64 is mem.read8(ptr.add(input, cursor))
+        if byte < 48 or byte > 57 then break
+        count is count * 10 + byte - 48
+        digits += 1
+        cursor += 1
+      end
+      if digits != 0 and count >= 1 and count <= 16 then return count
+      return 0
+    end
+  end
+  depth: u64 is 0
+  columns: u64 is 0
+  in_token: bool is false
+  cursor: u64 is start
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if byte == 40 then depth += 1
+    if byte == 41 and depth != 0 then depth -= 1
+    separator: bool is depth == 0 and html_dom_space(byte)
+    if separator then
+      in_token is false
+    else
+      if not in_token then
+        columns += 1
+        if columns > 16 then return 0
+        in_token is true
+      end
+    end
+    cursor += 1
+  end
+  return columns
+end
+
+func css_apply_quad(input: ptr, start: u64, limit: u64, style: ptr[CssComputedStyle], base_property: u64) do
+  values0: u64 is 0
+  values1: u64 is 0
+  values2: u64 is 0
+  values3: u64 is 0
+  count: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    cursor is css_trim_start(input, cursor, limit)
+    if cursor >= limit then break
+    value_end: u64 is cursor
+    while value_end < limit and not html_dom_space(mem.read8(ptr.add(input, value_end))) do
+      value_end += 1
+    end
+    value: u64 is css_length(input, cursor, value_end)
+    if value == u64("0xfffffffffffffffe") or count >= 4 then return 0
+    if value == u64("0xffffffffffffffff") and base_property != 5 then return 0
+    if count == 0 then values0 is value
+    if count == 1 then values1 is value
+    if count == 2 then values2 is value
+    if count == 3 then values3 is value
+    count += 1
+    cursor is value_end
+  end
+  if count == 0 then return 0
+  top: u64 is values0
+  right: u64 is values0
+  bottom: u64 is values0
+  left: u64 is values0
+  if count == 2 then
+    right is values1
+    left is values1
+  end
+  if count == 3 then
+    right is values1
+    left is values1
+    bottom is values2
+  end
+  if count == 4 then
+    right is values1
+    bottom is values2
+    left is values3
+  end
+  mem.write64(ptr.add(style, base_property * 8), top)
+  mem.write64(ptr.add(style, (base_property + 1) * 8), right)
+  mem.write64(ptr.add(style, (base_property + 2) * 8), bottom)
+  mem.write64(ptr.add(style, (base_property + 3) * 8), left)
+  return ((1 << 4) - 1) << base_property
+end
+
+func css_declarations(input: ptr, start: u64, limit: u64, style: ptr[CssComputedStyle], mask_pointer: ptr) do
+  if input == 0 or style == 0 or mask_pointer == 0 then return false
+  mask: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    cursor is css_trim_start(input, cursor, limit)
+    while cursor < limit and mem.read8(ptr.add(input, cursor)) == 59 do
+      cursor += 1
+      cursor is css_trim_start(input, cursor, limit)
+    end
+    if cursor >= limit then break
+    name_start: u64 is cursor
+    while cursor < limit and mem.read8(ptr.add(input, cursor)) != 58 and mem.read8(ptr.add(input, cursor)) != 59 do
+      cursor += 1
+    end
+    if cursor >= limit or mem.read8(ptr.add(input, cursor)) != 58 then return false
+    name_limit: u64 is css_trim_limit(input, name_start, cursor)
+    cursor += 1
+    value_start: u64 is cursor
+    while cursor < limit and mem.read8(ptr.add(input, cursor)) != 59 do
+      cursor += 1
+    end
+    value_limit: u64 is css_trim_limit(input, value_start, cursor)
+    value_start is css_trim_start(input, value_start, value_limit)
+    property: u64 is u64("0xffffffffffffffff")
+    parsed: u64 is 0
+    valid: bool is true
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_display_name, 7) then
+      property is 0
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_none_value, 4) then parsed is 0
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_block_value, 5) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_inline_value, 6) then parsed is 2
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_inline_block_value, 12) then parsed is 3
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_flex_value, 4) then parsed is 4
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_inline_flex_value, 11) then parsed is 4
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_grid_value, 4) then parsed is 5
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_inline_grid_value, 11) then parsed is 5
+      if parsed == 0 and not html_dom_token_equal(input, value_start, value_limit - value_start, css_none_value, 4) then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_color_name, 5) then
+      property is 1
+      parsed is css_color(input, value_start, value_limit)
+      if parsed == u64("0xffffffffffffffff") then valid is false
+    end
+    background_property: bool is html_dom_token_equal(input, name_start, name_limit - name_start, css_background_name, 10)
+    if not background_property then background_property is html_dom_token_equal(input, name_start, name_limit - name_start, css_background_color_name, 16)
+    if background_property then
+      property is 2
+      parsed is css_background_color(input, value_start, value_limit)
+      if parsed == u64("0xffffffffffffffff") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_width_name, 5) then property is 3
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_height_name, 6) then property is 4
+    if property == 3 then
+      parsed is css_width_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+    end
+    if property == 4 then
+      parsed is css_height_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+    end
+    quad_mask: u64 is 0
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_margin_name, 6) then quad_mask is css_apply_quad(input, value_start, value_limit, style, 5)
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_padding_name, 7) then quad_mask is css_apply_quad(input, value_start, value_limit, style, 9)
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_width_name, 12) then quad_mask is css_apply_quad(input, value_start, value_limit, style, 13)
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_name, 6) then
+      border_width: u64 is css_border_shorthand_width(input, value_start, value_limit)
+      if border_width >= u64("0xfffffffffffffffe") then
+        valid is false
+      else
+        style.border_top is border_width
+        style.border_right is border_width
+        style.border_bottom is border_width
+        style.border_left is border_width
+        quad_mask is ((1 << 4) - 1) << 13
+      end
+    end
+    if quad_mask != 0 then mask is mask | quad_mask
+    longhand: u64 is u64("0xffffffffffffffff")
+    border_shorthand: bool is false
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_margin_top_name, 10) then longhand is 5
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_margin_right_name, 12) then longhand is 6
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_margin_bottom_name, 13) then longhand is 7
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_margin_left_name, 11) then longhand is 8
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_padding_top_name, 11) then longhand is 9
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_padding_right_name, 13) then longhand is 10
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_padding_bottom_name, 14) then longhand is 11
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_padding_left_name, 12) then longhand is 12
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_top_width_name, 16) then longhand is 13
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_right_width_name, 18) then longhand is 14
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_bottom_width_name, 19) then longhand is 15
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_left_width_name, 17) then longhand is 16
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_top_name, 10) then
+      longhand is 13
+      border_shorthand is true
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_right_name, 12) then
+      longhand is 14
+      border_shorthand is true
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_bottom_name, 13) then
+      longhand is 15
+      border_shorthand is true
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_border_left_name, 11) then
+      longhand is 16
+      border_shorthand is true
+    end
+    if longhand != u64("0xffffffffffffffff") then
+      if border_shorthand then
+        parsed is css_border_shorthand_width(input, value_start, value_limit)
+      else
+        parsed is css_length(input, value_start, value_limit)
+      end
+      margin_longhand: bool is longhand >= 5 and longhand <= 8
+      if parsed == u64("0xfffffffffffffffe") or (parsed == u64("0xffffffffffffffff") and not margin_longhand) then
+        valid is false
+      else
+        property is longhand
+      end
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_font_size_name, 9) then
+      property is 17
+      parsed is css_font_size_length(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") or parsed == u64("0xffffffffffffffff") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_line_height_name, 11) then
+      property is 18
+      parsed is css_line_height_length(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") or parsed == u64("0xffffffffffffffff") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_box_sizing_name, 10) then
+      property is 19
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_border_box_value, 10) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_content_box_value, 11) then parsed is 0
+      if parsed == 0 and not html_dom_token_equal(input, value_start, value_limit - value_start, css_content_box_value, 11) then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_justify_content_name, 15) then
+      property is 20
+      parsed is 0
+      start_value: bool is html_dom_token_equal(input, value_start, value_limit - value_start, css_start_value, 5)
+      if not start_value then start_value is html_dom_token_equal(input, value_start, value_limit - value_start, css_flex_start_value, 10)
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_center_value, 6) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_end_value, 3) then parsed is 2
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_flex_end_value, 8) then parsed is 2
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_space_between_value, 13) then parsed is 3
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_space_around_value, 12) then parsed is 4
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_space_evenly_value, 12) then parsed is 5
+      if parsed == 0 and not start_value then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_align_items_name, 11) then
+      property is 21
+      parsed is 0
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_start_value, 5) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_flex_start_value, 10) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_center_value, 6) then parsed is 2
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_end_value, 3) then parsed is 3
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_flex_end_value, 8) then parsed is 3
+      stretch_value: bool is html_dom_token_equal(input, value_start, value_limit - value_start, css_stretch_value, 7)
+      if parsed == 0 and not stretch_value then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_flex_wrap_name, 9) then
+      property is 22
+      parsed is 0
+      nowrap_value: bool is html_dom_token_equal(input, value_start, value_limit - value_start, css_nowrap_value, 6)
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_wrap_value, 4) then parsed is 1
+      if parsed == 0 and not nowrap_value then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_flex_direction_name, 14) then
+      property is 23
+      parsed is 0
+      row_value: bool is html_dom_token_equal(input, value_start, value_limit - value_start, css_row_value, 3)
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_column_value, 6) then parsed is 1
+      if parsed == 0 and not row_value then valid is false
+    end
+    gap_mask: u64 is 0
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_gap_name, 3) then
+      gap_mask is css_apply_gap(input, value_start, value_limit, style)
+      if gap_mask == 0 then
+        valid is false
+      else
+        mask is mask | gap_mask
+      end
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_row_gap_name, 7) then property is 24
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_column_gap_name, 10) then property is 25
+    if property == 24 or property == 25 then
+      parsed is css_length(input, value_start, value_limit)
+      if parsed >= u64("0xfffffffffffffffe") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_grid_template_columns_name, 21) then
+      property is 26
+      parsed is css_grid_column_count(input, value_start, value_limit)
+      if parsed == 0 then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_min_width_name, 9) then
+      property is 27
+      parsed is css_width_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") or parsed == u64("0xffffffffffffffff") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_max_width_name, 9) then
+      property is 28
+      parsed is css_width_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_min_height_name, 10) then
+      property is 29
+      parsed is css_height_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+      if parsed == u64("0xffffffffffffffff") then parsed is 0
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_max_height_name, 10) then
+      property is 30
+      parsed is css_height_dimension(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_position_name, 8) then
+      property is 31
+      parsed is 0
+      static_position: bool is html_dom_token_equal(input, value_start, value_limit - value_start, css_static_value, 6)
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_relative_value, 8) then parsed is 1
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_absolute_value, 8) then parsed is 2
+      if html_dom_token_equal(input, value_start, value_limit - value_start, css_fixed_value, 5) then parsed is 3
+      if parsed == 0 and not static_position then valid is false
+    end
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_top_name, 3) then property is 32
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_right_name, 5) then property is 33
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_bottom_name, 6) then property is 34
+    if html_dom_token_equal(input, name_start, name_limit - name_start, css_left_name, 4) then property is 35
+    if property >= 32 and property <= 35 then
+      parsed is css_position_offset(input, value_start, value_limit)
+      if parsed == u64("0xfffffffffffffffe") then valid is false
+    end
+    if property != u64("0xffffffffffffffff") and valid then
+      mem.write64(ptr.add(style, property * 8), parsed)
+      mask is mask | (1 << property)
+    end
+    if cursor < limit then cursor += 1
+  end
+  mem.write64(mask_pointer, mask)
+  return true
+end
+
+func css_skip_comment(input: ptr, cursor: u64, limit: u64) do
+  if cursor + 1 >= limit or mem.read8(ptr.add(input, cursor)) != 47 or mem.read8(ptr.add(input, cursor + 1)) != 42 then return cursor
+  cursor += 2
+  while cursor + 1 < limit do
+    if mem.read8(ptr.add(input, cursor)) == 42 and mem.read8(ptr.add(input, cursor + 1)) == 47 then return cursor + 2
+    cursor += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func css_stylesheet_parse(input: ptr, input_bytes: u64, stylesheet: ptr[CssStylesheet]) do
+  if input == 0 or stylesheet == 0 or stylesheet.rules == 0 or stylesheet.styles == 0 then return false
+  if input_bytes > 65535 or stylesheet.capacity == 0 then return false
+  stylesheet.input is input
+  stylesheet.input_bytes is input_bytes
+  stylesheet.count is 0
+  cursor: u64 is 0
+  while cursor < input_bytes do
+    cursor is css_trim_start(input, cursor, input_bytes)
+    if cursor >= input_bytes then break
+    comment_end: u64 is css_skip_comment(input, cursor, input_bytes)
+    if comment_end == u64("0xffffffffffffffff") then return false
+    if comment_end != cursor then
+      cursor is comment_end
+    else
+      if stylesheet.count >= stylesheet.capacity then return false
+      selector_start: u64 is cursor
+      while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) != 123 do
+        if mem.read8(ptr.add(input, cursor)) == 44 then return false
+        cursor += 1
+      end
+      if cursor >= input_bytes then return false
+      selector_limit: u64 is css_trim_limit(input, selector_start, cursor)
+      selector_start is css_trim_start(input, selector_start, selector_limit)
+      if selector_start == selector_limit then return false
+      index: u64 is selector_start
+      while index < selector_limit do
+        if html_dom_space(mem.read8(ptr.add(input, index))) then return false
+        index += 1
+      end
+      rule: ptr[CssRule] is ptr.add(stylesheet.rules, stylesheet.count * 48)
+      rule.selector_kind is 1
+      rule.selector_start is selector_start
+      rule.selector_bytes is selector_limit - selector_start
+      rule.specificity is 1
+      first: u64 is mem.read8(ptr.add(input, selector_start))
+      if first == 46 or first == 35 then
+        rule.selector_kind is 2
+        rule.specificity is 10
+        if first == 35 then
+          rule.selector_kind is 3
+          rule.specificity is 100
+        end
+        rule.selector_start is selector_start + 1
+        rule.selector_bytes is selector_limit - selector_start - 1
+        if rule.selector_bytes == 0 then return false
+        rule.selector_tag is 0
+      else
+        rule.selector_tag is html_dom_tag_code(input, selector_start, selector_limit - selector_start)
+        if rule.selector_tag == 0 then return false
+      end
+      cursor += 1
+      declaration_start: u64 is cursor
+      while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) != 125 do
+        cursor += 1
+      end
+      if cursor >= input_bytes then return false
+      style: ptr[CssComputedStyle] is ptr.add(stylesheet.styles, stylesheet.count * 288)
+      css_style_clear(style)
+      rule_mask: u64 is 0
+      if not css_declarations(input, declaration_start, cursor, style, addr_of(rule_mask)) then return false
+      rule.property_mask is rule_mask
+      stylesheet.count is stylesheet.count + 1
+      cursor += 1
+    end
+  end
+  return true
+end
+
+func css_selector_specificity(input: ptr, start: u64, limit: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if start >= limit then return u64("0xffffffffffffffff")
+  specificity: u64 is 0
+  cursor: u64 is start
+  compound_items: u64 is 0
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if html_dom_space(byte) then
+      while cursor < limit and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      compound_items is 0
+    elif byte == 62 then
+      cursor += 1
+      while cursor < limit and html_dom_space(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      compound_items is 0
+    elif byte == 46 or byte == 35 then
+      prefix: u64 is byte
+      cursor += 1
+      name_start: u64 is cursor
+      while cursor < limit and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      if cursor == name_start then return u64("0xffffffffffffffff")
+      if prefix == 35 then specificity += 100 else specificity += 10
+      compound_items += 1
+    elif byte == 42 then
+      cursor += 1
+      compound_items += 1
+    else
+      if not html_dom_name_byte(byte) or compound_items != 0 then return u64("0xffffffffffffffff")
+      name_start: u64 is cursor
+      while cursor < limit and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      if html_dom_tag_code(input, name_start, cursor - name_start) == 0 then return u64("0xffffffffffffffff")
+      specificity += 1
+      compound_items += 1
+    end
+  end
+  if compound_items == 0 then return u64("0xffffffffffffffff")
+  return specificity
+end
+
+func css_relaxed_add_rule(stylesheet: ptr[CssStylesheet], selector_start: u64, selector_limit: u64, declaration_start: u64, declaration_limit: u64) do
+  input: ptr is stylesheet.input
+  selector_start is css_trim_start(input, selector_start, selector_limit)
+  selector_limit is css_trim_limit(input, selector_start, selector_limit)
+  if selector_start >= selector_limit then return true
+  complex_specificity: u64 is css_selector_specificity(input, selector_start, selector_limit)
+  if complex_specificity == u64("0xffffffffffffffff") then return true
+  first: u64 is mem.read8(ptr.add(input, selector_start))
+  name_start: u64 is selector_start
+  selector_kind: u64 is 1
+  specificity: u64 is 1
+  if first == 46 then
+    selector_kind is 2
+    specificity is 10
+    name_start += 1
+  end
+  if first == 35 then
+    selector_kind is 3
+    specificity is 100
+    name_start += 1
+  end
+  if name_start >= selector_limit then return true
+  cursor: u64 is name_start
+  simple: bool is true
+  while cursor < selector_limit do
+    value: u64 is mem.read8(ptr.add(input, cursor))
+    if not html_dom_name_byte(value) then simple is false
+    cursor += 1
+  end
+  if not simple then
+    selector_kind is 4
+    specificity is complex_specificity
+    name_start is selector_start
+  end
+  selector_tag: u64 is 0
+  if selector_kind == 1 then
+    selector_tag is html_dom_tag_code(input, name_start, selector_limit - name_start)
+    if selector_tag == 0 then return true
+  end
+  if stylesheet.count >= stylesheet.capacity then return false
+  rule: ptr[CssRule] is ptr.add(stylesheet.rules, stylesheet.count * 48)
+  rule.selector_kind is selector_kind
+  rule.selector_tag is selector_tag
+  rule.selector_start is name_start
+  rule.selector_bytes is selector_limit - name_start
+  rule.specificity is specificity
+  style: ptr[CssComputedStyle] is ptr.add(stylesheet.styles, stylesheet.count * 288)
+  css_style_clear(style)
+  rule_mask: u64 is 0
+  if not css_declarations(input, declaration_start, declaration_limit, style, addr_of(rule_mask)) then return true
+  rule.property_mask is rule_mask
+  stylesheet.count is stylesheet.count + 1
+  return true
+end
+
+func css_media_token_present(input: ptr, start: u64, limit: u64, token: ptr, token_bytes: u64) do
+  if input == 0 or token == 0 or token_bytes == 0 then return false
+  cursor: u64 is start
+  while cursor + token_bytes <= limit do
+    left_boundary: bool is cursor == start
+    if not left_boundary then left_boundary is not html_dom_name_byte(mem.read8(ptr.add(input, cursor - 1)))
+    right_boundary: bool is cursor + token_bytes == limit
+    if not right_boundary then right_boundary is not html_dom_name_byte(mem.read8(ptr.add(input, cursor + token_bytes)))
+    if left_boundary and right_boundary and html_dom_token_equal(input, cursor, token_bytes, token, token_bytes) then return true
+    cursor += 1
+  end
+  return false
+end
+
+# Returns 1 when a supported media feature matches, 2 when it does not match,
+# and 0 when the feature is unsupported or malformed.
+func css_media_feature_result(input: ptr, start: u64, limit: u64, viewport_width: u64, viewport_height: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  colon: u64 is start
+  while colon < limit and mem.read8(ptr.add(input, colon)) != 58 do
+    colon += 1
+  end
+  if colon >= limit then return 0
+  name_limit: u64 is css_trim_limit(input, start, colon)
+  value_start: u64 is css_trim_start(input, colon + 1, limit)
+  value: u64 is css_length(input, value_start, limit)
+  if value >= u64("0xfffffffffffffffe") then return 0
+  if html_dom_token_equal(input, start, name_limit - start, css_media_min_width_name, 9) then
+    if viewport_width >= value then return 1 else return 2
+  end
+  if html_dom_token_equal(input, start, name_limit - start, css_media_max_width_name, 9) then
+    if viewport_width <= value then return 1 else return 2
+  end
+  if html_dom_token_equal(input, start, name_limit - start, css_media_min_height_name, 10) then
+    if viewport_height >= value then return 1 else return 2
+  end
+  if html_dom_token_equal(input, start, name_limit - start, css_media_max_height_name, 10) then
+    if viewport_height <= value then return 1 else return 2
+  end
+  return 0
+end
+
+func css_media_segment_matches(input: ptr, start: u64, limit: u64, viewport_width: u64, viewport_height: u64) do
+  start is css_trim_start(input, start, limit)
+  limit is css_trim_limit(input, start, limit)
+  if start >= limit then return false
+  if css_media_token_present(input, start, limit, css_media_print_value, 5) then return false
+  inverted: bool is css_media_token_present(input, start, limit, css_media_not_value, 3)
+  matched: bool is true
+  feature_count: u64 is 0
+  cursor: u64 is start
+  while cursor < limit do
+    if mem.read8(ptr.add(input, cursor)) == 40 then
+      close: u64 is cursor + 1
+      while close < limit and mem.read8(ptr.add(input, close)) != 41 do
+        close += 1
+      end
+      if close >= limit then return false
+      result: u64 is css_media_feature_result(input, cursor + 1, close, viewport_width, viewport_height)
+      if result == 0 then return false
+      if result == 2 then matched is false
+      feature_count += 1
+      cursor is close
+    end
+    cursor += 1
+  end
+  # A feature-less screen/all query is true. Other media types are rejected
+  # above when they are known not to represent the graphical viewport.
+  if inverted then return not matched
+  return matched
+end
+
+func css_media_condition_matches(input: ptr, start: u64, limit: u64, viewport_width: u64, viewport_height: u64) do
+  segment_start: u64 is start
+  cursor: u64 is start
+  depth: u64 is 0
+  while cursor <= limit do
+    split: bool is cursor == limit
+    if cursor < limit then
+      byte: u64 is mem.read8(ptr.add(input, cursor))
+      if byte == 40 then depth += 1
+      if byte == 41 and depth != 0 then depth -= 1
+      if byte == 44 and depth == 0 then split is true
+    end
+    if split then
+      if css_media_segment_matches(input, segment_start, cursor, viewport_width, viewport_height) then return true
+      segment_start is cursor + 1
+    end
+    cursor += 1
+  end
+  return false
+end
+
+func css_stylesheet_parse_relaxed_range(stylesheet: ptr[CssStylesheet], range_start: u64, range_limit: u64, viewport_width: u64, viewport_height: u64, recursion_depth: u64) do
+  if stylesheet == 0 or stylesheet.input == 0 or recursion_depth > 8 then return false
+  input: ptr is stylesheet.input
+  cursor: u64 is range_start
+  while cursor < range_limit do
+    cursor is css_trim_start(input, cursor, range_limit)
+    if cursor >= range_limit then break
+    comment_end: u64 is css_skip_comment(input, cursor, range_limit)
+    if comment_end == u64("0xffffffffffffffff") then return false
+    if comment_end != cursor then
+      cursor is comment_end
+    else
+      if mem.read8(ptr.add(input, cursor)) == 64 then
+        at_start: u64 is cursor
+        prelude_end: u64 is cursor + 1
+        while prelude_end < range_limit and mem.read8(ptr.add(input, prelude_end)) != 59 and mem.read8(ptr.add(input, prelude_end)) != 123 do
+          prelude_end += 1
+        end
+        if prelude_end >= range_limit then return true
+        if mem.read8(ptr.add(input, prelude_end)) == 59 then
+          cursor is prelude_end + 1
+        else
+          block_depth: u64 is 1
+          block_end: u64 is prelude_end + 1
+          while block_end < range_limit and block_depth != 0 do
+            value: u64 is mem.read8(ptr.add(input, block_end))
+            if value == 123 then block_depth += 1
+            if value == 125 then block_depth -= 1
+            block_end += 1
+          end
+          if block_depth != 0 then return true
+          name_start: u64 is at_start + 1
+          name_limit: u64 is name_start
+          while name_limit < prelude_end and html_dom_name_byte(mem.read8(ptr.add(input, name_limit))) do
+            name_limit += 1
+          end
+          is_media: bool is html_dom_token_equal(input, name_start, name_limit - name_start, css_media_name, 5)
+          if is_media and viewport_width != 0 and viewport_height != 0 then
+            condition_start: u64 is css_trim_start(input, name_limit, prelude_end)
+            if css_media_condition_matches(input, condition_start, prelude_end, viewport_width, viewport_height) then
+              if not css_stylesheet_parse_relaxed_range(stylesheet, prelude_end + 1, block_end - 1, viewport_width, viewport_height, recursion_depth + 1) then return false
+            end
+          end
+          cursor is block_end
+        end
+      else
+        selector_start: u64 is cursor
+        while cursor < range_limit and mem.read8(ptr.add(input, cursor)) != 123 do
+          cursor += 1
+        end
+        if cursor >= range_limit then return true
+        selector_limit: u64 is cursor
+        declaration_start: u64 is cursor + 1
+        cursor is declaration_start
+        while cursor < range_limit and mem.read8(ptr.add(input, cursor)) != 125 do
+          cursor += 1
+        end
+        if cursor >= range_limit then return true
+        declaration_limit: u64 is cursor
+        segment_start: u64 is selector_start
+        segment_cursor: u64 is selector_start
+        while segment_cursor <= selector_limit do
+          if segment_cursor == selector_limit or mem.read8(ptr.add(input, segment_cursor)) == 44 then
+            if not css_relaxed_add_rule(stylesheet, segment_start, segment_cursor, declaration_start, declaration_limit) then return false
+            segment_start is segment_cursor + 1
+          end
+          segment_cursor += 1
+        end
+        cursor += 1
+      end
+    end
+  end
+  return true
+end
+
+func css_stylesheet_parse_relaxed_viewport(input: ptr, input_bytes: u64, stylesheet: ptr[CssStylesheet], viewport_width: u64, viewport_height: u64) do
+  if input == 0 or stylesheet == 0 or stylesheet.rules == 0 or stylesheet.styles == 0 then return false
+  if input_bytes > 65535 or stylesheet.capacity == 0 or viewport_width == 0 or viewport_height == 0 then return false
+  stylesheet.input is input
+  stylesheet.input_bytes is input_bytes
+  stylesheet.count is 0
+  return css_stylesheet_parse_relaxed_range(stylesheet, 0, input_bytes, viewport_width, viewport_height, 0)
+end
+
+func css_stylesheet_parse_relaxed(input: ptr, input_bytes: u64, stylesheet: ptr[CssStylesheet]) do
+  if input == 0 or stylesheet == 0 or stylesheet.rules == 0 or stylesheet.styles == 0 then return false
+  if input_bytes > 65535 or stylesheet.capacity == 0 then return false
+  stylesheet.input is input
+  stylesheet.input_bytes is input_bytes
+  stylesheet.count is 0
+  return css_stylesheet_parse_relaxed_range(stylesheet, 0, input_bytes, 0, 0, 0)
+end
+
+func css_attribute_token(document: ptr[HtmlDomDocument], attribute: ptr[HtmlDomAttribute], input: ptr, start: u64, length: u64) do
+  if attribute == 0 or attribute.has_value == 0 then return false
+  cursor: u64 is attribute.source_start
+  limit: u64 is cursor + attribute.source_bytes
+  while cursor < limit do
+    while cursor < limit and html_dom_space(mem.read8(ptr.add(document.input, cursor))) do
+      cursor += 1
+    end
+    token_start: u64 is cursor
+    while cursor < limit and not html_dom_space(mem.read8(ptr.add(document.input, cursor))) do
+      cursor += 1
+    end
+    if cursor - token_start == length then
+      index: u64 is 0
+      equal: bool is true
+      while index < length do
+        if mem.read8(ptr.add(document.input, token_start + index)) != mem.read8(ptr.add(input, start + index)) then equal is false
+        index += 1
+      end
+      if equal then return true
+    end
+  end
+  return false
+end
+
+func css_selector_compound_matches(document: ptr[HtmlDomDocument], node_index: u64, input: ptr, start: u64, limit: u64) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 or node.kind != 1 or start >= limit then return false
+  cursor: u64 is start
+  compound_items: u64 is 0
+  while cursor < limit do
+    byte: u64 is mem.read8(ptr.add(input, cursor))
+    if byte == 46 or byte == 35 then
+      prefix: u64 is byte
+      cursor += 1
+      name_start: u64 is cursor
+      while cursor < limit and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      if cursor == name_start then return false
+      attribute_name: u64 is 2
+      if prefix == 35 then attribute_name is 1
+      attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, attribute_name)
+      if not css_attribute_token(document, attribute, input, name_start, cursor - name_start) then return false
+      compound_items += 1
+    elif byte == 42 then
+      if compound_items != 0 then return false
+      cursor += 1
+      compound_items += 1
+    else
+      if not html_dom_name_byte(byte) or compound_items != 0 then return false
+      name_start: u64 is cursor
+      while cursor < limit and html_dom_name_byte(mem.read8(ptr.add(input, cursor))) do
+        cursor += 1
+      end
+      if node.tag != html_dom_tag_code(input, name_start, cursor - name_start) then return false
+      compound_items += 1
+    end
+  end
+  return compound_items != 0
+end
+
+func css_complex_matches_at(document: ptr[HtmlDomDocument], node_index: u64, input: ptr, selector_start: u64, selector_limit: u64, depth: u64) do
+  if depth >= 32 or node_index == u64("0xffffffffffffffff") then return false
+  selector_limit is css_trim_limit(input, selector_start, selector_limit)
+  if selector_limit <= selector_start then return false
+  segment_start: u64 is selector_limit
+  while segment_start > selector_start do
+    previous: u64 is mem.read8(ptr.add(input, segment_start - 1))
+    if html_dom_space(previous) or previous == 62 then break
+    segment_start -= 1
+  end
+  if not css_selector_compound_matches(document, node_index, input, segment_start, selector_limit) then return false
+  cursor: u64 is segment_start
+  while cursor > selector_start and html_dom_space(mem.read8(ptr.add(input, cursor - 1))) do
+    cursor -= 1
+  end
+  if cursor == selector_start then return true
+  direct: bool is false
+  if mem.read8(ptr.add(input, cursor - 1)) == 62 then
+    direct is true
+    cursor -= 1
+    while cursor > selector_start and html_dom_space(mem.read8(ptr.add(input, cursor - 1))) do
+      cursor -= 1
+    end
+  end
+  if cursor <= selector_start then return false
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  parent_index: u64 is node.parent
+  if direct then return css_complex_matches_at(document, parent_index, input, selector_start, cursor, depth + 1)
+  while parent_index != u64("0xffffffffffffffff") do
+    if css_complex_matches_at(document, parent_index, input, selector_start, cursor, depth + 1) then return true
+    parent: ptr[HtmlDomNode] is html_dom_node(document, parent_index)
+    if parent == 0 then return false
+    parent_index is parent.parent
+  end
+  return false
+end
+
+func css_rule_matches(document: ptr[HtmlDomDocument], node_index: u64, stylesheet: ptr[CssStylesheet], rule: ptr[CssRule]) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 or node.kind != 1 then return false
+  if rule.selector_kind == 4 then
+    return css_complex_matches_at(document, node_index, stylesheet.input, rule.selector_start, rule.selector_start + rule.selector_bytes, 0)
+  end
+  if rule.selector_kind == 1 then return node.tag == rule.selector_tag
+  attribute_name: u64 is 2
+  if rule.selector_kind == 3 then attribute_name is 1
+  attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, attribute_name)
+  return css_attribute_token(document, attribute, stylesheet.input, rule.selector_start, rule.selector_bytes)
+end
+
+func css_default_style(tag: u64, output: ptr[CssComputedStyle], parent: ptr[CssComputedStyle]) do
+  css_style_clear(output)
+  output.display is 2
+  if tag == 1 or tag == 3 or tag == 4 or tag == 5 then output.display is 1
+  if tag >= 6 and tag <= 11 then output.display is 1
+  if tag >= 22 and tag <= 30 then output.display is 1
+  if tag == 31 or tag == 32 then output.display is 3
+  if tag == 2 or tag == 16 or tag == 17 or tag == 18 or tag == 19 or tag == 20 or tag == 21 then output.display is 0
+  output.color is u64("0x0c182c")
+  output.background is u64("0x01000000")
+  output.width is u64("0xffffffffffffffff")
+  output.height is u64("0xffffffffffffffff")
+  output.min_width is 0
+  output.max_width is u64("0xffffffffffffffff")
+  output.min_height is 0
+  output.max_height is u64("0xffffffffffffffff")
+  output.position is 0
+  output.top is u64("0xffffffffffffffff")
+  output.right is u64("0xffffffffffffffff")
+  output.bottom is u64("0xffffffffffffffff")
+  output.left is u64("0xffffffffffffffff")
+  output.font_size is 16
+  output.line_height is 20
+  if parent != 0 then
+    output.color is parent.color
+    output.font_size is parent.font_size
+    output.line_height is parent.line_height
+  end
+  if tag >= 6 and tag <= 11 then
+    output.font_size is 24
+    output.line_height is 30
+  end
+  if tag == 31 then
+    output.width is 200
+    output.height is 30
+    output.box_sizing is 1
+  end
+  if tag == 32 then
+    output.width is 96
+    output.height is 30
+    output.box_sizing is 1
+  end
+  return true
+end
+
+func css_compute_node(document: ptr[HtmlDomDocument], node_index: u64, stylesheet: ptr[CssStylesheet], output: ptr[CssComputedStyle], parent: ptr[CssComputedStyle], scratch: ptr) do
+  node: ptr[HtmlDomNode] is html_dom_node(document, node_index)
+  if node == 0 or output == 0 or scratch == 0 then return false
+  css_default_style(node.tag, output, parent)
+  if node.kind == 0 then output.display is 1
+  if node.kind == 2 then output.display is 2
+  winners: ptr is scratch
+  index: u64 is 0
+  while index < 36 do
+    mem.write64(ptr.add(winners, index * 8), 0)
+    index += 1
+  end
+  rule_index: u64 is 0
+  while rule_index < stylesheet.count do
+    rule: ptr[CssRule] is ptr.add(stylesheet.rules, rule_index * 48)
+    if css_rule_matches(document, node_index, stylesheet, rule) then
+      rule_style: ptr is ptr.add(stylesheet.styles, rule_index * 288)
+      property: u64 is 0
+      while property < 36 do
+        if (rule.property_mask & (1 << property)) != 0 and rule.specificity >= mem.read64(ptr.add(winners, property * 8)) then
+          mem.write64(ptr.add(output, property * 8), mem.read64(ptr.add(rule_style, property * 8)))
+          mem.write64(ptr.add(winners, property * 8), rule.specificity)
+        end
+        property += 1
+      end
+    end
+    rule_index += 1
+  end
+  inline_attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, node_index, 6)
+  if inline_attribute != 0 and inline_attribute.has_value != 0 then
+    inline_style: ptr[CssComputedStyle] is ptr.add(scratch, 288)
+    inline_mask: ptr is ptr.add(scratch, 576)
+    css_style_clear(inline_style)
+    if not css_declarations(document.input, inline_attribute.source_start, inline_attribute.source_start + inline_attribute.source_bytes, inline_style, inline_mask) then return false
+    property: u64 is 0
+    while property < 36 do
+      if (mem.read64(inline_mask) & (1 << property)) != 0 then
+        mem.write64(ptr.add(output, property * 8), mem.read64(ptr.add(inline_style, property * 8)))
+      end
+      property += 1
+    end
+  end
+  if html_dom_find_attribute(document, node_index, 13) != 0 then output.display is 0
+  return true
+end
+
+func css_compute_document(document: ptr[HtmlDomDocument], stylesheet: ptr[CssStylesheet], outputs: ptr, output_capacity: u64, scratch: ptr, scratch_bytes: u64) do
+  if document == 0 or stylesheet == 0 or outputs == 0 or scratch == 0 or scratch_bytes < 584 then return false
+  if document.node_count > output_capacity then return false
+  index: u64 is 0
+  while index < document.node_count do
+    node: ptr[HtmlDomNode] is html_dom_node(document, index)
+    output: ptr[CssComputedStyle] is ptr.add(outputs, index * 288)
+    parent_style: ptr[CssComputedStyle] is 0
+    if node.parent != u64("0xffffffffffffffff") then parent_style is ptr.add(outputs, node.parent * 288)
+    if not css_compute_node(document, index, stylesheet, output, parent_style, scratch) then return false
+    index += 1
+  end
+  return true
+end

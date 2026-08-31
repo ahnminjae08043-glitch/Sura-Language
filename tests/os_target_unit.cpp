@@ -285,6 +285,10 @@ int main(int argc, char** argv) {
                                       std::move(cpuid_args)), 1));
     }
     {
+        entry_body->body.push_back(std::make_unique<AssignStmt>(
+            "hardware_random", method_call("cpu", "rdrand", {}), 1));
+    }
+    {
         auto size = std::make_unique<CallExpr>("sizeof", 1);
         size->args.push_back(std::make_unique<Ident>("PciHeader", 1));
         entry_body->body.push_back(std::make_unique<AssignStmt>(
@@ -678,6 +682,74 @@ int main(int argc, char** argv) {
             "user_entered",
             method_call("user", "enter", std::move(args)), 1));
     }
+    {
+        auto maximum_call = std::make_unique<CallExpr>("u64", 1);
+        maximum_call->args.push_back(
+            std::make_unique<StrLit>("0xffffffffffffffff", 1));
+        auto maximum = std::make_unique<AssignStmt>(
+            "unsigned_maximum", std::move(maximum_call), 1);
+        maximum->type_annot = scalar_type("u64");
+        entry_body->body.push_back(std::move(maximum));
+
+        auto unsigned_divide = std::make_unique<AssignStmt>(
+            "unsigned_divide",
+            std::make_unique<BinOp>(
+                "/", std::make_unique<Ident>("unsigned_maximum", 1),
+                std::make_unique<NumLit>(255, 1), 1),
+            1);
+        unsigned_divide->type_annot = scalar_type("u64");
+        entry_body->body.push_back(std::move(unsigned_divide));
+
+        auto unsigned_compare = std::make_unique<AssignStmt>(
+            "unsigned_compare",
+            std::make_unique<BinOp>(
+                ">", std::make_unique<Ident>("unsigned_maximum", 1),
+                std::make_unique<NumLit>(7, 1), 1),
+            1);
+        unsigned_compare->type_annot = scalar_type("bool");
+        entry_body->body.push_back(std::move(unsigned_compare));
+
+        auto unsigned_shift = std::make_unique<AssignStmt>(
+            "unsigned_shift",
+            std::make_unique<BinOp>(
+                ">>", std::make_unique<Ident>("unsigned_maximum", 1),
+                std::make_unique<NumLit>(63, 1), 1),
+            1);
+        unsigned_shift->type_annot = scalar_type("u64");
+        entry_body->body.push_back(std::move(unsigned_shift));
+
+        auto negative = std::make_unique<AssignStmt>(
+            "signed_negative", std::make_unique<NumLit>(-8, 1), 1);
+        negative->type_annot = scalar_type("i64");
+        entry_body->body.push_back(std::move(negative));
+
+        auto signed_divide = std::make_unique<AssignStmt>(
+            "signed_divide",
+            std::make_unique<BinOp>(
+                "/", std::make_unique<Ident>("signed_negative", 1),
+                std::make_unique<NumLit>(2, 1), 1),
+            1);
+        signed_divide->type_annot = scalar_type("i64");
+        entry_body->body.push_back(std::move(signed_divide));
+
+        auto signed_compare = std::make_unique<AssignStmt>(
+            "signed_compare",
+            std::make_unique<BinOp>(
+                "<", std::make_unique<Ident>("signed_negative", 1),
+                std::make_unique<NumLit>(0, 1), 1),
+            1);
+        signed_compare->type_annot = scalar_type("bool");
+        entry_body->body.push_back(std::move(signed_compare));
+
+        auto signed_shift = std::make_unique<AssignStmt>(
+            "signed_shift",
+            std::make_unique<BinOp>(
+                ">>", std::make_unique<Ident>("signed_negative", 1),
+                std::make_unique<NumLit>(2, 1), 1),
+            1);
+        signed_shift->type_annot = scalar_type("i64");
+        entry_body->body.push_back(std::move(signed_shift));
+    }
     entry_body->body.push_back(std::make_unique<ExprStmt>(
         method_call("uefi", "clear"), 1));
     entry_body->body.push_back(std::make_unique<ExprStmt>(
@@ -697,6 +769,18 @@ int main(int argc, char** argv) {
     assert(result.image.size() >= 10240);
     assert(result.image[0] == 'M' && result.image[1] == 'Z');
     assert(contains_bytes(result.image,
+                          {0x31, 0xd2, 0x49, 0xf7, 0xf2})); // unsigned div
+    assert(contains_bytes(result.image,
+                          {0x48, 0x99, 0x49, 0xf7, 0xfa})); // signed idiv
+    assert(contains_bytes(result.image,
+                          {0x48, 0x39, 0xc1, 0x0f, 0x97, 0xc0})); // unsigned >
+    assert(contains_bytes(result.image,
+                          {0x48, 0x39, 0xc1, 0x0f, 0x9c, 0xc0})); // signed <
+    assert(contains_bytes(result.image,
+                          {0x48, 0xd3, 0xe8})); // unsigned shift right
+    assert(contains_bytes(result.image,
+                          {0x48, 0xd3, 0xf8})); // signed shift right
+    assert(contains_bytes(result.image,
                           {0x48, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
                            0x00, 0x00, 0x48, 0x85, 0xc0, 0x0f, 0x84,
                            0x0a, 0x00, 0x00, 0x00, 0x48, 0xb8,
@@ -707,6 +791,9 @@ int main(int argc, char** argv) {
                            0x0a, 0x00, 0x00, 0x00, 0x48, 0xb8,
                            0x88, 0x77, 0x66, 0x55})); // short-circuit or
     assert(contains_bytes(result.image, {0x0f, 0xa2})); // cpuid
+    assert(contains_bytes(result.image,
+                          {0x48, 0x0f, 0xc7, 0xf0, 0x72, 0x02,
+                           0x31, 0xc0})); // rdrand, zero on CF=0
     assert(contains_bytes(result.image,
                           {0xf0, 0x48, 0x0f, 0xc1, 0x01})); // lock xadd
     assert(count_bytes(result.image, {0x48, 0xcf}) >= 3); // iretq

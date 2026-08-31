@@ -2,7 +2,9 @@
 #
 # MMIO must be mapped uncached by the kernel. DMA buffers and their physical
 # addresses are caller-owned, contiguous, and stable for every command.
-# This implementation uses one command slot and one PRDT entry.
+# This implementation uses one command slot and one PRDT entry. Requests whose
+# caller buffer is not the physical DMA window are copied through that window
+# in bounded chunks, so filesystem buffers do not need to be DMA-addressable.
 
 import "block.sura"
 import "pci.sura"
@@ -69,6 +71,16 @@ func ahci_zero(buffer: ptr, byte_count: u64) do
   index: u64 is 0
   while index < byte_count do
     mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func ahci_copy(destination: ptr, source: ptr, byte_count: u64) do
+  if destination == 0 or source == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(destination, index), mem.read8(ptr.add(source, index)))
     index += 1
   end
   return true
@@ -434,28 +446,49 @@ func ahci_identify(context: ptr[AhciContext]) do
   return true
 end
 
+func ahci_transfer_blocks(context: ptr[AhciContext], lba: u64, count: u64, buffer: ptr, write_operation: bool) do
+  if context == 0 or context.dma == 0 or context.sector_size == 0 then return 1
+  if buffer == 0 or count == 0 then return 1
+  if lba >= context.sector_count or count > context.sector_count - lba then return 1
+  dma: ptr[AhciDma] is context.dma
+  maximum_sectors: u64 is dma.data_bytes / context.sector_size
+  if maximum_sectors == 0 then return 1
+  if maximum_sectors > 65535 then maximum_sectors is 65535
+
+  completed: u64 is 0
+  while completed < count do
+    chunk_sectors: u64 is count - completed
+    if chunk_sectors > maximum_sectors then chunk_sectors is maximum_sectors
+    chunk_bytes: u64 is chunk_sectors * context.sector_size
+    if chunk_bytes / chunk_sectors != context.sector_size then return 1
+    caller_chunk: ptr is ptr.add(buffer, completed * context.sector_size)
+    if write_operation then
+      if not ahci_copy(dma.data_virtual, caller_chunk, chunk_bytes) then return 1
+    end
+    command: u64 is 37
+    if write_operation then command is 53
+    if not ahci_issue(context, command, lba + completed, chunk_sectors, dma.data_physical, chunk_bytes) then
+      return 2
+    end
+    if not write_operation then
+      if not ahci_copy(caller_chunk, dma.data_virtual, chunk_bytes) then return 1
+    end
+    completed += chunk_sectors
+  end
+  return 0
+end
+
 func ahci_read_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
   context: ptr[AhciContext] is context_address
-  if context == 0 or context.sector_size == 0 or count == 0 then return 1
-  byte_count: u64 is count * context.sector_size
-  if byte_count / count != context.sector_size then return 1
-  if byte_count > 4194304 or count > 65535 then return 1
-  physical: u64 is ahci_translate_dma(context, buffer, byte_count)
-  if physical == 0 then return 1
-  if ahci_issue(context, 37, lba, count, physical, byte_count) then return 0
-  return 2
+  return ahci_transfer_blocks(context, lba, count, buffer, false)
 end
 
 func ahci_write_blocks(context_address: ptr, lba: u64, count: u64, buffer: ptr) do
   context: ptr[AhciContext] is context_address
   if context == 0 or context.read_only != 0 then return 2
-  if context.sector_size == 0 or count == 0 then return 1
-  byte_count: u64 is count * context.sector_size
-  if byte_count / count != context.sector_size then return 1
-  if byte_count > 4194304 or count > 65535 then return 1
-  physical: u64 is ahci_translate_dma(context, buffer, byte_count)
-  if physical == 0 then return 1
-  if ahci_issue(context, 53, lba, count, physical, byte_count) then return 0
+  status: u64 is ahci_transfer_blocks(context, lba, count, buffer, true)
+  if status == 0 then return 0
+  if status == 1 then return 1
   return 3
 end
 

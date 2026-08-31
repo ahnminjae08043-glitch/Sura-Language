@@ -1,0 +1,41 @@
+# Hardware entropy for the freestanding x86-64 target.
+#
+# TLS refuses to continue when the CPU does not advertise RDRAND or when the
+# instruction repeatedly fails. A zero return is conservatively treated as
+# failure, so an actual random zero may cause a retry but never weak output.
+
+func entropy_x86_rdrand_supported() do
+  if cpu.cpuid_eax(0, 0) < 1 then return false
+  return (cpu.cpuid_ecx(1, 0) & (1 << 30)) != 0
+end
+
+func entropy_x86_word() do
+  if not entropy_x86_rdrand_supported() then return 0
+  attempt: u64 is 0
+  while attempt < 16 do
+    value: u64 is cpu.rdrand()
+    if value != 0 then return value
+    cpu.pause()
+    attempt += 1
+  end
+  return 0
+end
+
+func entropy_x86_fill(output: ptr, output_bytes: u64) do
+  if output_bytes == 0 then return true
+  if output == 0 or not entropy_x86_rdrand_supported() then return false
+  cursor: u64 is 0
+  while cursor < output_bytes do
+    value: u64 is entropy_x86_word()
+    if value == 0 then return false
+    take: u64 is output_bytes - cursor
+    if take > 8 then take is 8
+    index: u64 is 0
+    while index < take do
+      mem.write8(ptr.add(output, cursor + index), (value >> (index * 8)) & 255)
+      index += 1
+    end
+    cursor is cursor + take
+  end
+  return true
+end

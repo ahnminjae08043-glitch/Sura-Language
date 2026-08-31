@@ -1,0 +1,79 @@
+#
+# Bounded browser raster-image decoding and intrinsic-size fitting.
+#
+# The caller owns the compressed input, RGBA output, and decoder workspace.
+# Decoding accepts the PNG and baseline JPEG subsets implemented by png.sura
+# and jpeg.sura. Dimensions are returned in BrowserImage without allocating.
+
+import "png.sura"
+import "jpeg.sura"
+
+struct BrowserImage do
+  pixels: ptr
+  pixel_capacity: u64
+  width: u64
+  height: u64
+  display_width: u64
+  display_height: u64
+  format: u64
+  decoded: u64
+end
+
+func browser_image_reset(image: ptr[BrowserImage]) do
+  if image == 0 then return false
+  image.width is 0
+  image.height is 0
+  image.display_width is 0
+  image.display_height is 0
+  image.format is 0
+  image.decoded is 0
+  return true
+end
+
+func browser_image_decode(input: ptr, input_bytes: u64, image: ptr[BrowserImage], workspace: ptr, workspace_bytes: u64) do
+  if input == 0 or image == 0 or workspace == 0 then return false
+  if input_bytes < 8 or image.pixels == 0 or image.pixel_capacity == 0 then return false
+  if not browser_image_reset(image) then return false
+
+  packed: u64 is 0
+  png_input: bool is mem.read8(input) == 137 and mem.read8(ptr.add(input, 1)) == 80
+  if png_input then
+    packed is png_decode_rgba(input, input_bytes, image.pixels, image.pixel_capacity, workspace, workspace_bytes)
+    if packed == 0 then return false
+    image.format is 1
+  else
+    jpeg_input: bool is mem.read8(input) == 255 and mem.read8(ptr.add(input, 1)) == 216
+    if not jpeg_input then return false
+    packed is jpeg_decode_rgba(input, input_bytes, image.pixels, image.pixel_capacity, workspace, workspace_bytes)
+    if packed == 0 then return false
+    image.format is 2
+  end
+
+  image.width is packed >> 32
+  image.height is packed & u64("0xffffffff")
+  if image.width == 0 or image.height == 0 then return false
+  image.display_width is image.width
+  image.display_height is image.height
+  image.decoded is 1
+  return true
+end
+
+func browser_image_fit(image: ptr[BrowserImage], maximum_width: u64, maximum_height: u64) do
+  if image == 0 or image.decoded == 0 then return false
+  if maximum_width == 0 or maximum_height == 0 then return false
+  width: u64 is image.width
+  height: u64 is image.height
+  if width > maximum_width then
+    height is height * maximum_width / width
+    width is maximum_width
+  end
+  if height > maximum_height then
+    width is width * maximum_height / height
+    height is maximum_height
+  end
+  if width == 0 then width is 1
+  if height == 0 then height is 1
+  image.display_width is width
+  image.display_height is height
+  return true
+end

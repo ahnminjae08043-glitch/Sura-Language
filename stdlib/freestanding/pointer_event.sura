@@ -1,0 +1,83 @@
+# Device-independent relative pointer events.
+#
+# Drivers translate their native packets into screen-coordinate deltas where
+# positive X moves right and positive Y moves down.
+
+struct PointerEvent do
+  x: i64
+  y: i64
+  delta_x: i64
+  delta_y: i64
+  wheel: i64
+  buttons: u64
+  pressed: u64
+  released: u64
+  moved: u64
+  sequence: u64
+end
+
+struct PointerEventDecoder do
+  x: i64
+  y: i64
+  max_x: u64
+  max_y: u64
+  buttons: u64
+  sequence: u64
+  initialized: u64
+end
+
+func pointer_event_clear(event: ptr[PointerEvent]) do
+  if event == 0 then return false
+  event.x is 0
+  event.y is 0
+  event.delta_x is 0
+  event.delta_y is 0
+  event.wheel is 0
+  event.buttons is 0
+  event.pressed is 0
+  event.released is 0
+  event.moved is 0
+  event.sequence is 0
+  return true
+end
+
+func pointer_event_decoder_init(state: ptr[PointerEventDecoder], width: u64, height: u64) do
+  if state == 0 or width == 0 or height == 0 then return false
+  state.x is width / 2
+  state.y is height / 2
+  state.max_x is width - 1
+  state.max_y is height - 1
+  state.buttons is 0
+  state.sequence is 0
+  state.initialized is 1
+  return true
+end
+
+func pointer_event_decoder_feed_relative(state: ptr[PointerEventDecoder], delta_x: i64, delta_y: i64, wheel: i64, buttons: u64, event: ptr[PointerEvent]) do
+  if state == 0 or event == 0 or state.initialized == 0 then return false
+  pointer_event_clear(event)
+  old_x: i64 is state.x
+  old_y: i64 is state.y
+  old_buttons: u64 is state.buttons
+  state.x is state.x + delta_x
+  state.y is state.y + delta_y
+  if state.x < 0 then state.x is 0
+  if state.y < 0 then state.y is 0
+  if state.x > state.max_x then state.x is state.max_x
+  if state.y > state.max_y then state.y is state.max_y
+  state.buttons is buttons
+  if state.sequence != u64("0xffffffffffffffff") then state.sequence += 1
+
+  event.x is state.x
+  event.y is state.y
+  event.delta_x is state.x - old_x
+  event.delta_y is state.y - old_y
+  event.wheel is wheel
+  event.buttons is buttons
+  changed: u64 is old_buttons ^ buttons
+  event.pressed is changed & buttons
+  event.released is changed & old_buttons
+  if event.delta_x != 0 or event.delta_y != 0 then event.moved is 1
+  event.sequence is state.sequence
+  return true
+end

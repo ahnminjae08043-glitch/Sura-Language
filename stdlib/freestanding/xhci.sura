@@ -1,0 +1,967 @@
+# Polling xHCI host-controller foundation for the freestanding x86-64 target.
+#
+# Controller MMIO and every DMA object are caller-owned and physically stable.
+# The first executed path uses one command ring and one polling event ring.
+# Device contexts and a polling default-control-endpoint transfer ring are also
+# available so enumeration can be verified before the HID layer is attached.
+
+import "pci.sura"
+
+struct XhciController do
+  bar: ptr
+  operational: ptr
+  runtime: ptr
+  doorbell: ptr
+  capability_length: u64
+  version: u64
+  max_slots: u64
+  max_interrupters: u64
+  max_ports: u64
+  context_size: u64
+  scratchpad_count: u64
+  timeout_spins: u64
+  running: u64
+end
+
+struct XhciCommandRing do
+  controller: ptr[XhciController]
+  trbs: ptr
+  physical: u64
+  count: u64
+  enqueue: u64
+  cycle: u64
+end
+
+struct XhciEventRing do
+  controller: ptr[XhciController]
+  trbs: ptr
+  physical: u64
+  count: u64
+  dequeue: u64
+  cycle: u64
+end
+
+struct XhciDma do
+  base: ptr
+  physical: u64
+  byte_count: u64
+  dcbaa: ptr
+  dcbaa_physical: u64
+  command_trbs: ptr
+  command_physical: u64
+  event_trbs: ptr
+  event_physical: u64
+  erst: ptr
+  erst_physical: u64
+end
+
+struct XhciCommandResult do
+  completion_code: u64
+  slot_id: u64
+  event_type: u64
+  command_pointer: u64
+end
+
+struct XhciTransferRing do
+  controller: ptr[XhciController]
+  trbs: ptr
+  physical: u64
+  count: u64
+  enqueue: u64
+  cycle: u64
+end
+
+struct XhciDeviceDma do
+  base: ptr
+  physical: u64
+  byte_count: u64
+  output_context: ptr
+  output_physical: u64
+  input_context: ptr
+  input_physical: u64
+  ep0_trbs: ptr
+  ep0_physical: u64
+  data: ptr
+  data_physical: u64
+  interrupt_trbs: ptr
+  interrupt_physical: u64
+  report: ptr
+  report_physical: u64
+end
+
+struct XhciHidEndpoint do
+  configuration_value: u64
+  interface_number: u64
+  protocol: u64
+  endpoint_address: u64
+  endpoint_id: u64
+  max_packet_size: u64
+  interval: u64
+end
+
+struct XhciDevice do
+  controller: ptr[XhciController]
+  dma: ptr[XhciDeviceDma]
+  ep0: ptr[XhciTransferRing]
+  slot_id: u64
+  port_id: u64
+  speed: u64
+  max_packet_size: u64
+  usb_address: u64
+end
+
+struct XhciTransferResult do
+  completion_code: u64
+  slot_id: u64
+  endpoint_id: u64
+  event_type: u64
+  trb_pointer: u64
+  residual_bytes: u64
+end
+
+func xhci_mmio_read32(base: ptr, offset: u64) do
+  if base == 0 or (offset & 3) != 0 then return u64("0xffffffff")
+  value: u64 is mem.read32(ptr.add(base, offset))
+  atomic.load_fence()
+  return value
+end
+
+func xhci_mmio_write32(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 3) != 0 then return false
+  atomic.store_fence()
+  mem.write32(ptr.add(base, offset), value)
+  atomic.store_fence()
+  return true
+end
+
+func xhci_mmio_read64(base: ptr, offset: u64) do
+  if base == 0 or (offset & 7) != 0 then return u64("0xffffffffffffffff")
+  low: u64 is xhci_mmio_read32(base, offset)
+  high: u64 is xhci_mmio_read32(base, offset + 4)
+  return low | (high << 32)
+end
+
+func xhci_mmio_write64(base: ptr, offset: u64, value: u64) do
+  if base == 0 or (offset & 7) != 0 then return false
+  if not xhci_mmio_write32(base, offset, value & u64("0xffffffff")) then return false
+  return xhci_mmio_write32(base, offset + 4, value >> 32)
+end
+
+func xhci_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), 0)
+    index += 1
+  end
+  return true
+end
+
+func xhci_controller_clear(controller: ptr[XhciController]) do
+  if controller == 0 then return false
+  controller.bar is 0
+  controller.operational is 0
+  controller.runtime is 0
+  controller.doorbell is 0
+  controller.capability_length is 0
+  controller.version is 0
+  controller.max_slots is 0
+  controller.max_interrupters is 0
+  controller.max_ports is 0
+  controller.context_size is 0
+  controller.scratchpad_count is 0
+  controller.timeout_spins is 0
+  controller.running is 0
+  return true
+end
+
+func xhci_command_ring_clear(ring: ptr[XhciCommandRing]) do
+  if ring == 0 then return false
+  ring.controller is 0
+  ring.trbs is 0
+  ring.physical is 0
+  ring.count is 0
+  ring.enqueue is 0
+  ring.cycle is 1
+  return true
+end
+
+func xhci_event_ring_clear(ring: ptr[XhciEventRing]) do
+  if ring == 0 then return false
+  ring.controller is 0
+  ring.trbs is 0
+  ring.physical is 0
+  ring.count is 0
+  ring.dequeue is 0
+  ring.cycle is 1
+  return true
+end
+
+func xhci_result_clear(result: ptr[XhciCommandResult]) do
+  if result == 0 then return false
+  result.completion_code is 0
+  result.slot_id is 0
+  result.event_type is 0
+  result.command_pointer is 0
+  return true
+end
+
+func xhci_transfer_ring_clear(ring: ptr[XhciTransferRing]) do
+  if ring == 0 then return false
+  ring.controller is 0
+  ring.trbs is 0
+  ring.physical is 0
+  ring.count is 0
+  ring.enqueue is 0
+  ring.cycle is 1
+  return true
+end
+
+func xhci_device_clear(device: ptr[XhciDevice]) do
+  if device == 0 then return false
+  device.controller is 0
+  device.dma is 0
+  device.ep0 is 0
+  device.slot_id is 0
+  device.port_id is 0
+  device.speed is 0
+  device.max_packet_size is 0
+  device.usb_address is 0
+  return true
+end
+
+func xhci_transfer_result_clear(result: ptr[XhciTransferResult]) do
+  if result == 0 then return false
+  result.completion_code is 0
+  result.slot_id is 0
+  result.endpoint_id is 0
+  result.event_type is 0
+  result.trb_pointer is 0
+  result.residual_bytes is 0
+  return true
+end
+
+func xhci_hid_endpoint_clear(endpoint: ptr[XhciHidEndpoint]) do
+  if endpoint == 0 then return false
+  endpoint.configuration_value is 0
+  endpoint.interface_number is 0
+  endpoint.protocol is 0
+  endpoint.endpoint_address is 0
+  endpoint.endpoint_id is 0
+  endpoint.max_packet_size is 0
+  endpoint.interval is 0
+  return true
+end
+
+func xhci_pci_find(device: ptr[PciDevice]) do
+  if device == 0 then return false
+  return pci_find_class(12, 3, 48, true, device)
+end
+
+func xhci_pci_bar_physical(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return 0
+  raw: u64 is pci_bar_value(device.bdf, 0)
+  if raw == 0 or raw == u64("0xffffffff") or pci_bar_is_io(raw) then return 0
+  return pci_bar_address(device.bdf, 0)
+end
+
+func xhci_pci_enable(device: ptr[PciDevice]) do
+  if device == 0 or not pci_bdf_valid(device.bdf) then return false
+  return pci_enable_command(device.bdf, 6)
+end
+
+func xhci_scratchpad_count(parameters2: u64) do
+  low: u64 is (parameters2 >> 21) & 31
+  high: u64 is (parameters2 >> 27) & 31
+  return (high << 5) | low
+end
+
+func xhci_controller_attach(controller: ptr[XhciController], bar: ptr, timeout_spins: u64) do
+  if controller == 0 or bar == 0 or timeout_spins == 0 then return false
+  xhci_controller_clear(controller)
+  capability: u64 is xhci_mmio_read32(bar, 0)
+  capability_length: u64 is capability & 255
+  version: u64 is (capability >> 16) & 65535
+  parameters1: u64 is xhci_mmio_read32(bar, 4)
+  parameters2: u64 is xhci_mmio_read32(bar, 8)
+  capabilities1: u64 is xhci_mmio_read32(bar, 16)
+  doorbell_offset: u64 is xhci_mmio_read32(bar, 20) & u64("0xfffffffc")
+  runtime_offset: u64 is xhci_mmio_read32(bar, 24) & u64("0xffffffe0")
+  max_slots: u64 is parameters1 & 255
+  max_interrupters: u64 is (parameters1 >> 8) & 2047
+  max_ports: u64 is (parameters1 >> 24) & 255
+  if capability_length < 32 or capability_length > 252 then return false
+  if version < 144 or version > 288 then return false
+  if max_slots == 0 or max_interrupters == 0 or max_ports == 0 then return false
+  if doorbell_offset < capability_length or runtime_offset < capability_length then return false
+  controller.bar is bar
+  controller.operational is ptr.add(bar, capability_length)
+  controller.runtime is ptr.add(bar, runtime_offset)
+  controller.doorbell is ptr.add(bar, doorbell_offset)
+  controller.capability_length is capability_length
+  controller.version is version
+  controller.max_slots is max_slots
+  controller.max_interrupters is max_interrupters
+  controller.max_ports is max_ports
+  controller.context_size is 32
+  if (capabilities1 & 4) != 0 then controller.context_size is 64
+  controller.scratchpad_count is xhci_scratchpad_count(parameters2)
+  controller.timeout_spins is timeout_spins
+  controller.running is 0
+  return true
+end
+
+func xhci_legacy_handoff(controller: ptr[XhciController]) do
+  if controller == 0 or controller.bar == 0 then return false
+  capabilities1: u64 is xhci_mmio_read32(controller.bar, 16)
+  offset: u64 is ((capabilities1 >> 16) & 65535) * 4
+  visited: u64 is 0
+  while offset != 0 and visited < 64 do
+    header: u64 is xhci_mmio_read32(controller.bar, offset)
+    capability_id: u64 is header & 255
+    next: u64 is ((header >> 8) & 255) * 4
+    if capability_id == 1 then
+      if not xhci_mmio_write32(controller.bar, offset, header | u64("0x01000000")) then return false
+      spins: u64 is 0
+      while spins < controller.timeout_spins do
+        ownership: u64 is xhci_mmio_read32(controller.bar, offset)
+        if (ownership & u64("0x00010000")) == 0 then
+          # Disable legacy SMI enables after ownership transfers.
+          xhci_mmio_write32(controller.bar, offset + 4, 0)
+          return true
+        end
+        cpu.pause()
+        spins += 1
+      end
+      return false
+    end
+    if next == 0 then return true
+    offset += next
+    visited += 1
+  end
+  return offset == 0
+end
+
+func xhci_wait_status(controller: ptr[XhciController], mask: u64, expected: u64) do
+  if controller == 0 or controller.operational == 0 or mask > u64("0xffffffff") then return false
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    status: u64 is xhci_mmio_read32(controller.operational, 4)
+    if (status & mask) == expected then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func xhci_stop(controller: ptr[XhciController]) do
+  if controller == 0 or controller.operational == 0 then return false
+  command: u64 is xhci_mmio_read32(controller.operational, 0)
+  if not xhci_mmio_write32(controller.operational, 0, command & (~1)) then return false
+  if not xhci_wait_status(controller, 1, 1) then return false
+  controller.running is 0
+  return true
+end
+
+func xhci_reset(controller: ptr[XhciController]) do
+  if controller == 0 or controller.operational == 0 then return false
+  if not xhci_stop(controller) then return false
+  command: u64 is xhci_mmio_read32(controller.operational, 0)
+  if not xhci_mmio_write32(controller.operational, 0, command | 2) then return false
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    current: u64 is xhci_mmio_read32(controller.operational, 0)
+    status: u64 is xhci_mmio_read32(controller.operational, 4)
+    if (current & 2) == 0 and (status & 2048) == 0 then return true
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func xhci_dma_configure(dma: ptr[XhciDma], base: ptr, physical: u64, byte_count: u64) do
+  if dma == 0 or base == 0 or physical == 0 or byte_count < 16384 then return false
+  if (physical & 4095) != 0 then return false
+  dma.base is base
+  dma.physical is physical
+  dma.byte_count is byte_count
+  dma.dcbaa is base
+  dma.dcbaa_physical is physical
+  dma.command_trbs is ptr.add(base, 4096)
+  dma.command_physical is physical + 4096
+  dma.event_trbs is ptr.add(base, 8192)
+  dma.event_physical is physical + 8192
+  dma.erst is ptr.add(base, 12288)
+  dma.erst_physical is physical + 12288
+  return xhci_zero(base, 16384)
+end
+
+func xhci_command_ring_init(ring: ptr[XhciCommandRing], controller: ptr[XhciController], dma: ptr[XhciDma]) do
+  if ring == 0 or controller == 0 or dma == 0 or dma.command_trbs == 0 then return false
+  xhci_command_ring_clear(ring)
+  ring.controller is controller
+  ring.trbs is dma.command_trbs
+  ring.physical is dma.command_physical
+  ring.count is 256
+  ring.enqueue is 0
+  ring.cycle is 1
+  link: ptr is ptr.add(ring.trbs, (ring.count - 1) * 16)
+  mem.write64(link, ring.physical)
+  mem.write32(ptr.add(link, 8), 0)
+  mem.write32(ptr.add(link, 12), (6 << 10) | 3)
+  return true
+end
+
+func xhci_event_ring_init(ring: ptr[XhciEventRing], controller: ptr[XhciController], dma: ptr[XhciDma]) do
+  if ring == 0 or controller == 0 or dma == 0 or dma.event_trbs == 0 then return false
+  xhci_event_ring_clear(ring)
+  ring.controller is controller
+  ring.trbs is dma.event_trbs
+  ring.physical is dma.event_physical
+  ring.count is 256
+  ring.dequeue is 0
+  ring.cycle is 1
+  mem.write64(dma.erst, dma.event_physical)
+  mem.write32(ptr.add(dma.erst, 8), ring.count)
+  mem.write32(ptr.add(dma.erst, 12), 0)
+  return true
+end
+
+func xhci_controller_start(controller: ptr[XhciController], dma: ptr[XhciDma], command: ptr[XhciCommandRing], event: ptr[XhciEventRing], requested_slots: u64) do
+  if controller == 0 or dma == 0 or command == 0 or event == 0 then return false
+  if requested_slots == 0 or requested_slots > controller.max_slots then return false
+  if controller.scratchpad_count != 0 then return false
+  if not xhci_legacy_handoff(controller) then return false
+  if not xhci_reset(controller) then return false
+  page_sizes: u64 is xhci_mmio_read32(controller.operational, 8)
+  if (page_sizes & 1) == 0 then return false
+  if not xhci_command_ring_init(command, controller, dma) then return false
+  if not xhci_event_ring_init(event, controller, dma) then return false
+  if not xhci_mmio_write64(controller.operational, 48, dma.dcbaa_physical) then return false
+  if not xhci_mmio_write64(controller.operational, 24, command.physical | command.cycle) then return false
+  if not xhci_mmio_write32(controller.operational, 56, requested_slots) then return false
+  interrupter: ptr is ptr.add(controller.runtime, 32)
+  if not xhci_mmio_write32(interrupter, 8, 1) then return false
+  if not xhci_mmio_write64(interrupter, 16, dma.erst_physical) then return false
+  if not xhci_mmio_write64(interrupter, 24, event.physical) then return false
+  command_value: u64 is xhci_mmio_read32(controller.operational, 0)
+  if not xhci_mmio_write32(controller.operational, 0, command_value | 1) then return false
+  if not xhci_wait_status(controller, 1, 0) then return false
+  status: u64 is xhci_mmio_read32(controller.operational, 4)
+  if (status & 4) != 0 then return false
+  controller.running is 1
+  return true
+end
+
+func xhci_command_next(ring: ptr[XhciCommandRing]) do
+  if ring == 0 or ring.trbs == 0 or ring.count < 2 then return false
+  ring.enqueue += 1
+  if ring.enqueue + 1 >= ring.count then
+    link: ptr is ptr.add(ring.trbs, (ring.count - 1) * 16)
+    control: u64 is (6 << 10) | 2 | ring.cycle
+    mem.write32(ptr.add(link, 12), control)
+    ring.enqueue is 0
+    ring.cycle is 1 - ring.cycle
+  end
+  return true
+end
+
+func xhci_event_next(ring: ptr[XhciEventRing]) do
+  if ring == 0 or ring.trbs == 0 or ring.count == 0 then return false
+  controller: ptr[XhciController] is ring.controller
+  if controller == 0 then return false
+  ring.dequeue += 1
+  if ring.dequeue >= ring.count then
+    ring.dequeue is 0
+    ring.cycle is 1 - ring.cycle
+  end
+  dequeue_physical: u64 is ring.physical + ring.dequeue * 16
+  return xhci_mmio_write64(ptr.add(controller.runtime, 32), 24, dequeue_physical | 8)
+end
+
+func xhci_command_submit_pointer(command: ptr[XhciCommandRing], event: ptr[XhciEventRing], trb_type: u64, slot_id: u64, parameter: u64, result: ptr[XhciCommandResult]) do
+  if command == 0 or event == 0 or result == 0 then return false
+  if command.controller == 0 or command.controller != event.controller then return false
+  controller: ptr[XhciController] is command.controller
+  if controller.running == 0 or trb_type == 0 or trb_type > 63 or slot_id > 255 then return false
+  xhci_result_clear(result)
+  command_pointer: u64 is command.physical + command.enqueue * 16
+  trb: ptr is ptr.add(command.trbs, command.enqueue * 16)
+  mem.write64(trb, parameter)
+  mem.write32(ptr.add(trb, 8), 0)
+  mem.write32(ptr.add(trb, 12), (slot_id << 24) | (trb_type << 10) | command.cycle)
+  atomic.store_fence()
+  if not xhci_command_next(command) then return false
+  if not xhci_mmio_write32(controller.doorbell, 0, 0) then return false
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    event_trb: ptr is ptr.add(event.trbs, event.dequeue * 16)
+    event_control: u64 is mem.read32(ptr.add(event_trb, 12))
+    atomic.load_fence()
+    if (event_control & 1) == event.cycle then
+      event_type: u64 is (event_control >> 10) & 63
+      event_pointer: u64 is mem.read64(event_trb)
+      completion_code: u64 is (mem.read32(ptr.add(event_trb, 8)) >> 24) & 255
+      event_slot: u64 is (event_control >> 24) & 255
+      if not xhci_event_next(event) then return false
+      if event_type == 33 and event_pointer == command_pointer then
+        result.event_type is event_type
+        result.command_pointer is event_pointer
+        result.completion_code is completion_code
+        result.slot_id is event_slot
+        return result.completion_code == 1
+      end
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func xhci_command_submit(command: ptr[XhciCommandRing], event: ptr[XhciEventRing], trb_type: u64, slot_id: u64, result: ptr[XhciCommandResult]) do
+  return xhci_command_submit_pointer(command, event, trb_type, slot_id, 0, result)
+end
+
+func xhci_enable_slot(command: ptr[XhciCommandRing], event: ptr[XhciEventRing], result: ptr[XhciCommandResult]) do
+  if not xhci_command_submit(command, event, 9, 0, result) then return false
+  return result.slot_id != 0
+end
+
+func xhci_disable_slot(command: ptr[XhciCommandRing], event: ptr[XhciEventRing], slot_id: u64, result: ptr[XhciCommandResult]) do
+  if slot_id == 0 or slot_id > 255 then return false
+  return xhci_command_submit(command, event, 10, slot_id, result)
+end
+
+func xhci_port_status(controller: ptr[XhciController], port_id: u64) do
+  if controller == 0 or controller.operational == 0 or port_id == 0 or port_id > controller.max_ports then
+    return u64("0xffffffff")
+  end
+  return xhci_mmio_read32(controller.operational, 1024 + (port_id - 1) * 16)
+end
+
+func xhci_connected_port_count(controller: ptr[XhciController]) do
+  if controller == 0 then return 0
+  count: u64 is 0
+  port_id: u64 is 1
+  while port_id <= controller.max_ports do
+    if (xhci_port_status(controller, port_id) & 1) != 0 then count += 1
+    port_id += 1
+  end
+  return count
+end
+
+func xhci_connected_port_at(controller: ptr[XhciController], ordinal: u64) do
+  if controller == 0 or ordinal == 0 then return 0
+  connected_index: u64 is 0
+  port_id: u64 is 1
+  while port_id <= controller.max_ports do
+    if (xhci_port_status(controller, port_id) & 1) != 0 then
+      connected_index += 1
+      if connected_index == ordinal then return port_id
+    end
+    port_id += 1
+  end
+  return 0
+end
+
+func xhci_first_connected_port(controller: ptr[XhciController]) do
+  return xhci_connected_port_at(controller, 1)
+end
+
+func xhci_port_reset(controller: ptr[XhciController], port_id: u64) do
+  if controller == 0 or controller.running == 0 then return false
+  if port_id == 0 or port_id > controller.max_ports then return false
+  status: u64 is xhci_port_status(controller, port_id)
+  if (status & 1) == 0 then return false
+  port: ptr is ptr.add(controller.operational, 1024 + (port_id - 1) * 16)
+  # Preserve port power, indicator state, and wake enables. Change bits are
+  # deliberately written as zero because they are RW1C.
+  neutral: u64 is status & u64("0x0e00c200")
+  if not xhci_mmio_write32(port, 0, neutral | 16) then return false
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    status is xhci_mmio_read32(port, 0)
+    if (status & 1) == 0 then return false
+    if (status & 16) == 0 and (status & 2) != 0 then
+      speed: u64 is (status >> 10) & 15
+      return speed != 0
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func xhci_default_control_packet_size(speed: u64) do
+  if speed == 2 then return 8
+  if speed == 3 then return 64
+  if speed == 4 then return 512
+  # Full-speed devices are first addressed with an 8-byte default control
+  # endpoint. bMaxPacketSize0 is evaluated after the first descriptor read.
+  if speed == 1 then return 8
+  return 0
+end
+
+func xhci_device_dma_configure(dma: ptr[XhciDeviceDma], base: ptr, physical: u64, byte_count: u64) do
+  if dma == 0 or base == 0 or physical == 0 or byte_count < 24576 then return false
+  if (physical & 4095) != 0 then return false
+  dma.base is base
+  dma.physical is physical
+  dma.byte_count is byte_count
+  dma.output_context is base
+  dma.output_physical is physical
+  dma.input_context is ptr.add(base, 4096)
+  dma.input_physical is physical + 4096
+  dma.ep0_trbs is ptr.add(base, 8192)
+  dma.ep0_physical is physical + 8192
+  dma.data is ptr.add(base, 12288)
+  dma.data_physical is physical + 12288
+  dma.interrupt_trbs is ptr.add(base, 16384)
+  dma.interrupt_physical is physical + 16384
+  dma.report is ptr.add(base, 20480)
+  dma.report_physical is physical + 20480
+  return xhci_zero(base, 24576)
+end
+
+func xhci_transfer_ring_init(ring: ptr[XhciTransferRing], controller: ptr[XhciController], trbs: ptr, physical: u64) do
+  if ring == 0 or controller == 0 or trbs == 0 or physical == 0 then return false
+  if (physical & 15) != 0 then return false
+  xhci_transfer_ring_clear(ring)
+  if not xhci_zero(trbs, 4096) then return false
+  ring.controller is controller
+  ring.trbs is trbs
+  ring.physical is physical
+  ring.count is 256
+  ring.enqueue is 0
+  ring.cycle is 1
+  link: ptr is ptr.add(trbs, 255 * 16)
+  mem.write64(link, physical)
+  mem.write32(ptr.add(link, 8), 0)
+  mem.write32(ptr.add(link, 12), (6 << 10) | 3)
+  return true
+end
+
+func xhci_transfer_next(ring: ptr[XhciTransferRing]) do
+  if ring == 0 or ring.trbs == 0 or ring.count < 2 then return false
+  ring.enqueue += 1
+  if ring.enqueue + 1 >= ring.count then
+    link: ptr is ptr.add(ring.trbs, (ring.count - 1) * 16)
+    mem.write32(ptr.add(link, 12), (6 << 10) | 2 | ring.cycle)
+    ring.enqueue is 0
+    ring.cycle is 1 - ring.cycle
+  end
+  return true
+end
+
+func xhci_device_init(device: ptr[XhciDevice], controller: ptr[XhciController], slot_id: u64, port_id: u64) do
+  if device == 0 or controller == 0 or controller.running == 0 then return false
+  if slot_id == 0 or slot_id > controller.max_slots then return false
+  if port_id == 0 or port_id > controller.max_ports then return false
+  status: u64 is xhci_port_status(controller, port_id)
+  speed: u64 is (status >> 10) & 15
+  max_packet: u64 is xhci_default_control_packet_size(speed)
+  if (status & 3) != 3 or max_packet == 0 then return false
+  xhci_device_clear(device)
+  device.controller is controller
+  device.slot_id is slot_id
+  device.port_id is port_id
+  device.speed is speed
+  device.max_packet_size is max_packet
+  return true
+end
+
+func xhci_device_context_configure(device: ptr[XhciDevice], controller_dma: ptr[XhciDma], dma: ptr[XhciDeviceDma], ep0: ptr[XhciTransferRing]) do
+  if device == 0 or controller_dma == 0 or dma == 0 or ep0 == 0 then return false
+  controller: ptr[XhciController] is device.controller
+  if controller == 0 or device.slot_id == 0 then return false
+  if dma.output_context == 0 or dma.input_context == 0 or dma.ep0_trbs == 0 then return false
+  if not xhci_transfer_ring_init(ep0, controller, dma.ep0_trbs, dma.ep0_physical) then return false
+  if not xhci_zero(dma.output_context, 4096) then return false
+  if not xhci_zero(dma.input_context, 4096) then return false
+
+  context_size: u64 is controller.context_size
+  if context_size != 32 and context_size != 64 then return false
+  # Input Control Context: add Slot Context (A0) and Endpoint 0 Context (A1).
+  mem.write32(dma.input_context, 0)
+  mem.write32(ptr.add(dma.input_context, 4), 3)
+  input_slot: ptr is ptr.add(dma.input_context, context_size)
+  input_ep0: ptr is ptr.add(dma.input_context, context_size * 2)
+  mem.write32(input_slot, (device.speed << 20) | (1 << 27))
+  mem.write32(ptr.add(input_slot, 4), device.port_id << 16)
+  mem.write32(ptr.add(input_ep0, 4), (device.max_packet_size << 16) | (4 << 3) | (3 << 1))
+  mem.write64(ptr.add(input_ep0, 8), dma.ep0_physical | 1)
+  mem.write32(ptr.add(input_ep0, 16), 8)
+
+  mem.write64(ptr.add(controller_dma.dcbaa, device.slot_id * 8), dma.output_physical)
+  atomic.store_fence()
+  device.dma is dma
+  device.ep0 is ep0
+  return true
+end
+
+func xhci_address_device(device: ptr[XhciDevice], command: ptr[XhciCommandRing], event: ptr[XhciEventRing], result: ptr[XhciCommandResult]) do
+  if device == 0 or command == 0 or event == 0 or result == 0 then return false
+  if device.dma == 0 or device.ep0 == 0 or device.slot_id == 0 then return false
+  dma: ptr[XhciDeviceDma] is device.dma
+  if not xhci_command_submit_pointer(command, event, 11, device.slot_id, dma.input_physical, result) then return false
+  output_slot: ptr is dma.output_context
+  address: u64 is mem.read32(ptr.add(output_slot, 12)) & 255
+  if address == 0 then return false
+  device.usb_address is address
+  return true
+end
+
+func xhci_transfer_wait(event: ptr[XhciEventRing], slot_id: u64, endpoint_id: u64, expected_trb: u64, result: ptr[XhciTransferResult]) do
+  if event == 0 or result == 0 or slot_id == 0 or endpoint_id == 0 then return false
+  controller: ptr[XhciController] is event.controller
+  if controller == 0 or controller.running == 0 then return false
+  xhci_transfer_result_clear(result)
+  spins: u64 is 0
+  while spins < controller.timeout_spins do
+    event_trb: ptr is ptr.add(event.trbs, event.dequeue * 16)
+    event_control: u64 is mem.read32(ptr.add(event_trb, 12))
+    atomic.load_fence()
+    if (event_control & 1) == event.cycle then
+      event_type: u64 is (event_control >> 10) & 63
+      event_pointer: u64 is mem.read64(event_trb)
+      status: u64 is mem.read32(ptr.add(event_trb, 8))
+      completion_code: u64 is (status >> 24) & 255
+      residual: u64 is status & u64("0x00ffffff")
+      event_endpoint: u64 is (event_control >> 16) & 31
+      event_slot: u64 is (event_control >> 24) & 255
+      if not xhci_event_next(event) then return false
+      if event_type == 32 and event_slot == slot_id and event_endpoint == endpoint_id then
+        result.event_type is event_type
+        result.trb_pointer is event_pointer
+        result.completion_code is completion_code
+        result.residual_bytes is residual
+        result.endpoint_id is event_endpoint
+        result.slot_id is event_slot
+        if expected_trb != 0 and event_pointer != expected_trb then return false
+        return completion_code == 1
+      end
+    end
+    cpu.pause()
+    spins += 1
+  end
+  return false
+end
+
+func xhci_transfer_poll_any(event: ptr[XhciEventRing], result: ptr[XhciTransferResult]) do
+  if event == 0 or result == 0 then return 0
+  controller: ptr[XhciController] is event.controller
+  if controller == 0 or controller.running == 0 then return 0
+  event_trb: ptr is ptr.add(event.trbs, event.dequeue * 16)
+  event_control: u64 is mem.read32(ptr.add(event_trb, 12))
+  atomic.load_fence()
+  if (event_control & 1) != event.cycle then return 0
+
+  event_type: u64 is (event_control >> 10) & 63
+  event_pointer: u64 is mem.read64(event_trb)
+  status: u64 is mem.read32(ptr.add(event_trb, 8))
+  completion_code: u64 is (status >> 24) & 255
+  residual: u64 is status & u64("0x00ffffff")
+  endpoint_id: u64 is (event_control >> 16) & 31
+  slot_id: u64 is (event_control >> 24) & 255
+  if not xhci_event_next(event) then return 0
+  if event_type != 32 then return 2
+
+  xhci_transfer_result_clear(result)
+  result.event_type is event_type
+  result.trb_pointer is event_pointer
+  result.completion_code is completion_code
+  result.residual_bytes is residual
+  result.endpoint_id is endpoint_id
+  result.slot_id is slot_id
+  if completion_code != 1 and completion_code != 13 then return 3
+  return 1
+end
+
+func xhci_control_get_descriptor(device: ptr[XhciDevice], event: ptr[XhciEventRing], descriptor_value: u64, length: u64, result: ptr[XhciTransferResult]) do
+  if device == 0 or event == 0 or result == 0 then return false
+  if descriptor_value > 65535 or length == 0 or length > 4096 then return false
+  controller: ptr[XhciController] is device.controller
+  dma: ptr[XhciDeviceDma] is device.dma
+  ring: ptr[XhciTransferRing] is device.ep0
+  if controller == 0 or dma == 0 or ring == 0 or device.usb_address == 0 then return false
+  if not xhci_zero(dma.data, length) then return false
+
+  setup: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  setup_data: u64 is 128 | (6 << 8) | (descriptor_value << 16) | (length << 48)
+  mem.write64(setup, setup_data)
+  mem.write32(ptr.add(setup, 8), 8)
+  mem.write32(ptr.add(setup, 12), (3 << 16) | (2 << 10) | 64 | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+
+  data: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  mem.write64(data, dma.data_physical)
+  mem.write32(ptr.add(data, 8), length)
+  mem.write32(ptr.add(data, 12), (1 << 16) | (3 << 10) | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+
+  status: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  status_physical: u64 is ring.physical + ring.enqueue * 16
+  mem.write64(status, 0)
+  mem.write32(ptr.add(status, 8), 0)
+  mem.write32(ptr.add(status, 12), (4 << 10) | 32 | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+
+  atomic.store_fence()
+  if not xhci_mmio_write32(controller.doorbell, device.slot_id * 4, 1) then return false
+  return xhci_transfer_wait(event, device.slot_id, 1, status_physical, result)
+end
+
+func xhci_control_no_data(device: ptr[XhciDevice], event: ptr[XhciEventRing], setup_data: u64, result: ptr[XhciTransferResult]) do
+  if device == 0 or event == 0 or result == 0 then return false
+  if (setup_data >> 48) != 0 then return false
+  controller: ptr[XhciController] is device.controller
+  ring: ptr[XhciTransferRing] is device.ep0
+  if controller == 0 or ring == 0 or device.usb_address == 0 then return false
+
+  setup: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  mem.write64(setup, setup_data)
+  mem.write32(ptr.add(setup, 8), 8)
+  mem.write32(ptr.add(setup, 12), (2 << 10) | 64 | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+
+  status: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  status_physical: u64 is ring.physical + ring.enqueue * 16
+  mem.write64(status, 0)
+  mem.write32(ptr.add(status, 8), 0)
+  mem.write32(ptr.add(status, 12), (1 << 16) | (4 << 10) | 32 | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+
+  atomic.store_fence()
+  if not xhci_mmio_write32(controller.doorbell, device.slot_id * 4, 1) then return false
+  return xhci_transfer_wait(event, device.slot_id, 1, status_physical, result)
+end
+
+func xhci_control_set_configuration(device: ptr[XhciDevice], event: ptr[XhciEventRing], configuration_value: u64, result: ptr[XhciTransferResult]) do
+  if configuration_value == 0 or configuration_value > 255 then return false
+  setup_data: u64 is (9 << 8) | (configuration_value << 16)
+  return xhci_control_no_data(device, event, setup_data, result)
+end
+
+func xhci_hid_set_boot_protocol(device: ptr[XhciDevice], event: ptr[XhciEventRing], hid: ptr[XhciHidEndpoint], result: ptr[XhciTransferResult]) do
+  if hid == 0 or hid.protocol == 0 then return false
+  setup_data: u64 is 33 | (11 << 8) | (hid.interface_number << 32)
+  return xhci_control_no_data(device, event, setup_data, result)
+end
+
+func xhci_hid_set_report_protocol(device: ptr[XhciDevice], event: ptr[XhciEventRing], hid: ptr[XhciHidEndpoint], result: ptr[XhciTransferResult]) do
+  if hid == 0 or hid.protocol == 0 then return false
+  setup_data: u64 is 33 | (11 << 8) | (1 << 16) | (hid.interface_number << 32)
+  return xhci_control_no_data(device, event, setup_data, result)
+end
+
+func xhci_hid_parse_configuration(buffer: ptr, length: u64, hid: ptr[XhciHidEndpoint]) do
+  if buffer == 0 or hid == 0 or length < 9 or length > 4096 then return false
+  xhci_hid_endpoint_clear(hid)
+  if mem.read8(buffer) < 9 or mem.read8(ptr.add(buffer, 1)) != 2 then return false
+  total_length: u64 is mem.read16(ptr.add(buffer, 2))
+  if total_length < 9 or total_length > length then return false
+  hid.configuration_value is mem.read8(ptr.add(buffer, 5))
+  if hid.configuration_value == 0 then return false
+
+  active_hid: u64 is 0
+  offset: u64 is 0
+  while offset + 2 <= total_length do
+    descriptor: ptr is ptr.add(buffer, offset)
+    descriptor_length: u64 is mem.read8(descriptor)
+    descriptor_type: u64 is mem.read8(ptr.add(descriptor, 1))
+    if descriptor_length < 2 or offset + descriptor_length > total_length then return false
+    if descriptor_type == 4 and descriptor_length >= 9 then
+      active_hid is 0
+      interface_class: u64 is mem.read8(ptr.add(descriptor, 5))
+      interface_subclass: u64 is mem.read8(ptr.add(descriptor, 6))
+      interface_protocol: u64 is mem.read8(ptr.add(descriptor, 7))
+      alternate: u64 is mem.read8(ptr.add(descriptor, 3))
+      if interface_class == 3 and interface_subclass == 1 and alternate == 0 then
+        if interface_protocol == 1 or interface_protocol == 2 then
+          active_hid is 1
+          hid.interface_number is mem.read8(ptr.add(descriptor, 2))
+          hid.protocol is interface_protocol
+        end
+      end
+    end
+    if descriptor_type == 5 and descriptor_length >= 7 and active_hid != 0 then
+      address: u64 is mem.read8(ptr.add(descriptor, 2))
+      attributes: u64 is mem.read8(ptr.add(descriptor, 3))
+      endpoint_number: u64 is address & 15
+      max_packet: u64 is mem.read16(ptr.add(descriptor, 4)) & 2047
+      if (address & 128) != 0 and (attributes & 3) == 3 then
+        if endpoint_number == 0 or max_packet == 0 then return false
+        hid.endpoint_address is address
+        hid.endpoint_id is endpoint_number * 2 + 1
+        hid.max_packet_size is max_packet
+        hid.interval is mem.read8(ptr.add(descriptor, 6))
+        return hid.interval != 0
+      end
+    end
+    offset += descriptor_length
+  end
+  return false
+end
+
+func xhci_hid_interval_exponent(speed: u64, descriptor_interval: u64) do
+  if descriptor_interval == 0 then return 0
+  if speed == 1 or speed == 2 then
+    target: u64 is descriptor_interval * 8
+    exponent: u64 is 0
+    units: u64 is 1
+    while units < target and exponent < 15 do
+      units is units * 2
+      exponent += 1
+    end
+    return exponent
+  end
+  if speed == 3 or speed == 4 then
+    if descriptor_interval > 16 then return 15
+    return descriptor_interval - 1
+  end
+  return 0
+end
+
+func xhci_hid_configure_endpoint(device: ptr[XhciDevice], command: ptr[XhciCommandRing], event: ptr[XhciEventRing], hid: ptr[XhciHidEndpoint], ring: ptr[XhciTransferRing], result: ptr[XhciCommandResult]) do
+  if device == 0 or command == 0 or event == 0 or hid == 0 or ring == 0 or result == 0 then return false
+  controller: ptr[XhciController] is device.controller
+  dma: ptr[XhciDeviceDma] is device.dma
+  if controller == 0 or dma == 0 or hid.endpoint_id < 2 or hid.endpoint_id > 31 then return false
+  if hid.max_packet_size == 0 or hid.max_packet_size > 1024 then return false
+  if not xhci_zero(dma.input_context, 4096) then return false
+  if not xhci_transfer_ring_init(ring, controller, dma.interrupt_trbs, dma.interrupt_physical) then return false
+
+  dci: u64 is hid.endpoint_id
+  context_size: u64 is controller.context_size
+  interval: u64 is xhci_hid_interval_exponent(device.speed, hid.interval)
+  mem.write32(dma.input_context, 0)
+  mem.write32(ptr.add(dma.input_context, 4), 1 | (1 << dci))
+  input_slot: ptr is ptr.add(dma.input_context, context_size)
+  mem.write32(input_slot, (device.speed << 20) | (dci << 27))
+  mem.write32(ptr.add(input_slot, 4), device.port_id << 16)
+  input_endpoint: ptr is ptr.add(dma.input_context, (dci + 1) * context_size)
+  mem.write32(input_endpoint, interval << 16)
+  mem.write32(ptr.add(input_endpoint, 4), (hid.max_packet_size << 16) | (7 << 3) | (3 << 1))
+  mem.write64(ptr.add(input_endpoint, 8), dma.interrupt_physical | 1)
+  mem.write32(ptr.add(input_endpoint, 16), hid.max_packet_size | (hid.max_packet_size << 16))
+  atomic.store_fence()
+  return xhci_command_submit_pointer(command, event, 12, device.slot_id, dma.input_physical, result)
+end
+
+func xhci_hid_post_report(device: ptr[XhciDevice], hid: ptr[XhciHidEndpoint], ring: ptr[XhciTransferRing]) do
+  if device == 0 or hid == 0 or ring == 0 then return false
+  controller: ptr[XhciController] is device.controller
+  dma: ptr[XhciDeviceDma] is device.dma
+  if controller == 0 or dma == 0 or hid.endpoint_id == 0 then return false
+  if hid.max_packet_size == 0 or hid.max_packet_size > 4096 then return false
+  if not xhci_zero(dma.report, hid.max_packet_size) then return false
+  trb: ptr is ptr.add(ring.trbs, ring.enqueue * 16)
+  trb_physical: u64 is ring.physical + ring.enqueue * 16
+  mem.write64(trb, dma.report_physical)
+  mem.write32(ptr.add(trb, 8), hid.max_packet_size)
+  mem.write32(ptr.add(trb, 12), (1 << 10) | 36 | ring.cycle)
+  if not xhci_transfer_next(ring) then return false
+  atomic.store_fence()
+  if not xhci_mmio_write32(controller.doorbell, device.slot_id * 4, hid.endpoint_id) then return false
+  return trb_physical
+end

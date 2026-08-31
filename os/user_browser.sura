@@ -1,0 +1,159 @@
+# Ring-3 browser request validator for the Sura OS desktop.
+#
+# Ring 0 still owns the network device and the current HTTP/TLS implementation.
+# This worker owns the first process boundary: it validates an immutable
+# address snapshot, derives bounded host/path slices, and returns an explicit
+# network/storage/device capability decision through a private mailbox.
+
+struct UserBrowserMailbox do
+  request_sequence: u64
+  response_sequence: u64
+  command: u64
+  address_length: u64
+  status: u64
+  error: u64
+  action: u64
+  scheme: u64
+  host_start: u64
+  host_length: u64
+  path_start: u64
+  path_length: u64
+  network_allowed: u64
+  storage_allowed: u64
+  device_allowed: u64
+  reserved: u64
+end
+
+func user_browser_program(worker_argument: u64) do
+  persistent: bool is (worker_argument & 1) != 0
+  mailbox_address: u64 is worker_argument & ~1
+  while true do
+    if persistent then
+      wait_status: u64 is syscall.invoke(128, 5, 0, 0, 0, 0, 0)
+      if wait_status != 0 then
+        wait_exit: u64 is syscall.invoke(128, 4, 102, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+      receive_status: u64 is syscall.invoke(128, 2, mailbox_address + 4096, 0, 0, 0, 0)
+      if receive_status != 0 then
+        receive_exit: u64 is syscall.invoke(128, 4, 103, 0, 0, 0, 0)
+        while true do
+          cpu.pause()
+        end
+      end
+    end
+
+    mailbox: ptr[UserBrowserMailbox] is mailbox_address
+    if mailbox != 0 and mailbox.request_sequence != 0 and mailbox.response_sequence != mailbox.request_sequence then
+      mailbox.status is 1
+      mailbox.error is 0
+      mailbox.action is 0
+      mailbox.scheme is 0
+      mailbox.host_start is 0
+      mailbox.host_length is 0
+      mailbox.path_start is 0
+      mailbox.path_length is 0
+      mailbox.network_allowed is 0
+      mailbox.storage_allowed is 0
+      mailbox.device_allowed is 0
+      mailbox.reserved is 0
+
+      length: u64 is mailbox.address_length
+      address: ptr is ptr.add(mailbox_address, 128)
+      if mailbox.command != 1 then
+        mailbox.error is 1
+      elif length == 0 or length > 255 then
+        mailbox.error is 2
+      elif mem.read8(ptr.add(address, length)) != 0 then
+        mailbox.error is 3
+      else
+        cursor: u64 is 0
+        scheme: u64 is 1
+        if length >= 8 and mem.read8(address) == 104 and mem.read8(ptr.add(address, 1)) == 116 and mem.read8(ptr.add(address, 2)) == 116 and mem.read8(ptr.add(address, 3)) == 112 and mem.read8(ptr.add(address, 4)) == 115 and mem.read8(ptr.add(address, 5)) == 58 and mem.read8(ptr.add(address, 6)) == 47 and mem.read8(ptr.add(address, 7)) == 47 then
+          cursor is 8
+          scheme is 2
+        elif length >= 7 and mem.read8(address) == 104 and mem.read8(ptr.add(address, 1)) == 116 and mem.read8(ptr.add(address, 2)) == 116 and mem.read8(ptr.add(address, 3)) == 112 and mem.read8(ptr.add(address, 4)) == 58 and mem.read8(ptr.add(address, 5)) == 47 and mem.read8(ptr.add(address, 6)) == 47 then
+          cursor is 7
+          scheme is 1
+        end
+
+        host_start: u64 is cursor
+        host_bytes: u64 is 0
+        label_bytes: u64 is 0
+        host_error: u64 is 0
+        last_host_byte: u64 is 0
+        while cursor < length and host_error == 0 do
+          byte: u64 is mem.read8(ptr.add(address, cursor))
+          if byte == 47 or byte == 63 or byte == 35 then
+            cursor is length
+          else
+            allowed: bool is byte >= 48 and byte <= 57
+            if byte >= 65 and byte <= 90 then allowed is true
+            if byte >= 97 and byte <= 122 then allowed is true
+            if byte == 45 or byte == 46 then allowed is true
+            if not allowed then
+              host_error is 1
+            elif byte == 46 then
+              if label_bytes == 0 or last_host_byte == 45 then host_error is 2
+              label_bytes is 0
+            else
+              if label_bytes == 0 and byte == 45 then host_error is 3
+              label_bytes += 1
+              if label_bytes > 63 then host_error is 4
+            end
+            if host_error == 0 then
+              last_host_byte is byte
+              host_bytes += 1
+              cursor is host_start + host_bytes
+            end
+          end
+        end
+
+        # Recompute the path boundary because the host loop uses `cursor =
+        # length` as its bounded break operation.
+        path_start: u64 is host_start + host_bytes
+        if host_error != 0 or host_bytes == 0 or host_bytes > 253 or label_bytes == 0 or last_host_byte == 45 then
+          mailbox.error is 4 + host_error
+        else
+          path_error: u64 is 0
+          path_cursor: u64 is path_start
+          while path_cursor < length and path_error == 0 do
+            path_byte: u64 is mem.read8(ptr.add(address, path_cursor))
+            if path_byte < 33 or path_byte == 127 then path_error is 1
+            path_cursor += 1
+          end
+          if path_error != 0 then
+            mailbox.error is 9
+          else
+            mailbox.scheme is scheme
+            mailbox.host_start is host_start
+            mailbox.host_length is host_bytes
+            mailbox.path_start is path_start
+            mailbox.path_length is length - path_start
+            mailbox.network_allowed is 1
+
+            # Built-in sura.local pages never receive a network capability.
+            if host_bytes == 10 and mem.read8(ptr.add(address, host_start)) == 115 and mem.read8(ptr.add(address, host_start + 1)) == 117 and mem.read8(ptr.add(address, host_start + 2)) == 114 and mem.read8(ptr.add(address, host_start + 3)) == 97 and mem.read8(ptr.add(address, host_start + 4)) == 46 and mem.read8(ptr.add(address, host_start + 5)) == 108 and mem.read8(ptr.add(address, host_start + 6)) == 111 and mem.read8(ptr.add(address, host_start + 7)) == 99 and mem.read8(ptr.add(address, host_start + 8)) == 97 and mem.read8(ptr.add(address, host_start + 9)) == 108 then
+              mailbox.network_allowed is 0
+            end
+            mailbox.action is 1
+          end
+        end
+      end
+      mailbox.response_sequence is mailbox.request_sequence
+    end
+
+    if not persistent then
+      completed: bool is interrupt.invoke(128)
+      while true do
+        cpu.pause()
+      end
+    end
+  end
+end
+
+func user_browser_program_end() do
+  return true
+end

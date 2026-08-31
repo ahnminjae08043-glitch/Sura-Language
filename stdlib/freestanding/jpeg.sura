@@ -1,0 +1,484 @@
+# Allocation-free baseline JPEG decoder for freestanding clients.
+#
+# jpeg_decode_rgba() accepts 8-bit sequential Huffman JPEG with one grayscale
+# component or three YCbCr components. Sampling factors 1x1 through 2x2 are
+# supported, including common 4:4:4, 4:2:2, and 4:2:0 images. It writes RGBA8
+# and returns width in the high 32 bits and height in the low 32 bits. Zero
+# means malformed, unsupported, or insufficient caller-owned storage.
+
+struct JpegBitState do
+  input: ptr
+  input_bytes: u64
+  cursor: u64
+  bit_buffer: u64
+  bit_count: u64
+  failed: u64
+end
+
+struct JpegFrameState do
+  width: u64
+  height: u64
+  components: u64
+  max_h: u64
+  max_v: u64
+  entropy_cursor: u64
+end
+
+jpeg_zigzag is static.bytes([0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63], 1)
+jpeg_idct_matrix is static.u16([11585, 16069, 15137, 13623, 11585, 9102, 6270, 3196, 11585, 13623, 6270, 62340, 53951, 49467, 50399, 56434, 11585, 9102, 59266, 49467, 53951, 3196, 15137, 13623, 11585, 3196, 50399, 56434, 11585, 13623, 59266, 49467, 11585, 62340, 50399, 9102, 11585, 51913, 59266, 16069, 11585, 56434, 59266, 16069, 53951, 62340, 15137, 51913, 11585, 51913, 6270, 3196, 53951, 16069, 50399, 9102, 11585, 49467, 15137, 51913, 11585, 56434, 6270, 62340], 2)
+
+func jpeg_read_u16_be(buffer: ptr, offset: u64) do
+  return (mem.read8(ptr.add(buffer, offset)) << 8) | mem.read8(ptr.add(buffer, offset + 1))
+end
+
+func jpeg_matrix(index: u64) do
+  encoded: u64 is mem.read16(ptr.add(jpeg_idct_matrix, index * 2))
+  value: i64 is encoded
+  if encoded >= 32768 then value is encoded - 65536
+  return value
+end
+
+func jpeg_component_index(workspace: ptr, identifier: u64, component_count: u64) do
+  index: u64 is 0
+  while index < component_count do
+    if mem.read64(ptr.add(workspace, 5440 + index * 8)) == identifier then return index
+    index += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func jpeg_parse_dqt(input: ptr, start: u64, limit: u64, workspace: ptr) do
+  cursor: u64 is start
+  while cursor < limit do
+    info: u64 is mem.read8(ptr.add(input, cursor))
+    cursor += 1
+    precision: u64 is info >> 4
+    table: u64 is info & 15
+    if precision != 0 or table > 3 or limit - cursor < 64 then return false
+    index: u64 is 0
+    while index < 64 do
+      value: u64 is mem.read8(ptr.add(input, cursor + index))
+      if value == 0 then return false
+      mem.write64(ptr.add(workspace, 128 + table * 512 + index * 8), value)
+      index += 1
+    end
+    mem.write64(ptr.add(workspace, 2176 + table * 8), 1)
+    cursor += 64
+  end
+  return cursor == limit
+end
+
+func jpeg_parse_dht(input: ptr, start: u64, limit: u64, workspace: ptr) do
+  cursor: u64 is start
+  while cursor < limit do
+    if limit - cursor < 17 then return false
+    info: u64 is mem.read8(ptr.add(input, cursor))
+    cursor += 1
+    table_class: u64 is info >> 4
+    table_id: u64 is info & 15
+    if table_class > 1 or table_id > 3 then return false
+    slot: u64 is table_class * 4 + table_id
+    total: u64 is 0
+    remaining: u64 is 1
+    length: u64 is 1
+    while length <= 16 do
+      count: u64 is mem.read8(ptr.add(input, cursor + length - 1))
+      remaining is remaining * 2
+      if count > remaining then return false
+      remaining -= count
+      mem.write64(ptr.add(workspace, 2240 + slot * 136 + length * 8), count)
+      total += count
+      length += 1
+    end
+    cursor += 16
+    if total == 0 or total > 256 or total > limit - cursor then return false
+    index: u64 is 0
+    while index < total do
+      mem.write8(ptr.add(workspace, 3328 + slot * 256 + index), mem.read8(ptr.add(input, cursor + index)))
+      index += 1
+    end
+    mem.write64(ptr.add(workspace, 5376 + slot * 8), 1)
+    cursor += total
+  end
+  return cursor == limit
+end
+
+func jpeg_parse_sof0(input: ptr, start: u64, limit: u64, workspace: ptr, frame: ptr[JpegFrameState]) do
+  if limit - start < 6 or mem.read8(ptr.add(input, start)) != 8 then return false
+  height: u64 is jpeg_read_u16_be(input, start + 1)
+  width: u64 is jpeg_read_u16_be(input, start + 3)
+  components: u64 is mem.read8(ptr.add(input, start + 5))
+  if width == 0 or height == 0 or width > 2048 or height > 2048 then return false
+  if components != 1 and components != 3 then return false
+  if limit - start != 6 + components * 3 then return false
+  maximum_h: u64 is 0
+  maximum_v: u64 is 0
+  index: u64 is 0
+  while index < components do
+    entry: u64 is start + 6 + index * 3
+    identifier: u64 is mem.read8(ptr.add(input, entry))
+    sampling: u64 is mem.read8(ptr.add(input, entry + 1))
+    horizontal: u64 is sampling >> 4
+    vertical: u64 is sampling & 15
+    quant: u64 is mem.read8(ptr.add(input, entry + 2))
+    if horizontal == 0 or horizontal > 2 or vertical == 0 or vertical > 2 or quant > 3 then return false
+    earlier: u64 is 0
+    while earlier < index do
+      if mem.read64(ptr.add(workspace, 5440 + earlier * 8)) == identifier then return false
+      earlier += 1
+    end
+    mem.write64(ptr.add(workspace, 5440 + index * 8), identifier)
+    mem.write64(ptr.add(workspace, 5472 + index * 8), horizontal)
+    mem.write64(ptr.add(workspace, 5504 + index * 8), vertical)
+    mem.write64(ptr.add(workspace, 5536 + index * 8), quant)
+    if horizontal > maximum_h then maximum_h is horizontal
+    if vertical > maximum_v then maximum_v is vertical
+    index += 1
+  end
+  frame.width is width
+  frame.height is height
+  frame.components is components
+  frame.max_h is maximum_h
+  frame.max_v is maximum_v
+  return true
+end
+
+func jpeg_parse_sos(input: ptr, start: u64, limit: u64, workspace: ptr, frame: ptr[JpegFrameState]) do
+  if start >= limit then return false
+  scan_components: u64 is mem.read8(ptr.add(input, start))
+  if scan_components != frame.components or limit - start != 4 + scan_components * 2 then return false
+  seen: u64 is 0
+  scan: u64 is 0
+  while scan < scan_components do
+    entry: u64 is start + 1 + scan * 2
+    component: u64 is jpeg_component_index(workspace, mem.read8(ptr.add(input, entry)), frame.components)
+    if component == u64("0xffffffffffffffff") or (seen & (1 << component)) != 0 then return false
+    selector: u64 is mem.read8(ptr.add(input, entry + 1))
+    dc: u64 is selector >> 4
+    ac: u64 is selector & 15
+    if dc > 3 or ac > 3 then return false
+    if mem.read64(ptr.add(workspace, 5376 + dc * 8)) == 0 then return false
+    if mem.read64(ptr.add(workspace, 5376 + (4 + ac) * 8)) == 0 then return false
+    mem.write64(ptr.add(workspace, 5568 + component * 8), dc)
+    mem.write64(ptr.add(workspace, 5600 + component * 8), ac)
+    mem.write64(ptr.add(workspace, 5632 + scan * 8), component)
+    seen is seen | (1 << component)
+    scan += 1
+  end
+  tail: u64 is start + 1 + scan_components * 2
+  if mem.read8(ptr.add(input, tail)) != 0 or mem.read8(ptr.add(input, tail + 1)) != 63 or mem.read8(ptr.add(input, tail + 2)) != 0 then return false
+  return true
+end
+
+func jpeg_entropy_byte(state: ptr[JpegBitState], result: ptr) do
+  if state == 0 or result == 0 or state.cursor >= state.input_bytes then return false
+  value: u64 is mem.read8(ptr.add(state.input, state.cursor))
+  state.cursor is state.cursor + 1
+  if value == 255 then
+    if state.cursor >= state.input_bytes then return false
+    following: u64 is mem.read8(ptr.add(state.input, state.cursor))
+    if following != 0 then
+      state.cursor is state.cursor - 1
+      return false
+    end
+    state.cursor is state.cursor + 1
+  end
+  mem.write64(result, value)
+  return true
+end
+
+func jpeg_read_bits(state: ptr[JpegBitState], count: u64, result: ptr) do
+  if state == 0 or result == 0 or count > 16 then return false
+  value: u64 is 0
+  while state.bit_count < count do
+    if not jpeg_entropy_byte(state, addr_of(value)) then return false
+    state.bit_buffer is (state.bit_buffer << 8) | value
+    state.bit_count is state.bit_count + 8
+  end
+  if count == 0 then
+    mem.write64(result, 0)
+    return true
+  end
+  shift: u64 is state.bit_count - count
+  mem.write64(result, (state.bit_buffer >> shift) & ((1 << count) - 1))
+  state.bit_count is shift
+  return true
+end
+
+func jpeg_huffman_decode(state: ptr[JpegBitState], counts: ptr, symbols: ptr, result: ptr) do
+  code: u64 is 0
+  first: u64 is 0
+  index: u64 is 0
+  length: u64 is 1
+  bit: u64 is 0
+  while length <= 16 do
+    if not jpeg_read_bits(state, 1, addr_of(bit)) then return false
+    code is (code << 1) | bit
+    count: u64 is mem.read64(ptr.add(counts, length * 8))
+    if code >= first and code - first < count then
+      mem.write64(result, mem.read8(ptr.add(symbols, index + code - first)))
+      return true
+    end
+    index += count
+    first is (first + count) << 1
+    length += 1
+  end
+  return false
+end
+
+func jpeg_receive_signed(state: ptr[JpegBitState], count: u64, result: ptr) do
+  if count == 0 then
+    mem.write64(result, 0)
+    return true
+  end
+  bits: u64 is 0
+  if not jpeg_read_bits(state, count, addr_of(bits)) then return false
+  value: i64 is bits
+  if bits < (1 << (count - 1)) then value is bits - ((1 << count) - 1)
+  mem.write64(result, value)
+  return true
+end
+
+func jpeg_idct_block(workspace: ptr, destination: ptr, destination_x: u64, destination_y: u64) do
+  coefficients: ptr is ptr.add(workspace, 5760)
+  y: u64 is 0
+  while y < 8 do
+    x: u64 is 0
+    while x < 8 do
+      total: i64 is 0
+      v: u64 is 0
+      while v < 8 do
+        u: u64 is 0
+        while u < 8 do
+          coefficient: i64 is mem.read64(ptr.add(coefficients, (v * 8 + u) * 8))
+          total += coefficient * jpeg_matrix(x * 8 + u) * jpeg_matrix(y * 8 + v)
+          u += 1
+        end
+        v += 1
+      end
+      rounded: i64 is total
+      if rounded >= 0 then rounded += 536870912
+      if rounded < 0 then rounded -= 536870912
+      sample: i64 is rounded / 1073741824 + 128
+      if sample < 0 then sample is 0
+      if sample > 255 then sample is 255
+      mem.write64(ptr.add(destination, ((destination_y + y) * 16 + destination_x + x) * 8), sample)
+      x += 1
+    end
+    y += 1
+  end
+  return true
+end
+
+func jpeg_decode_block(state: ptr[JpegBitState], workspace: ptr, component: u64, block_x: u64, block_y: u64, predictor: ptr) do
+  coefficients: ptr is ptr.add(workspace, 5760)
+  index: u64 is 0
+  while index < 64 do
+    mem.write64(ptr.add(coefficients, index * 8), 0)
+    index += 1
+  end
+  dc_table: u64 is mem.read64(ptr.add(workspace, 5568 + component * 8))
+  ac_table: u64 is mem.read64(ptr.add(workspace, 5600 + component * 8))
+  symbol: u64 is 0
+  if not jpeg_huffman_decode(state, ptr.add(workspace, 2240 + dc_table * 136), ptr.add(workspace, 3328 + dc_table * 256), addr_of(symbol)) then return false
+  if symbol > 11 then return false
+  difference: i64 is 0
+  if not jpeg_receive_signed(state, symbol, addr_of(difference)) then return false
+  dc: i64 is mem.read64(predictor) + difference
+  mem.write64(predictor, dc)
+  quant_table: u64 is mem.read64(ptr.add(workspace, 5536 + component * 8))
+  if mem.read64(ptr.add(workspace, 2176 + quant_table * 8)) == 0 then return false
+  mem.write64(coefficients, dc * mem.read64(ptr.add(workspace, 128 + quant_table * 512)))
+
+  zigzag_index: u64 is 1
+  while zigzag_index < 64 do
+    if not jpeg_huffman_decode(state, ptr.add(workspace, 2240 + (4 + ac_table) * 136), ptr.add(workspace, 3328 + (4 + ac_table) * 256), addr_of(symbol)) then return false
+    if symbol == 0 then break
+    run: u64 is symbol >> 4
+    size: u64 is symbol & 15
+    if size == 0 then
+      if run != 15 or zigzag_index > 48 then return false
+      zigzag_index += 16
+    else
+      if size > 10 or run > 15 or run > 63 - zigzag_index then return false
+      zigzag_index += run
+      coefficient: i64 is 0
+      if not jpeg_receive_signed(state, size, addr_of(coefficient)) then return false
+      natural: u64 is mem.read8(ptr.add(jpeg_zigzag, zigzag_index))
+      quant: u64 is mem.read64(ptr.add(workspace, 128 + quant_table * 512 + zigzag_index * 8))
+      mem.write64(ptr.add(coefficients, natural * 8), coefficient * quant)
+      zigzag_index += 1
+    end
+  end
+  plane: ptr is ptr.add(workspace, 6272 + component * 2048)
+  return jpeg_idct_block(workspace, plane, block_x * 8, block_y * 8)
+end
+
+func jpeg_clamp(value: i64) do
+  if value < 0 then return 0
+  if value > 255 then return 255
+  return value
+end
+
+func jpeg_write_mcu(frame: ptr[JpegFrameState], workspace: ptr, output: ptr, output_capacity: u64, mcu_x: u64, mcu_y: u64) do
+  mcu_width: u64 is frame.max_h * 8
+  mcu_height: u64 is frame.max_v * 8
+  local_y: u64 is 0
+  while local_y < mcu_height do
+    image_y: u64 is mcu_y * mcu_height + local_y
+    if image_y < frame.height then
+      local_x: u64 is 0
+      while local_x < mcu_width do
+        image_x: u64 is mcu_x * mcu_width + local_x
+        if image_x < frame.width then
+          destination: u64 is (image_y * frame.width + image_x) * 4
+          if destination + 4 > output_capacity then return false
+          first_h: u64 is mem.read64(ptr.add(workspace, 5472))
+          first_v: u64 is mem.read64(ptr.add(workspace, 5504))
+          first_x: u64 is local_x * first_h / frame.max_h
+          first_y: u64 is local_y * first_v / frame.max_v
+          luminance: i64 is mem.read64(ptr.add(workspace, 6272 + (first_y * 16 + first_x) * 8))
+          red: i64 is luminance
+          green: i64 is luminance
+          blue: i64 is luminance
+          if frame.components == 3 then
+            cb_h: u64 is mem.read64(ptr.add(workspace, 5472 + 8))
+            cb_v: u64 is mem.read64(ptr.add(workspace, 5504 + 8))
+            cr_h: u64 is mem.read64(ptr.add(workspace, 5472 + 16))
+            cr_v: u64 is mem.read64(ptr.add(workspace, 5504 + 16))
+            cb_x: u64 is local_x * cb_h / frame.max_h
+            cb_y: u64 is local_y * cb_v / frame.max_v
+            cr_x: u64 is local_x * cr_h / frame.max_h
+            cr_y: u64 is local_y * cr_v / frame.max_v
+            cb: i64 is mem.read64(ptr.add(workspace, 8320 + (cb_y * 16 + cb_x) * 8)) - 128
+            cr: i64 is mem.read64(ptr.add(workspace, 10368 + (cr_y * 16 + cr_x) * 8)) - 128
+            red is luminance + ((91881 * cr) >> 16)
+            green is luminance - ((22554 * cb + 46802 * cr) >> 16)
+            blue is luminance + ((116130 * cb) >> 16)
+          end
+          mem.write8(ptr.add(output, destination), jpeg_clamp(red))
+          mem.write8(ptr.add(output, destination + 1), jpeg_clamp(green))
+          mem.write8(ptr.add(output, destination + 2), jpeg_clamp(blue))
+          mem.write8(ptr.add(output, destination + 3), 255)
+        end
+        local_x += 1
+      end
+    end
+    local_y += 1
+  end
+  return true
+end
+
+func jpeg_decode_scan(input: ptr, input_bytes: u64, output: ptr, output_capacity: u64, workspace: ptr, frame: ptr[JpegFrameState]) do
+  state: ptr[JpegBitState] is workspace
+  state.input is input
+  state.input_bytes is input_bytes
+  state.cursor is frame.entropy_cursor
+  state.bit_buffer is 0
+  state.bit_count is 0
+  state.failed is 0
+  component: u64 is 0
+  while component < frame.components do
+    mem.write64(ptr.add(workspace, 12416 + component * 8), 0)
+    component += 1
+  end
+  mcu_width: u64 is frame.max_h * 8
+  mcu_height: u64 is frame.max_v * 8
+  mcu_columns: u64 is (frame.width + mcu_width - 1) / mcu_width
+  mcu_rows: u64 is (frame.height + mcu_height - 1) / mcu_height
+  mcu_y: u64 is 0
+  while mcu_y < mcu_rows do
+    mcu_x: u64 is 0
+    while mcu_x < mcu_columns do
+      scan: u64 is 0
+      while scan < frame.components do
+        component is mem.read64(ptr.add(workspace, 5632 + scan * 8))
+        horizontal: u64 is mem.read64(ptr.add(workspace, 5472 + component * 8))
+        vertical: u64 is mem.read64(ptr.add(workspace, 5504 + component * 8))
+        block_y: u64 is 0
+        while block_y < vertical do
+          block_x: u64 is 0
+          while block_x < horizontal do
+            if not jpeg_decode_block(state, workspace, component, block_x, block_y, ptr.add(workspace, 12416 + component * 8)) then return false
+            block_x += 1
+          end
+          block_y += 1
+        end
+        scan += 1
+      end
+      if not jpeg_write_mcu(frame, workspace, output, output_capacity, mcu_x, mcu_y) then return false
+      mcu_x += 1
+    end
+    mcu_y += 1
+  end
+  state.bit_count is 0
+  cursor: u64 is state.cursor
+  if cursor >= input_bytes or mem.read8(ptr.add(input, cursor)) != 255 then return false
+  while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) == 255 do
+    cursor += 1
+  end
+  return cursor < input_bytes and mem.read8(ptr.add(input, cursor)) == 217 and cursor + 1 == input_bytes
+end
+
+func jpeg_decode_rgba(input: ptr, input_bytes: u64, output: ptr, output_capacity: u64, workspace: ptr, workspace_bytes: u64) do
+  if input == 0 or output == 0 or workspace == 0 or workspace_bytes < 16384 then return 0
+  if input_bytes < 16 or input_bytes > 16777216 then return 0
+  if mem.read8(input) != 255 or mem.read8(ptr.add(input, 1)) != 216 then return 0
+  clear: u64 is 0
+  while clear < 16384 do
+    mem.write8(ptr.add(workspace, clear), 0)
+    clear += 1
+  end
+  frame: ptr[JpegFrameState] is ptr.add(workspace, 64)
+  frame_found: bool is false
+  scan_found: bool is false
+  cursor: u64 is 2
+  while cursor < input_bytes and not scan_found do
+    if mem.read8(ptr.add(input, cursor)) != 255 then return 0
+    while cursor < input_bytes and mem.read8(ptr.add(input, cursor)) == 255 do
+      cursor += 1
+    end
+    if cursor >= input_bytes then return 0
+    marker: u64 is mem.read8(ptr.add(input, cursor))
+    cursor += 1
+    if marker == 216 or marker == 217 or (marker >= 208 and marker <= 215) then return 0
+    if input_bytes - cursor < 2 then return 0
+    segment_length: u64 is jpeg_read_u16_be(input, cursor)
+    if segment_length < 2 or segment_length > input_bytes - cursor then return 0
+    start: u64 is cursor + 2
+    limit: u64 is cursor + segment_length
+    handled: bool is false
+    if marker == 219 then
+      if not jpeg_parse_dqt(input, start, limit, workspace) then return 0
+      handled is true
+    end
+    if marker == 196 then
+      if not jpeg_parse_dht(input, start, limit, workspace) then return 0
+      handled is true
+    end
+    if marker == 192 then
+      if frame_found or not jpeg_parse_sof0(input, start, limit, workspace, frame) then return 0
+      frame_found is true
+      handled is true
+    end
+    if marker == 218 then
+      if not frame_found or not jpeg_parse_sos(input, start, limit, workspace, frame) then return 0
+      frame.entropy_cursor is limit
+      scan_found is true
+      handled is true
+    end
+    if marker == 221 then
+      if segment_length != 4 or jpeg_read_u16_be(input, start) != 0 then return 0
+      handled is true
+    end
+    if marker == 254 or (marker >= 224 and marker <= 239) then handled is true
+    if not handled then return 0
+    cursor is limit
+  end
+  if not frame_found or not scan_found then return 0
+  if frame.width > u64("0xffffffffffffffff") / frame.height then return 0
+  pixels: u64 is frame.width * frame.height
+  if pixels > u64("0xffffffffffffffff") / 4 or pixels * 4 > output_capacity then return 0
+  if not jpeg_decode_scan(input, input_bytes, output, output_capacity, workspace, frame) then return 0
+  return (frame.width << 32) | frame.height
+end
