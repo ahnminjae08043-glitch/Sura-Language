@@ -29,7 +29,8 @@
 - [x] freestanding/OS 소스 전체 버전 관리 편입 (2026-08-31, 251개 항목 커밋)
 - [x] 클린 클론에서 빌드·해시 재현 검증 (`3cb621f1...` 일치 확인)
 - [x] 안정 테스트 스위트를 클린 클론에서 통과 (151 pass / 0 skip / 0 fail, JIT 포함)
-- [ ] 1.12.0 릴리스: 커밋·컴파일러·플래그·해시를 담은 provenance manifest 공개
+- [x] provenance manifest 작성 ([PROVENANCE.md](PROVENANCE.md) — 커밋·컴파일러·플래그·해시·재현 절차)
+- [ ] 1.12.0 릴리스: 위 manifest를 릴리스 산출물과 함께 공개
 
 ## 2026 Q4 — 공개와 첫 사용자
 
