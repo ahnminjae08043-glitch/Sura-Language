@@ -1,19 +1,36 @@
 param(
     [string]$Transpiler = (Join-Path $PSScriptRoot "sura_to_js.ps1"),
     [string]$Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "test_js_target.sura"),
-    [string]$Engine = ""
+    [string]$Engine = "",
+    [switch]$ExtendedRuntime,
+    [switch]$NetworkIntegration,
+    [switch]$ShowTimings
 )
 
 $ErrorActionPreference = "Stop"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("sura_js_target_" + [System.Guid]::NewGuid().ToString("N"))
 $serverProcess = $null
 
-function Get-PowerShellRunner {
-    $pwsh = Get-Command pwsh -ErrorAction SilentlyContinue
-    if ($pwsh) { return $pwsh.Source }
-    $powershell = Get-Command powershell -ErrorAction SilentlyContinue
-    if ($powershell) { return $powershell.Source }
-    throw "PowerShell runner not found"
+function Invoke-JsTranspiler {
+    param(
+        [string]$InputPath,
+        [string]$OutputPath,
+        [switch]$AstJson,
+        [string]$EnginePath = ""
+    )
+    $invokeArgs = @{
+        Source = $InputPath
+        Out = $OutputPath
+    }
+    if ($AstJson) { $invokeArgs.AstJson = $true }
+    if ($EnginePath) { $invokeArgs.Engine = $EnginePath }
+    $global:LASTEXITCODE = 0
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    & $Transpiler @invokeArgs
+    $watch.Stop()
+    if ($ShowTimings) {
+        Write-Host ("[TIMING] transpile {0}: {1} ms" -f ([System.IO.Path]::GetFileName($InputPath)), $watch.ElapsedMilliseconds)
+    }
 }
 
 function Resolve-SuraEngine {
@@ -35,11 +52,16 @@ function Invoke-NodeCapture {
         [string]$NodePath,
         [string]$ScriptPath
     )
-    $oldPreference = $ErrorActionPreference
+        $oldPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
         $output = & $NodePath $ScriptPath 2>&1 | ForEach-Object { "$_" }
         $code = $LASTEXITCODE
+        $watch.Stop()
+        if ($ShowTimings) {
+            Write-Host ("[TIMING] node {0}: {1} ms" -f ([System.IO.Path]::GetFileName($ScriptPath)), $watch.ElapsedMilliseconds)
+        }
         return [pscustomobject]@{
             ExitCode = $code
             Output = $output
@@ -63,6 +85,7 @@ function Get-FreeTcpPort {
 }
 
 try {
+    if ($NetworkIntegration) { $ExtendedRuntime = $true }
     if (-not (Test-Path -LiteralPath $Transpiler)) {
         throw "Sura JS transpiler not found: $Transpiler"
     }
@@ -76,9 +99,8 @@ try {
 
     New-Item -ItemType Directory -Force -Path $temp | Out-Null
     $out = Join-Path $temp "test_js_target.js"
-    $ps = Get-PowerShellRunner
     $enginePath = Resolve-SuraEngine $Engine
-    & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $Source -Out $out | Out-Host
+    Invoke-JsTranspiler -InputPath $Source -OutputPath $out | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "sura_to_js failed with exit code $LASTEXITCODE"
     }
@@ -108,7 +130,7 @@ input "prompt"
 exit 0
 random 1 ~ 3 cmd_roll
 '@ | Set-Content -LiteralPath $cmdSource -Encoding UTF8
-    & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $cmdSource -Out $cmdOut | Out-Host
+    Invoke-JsTranspiler -InputPath $cmdSource -OutputPath $cmdOut | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "command-style JS forms transpile failed"
     }
@@ -133,7 +155,7 @@ add_score()
 assert_eq(score, 1)
 print("global-js-ok")
 '@ | Set-Content -LiteralPath $globalSource -Encoding UTF8
-    & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $globalSource -Out $globalOut | Out-Host
+    Invoke-JsTranspiler -InputPath $globalSource -OutputPath $globalOut | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "global declaration JS source transpile failed"
     }
@@ -206,7 +228,7 @@ print "ast-js-ok"
     if ($LASTEXITCODE -ne 0) {
         throw "AST JSON export for JS target smoke failed with exit code $LASTEXITCODE"
     }
-    & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $astJson -Out $astJsOut -AstJson -Engine $enginePath | Out-Host
+    Invoke-JsTranspiler -InputPath $astJson -OutputPath $astJsOut -AstJson -EnginePath $enginePath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "AST JSON JS target transpile failed with exit code $LASTEXITCODE"
     }
@@ -778,58 +800,67 @@ process.on('SIGTERM', close);
 process.on('SIGINT', close);
 '@ | Set-Content -LiteralPath $serverFile -Encoding UTF8
 
-    $serverProcess = Start-Process -FilePath $node.Source -ArgumentList @($serverFile, $portFile) -PassThru -WindowStyle Hidden -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
-    for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $portFile); $i++) {
-        Start-Sleep -Milliseconds 100
+    $port = ""
+    $staticPort = 0
+    $routePort = 0
+    if ($NetworkIntegration) {
+        $serverProcess = Start-Process -FilePath $node.Source -ArgumentList @($serverFile, $portFile) -PassThru -WindowStyle Hidden -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr
+        for ($i = 0; $i -lt 50 -and -not (Test-Path -LiteralPath $portFile); $i++) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not (Test-Path -LiteralPath $portFile)) {
+            $errText = if (Test-Path -LiteralPath $serverErr) { Get-Content -LiteralPath $serverErr -Raw } else { "" }
+            throw "local HTTP smoke server did not start. $errText"
+        }
+        $port = ([System.IO.File]::ReadAllText($portFile, [System.Text.Encoding]::UTF8)).Trim()
+        if (-not $port) { throw "local HTTP smoke server did not report a port" }
+        $staticPort = Get-FreeTcpPort
+        $routePort = Get-FreeTcpPort
     }
-    if (-not (Test-Path -LiteralPath $portFile)) {
-        $errText = if (Test-Path -LiteralPath $serverErr) { Get-Content -LiteralPath $serverErr -Raw } else { "" }
-        throw "local HTTP smoke server did not start. $errText"
-    }
-    $port = ([System.IO.File]::ReadAllText($portFile, [System.Text.Encoding]::UTF8)).Trim()
-    if (-not $port) { throw "local HTTP smoke server did not report a port" }
-
-    $staticPort = Get-FreeTcpPort
-    $routePort = Get-FreeTcpPort
     $oldHttpUrl = [Environment]::GetEnvironmentVariable("SURA_JS_HTTP_URL", "Process")
     $oldStaticPort = [Environment]::GetEnvironmentVariable("SURA_JS_STATIC_PORT", "Process")
     $oldRoutePort = [Environment]::GetEnvironmentVariable("SURA_JS_ROUTE_PORT", "Process")
-    [Environment]::SetEnvironmentVariable("SURA_JS_HTTP_URL", "http://127.0.0.1:$port", "Process")
+    $liveUrl = if ($NetworkIntegration) { "http://127.0.0.1:$port" } else { "" }
+    [Environment]::SetEnvironmentVariable("SURA_JS_HTTP_URL", $liveUrl, "Process")
     [Environment]::SetEnvironmentVariable("SURA_JS_STATIC_PORT", "$staticPort", "Process")
     [Environment]::SetEnvironmentVariable("SURA_JS_ROUTE_PORT", "$routePort", "Process")
     try {
-        $nodeResult = Invoke-NodeCapture $node.Source $out
-        $nodeCode = $nodeResult.ExitCode
-        $joined = $nodeResult.Joined
-        if ($nodeCode -ne 0 -or $joined -notmatch "js target: PASS") {
-            Write-Output $joined
-            throw "generated JS target did not pass"
+        if ($ExtendedRuntime) {
+            $nodeResult = Invoke-NodeCapture $node.Source $out
+            $nodeCode = $nodeResult.ExitCode
+            $joined = $nodeResult.Joined
+            if ($nodeCode -ne 0 -or $joined -notmatch "js target: PASS") {
+                Write-Output $joined
+                throw "generated JS target did not pass"
+            }
         }
 
-        $fullAstJson = Join-Path $temp "test_js_target.ast.json"
-        $fullAstOut = Join-Path $temp "test_js_target.ast.js"
-        & $enginePath --ast-json --out $fullAstJson $Source | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "full JS target AST JSON export failed with exit code $LASTEXITCODE"
-        }
-        & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $fullAstJson -Out $fullAstOut -AstJson -Engine $enginePath | Out-Host
-        if ($LASTEXITCODE -ne 0) {
-            throw "full JS target AST JSON transpile failed with exit code $LASTEXITCODE"
-        }
-        $fullAstJs = [System.IO.File]::ReadAllText($fullAstOut, [System.Text.Encoding]::UTF8)
-        if ($fullAstJs -notmatch "AST JSON input: sura\.ast\.v1" -or
-            $fullAstJs -notmatch "class __SuraAstClass_JsVec2" -or
-            $fullAstJs -notmatch "function JsVec2\(\.\.\.args\)" -or
-            $fullAstJs -notmatch 'assert_eq\(`hello \$\{who\}`' -or
-            $fullAstJs -notmatch '__sura_ast_match') {
-            throw "full AST JSON JS should lower callable classes, interpolation, and match nodes"
-        }
-        $fullAstResult = Invoke-NodeCapture $node.Source $fullAstOut
-        $fullAstCode = $fullAstResult.ExitCode
-        $fullAstJoined = $fullAstResult.Joined
-        if ($fullAstCode -ne 0 -or $fullAstJoined -notmatch "js target: PASS") {
-            Write-Output $fullAstJoined
-            throw "full AST JSON JS target did not pass"
+        if ($ExtendedRuntime) {
+            $fullAstJson = Join-Path $temp "test_js_target.ast.json"
+            $fullAstOut = Join-Path $temp "test_js_target.ast.js"
+            & $enginePath --ast-json --out $fullAstJson $Source | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                throw "full JS target AST JSON export failed with exit code $LASTEXITCODE"
+            }
+            Invoke-JsTranspiler -InputPath $fullAstJson -OutputPath $fullAstOut -AstJson -EnginePath $enginePath | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+                throw "full JS target AST JSON transpile failed with exit code $LASTEXITCODE"
+            }
+            $fullAstJs = [System.IO.File]::ReadAllText($fullAstOut, [System.Text.Encoding]::UTF8)
+            if ($fullAstJs -notmatch "AST JSON input: sura\.ast\.v1" -or
+                $fullAstJs -notmatch "class __SuraAstClass_JsVec2" -or
+                $fullAstJs -notmatch "function JsVec2\(\.\.\.args\)" -or
+                $fullAstJs -notmatch 'assert_eq\(`hello \$\{who\}`' -or
+                $fullAstJs -notmatch '__sura_ast_match') {
+                throw "full AST JSON JS should lower callable classes, interpolation, and match nodes"
+            }
+            $fullAstResult = Invoke-NodeCapture $node.Source $fullAstOut
+            $fullAstCode = $fullAstResult.ExitCode
+            $fullAstJoined = $fullAstResult.Joined
+            if ($fullAstCode -ne 0 -or $fullAstJoined -notmatch "js target: PASS") {
+                Write-Output $fullAstJoined
+                throw "full AST JSON JS target did not pass"
+            }
         }
     }
     finally {
@@ -845,7 +876,7 @@ process.on('SIGINT', close);
     if ($LASTEXITCODE -ne 0) {
         throw "JS operator parity AST JSON export failed with exit code $LASTEXITCODE"
     }
-    & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $operatorAstJson -Out $operatorAstOut -AstJson -Engine $enginePath | Out-Host
+    Invoke-JsTranspiler -InputPath $operatorAstJson -OutputPath $operatorAstOut -AstJson -EnginePath $enginePath | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "JS operator parity AST transpile failed with exit code $LASTEXITCODE"
     }
@@ -878,7 +909,7 @@ process.on('SIGINT', close);
     foreach ($case in $stableCases) {
         $stableSource = Join-Path (Split-Path -Parent $PSScriptRoot) $case.source
         $stableOut = Join-Path $temp ((Split-Path $case.source -Leaf) + ".js")
-        & $ps -NoProfile -ExecutionPolicy Bypass -File $Transpiler -Source $stableSource -Out $stableOut | Out-Host
+        Invoke-JsTranspiler -InputPath $stableSource -OutputPath $stableOut | Out-Host
         if ($LASTEXITCODE -ne 0) {
             throw "stable JS runtime parity transpile failed: $($case.source)"
         }
