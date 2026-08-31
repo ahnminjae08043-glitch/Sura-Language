@@ -1,0 +1,782 @@
+# Firmware-executed RFC vector gate for the TLS 1.3 SHA-256 foundation.
+
+import "../../stdlib/freestanding/hkdf_sha256.sura"
+import "../../stdlib/freestanding/aes128_gcm.sura"
+import "../../stdlib/freestanding/x25519.sura"
+import "../../stdlib/freestanding/tls13_record.sura"
+import "../../stdlib/freestanding/tls13_handshake.sura"
+import "../../stdlib/freestanding/tls13_hello.sura"
+import "../../stdlib/freestanding/entropy_x86.sura"
+import "../../stdlib/freestanding/rsa_public.sura"
+import "../../stdlib/freestanding/rsa_sha256.sura"
+import "../../stdlib/freestanding/der.sura"
+import "../../stdlib/freestanding/x509.sura"
+import "../../stdlib/freestanding/x509_chain.sura"
+import "../../stdlib/freestanding/tls13_verify.sura"
+import "../../stdlib/freestanding/tls13_messages.sura"
+import "tls_x509_vectors.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+tls_crypto_state_storage is static.struct(Sha256State)
+tls_crypto_block is static.zero(64, 16)
+tls_crypto_schedule is static.zero(512, 16)
+tls_crypto_digest is static.zero(64, 16)
+tls_crypto_key_block is static.zero(64, 16)
+tls_crypto_inner_digest is static.zero(32, 16)
+tls_crypto_message is static.zero(256, 16)
+tls_crypto_workspace_storage is static.struct(HmacSha256Workspace)
+tls_crypto_buffers_storage is static.struct(HmacSha256Buffers)
+tls_crypto_expand_storage is static.struct(HkdfSha256ExpandRequest)
+tls_crypto_label_storage is static.struct(Tls13HkdfExpandLabelRequest)
+tls_crypto_label_expand_storage is static.struct(HkdfSha256ExpandRequest)
+tls_crypto_label_info is static.zero(64, 16)
+tls_crypto_aes_workspace_storage is static.struct(Aes128GcmWorkspace)
+tls_crypto_aes_buffers_storage is static.struct(Aes128GcmBuffers)
+tls_crypto_aes_request_storage is static.struct(Aes128GcmRequest)
+tls_crypto_aes_round_keys is static.zero(176, 16)
+tls_crypto_aes_state is static.zero(16, 16)
+tls_crypto_aes_hash_subkey is static.zero(16, 16)
+tls_crypto_aes_counter is static.zero(16, 16)
+tls_crypto_aes_ghash is static.zero(16, 16)
+tls_crypto_aes_multiply_z is static.zero(16, 16)
+tls_crypto_aes_multiply_v is static.zero(16, 16)
+tls_crypto_aes_scratch is static.zero(16, 16)
+tls_crypto_aes_output is static.zero(32, 16)
+tls_crypto_aes_tag is static.zero(16, 16)
+tls_crypto_x25519_workspace_storage is static.struct(X25519Workspace)
+tls_crypto_x25519_buffers_storage is static.struct(X25519Buffers)
+tls_crypto_x25519_a is static.zero(128, 16)
+tls_crypto_x25519_b is static.zero(128, 16)
+tls_crypto_x25519_c is static.zero(128, 16)
+tls_crypto_x25519_d is static.zero(128, 16)
+tls_crypto_x25519_e is static.zero(128, 16)
+tls_crypto_x25519_f is static.zero(128, 16)
+tls_crypto_x25519_x is static.zero(128, 16)
+tls_crypto_x25519_scalar is static.zero(32, 16)
+tls_crypto_x25519_product is static.zero(248, 16)
+tls_crypto_x25519_reduce is static.zero(128, 16)
+tls_crypto_x25519_output is static.zero(64, 16)
+tls_crypto_record_state_storage is static.struct(Tls13RecordProtection)
+tls_crypto_record_buffers_storage is static.struct(Tls13RecordBuffers)
+tls_crypto_record_encrypt_storage is static.struct(Tls13EncryptRequest)
+tls_crypto_record_decrypt_storage is static.struct(Tls13DecryptRequest)
+tls_crypto_record_aes_request is static.struct(Aes128GcmRequest)
+tls_crypto_record_key is static.zero(16, 16)
+tls_crypto_record_iv is static.zero(12, 16)
+tls_crypto_record_nonce is static.zero(12, 16)
+tls_crypto_record_inner is static.zero(64, 16)
+tls_crypto_record_output is static.zero(64, 16)
+tls_crypto_record_plaintext is static.zero(64, 16)
+tls_crypto_handshake_workspace_storage is static.struct(Tls13HandshakeWorkspace)
+tls_crypto_handshake_buffers_storage is static.struct(Tls13HandshakeBuffers)
+tls_crypto_handshake_expand_spec_storage is static.struct(Tls13HandshakeExpandSpec)
+tls_crypto_handshake_label_request_storage is static.struct(Tls13HkdfExpandLabelRequest)
+tls_crypto_handshake_expand_request_storage is static.struct(HkdfSha256ExpandRequest)
+tls_crypto_handshake_secrets_storage is static.struct(Tls13HandshakeSecrets)
+tls_crypto_handshake_request_storage is static.struct(Tls13HandshakeRequest)
+tls_crypto_application_secrets_storage is static.struct(Tls13ApplicationSecrets)
+tls_crypto_application_request_storage is static.struct(Tls13ApplicationRequest)
+tls_crypto_handshake_label_info is static.zero(64, 16)
+tls_crypto_handshake_zero is static.zero(32, 16)
+tls_crypto_handshake_empty_hash is static.zero(32, 16)
+tls_crypto_handshake_transcript_hash is static.zero(32, 16)
+tls_crypto_handshake_early is static.zero(32, 16)
+tls_crypto_handshake_derived is static.zero(32, 16)
+tls_crypto_handshake_secret is static.zero(32, 16)
+tls_crypto_handshake_client_traffic is static.zero(32, 16)
+tls_crypto_handshake_server_traffic is static.zero(32, 16)
+tls_crypto_handshake_client_key is static.zero(16, 16)
+tls_crypto_handshake_client_iv is static.zero(12, 16)
+tls_crypto_handshake_server_key is static.zero(16, 16)
+tls_crypto_handshake_server_iv is static.zero(12, 16)
+tls_crypto_handshake_client_finished is static.zero(32, 16)
+tls_crypto_handshake_server_finished is static.zero(32, 16)
+tls_crypto_application_derived is static.zero(32, 16)
+tls_crypto_application_master is static.zero(32, 16)
+tls_crypto_application_client_traffic is static.zero(32, 16)
+tls_crypto_application_server_traffic is static.zero(32, 16)
+tls_crypto_application_client_key is static.zero(16, 16)
+tls_crypto_application_client_iv is static.zero(12, 16)
+tls_crypto_application_server_key is static.zero(16, 16)
+tls_crypto_application_server_iv is static.zero(12, 16)
+tls_crypto_client_hello_request_storage is static.struct(Tls13ClientHelloRequest)
+tls_crypto_server_hello_request_storage is static.struct(Tls13ServerHelloRequest)
+tls_crypto_client_hello_record is static.zero(512, 16)
+tls_crypto_server_hello_record is static.zero(128, 16)
+tls_crypto_server_public_key is static.zero(32, 16)
+tls_crypto_entropy_output is static.zero(64, 16)
+tls_crypto_rsa_workspace_storage is static.struct(RsaPublicWorkspace)
+tls_crypto_rsa_buffers_storage is static.struct(RsaPublicBuffers)
+tls_crypto_rsa_modulus is static.zero(256, 16)
+tls_crypto_rsa_operand is static.zero(256, 16)
+tls_crypto_rsa_base is static.zero(256, 16)
+tls_crypto_rsa_result is static.zero(256, 16)
+tls_crypto_rsa_r2 is static.zero(256, 16)
+tls_crypto_rsa_temporary is static.zero(528, 16)
+tls_crypto_rsa_encoded is static.zero(128, 16)
+tls_crypto_rsa_modulus_input is static.zero(128, 16)
+tls_crypto_rsa_signature_input is static.zero(128, 16)
+tls_crypto_rsa_sha_workspace_storage is static.struct(RsaSha256Workspace)
+tls_crypto_rsa_sha_buffers_storage is static.struct(RsaSha256Buffers)
+tls_crypto_rsa_sha_request_storage is static.struct(RsaSha256VerifyRequest)
+tls_crypto_rsa_sha_message_hash is static.zero(32, 16)
+tls_crypto_rsa_sha_mgf_hash is static.zero(32, 16)
+tls_crypto_rsa_sha_mask is static.zero(512, 16)
+tls_crypto_rsa_sha_database is static.zero(512, 16)
+tls_crypto_rsa_sha_hash_input is static.zero(72, 16)
+tls_crypto_der_reader_storage is static.struct(DerReader)
+tls_crypto_der_child_reader_storage is static.struct(DerReader)
+tls_crypto_der_element_storage is static.struct(DerElement)
+tls_crypto_der_child_element_storage is static.struct(DerElement)
+tls_crypto_x509_workspace_storage is static.struct(X509Workspace)
+tls_crypto_x509_buffers_storage is static.struct(X509Buffers)
+tls_crypto_x509_reader0_storage is static.struct(DerReader)
+tls_crypto_x509_reader1_storage is static.struct(DerReader)
+tls_crypto_x509_reader2_storage is static.struct(DerReader)
+tls_crypto_x509_reader3_storage is static.struct(DerReader)
+tls_crypto_x509_element0_storage is static.struct(DerElement)
+tls_crypto_x509_element1_storage is static.struct(DerElement)
+tls_crypto_x509_element2_storage is static.struct(DerElement)
+tls_crypto_x509_element3_storage is static.struct(DerElement)
+tls_crypto_x509_element4_storage is static.struct(DerElement)
+tls_crypto_x509_element5_storage is static.struct(DerElement)
+tls_crypto_x509_leaf_storage is static.struct(X509Certificate)
+tls_crypto_x509_intermediate_storage is static.struct(X509Certificate)
+tls_crypto_x509_root_storage is static.struct(X509Certificate)
+tls_crypto_x509_time_storage is static.struct(X509DateTime)
+tls_crypto_x509_chain_request_storage is static.struct(X509ChainVerifyRequest)
+tls_crypto_x509_certificates is static.zero(16, 16)
+tls_crypto_x509_roots is static.zero(24, 16)
+tls_crypto_certificate_list_storage is static.struct(Tls13CertificateList)
+tls_crypto_certificate_verify_message_storage is static.struct(Tls13CertificateVerifyMessage)
+tls_crypto_certificate_message is static.zero(2048, 16)
+tls_crypto_certificate_verify_message is static.zero(136, 16)
+tls_crypto_finished_message is static.zero(36, 16)
+
+tls_crypto_abc is static.bytes([97, 98, 99], 1)
+tls_crypto_sha256_empty is static.bytes([227, 176, 196, 66, 152, 252, 28, 20, 154, 251, 244, 200, 153, 111, 185, 36, 39, 174, 65, 228, 100, 155, 147, 76, 164, 149, 153, 27, 120, 82, 184, 85], 1)
+tls_crypto_sha256_abc is static.bytes([186, 120, 22, 191, 143, 1, 207, 234, 65, 65, 64, 222, 93, 174, 34, 35, 176, 3, 97, 163, 150, 23, 122, 156, 180, 16, 255, 97, 242, 0, 21, 173], 1)
+
+tls_crypto_hmac_key is static.bytes([11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11], 1)
+tls_crypto_hmac_message is static.bytes([72, 105, 32, 84, 104, 101, 114, 101], 1)
+tls_crypto_hmac_expected is static.bytes([176, 52, 76, 97, 216, 219, 56, 83, 92, 168, 175, 206, 175, 11, 241, 43, 136, 29, 194, 0, 201, 131, 61, 167, 38, 233, 55, 108, 46, 50, 207, 247], 1)
+
+tls_crypto_hkdf_ikm is static.bytes([11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11], 1)
+tls_crypto_hkdf_salt is static.bytes([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], 1)
+tls_crypto_hkdf_info is static.bytes([240, 241, 242, 243, 244, 245, 246, 247, 248, 249], 1)
+tls_crypto_hkdf_prk_expected is static.bytes([7, 119, 9, 54, 44, 46, 50, 223, 13, 220, 63, 13, 196, 123, 186, 99, 144, 182, 199, 59, 181, 15, 156, 49, 34, 236, 132, 74, 215, 194, 179, 229], 1)
+tls_crypto_hkdf_okm_expected is static.bytes([60, 178, 95, 37, 250, 172, 213, 122, 144, 67, 79, 100, 208, 54, 47, 42, 45, 45, 10, 144, 207, 26, 90, 76, 93, 176, 45, 86, 236, 196, 197, 191, 52, 0, 114, 8, 213, 184, 135, 24, 88, 101], 1)
+tls_crypto_label_secret is static.bytes([47, 170, 192, 143, 133, 29, 53, 254, 163, 96, 79, 203, 77, 232, 45, 198, 44, 155, 22, 74, 112, 151, 77, 4, 98, 226, 127, 26, 178, 120, 112, 15], 1)
+tls_crypto_label_name is static.bytes([102, 105, 110, 105, 115, 104, 101, 100], 1)
+tls_crypto_label_expected is static.bytes([90, 206, 57, 76, 38, 152, 13, 88, 18, 67, 246, 39, 209, 21, 10, 226, 126, 55, 250, 82, 54, 78, 10, 127, 32, 172, 104, 109, 9, 205, 14, 142], 1)
+tls_crypto_aes_zero_key is static.zero(16, 16)
+tls_crypto_aes_zero_block is static.zero(16, 16)
+tls_crypto_aes_zero_nonce is static.zero(12, 16)
+tls_crypto_aes_zero_block_expected is static.bytes([102, 233, 75, 212, 239, 138, 44, 59, 136, 76, 250, 89, 202, 52, 43, 46], 1)
+tls_crypto_gcm_cipher_expected is static.bytes([3, 136, 218, 206, 96, 182, 163, 146, 243, 40, 194, 185, 113, 178, 254, 120], 1)
+tls_crypto_gcm_tag_expected is static.bytes([171, 110, 71, 212, 44, 236, 19, 189, 245, 58, 103, 178, 18, 87, 189, 223], 1)
+tls_crypto_x25519_scalar_vector is static.bytes([165, 70, 227, 107, 240, 82, 124, 157, 59, 22, 21, 75, 130, 70, 94, 221, 98, 20, 76, 10, 193, 252, 90, 24, 80, 106, 34, 68, 186, 68, 154, 196], 1)
+tls_crypto_x25519_coordinate_vector is static.bytes([230, 219, 104, 103, 88, 48, 48, 219, 53, 148, 193, 164, 36, 177, 95, 124, 114, 102, 36, 236, 38, 179, 53, 59, 16, 169, 3, 166, 208, 171, 28, 76], 1)
+tls_crypto_x25519_expected_vector is static.bytes([195, 218, 85, 55, 157, 233, 198, 144, 142, 148, 234, 77, 242, 141, 8, 79, 50, 236, 207, 3, 73, 28, 113, 247, 84, 180, 7, 85, 119, 162, 133, 82], 1)
+tls_crypto_x25519_basepoint is static.bytes([9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 1)
+tls_crypto_x25519_alice_private is static.bytes([119, 7, 109, 10, 115, 24, 165, 125, 60, 22, 193, 114, 81, 178, 102, 69, 223, 76, 47, 135, 235, 192, 153, 42, 177, 119, 251, 165, 29, 185, 44, 42], 1)
+tls_crypto_x25519_alice_public is static.bytes([133, 32, 240, 9, 137, 48, 167, 84, 116, 139, 125, 220, 180, 62, 247, 90, 13, 191, 58, 13, 38, 56, 26, 244, 235, 164, 169, 142, 170, 155, 78, 106], 1)
+tls_crypto_x25519_bob_private is static.bytes([93, 171, 8, 126, 98, 74, 138, 75, 121, 225, 127, 139, 131, 128, 14, 230, 111, 59, 177, 41, 38, 24, 182, 253, 28, 47, 139, 39, 255, 136, 224, 235], 1)
+tls_crypto_x25519_bob_public is static.bytes([222, 158, 219, 125, 123, 125, 193, 180, 211, 91, 97, 194, 236, 228, 53, 55, 63, 131, 67, 200, 91, 120, 103, 77, 173, 252, 126, 20, 111, 136, 43, 79], 1)
+tls_crypto_x25519_shared is static.bytes([74, 93, 157, 91, 164, 206, 45, 225, 114, 142, 59, 244, 128, 53, 15, 37, 224, 126, 33, 201, 71, 209, 158, 51, 118, 240, 155, 60, 30, 22, 23, 66], 1)
+tls_crypto_record_key_vector is static.bytes([146, 2, 5, 165, 183, 191, 33, 21, 230, 252, 92, 41, 66, 131, 79, 84], 1)
+tls_crypto_record_iv_vector is static.bytes([109, 71, 95, 9, 147, 200, 229, 100, 97, 13, 178, 185], 1)
+tls_crypto_record_payload is static.bytes([65, 66, 67, 68, 69, 70], 1)
+tls_crypto_record_expected is static.bytes([23, 3, 3, 0, 23, 171, 29, 244, 32, 231, 92, 69, 122, 124, 197, 210, 132, 79, 118, 213, 174, 228, 180, 237, 191, 4, 155, 224], 1)
+tls_crypto_rfc8448_client_hello is static.bytes([1, 0, 0, 192, 3, 3, 203, 52, 236, 177, 231, 129, 99, 186, 28, 56, 198, 218, 203, 25, 106, 109, 255, 162, 26, 141, 153, 18, 236, 24, 162, 239, 98, 131, 2, 77, 236, 231, 0, 0, 6, 19, 1, 19, 3, 19, 2, 1, 0, 0, 145, 0, 0, 0, 11, 0, 9, 0, 0, 6, 115, 101, 114, 118, 101, 114, 255, 1, 0, 1, 0, 0, 10, 0, 20, 0, 18, 0, 29, 0, 23, 0, 24, 0, 25, 1, 0, 1, 1, 1, 2, 1, 3, 1, 4, 0, 35, 0, 0, 0, 51, 0, 38, 0, 36, 0, 29, 0, 32, 153, 56, 29, 229, 96, 228, 189, 67, 210, 61, 142, 67, 90, 125, 186, 254, 179, 192, 110, 81, 193, 60, 174, 77, 84, 19, 105, 30, 82, 154, 175, 44, 0, 43, 0, 3, 2, 3, 4, 0, 13, 0, 32, 0, 30, 4, 3, 5, 3, 6, 3, 2, 3, 8, 4, 8, 5, 8, 6, 4, 1, 5, 1, 6, 1, 2, 1, 4, 2, 5, 2, 6, 2, 2, 2, 0, 45, 0, 2, 1, 1, 0, 28, 0, 2, 64, 1], 1)
+tls_crypto_rfc8448_server_hello is static.bytes([2, 0, 0, 86, 3, 3, 166, 175, 6, 164, 18, 24, 96, 220, 94, 110, 96, 36, 156, 211, 76, 149, 147, 12, 138, 197, 203, 20, 52, 218, 193, 85, 119, 46, 211, 226, 105, 40, 0, 19, 1, 0, 0, 46, 0, 51, 0, 36, 0, 29, 0, 32, 201, 130, 136, 118, 17, 32, 149, 254, 102, 118, 43, 219, 247, 198, 114, 225, 86, 214, 204, 37, 59, 131, 61, 241, 221, 105, 177, 176, 78, 117, 31, 15, 0, 43, 0, 2, 3, 4], 1)
+tls_crypto_rfc8448_shared is static.bytes([139, 212, 5, 79, 181, 91, 157, 99, 253, 251, 172, 249, 240, 75, 159, 13, 53, 230, 214, 63, 83, 117, 99, 239, 212, 98, 114, 144, 15, 137, 73, 45], 1)
+tls_crypto_rfc8448_early_expected is static.bytes([51, 173, 10, 28, 96, 126, 192, 59, 9, 230, 205, 152, 147, 104, 12, 226, 16, 173, 243, 0, 170, 31, 38, 96, 225, 178, 46, 16, 241, 112, 249, 42], 1)
+tls_crypto_rfc8448_derived_expected is static.bytes([111, 38, 21, 161, 8, 199, 2, 197, 103, 143, 84, 252, 157, 186, 182, 151, 22, 192, 118, 24, 156, 72, 37, 12, 235, 234, 195, 87, 108, 54, 17, 186], 1)
+tls_crypto_rfc8448_handshake_expected is static.bytes([29, 200, 38, 233, 54, 6, 170, 111, 220, 10, 173, 193, 47, 116, 27, 1, 4, 106, 166, 185, 159, 105, 30, 210, 33, 169, 240, 202, 4, 63, 190, 172], 1)
+tls_crypto_rfc8448_transcript_expected is static.bytes([134, 12, 6, 237, 192, 120, 88, 238, 142, 120, 240, 231, 66, 140, 88, 237, 214, 180, 63, 44, 163, 230, 233, 95, 2, 237, 6, 60, 240, 225, 202, 216], 1)
+tls_crypto_rfc8448_client_traffic_expected is static.bytes([179, 237, 219, 18, 110, 6, 127, 53, 167, 128, 179, 171, 244, 94, 45, 143, 59, 26, 149, 7, 56, 245, 46, 150, 0, 116, 106, 14, 39, 165, 90, 33], 1)
+tls_crypto_rfc8448_server_traffic_expected is static.bytes([182, 123, 125, 105, 12, 193, 108, 78, 117, 229, 66, 19, 203, 45, 55, 180, 233, 201, 18, 188, 222, 217, 16, 93, 66, 190, 253, 89, 211, 145, 173, 56], 1)
+tls_crypto_rfc8448_client_key_expected is static.bytes([219, 250, 166, 147, 209, 118, 44, 91, 102, 106, 245, 217, 80, 37, 141, 1], 1)
+tls_crypto_rfc8448_client_iv_expected is static.bytes([91, 211, 199, 27, 131, 110, 11, 118, 187, 115, 38, 95], 1)
+tls_crypto_rfc8448_server_key_expected is static.bytes([63, 206, 81, 96, 9, 194, 23, 39, 208, 242, 228, 232, 110, 228, 3, 188], 1)
+tls_crypto_rfc8448_server_iv_expected is static.bytes([93, 49, 62, 178, 103, 18, 118, 238, 19, 0, 11, 48], 1)
+tls_crypto_rfc8448_client_finished_expected is static.bytes([184, 10, 208, 16, 21, 251, 47, 11, 214, 95, 247, 212, 218, 93, 107, 248, 63, 132, 130, 29, 31, 135, 253, 199, 211, 199, 91, 90, 123, 66, 217, 196], 1)
+tls_crypto_rfc8448_server_finished_expected is static.bytes([0, 141, 59, 102, 248, 22, 234, 85, 159, 150, 181, 55, 232, 133, 195, 31, 192, 104, 191, 73, 44, 101, 47, 1, 242, 136, 161, 216, 205, 193, 159, 200], 1)
+tls_crypto_application_derived_expected is static.bytes([67, 222, 119, 224, 199, 119, 19, 133, 154, 148, 77, 185, 219, 37, 144, 181, 49, 144, 166, 91, 62, 226, 228, 241, 45, 215, 160, 187, 124, 226, 84, 180], 1)
+tls_crypto_application_master_expected is static.bytes([24, 223, 6, 132, 61, 19, 160, 139, 242, 164, 73, 132, 76, 95, 138, 71, 128, 1, 188, 77, 76, 98, 121, 132, 213, 164, 29, 168, 208, 64, 41, 25], 1)
+tls_crypto_application_client_traffic_expected is static.bytes([112, 198, 222, 97, 81, 214, 117, 110, 236, 98, 128, 132, 222, 18, 217, 249, 207, 54, 252, 230, 101, 51, 149, 225, 114, 153, 82, 246, 73, 105, 226, 188], 1)
+tls_crypto_application_server_traffic_expected is static.bytes([17, 233, 146, 248, 75, 84, 109, 22, 31, 74, 130, 205, 155, 110, 244, 43, 246, 147, 8, 59, 34, 135, 90, 215, 67, 209, 216, 71, 159, 206, 147, 33], 1)
+tls_crypto_application_client_key_expected is static.bytes([171, 48, 126, 151, 217, 26, 100, 82, 252, 220, 89, 45, 175, 96, 80, 188], 1)
+tls_crypto_application_client_iv_expected is static.bytes([161, 81, 225, 106, 34, 219, 99, 128, 214, 168, 62, 168], 1)
+tls_crypto_application_server_key_expected is static.bytes([142, 130, 249, 84, 100, 80, 9, 196, 90, 94, 124, 56, 89, 3, 202, 242], 1)
+tls_crypto_application_server_iv_expected is static.bytes([252, 170, 97, 121, 39, 203, 169, 48, 187, 7, 165, 16], 1)
+tls_crypto_server_hostname is static.bytes([115, 101, 114, 118, 101, 114], 1)
+tls_crypto_rfc8448_client_public is static.bytes([153, 56, 29, 229, 96, 228, 189, 67, 210, 61, 142, 67, 90, 125, 186, 254, 179, 192, 110, 81, 193, 60, 174, 77, 84, 19, 105, 30, 82, 154, 175, 44], 1)
+tls_crypto_rfc8448_server_public is static.bytes([201, 130, 136, 118, 17, 32, 149, 254, 102, 118, 43, 219, 247, 198, 114, 225, 86, 214, 204, 37, 59, 131, 61, 241, 221, 105, 177, 176, 78, 117, 31, 15], 1)
+tls_crypto_rsa_expected_suffix is static.bytes([4, 123, 29, 241, 90, 238, 4, 241, 167, 191, 63, 62, 225, 231, 98, 192, 159, 7, 61, 209, 121, 193, 102, 120, 11, 29, 122, 12, 210, 141, 236, 84, 102, 138, 88, 15, 20, 251, 13, 117, 157, 251, 75, 166, 143, 43, 154, 67, 171, 22, 34, 220, 157, 210, 2], 1)
+tls_crypto_rsa_sha_message is static.bytes([83, 117, 114, 97, 32, 84, 76, 83, 32, 115, 105, 103, 110, 97, 116, 117, 114, 101, 32, 118, 101, 114, 105, 102, 105, 99, 97, 116, 105, 111, 110, 10], 1)
+tls_crypto_rsa_sha_modulus is static.bytes([187, 44, 229, 165, 204, 139, 47, 183, 4, 145, 175, 244, 155, 163, 82, 208, 180, 235, 16, 9, 202, 236, 9, 166, 248, 201, 121, 119, 149, 161, 135, 253, 38, 39, 59, 181, 101, 180, 230, 102, 102, 190, 134, 158, 151, 42, 137, 71, 110, 44, 216, 234, 138, 121, 176, 205, 166, 134, 21, 70, 216, 70, 26, 180, 218, 155, 184, 144, 49, 41, 30, 63, 220, 221, 244, 7, 238, 160, 244, 28, 238, 228, 14, 34, 80, 183, 139, 188, 42, 142, 41, 171, 246, 169, 55, 112, 215, 93, 34, 192, 72, 37, 165, 127, 183, 107, 75, 221, 150, 240, 76, 180, 99, 167, 48, 245, 207, 225, 129, 37, 123, 81, 195, 130, 223, 41, 214, 99], 1)
+tls_crypto_rsa_sha_pkcs_signature is static.bytes([124, 218, 117, 50, 201, 44, 99, 74, 38, 117, 222, 230, 163, 132, 18, 142, 248, 169, 192, 111, 157, 53, 45, 205, 33, 168, 233, 139, 201, 194, 9, 120, 131, 186, 167, 245, 95, 40, 156, 59, 72, 67, 157, 114, 183, 132, 185, 131, 113, 184, 158, 79, 237, 35, 11, 239, 130, 149, 244, 188, 9, 169, 17, 148, 168, 42, 217, 32, 110, 243, 148, 56, 200, 43, 61, 14, 113, 224, 52, 39, 119, 85, 66, 240, 93, 108, 80, 56, 173, 210, 245, 233, 139, 143, 44, 5, 12, 37, 37, 149, 79, 42, 221, 219, 43, 127, 171, 115, 27, 203, 119, 25, 233, 200, 83, 245, 69, 137, 80, 25, 200, 60, 43, 111, 238, 67, 65, 104], 1)
+tls_crypto_rsa_sha_pss_signature is static.bytes([121, 220, 55, 66, 219, 95, 99, 126, 117, 47, 70, 102, 255, 145, 99, 161, 215, 187, 208, 103, 185, 110, 14, 78, 128, 4, 172, 17, 78, 166, 127, 61, 89, 179, 221, 137, 17, 50, 52, 154, 196, 16, 20, 102, 99, 187, 142, 167, 13, 173, 89, 176, 88, 80, 44, 75, 61, 229, 177, 112, 57, 63, 165, 110, 84, 254, 213, 183, 62, 162, 190, 238, 115, 70, 33, 192, 3, 171, 127, 233, 239, 246, 221, 35, 64, 106, 4, 50, 167, 58, 70, 154, 4, 194, 23, 173, 150, 174, 77, 207, 223, 185, 207, 157, 84, 248, 138, 8, 235, 107, 237, 171, 31, 90, 228, 197, 196, 42, 135, 60, 7, 216, 20, 91, 142, 38, 20, 116], 1)
+tls_crypto_der_valid is static.bytes([48, 5, 2, 1, 5, 5, 0], 1)
+tls_crypto_der_indefinite is static.bytes([48, 128, 0, 0], 1)
+tls_crypto_der_nonminimal is static.bytes([4, 129, 1, 0], 1)
+tls_crypto_der_truncated is static.bytes([4, 3, 1, 2], 1)
+tls_crypto_x509_hostname is static.bytes([115, 117, 114, 97, 108, 97, 110, 103, 46, 115, 105, 116, 101], 1)
+tls_crypto_x509_wrong_hostname is static.bytes([101, 118, 105, 108, 46, 101, 120, 97, 109, 112, 108, 101], 1)
+tls_crypto_x509_utc_time is static.bytes([50, 57, 48, 50, 50, 56, 50, 51, 53, 57, 53, 57, 90], 1)
+tls_crypto_x509_bad_time is static.bytes([50, 57, 48, 50, 50, 57, 50, 51, 53, 57, 53, 57, 90], 1)
+tls_crypto_encrypted_extensions is static.bytes([8, 0, 0, 17, 0, 15, 0, 16, 0, 11, 0, 9, 8, 104, 116, 116, 112, 47, 49, 46, 49], 1)
+
+tls_crypto_sha_marker is static.utf8("SURA_SHA256_OK\r\n")
+tls_crypto_hmac_marker is static.utf8("SURA_HMAC_SHA256_OK\r\n")
+tls_crypto_hkdf_marker is static.utf8("SURA_HKDF_SHA256_OK\r\n")
+tls_crypto_label_marker is static.utf8("SURA_TLS13_LABEL_OK\r\n")
+tls_crypto_aes_marker is static.utf8("SURA_AES128_OK\r\n")
+tls_crypto_gcm_marker is static.utf8("SURA_AES128_GCM_OK\r\n")
+tls_crypto_x25519_marker is static.utf8("SURA_X25519_OK\r\n")
+tls_crypto_record_marker is static.utf8("SURA_TLS13_RECORD_OK\r\n")
+tls_crypto_key_schedule_marker is static.utf8("SURA_TLS13_KEY_SCHEDULE_OK\r\n")
+tls_crypto_hello_marker is static.utf8("SURA_TLS13_HELLO_OK\r\n")
+tls_crypto_entropy_marker is static.utf8("SURA_ENTROPY_X86_OK\r\n")
+tls_crypto_rsa_marker is static.utf8("SURA_RSA_PUBLIC_OK\r\n")
+tls_crypto_rsa_sha_marker is static.utf8("SURA_RSA_SHA256_VERIFY_OK\r\n")
+tls_crypto_der_marker is static.utf8("SURA_DER_READER_OK\r\n")
+tls_crypto_x509_marker is static.utf8("SURA_X509_CHAIN_OK\r\n")
+tls_crypto_application_marker is static.utf8("SURA_TLS13_APPLICATION_OK\r\n")
+tls_crypto_messages_marker is static.utf8("SURA_TLS13_MESSAGES_OK\r\n")
+tls_crypto_success_marker is static.utf8("SURA_TLS_CRYPTO_OK\r\n")
+tls_crypto_memory_map is static.zero(65536, 4096)
+tls_crypto_map_size: usize is 65536
+tls_crypto_map_key: u64 is 0
+tls_crypto_descriptor_size: usize is 0
+tls_crypto_descriptor_version: u32 is 0
+
+func tls_crypto_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func tls_crypto_write_marker(marker: ptr) do
+  return serial_write_cstr(1016, marker, 64, 1000000)
+end
+
+func tls_crypto_write_u24(output: ptr, value: u64) do
+  if output == 0 or value > 16777215 then return false
+  mem.write8(output, (value >> 16) & 255)
+  mem.write8(ptr.add(output, 1), (value >> 8) & 255)
+  mem.write8(ptr.add(output, 2), value & 255)
+  return true
+end
+
+func tls_crypto_run_vectors() do
+  state: ptr[Sha256State] is tls_crypto_state_storage
+  if not sha256_digest(0, 0, tls_crypto_digest, state, tls_crypto_block, tls_crypto_schedule) then return 1
+  if not crypto_bytes_equal(tls_crypto_digest, tls_crypto_sha256_empty, 32) then return 2
+  if not sha256_init(state, tls_crypto_block, tls_crypto_schedule) then return 3
+  if not sha256_update(state, tls_crypto_abc, 1) then return 4
+  if not sha256_update(state, ptr.add(tls_crypto_abc, 1), 2) then return 5
+  if not sha256_final(state, tls_crypto_digest) then return 6
+  if not crypto_bytes_equal(tls_crypto_digest, tls_crypto_sha256_abc, 32) then return 7
+  if not tls_crypto_write_marker(tls_crypto_sha_marker) then return 8
+
+  buffers: ptr[HmacSha256Buffers] is tls_crypto_buffers_storage
+  buffers.state is tls_crypto_state_storage
+  buffers.block is tls_crypto_block
+  buffers.schedule is tls_crypto_schedule
+  buffers.key_block is tls_crypto_key_block
+  buffers.inner_digest is tls_crypto_inner_digest
+  buffers.message is tls_crypto_message
+  buffers.message_capacity is 256
+  workspace: ptr[HmacSha256Workspace] is tls_crypto_workspace_storage
+  if not hmac_sha256_workspace_init(workspace, buffers) then return 9
+  if not hmac_sha256(workspace, tls_crypto_hmac_key, 20, tls_crypto_hmac_message, 8, tls_crypto_digest) then return 10
+  if not crypto_bytes_equal(tls_crypto_digest, tls_crypto_hmac_expected, 32) then return 11
+  if not tls_crypto_write_marker(tls_crypto_hmac_marker) then return 12
+
+  if not hkdf_sha256_extract(workspace, tls_crypto_hkdf_salt, 13, tls_crypto_hkdf_ikm, 22, tls_crypto_digest) then return 13
+  if not crypto_bytes_equal(tls_crypto_digest, tls_crypto_hkdf_prk_expected, 32) then return 14
+  request: ptr[HkdfSha256ExpandRequest] is tls_crypto_expand_storage
+  request.prk is tls_crypto_digest
+  request.prk_bytes is 32
+  request.info is tls_crypto_hkdf_info
+  request.info_bytes is 10
+  request.output is ptr.add(tls_crypto_digest, 32)
+  request.output_bytes is 42
+  if not hkdf_sha256_expand(workspace, request) then return 15
+  if not crypto_bytes_equal(ptr.add(tls_crypto_digest, 32), tls_crypto_hkdf_okm_expected, 42) then return 16
+  if not tls_crypto_write_marker(tls_crypto_hkdf_marker) then return 17
+
+  label_request: ptr[Tls13HkdfExpandLabelRequest] is tls_crypto_label_storage
+  label_request.secret is tls_crypto_label_secret
+  label_request.secret_bytes is 32
+  label_request.label is tls_crypto_label_name
+  label_request.label_bytes is 8
+  label_request.context is 0
+  label_request.context_bytes is 0
+  label_request.output is tls_crypto_digest
+  label_request.output_bytes is 32
+  label_request.info is tls_crypto_label_info
+  label_request.info_capacity is 64
+  label_request.expand_request is tls_crypto_label_expand_storage
+  if not tls13_hkdf_expand_label(workspace, label_request) then return 18
+  if not crypto_bytes_equal(tls_crypto_digest, tls_crypto_label_expected, 32) then return 19
+  if not tls_crypto_write_marker(tls_crypto_label_marker) then return 20
+
+  aes_buffers: ptr[Aes128GcmBuffers] is tls_crypto_aes_buffers_storage
+  aes_buffers.round_keys is tls_crypto_aes_round_keys
+  aes_buffers.state is tls_crypto_aes_state
+  aes_buffers.hash_subkey is tls_crypto_aes_hash_subkey
+  aes_buffers.counter is tls_crypto_aes_counter
+  aes_buffers.ghash is tls_crypto_aes_ghash
+  aes_buffers.multiply_z is tls_crypto_aes_multiply_z
+  aes_buffers.multiply_v is tls_crypto_aes_multiply_v
+  aes_buffers.scratch is tls_crypto_aes_scratch
+  aes_workspace: ptr[Aes128GcmWorkspace] is tls_crypto_aes_workspace_storage
+  if not aes128_gcm_workspace_init(aes_workspace, aes_buffers) then return 21
+  if not aes128_expand_key(aes_workspace, tls_crypto_aes_zero_key) then return 22
+  if not aes128_encrypt_block(aes_workspace, tls_crypto_aes_zero_block, tls_crypto_aes_output) then return 23
+  if not crypto_bytes_equal(tls_crypto_aes_output, tls_crypto_aes_zero_block_expected, 16) then return 24
+  if not tls_crypto_write_marker(tls_crypto_aes_marker) then return 25
+
+  aes_request: ptr[Aes128GcmRequest] is tls_crypto_aes_request_storage
+  aes_request.key is tls_crypto_aes_zero_key
+  aes_request.nonce is tls_crypto_aes_zero_nonce
+  aes_request.nonce_bytes is 12
+  aes_request.aad is 0
+  aes_request.aad_bytes is 0
+  aes_request.input is tls_crypto_aes_zero_block
+  aes_request.input_bytes is 16
+  aes_request.output is tls_crypto_aes_output
+  aes_request.output_capacity is 32
+  aes_request.tag is tls_crypto_aes_tag
+  aes_request.tag_bytes is 16
+  if not aes128_gcm_encrypt(aes_workspace, aes_request) then return 26
+  if not crypto_bytes_equal(tls_crypto_aes_output, tls_crypto_gcm_cipher_expected, 16) then return 27
+  if not crypto_bytes_equal(tls_crypto_aes_tag, tls_crypto_gcm_tag_expected, 16) then return 28
+
+  aes_request.input is tls_crypto_aes_output
+  aes_request.output is ptr.add(tls_crypto_aes_output, 16)
+  if not aes128_gcm_decrypt(aes_workspace, aes_request) then return 29
+  if not crypto_bytes_equal(ptr.add(tls_crypto_aes_output, 16), tls_crypto_aes_zero_block, 16) then return 30
+  mem.write8(tls_crypto_aes_tag, mem.read8(tls_crypto_aes_tag) ^ 1)
+  index: u64 is 0
+  while index < 16 do
+    mem.write8(ptr.add(tls_crypto_aes_output, 16 + index), 165)
+    index += 1
+  end
+  if aes128_gcm_decrypt(aes_workspace, aes_request) then return 31
+  index is 0
+  while index < 16 do
+    if mem.read8(ptr.add(tls_crypto_aes_output, 16 + index)) != 165 then return 32
+    index += 1
+  end
+  if not tls_crypto_write_marker(tls_crypto_gcm_marker) then return 33
+
+  x25519_buffers: ptr[X25519Buffers] is tls_crypto_x25519_buffers_storage
+  x25519_buffers.field_a is tls_crypto_x25519_a
+  x25519_buffers.field_b is tls_crypto_x25519_b
+  x25519_buffers.field_c is tls_crypto_x25519_c
+  x25519_buffers.field_d is tls_crypto_x25519_d
+  x25519_buffers.field_e is tls_crypto_x25519_e
+  x25519_buffers.field_f is tls_crypto_x25519_f
+  x25519_buffers.field_x is tls_crypto_x25519_x
+  x25519_buffers.scalar is tls_crypto_x25519_scalar
+  x25519_buffers.product is tls_crypto_x25519_product
+  x25519_buffers.reduce_m is tls_crypto_x25519_reduce
+  x25519_workspace: ptr[X25519Workspace] is tls_crypto_x25519_workspace_storage
+  if not x25519_workspace_init(x25519_workspace, x25519_buffers) then return 34
+  if not x25519(x25519_workspace, tls_crypto_x25519_scalar_vector, tls_crypto_x25519_coordinate_vector, tls_crypto_x25519_output) then return 35
+  if not crypto_bytes_equal(tls_crypto_x25519_output, tls_crypto_x25519_expected_vector, 32) then return 36
+  if not x25519(x25519_workspace, tls_crypto_x25519_alice_private, tls_crypto_x25519_basepoint, tls_crypto_x25519_output) then return 37
+  if not crypto_bytes_equal(tls_crypto_x25519_output, tls_crypto_x25519_alice_public, 32) then return 38
+  if not x25519(x25519_workspace, tls_crypto_x25519_bob_private, tls_crypto_x25519_basepoint, tls_crypto_x25519_output) then return 39
+  if not crypto_bytes_equal(tls_crypto_x25519_output, tls_crypto_x25519_bob_public, 32) then return 40
+  if not x25519_shared_secret(x25519_workspace, tls_crypto_x25519_alice_private, tls_crypto_x25519_bob_public, tls_crypto_x25519_output) then return 41
+  if not crypto_bytes_equal(tls_crypto_x25519_output, tls_crypto_x25519_shared, 32) then return 42
+  if not x25519_shared_secret(x25519_workspace, tls_crypto_x25519_bob_private, tls_crypto_x25519_alice_public, ptr.add(tls_crypto_x25519_output, 32)) then return 43
+  if not crypto_bytes_equal(ptr.add(tls_crypto_x25519_output, 32), tls_crypto_x25519_shared, 32) then return 44
+  if not crypto_bytes_equal(tls_crypto_x25519_output, ptr.add(tls_crypto_x25519_output, 32), 32) then return 45
+  if not tls_crypto_write_marker(tls_crypto_x25519_marker) then return 46
+
+  record_buffers: ptr[Tls13RecordBuffers] is tls_crypto_record_buffers_storage
+  record_buffers.key is tls_crypto_record_key
+  record_buffers.iv is tls_crypto_record_iv
+  record_buffers.nonce is tls_crypto_record_nonce
+  record_buffers.aes_workspace is tls_crypto_aes_workspace_storage
+  record_state: ptr[Tls13RecordProtection] is tls_crypto_record_state_storage
+  if not tls13_record_init(record_state, record_buffers, tls_crypto_record_key_vector, tls_crypto_record_iv_vector) then return 47
+  encrypt_request: ptr[Tls13EncryptRequest] is tls_crypto_record_encrypt_storage
+  encrypt_request.content is tls_crypto_record_payload
+  encrypt_request.content_bytes is 6
+  encrypt_request.content_type is 23
+  encrypt_request.padding_bytes is 0
+  encrypt_request.inner_plaintext is tls_crypto_record_inner
+  encrypt_request.inner_capacity is 64
+  encrypt_request.record is tls_crypto_record_output
+  encrypt_request.record_capacity is 64
+  encrypt_request.aes_request is tls_crypto_record_aes_request
+  if not tls13_record_encrypt(record_state, encrypt_request) then return 48
+  if encrypt_request.record_bytes != 28 then return 49
+  if not crypto_bytes_equal(tls_crypto_record_output, tls_crypto_record_expected, 28) then return 50
+
+  if not tls13_record_init(record_state, record_buffers, tls_crypto_record_key_vector, tls_crypto_record_iv_vector) then return 51
+  decrypt_request: ptr[Tls13DecryptRequest] is tls_crypto_record_decrypt_storage
+  decrypt_request.record is tls_crypto_record_output
+  decrypt_request.record_bytes is 28
+  decrypt_request.plaintext is tls_crypto_record_plaintext
+  decrypt_request.plaintext_capacity is 64
+  decrypt_request.aes_request is tls_crypto_record_aes_request
+  if not tls13_record_decrypt(record_state, decrypt_request) then return 52
+  if decrypt_request.content_bytes != 6 or decrypt_request.content_type != 23 then return 53
+  if not crypto_bytes_equal(tls_crypto_record_plaintext, tls_crypto_record_payload, 6) then return 54
+
+  mem.write8(ptr.add(tls_crypto_record_output, 27), mem.read8(ptr.add(tls_crypto_record_output, 27)) ^ 1)
+  index is 0
+  while index < 64 do
+    mem.write8(ptr.add(tls_crypto_record_plaintext, index), 165)
+    index += 1
+  end
+  if not tls13_record_init(record_state, record_buffers, tls_crypto_record_key_vector, tls_crypto_record_iv_vector) then return 55
+  if tls13_record_decrypt(record_state, decrypt_request) then return 56
+  index is 0
+  while index < 64 do
+    if mem.read8(ptr.add(tls_crypto_record_plaintext, index)) != 165 then return 57
+    index += 1
+  end
+  if not tls_crypto_write_marker(tls_crypto_record_marker) then return 58
+
+  handshake_buffers: ptr[Tls13HandshakeBuffers] is tls_crypto_handshake_buffers_storage
+  handshake_buffers.hmac_workspace is tls_crypto_workspace_storage
+  handshake_buffers.sha_state is tls_crypto_state_storage
+  handshake_buffers.sha_block is tls_crypto_block
+  handshake_buffers.sha_schedule is tls_crypto_schedule
+  handshake_buffers.label_request is tls_crypto_handshake_label_request_storage
+  handshake_buffers.expand_request is tls_crypto_handshake_expand_request_storage
+  handshake_buffers.expand_spec is tls_crypto_handshake_expand_spec_storage
+  handshake_buffers.label_info is tls_crypto_handshake_label_info
+  handshake_buffers.label_info_capacity is 64
+  handshake_buffers.zero32 is tls_crypto_handshake_zero
+  handshake_buffers.empty_hash is tls_crypto_handshake_empty_hash
+  handshake_buffers.transcript_hash is tls_crypto_handshake_transcript_hash
+  handshake_workspace: ptr[Tls13HandshakeWorkspace] is tls_crypto_handshake_workspace_storage
+  if not tls13_handshake_workspace_init(handshake_workspace, handshake_buffers) then return 59
+
+  handshake_secrets: ptr[Tls13HandshakeSecrets] is tls_crypto_handshake_secrets_storage
+  handshake_secrets.early_secret is tls_crypto_handshake_early
+  handshake_secrets.derived_secret is tls_crypto_handshake_derived
+  handshake_secrets.handshake_secret is tls_crypto_handshake_secret
+  handshake_secrets.client_traffic_secret is tls_crypto_handshake_client_traffic
+  handshake_secrets.server_traffic_secret is tls_crypto_handshake_server_traffic
+  handshake_secrets.client_key is tls_crypto_handshake_client_key
+  handshake_secrets.client_iv is tls_crypto_handshake_client_iv
+  handshake_secrets.server_key is tls_crypto_handshake_server_key
+  handshake_secrets.server_iv is tls_crypto_handshake_server_iv
+  handshake_secrets.client_finished_key is tls_crypto_handshake_client_finished
+  handshake_secrets.server_finished_key is tls_crypto_handshake_server_finished
+  handshake_request: ptr[Tls13HandshakeRequest] is tls_crypto_handshake_request_storage
+  handshake_request.client_hello is tls_crypto_rfc8448_client_hello
+  handshake_request.client_hello_bytes is 196
+  handshake_request.server_hello is tls_crypto_rfc8448_server_hello
+  handshake_request.server_hello_bytes is 90
+  handshake_request.shared_secret is tls_crypto_rfc8448_shared
+  handshake_request.shared_secret_bytes is 32
+  handshake_request.secrets is tls_crypto_handshake_secrets_storage
+  if not tls13_handshake_derive(handshake_workspace, handshake_request) then return 60
+  if not crypto_bytes_equal(tls_crypto_handshake_early, tls_crypto_rfc8448_early_expected, 32) then return 61
+  if not crypto_bytes_equal(tls_crypto_handshake_derived, tls_crypto_rfc8448_derived_expected, 32) then return 62
+  if not crypto_bytes_equal(tls_crypto_handshake_secret, tls_crypto_rfc8448_handshake_expected, 32) then return 63
+  if not crypto_bytes_equal(tls_crypto_handshake_transcript_hash, tls_crypto_rfc8448_transcript_expected, 32) then return 64
+  if not crypto_bytes_equal(tls_crypto_handshake_client_traffic, tls_crypto_rfc8448_client_traffic_expected, 32) then return 65
+  if not crypto_bytes_equal(tls_crypto_handshake_server_traffic, tls_crypto_rfc8448_server_traffic_expected, 32) then return 66
+  if not crypto_bytes_equal(tls_crypto_handshake_client_key, tls_crypto_rfc8448_client_key_expected, 16) then return 67
+  if not crypto_bytes_equal(tls_crypto_handshake_client_iv, tls_crypto_rfc8448_client_iv_expected, 12) then return 68
+  if not crypto_bytes_equal(tls_crypto_handshake_server_key, tls_crypto_rfc8448_server_key_expected, 16) then return 69
+  if not crypto_bytes_equal(tls_crypto_handshake_server_iv, tls_crypto_rfc8448_server_iv_expected, 12) then return 70
+  if not crypto_bytes_equal(tls_crypto_handshake_client_finished, tls_crypto_rfc8448_client_finished_expected, 32) then return 71
+  if not crypto_bytes_equal(tls_crypto_handshake_server_finished, tls_crypto_rfc8448_server_finished_expected, 32) then return 72
+  if not tls_crypto_write_marker(tls_crypto_key_schedule_marker) then return 73
+
+  client_hello: ptr[Tls13ClientHelloRequest] is tls_crypto_client_hello_request_storage
+  client_hello.hostname is tls_crypto_server_hostname
+  client_hello.hostname_bytes is 6
+  client_hello.random is ptr.add(tls_crypto_rfc8448_client_hello, 6)
+  client_hello.session_id is 0
+  client_hello.session_id_bytes is 0
+  client_hello.public_key is tls_crypto_rfc8448_client_public
+  client_hello.record is tls_crypto_client_hello_record
+  client_hello.record_capacity is 512
+  if not tls13_client_hello_build(client_hello) then return 74
+  if client_hello.record_bytes != 161 or client_hello.handshake_bytes != 156 then return 75
+  if client_hello.handshake != ptr.add(tls_crypto_client_hello_record, 5) then return 76
+  if not crypto_bytes_equal(ptr.add(tls_crypto_client_hello_record, 61), tls_crypto_server_hostname, 6) then return 77
+  if not crypto_bytes_equal(ptr.add(tls_crypto_client_hello_record, 114), tls_crypto_rfc8448_client_public, 32) then return 78
+
+  mem.write8(tls_crypto_server_hello_record, 22)
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 1), 3)
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 2), 3)
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 3), 0)
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 4), 90)
+  if not tls13_hello_copy(ptr.add(tls_crypto_server_hello_record, 5), tls_crypto_rfc8448_server_hello, 90) then return 79
+  server_hello: ptr[Tls13ServerHelloRequest] is tls_crypto_server_hello_request_storage
+  server_hello.record is tls_crypto_server_hello_record
+  server_hello.record_bytes is 95
+  server_hello.expected_session_id is 0
+  server_hello.expected_session_id_bytes is 0
+  server_hello.public_key is tls_crypto_server_public_key
+  if not tls13_server_hello_parse(server_hello) then return 80
+  if server_hello.handshake_bytes != 90 or server_hello.cipher_suite != 4865 or server_hello.named_group != 29 then return 81
+  if not crypto_bytes_equal(tls_crypto_server_public_key, tls_crypto_rfc8448_server_public, 32) then return 82
+
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 8), 87)
+  if tls13_server_hello_parse(server_hello) then return 83
+  mem.write8(ptr.add(tls_crypto_server_hello_record, 8), 86)
+  if not tls13_hello_copy(ptr.add(tls_crypto_server_hello_record, 11), tls13_hello_retry_request_random, 32) then return 84
+  if tls13_server_hello_parse(server_hello) then return 85
+  if not tls13_hello_copy(ptr.add(tls_crypto_server_hello_record, 11), ptr.add(tls_crypto_rfc8448_server_hello, 6), 32) then return 86
+  index is 0
+  while index < 32 do
+    mem.write8(ptr.add(tls_crypto_server_hello_record, 57 + index), 0)
+    index += 1
+  end
+  if tls13_server_hello_parse(server_hello) then return 87
+  if not tls_crypto_write_marker(tls_crypto_hello_marker) then return 88
+  if not entropy_x86_rdrand_supported() then return 89
+  if not entropy_x86_fill(tls_crypto_entropy_output, 64) then return 90
+  if crypto_bytes_equal(tls_crypto_entropy_output, tls_crypto_handshake_zero, 32) then return 91
+  if crypto_bytes_equal(tls_crypto_entropy_output, ptr.add(tls_crypto_entropy_output, 32), 32) then return 92
+  if not tls_crypto_write_marker(tls_crypto_entropy_marker) then return 93
+
+  rsa_buffers: ptr[RsaPublicBuffers] is tls_crypto_rsa_buffers_storage
+  rsa_buffers.modulus is tls_crypto_rsa_modulus
+  rsa_buffers.operand is tls_crypto_rsa_operand
+  rsa_buffers.base is tls_crypto_rsa_base
+  rsa_buffers.result is tls_crypto_rsa_result
+  rsa_buffers.r2 is tls_crypto_rsa_r2
+  rsa_buffers.temporary is tls_crypto_rsa_temporary
+  rsa_buffers.encoded is tls_crypto_rsa_encoded
+  rsa_buffers.encoded_capacity is 128
+  rsa_buffers.limb_capacity is 32
+  rsa_workspace: ptr[RsaPublicWorkspace] is tls_crypto_rsa_workspace_storage
+  if not rsa_public_workspace_init(rsa_workspace, rsa_buffers) then return 94
+  index is 0
+  while index < 128 do
+    mem.write8(ptr.add(tls_crypto_rsa_modulus_input, index), 255)
+    mem.write8(ptr.add(tls_crypto_rsa_signature_input, index), 0)
+    index += 1
+  end
+  mem.write8(ptr.add(tls_crypto_rsa_modulus_input, 127), 147)
+  mem.write8(ptr.add(tls_crypto_rsa_signature_input, 127), 2)
+  if not rsa_public_load_modulus(rsa_workspace, tls_crypto_rsa_modulus_input, 128) then return 95
+  if not rsa_public_exponent_65537(rsa_workspace, tls_crypto_rsa_signature_input, 128) then return 96
+  index is 0
+  while index < 73 do
+    if mem.read8(ptr.add(tls_crypto_rsa_encoded, index)) != 0 then return 97
+    index += 1
+  end
+  if not crypto_bytes_equal(ptr.add(tls_crypto_rsa_encoded, 73), tls_crypto_rsa_expected_suffix, 55) then return 98
+  if not tls_crypto_write_marker(tls_crypto_rsa_marker) then return 99
+
+  rsa_sha_buffers: ptr[RsaSha256Buffers] is tls_crypto_rsa_sha_buffers_storage
+  rsa_sha_buffers.rsa_workspace is tls_crypto_rsa_workspace_storage
+  rsa_sha_buffers.sha_state is tls_crypto_state_storage
+  rsa_sha_buffers.sha_block is tls_crypto_block
+  rsa_sha_buffers.sha_schedule is tls_crypto_schedule
+  rsa_sha_buffers.message_hash is tls_crypto_rsa_sha_message_hash
+  rsa_sha_buffers.mgf_hash is tls_crypto_rsa_sha_mgf_hash
+  rsa_sha_buffers.mask is tls_crypto_rsa_sha_mask
+  rsa_sha_buffers.mask_capacity is 512
+  rsa_sha_buffers.database is tls_crypto_rsa_sha_database
+  rsa_sha_buffers.database_capacity is 512
+  rsa_sha_buffers.hash_input is tls_crypto_rsa_sha_hash_input
+  rsa_sha_buffers.hash_input_capacity is 72
+  rsa_sha_workspace: ptr[RsaSha256Workspace] is tls_crypto_rsa_sha_workspace_storage
+  if not rsa_sha256_workspace_init(rsa_sha_workspace, rsa_sha_buffers) then return 100
+  rsa_sha_request: ptr[RsaSha256VerifyRequest] is tls_crypto_rsa_sha_request_storage
+  rsa_sha_request.modulus is tls_crypto_rsa_sha_modulus
+  rsa_sha_request.modulus_bytes is 128
+  rsa_sha_request.exponent is 65537
+  rsa_sha_request.signature is tls_crypto_rsa_signature_input
+  rsa_sha_request.signature_bytes is 128
+  rsa_sha_request.message is tls_crypto_rsa_sha_message
+  rsa_sha_request.message_bytes is 32
+  if not crypto_copy(tls_crypto_rsa_signature_input, tls_crypto_rsa_sha_pkcs_signature, 128) then return 101
+  if not rsa_pkcs1_v15_sha256_verify(rsa_sha_workspace, rsa_sha_request) then return 102
+  mem.write8(ptr.add(tls_crypto_rsa_signature_input, 127), mem.read8(ptr.add(tls_crypto_rsa_signature_input, 127)) ^ 1)
+  if rsa_pkcs1_v15_sha256_verify(rsa_sha_workspace, rsa_sha_request) then return 103
+  if not crypto_copy(tls_crypto_rsa_signature_input, tls_crypto_rsa_sha_pss_signature, 128) then return 104
+  if not rsa_pss_sha256_verify(rsa_sha_workspace, rsa_sha_request) then return 105
+  mem.write8(ptr.add(tls_crypto_rsa_signature_input, 127), mem.read8(ptr.add(tls_crypto_rsa_signature_input, 127)) ^ 1)
+  if rsa_pss_sha256_verify(rsa_sha_workspace, rsa_sha_request) then return 106
+  if not tls_crypto_write_marker(tls_crypto_rsa_sha_marker) then return 107
+
+  der_reader: ptr[DerReader] is tls_crypto_der_reader_storage
+  der_child_reader: ptr[DerReader] is tls_crypto_der_child_reader_storage
+  der_element: ptr[DerElement] is tls_crypto_der_element_storage
+  der_child: ptr[DerElement] is tls_crypto_der_child_element_storage
+  if not der_reader_init(der_reader, tls_crypto_der_valid, 7) then return 108
+  if not der_expect(der_reader, der_element, 48) or not der_reader_finished(der_reader) then return 109
+  if not der_enter(der_element, der_child_reader) then return 110
+  if not der_expect(der_child_reader, der_child, 2) then return 111
+  if der_positive_integer_u64(der_child) != 5 then return 112
+  if not der_expect(der_child_reader, der_child, 5) or der_child.content_bytes != 0 then return 113
+  if not der_reader_finished(der_child_reader) then return 114
+  if not der_reader_init(der_reader, tls_crypto_der_indefinite, 4) then return 115
+  if der_read_element(der_reader, der_element) then return 116
+  if not der_reader_init(der_reader, tls_crypto_der_nonminimal, 4) then return 117
+  if der_read_element(der_reader, der_element) then return 118
+  if not der_reader_init(der_reader, tls_crypto_der_truncated, 4) then return 119
+  if der_read_element(der_reader, der_element) then return 120
+  if not tls_crypto_write_marker(tls_crypto_der_marker) then return 121
+
+  x509_buffers: ptr[X509Buffers] is tls_crypto_x509_buffers_storage
+  x509_buffers.reader0 is tls_crypto_x509_reader0_storage
+  x509_buffers.reader1 is tls_crypto_x509_reader1_storage
+  x509_buffers.reader2 is tls_crypto_x509_reader2_storage
+  x509_buffers.reader3 is tls_crypto_x509_reader3_storage
+  x509_buffers.element0 is tls_crypto_x509_element0_storage
+  x509_buffers.element1 is tls_crypto_x509_element1_storage
+  x509_buffers.element2 is tls_crypto_x509_element2_storage
+  x509_buffers.element3 is tls_crypto_x509_element3_storage
+  x509_buffers.element4 is tls_crypto_x509_element4_storage
+  x509_buffers.element5 is tls_crypto_x509_element5_storage
+  x509_workspace: ptr[X509Workspace] is tls_crypto_x509_workspace_storage
+  if not x509_workspace_init(x509_workspace, x509_buffers) then return 122
+  x509_leaf: ptr[X509Certificate] is tls_crypto_x509_leaf_storage
+  x509_intermediate: ptr[X509Certificate] is tls_crypto_x509_intermediate_storage
+  x509_root: ptr[X509Certificate] is tls_crypto_x509_root_storage
+  if not x509_parse(tls_crypto_x509_leaf_der, 669, x509_workspace, x509_leaf) then return 123
+  if not x509_parse(tls_crypto_x509_intermediate_der, 611, x509_workspace, x509_intermediate) then return 124
+  if not x509_parse(tls_crypto_x509_root_der, 603, x509_workspace, x509_root) then return 125
+  if x509_leaf.is_ca != 0 or x509_leaf.has_san == 0 then return 126
+  if x509_intermediate.is_ca == 0 or x509_root.is_ca == 0 then return 127
+  if not x509_hostname_matches(x509_leaf, tls_crypto_x509_hostname, 13, x509_workspace) then return 128
+  if x509_hostname_matches(x509_leaf, tls_crypto_x509_wrong_hostname, 12, x509_workspace) then return 129
+  x509_time: ptr[X509DateTime] is tls_crypto_x509_time_storage
+  if not x509_time_parse(tls_crypto_x509_utc_time, 13, 23, x509_time) then return 130
+  if x509_time.value != u64("20290228235959") then return 131
+  if x509_time_parse(tls_crypto_x509_bad_time, 13, 23, x509_time) then return 132
+
+  mem.write64(tls_crypto_x509_certificates, x509_leaf)
+  mem.write64(ptr.add(tls_crypto_x509_certificates, 8), x509_intermediate)
+  # Put the matching root last to verify bounded multi-anchor selection
+  # rather than succeeding only because the first pointer is trusted.
+  mem.write64(tls_crypto_x509_roots, x509_leaf)
+  mem.write64(ptr.add(tls_crypto_x509_roots, 8), x509_intermediate)
+  mem.write64(ptr.add(tls_crypto_x509_roots, 16), x509_root)
+  x509_chain: ptr[X509ChainVerifyRequest] is tls_crypto_x509_chain_request_storage
+  x509_chain.certificates is tls_crypto_x509_certificates
+  x509_chain.certificate_count is 2
+  x509_chain.trusted_roots is tls_crypto_x509_roots
+  x509_chain.trusted_root_count is 3
+  x509_chain.hostname is tls_crypto_x509_hostname
+  x509_chain.hostname_bytes is 13
+  x509_chain.current_time is u64("20270101000000")
+  x509_chain.rsa_workspace is tls_crypto_rsa_sha_workspace_storage
+  x509_chain.rsa_request is tls_crypto_rsa_sha_request_storage
+  x509_chain.rsa_sha384_workspace is 0
+  x509_chain.rsa_sha384_request is 0
+  x509_chain.time_scratch is tls_crypto_x509_time_storage
+  if not x509_verify_chain(x509_chain, x509_workspace) then return 133
+  x509_chain.hostname is tls_crypto_x509_wrong_hostname
+  x509_chain.hostname_bytes is 12
+  if x509_verify_chain(x509_chain, x509_workspace) then return 134
+  x509_chain.hostname is tls_crypto_x509_hostname
+  x509_chain.hostname_bytes is 13
+  x509_chain.current_time is u64("20350101000000")
+  if x509_verify_chain(x509_chain, x509_workspace) then return 135
+  x509_chain.current_time is u64("20270101000000")
+  mem.write64(tls_crypto_x509_roots, x509_leaf)
+  mem.write64(ptr.add(tls_crypto_x509_roots, 8), x509_leaf)
+  mem.write64(ptr.add(tls_crypto_x509_roots, 16), x509_leaf)
+  if x509_verify_chain(x509_chain, x509_workspace) then return 136
+  mem.write64(ptr.add(tls_crypto_x509_roots, 16), x509_root)
+  if not tls_crypto_write_marker(tls_crypto_x509_marker) then return 137
+
+  application_secrets: ptr[Tls13ApplicationSecrets] is tls_crypto_application_secrets_storage
+  application_secrets.derived_secret is tls_crypto_application_derived
+  application_secrets.master_secret is tls_crypto_application_master
+  application_secrets.client_traffic_secret is tls_crypto_application_client_traffic
+  application_secrets.server_traffic_secret is tls_crypto_application_server_traffic
+  application_secrets.client_key is tls_crypto_application_client_key
+  application_secrets.client_iv is tls_crypto_application_client_iv
+  application_secrets.server_key is tls_crypto_application_server_key
+  application_secrets.server_iv is tls_crypto_application_server_iv
+  application_request: ptr[Tls13ApplicationRequest] is tls_crypto_application_request_storage
+  application_request.handshake_secret is tls_crypto_rfc8448_handshake_expected
+  application_request.transcript_hash is tls_crypto_sha256_abc
+  application_request.secrets is tls_crypto_application_secrets_storage
+  if not tls13_application_derive(handshake_workspace, application_request) then return 138
+  if not crypto_bytes_equal(tls_crypto_application_derived, tls_crypto_application_derived_expected, 32) then return 139
+  if not crypto_bytes_equal(tls_crypto_application_master, tls_crypto_application_master_expected, 32) then return 140
+  if not crypto_bytes_equal(tls_crypto_application_client_traffic, tls_crypto_application_client_traffic_expected, 32) then return 141
+  if not crypto_bytes_equal(tls_crypto_application_server_traffic, tls_crypto_application_server_traffic_expected, 32) then return 142
+  if not crypto_bytes_equal(tls_crypto_application_client_key, tls_crypto_application_client_key_expected, 16) then return 143
+  if not crypto_bytes_equal(tls_crypto_application_client_iv, tls_crypto_application_client_iv_expected, 12) then return 144
+  if not crypto_bytes_equal(tls_crypto_application_server_key, tls_crypto_application_server_key_expected, 16) then return 145
+  if not crypto_bytes_equal(tls_crypto_application_server_iv, tls_crypto_application_server_iv_expected, 12) then return 146
+  if not tls_crypto_write_marker(tls_crypto_application_marker) then return 147
+
+  if not tls13_encrypted_extensions_parse(tls_crypto_encrypted_extensions, 21) then return 148
+  mem.write8(tls_crypto_certificate_message, 11)
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_certificate_message, 1), 1294) then return 149
+  mem.write8(ptr.add(tls_crypto_certificate_message, 4), 0)
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_certificate_message, 5), 1290) then return 150
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_certificate_message, 8), 669) then return 151
+  if not crypto_copy(ptr.add(tls_crypto_certificate_message, 11), tls_crypto_x509_leaf_der, 669) then return 152
+  mem.write16(ptr.add(tls_crypto_certificate_message, 680), 0)
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_certificate_message, 682), 611) then return 153
+  if not crypto_copy(ptr.add(tls_crypto_certificate_message, 685), tls_crypto_x509_intermediate_der, 611) then return 154
+  mem.write16(ptr.add(tls_crypto_certificate_message, 1296), 0)
+  certificate_list: ptr[Tls13CertificateList] is tls_crypto_certificate_list_storage
+  if not tls13_certificate_message_parse(tls_crypto_certificate_message, 1298, certificate_list) then return 155
+  if certificate_list.certificate_count != 2 then return 156
+  if certificate_list.certificate0_bytes != 669 or certificate_list.certificate1_bytes != 611 then return 157
+  if not crypto_bytes_equal(certificate_list.certificate0, tls_crypto_x509_leaf_der, 669) then return 158
+  if not crypto_bytes_equal(certificate_list.certificate1, tls_crypto_x509_intermediate_der, 611) then return 159
+
+  mem.write8(tls_crypto_certificate_verify_message, 15)
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_certificate_verify_message, 1), 132) then return 160
+  mem.write8(ptr.add(tls_crypto_certificate_verify_message, 4), 8)
+  mem.write8(ptr.add(tls_crypto_certificate_verify_message, 5), 4)
+  mem.write8(ptr.add(tls_crypto_certificate_verify_message, 6), 0)
+  mem.write8(ptr.add(tls_crypto_certificate_verify_message, 7), 128)
+  if not crypto_copy(ptr.add(tls_crypto_certificate_verify_message, 8), tls_crypto_rsa_sha_pss_signature, 128) then return 161
+  certificate_verify_message: ptr[Tls13CertificateVerifyMessage] is tls_crypto_certificate_verify_message_storage
+  if not tls13_certificate_verify_message_parse(tls_crypto_certificate_verify_message, 136, certificate_verify_message) then return 162
+  if certificate_verify_message.signature_scheme != 2052 or certificate_verify_message.signature_bytes != 128 then return 163
+  mem.write8(tls_crypto_finished_message, 20)
+  if not tls_crypto_write_u24(ptr.add(tls_crypto_finished_message, 1), 32) then return 164
+  if not crypto_copy(ptr.add(tls_crypto_finished_message, 4), tls_crypto_rfc8448_server_finished_expected, 32) then return 165
+  if tls13_finished_message_parse(tls_crypto_finished_message, 36) != ptr.add(tls_crypto_finished_message, 4) then return 166
+  if not tls_crypto_write_marker(tls_crypto_messages_marker) then return 167
+  if not tls_crypto_write_marker(tls_crypto_success_marker) then return 168
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global tls_crypto_map_size, tls_crypto_map_key
+  global tls_crypto_descriptor_size, tls_crypto_descriptor_version
+  uefi.write("Sura TLS cryptographic foundation test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    tls_crypto_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(tls_crypto_map_size), tls_crypto_memory_map, addr_of(tls_crypto_map_key), addr_of(tls_crypto_descriptor_size), addr_of(tls_crypto_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(tls_crypto_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then tls_crypto_exit(2)
+  vector_status: u64 is tls_crypto_run_vectors()
+  if vector_status != 0 then tls_crypto_exit(vector_status + 32)
+  tls_crypto_exit(16)
+  return 0
+end

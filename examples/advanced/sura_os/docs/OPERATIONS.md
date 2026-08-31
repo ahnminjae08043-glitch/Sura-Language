@@ -239,3 +239,28 @@ snapshot ids:
 
 재현 절차는 가상 셸 명령과 SVM32 source를 포함하되 호스트 개인 경로나 비밀 값은 제거한다.
 
+## 영구 디스크 운영 절차
+
+기본 대화형 실행은 `suraos.disk.json`을 자동으로 로드·저장한다. 운영용 이미지는 이름을 명시해 분리한다.
+
+```powershell
+..\..\..\SuraLanguage.exe main.sura -- --interactive --disk production.disk.json
+```
+
+셸에서 아래를 주기적으로 확인한다.
+
+```text
+disk status
+disk usage
+health
+```
+
+- `dirty=true`: 마지막 저장 뒤 변경이 있음
+- `pressure=warning`: 사용률 85% 이상
+- `pressure=critical`: 사용률 95% 이상
+- `pressure=full`: 남은 공간 0바이트
+- `last=save-failed`: 호스트 이미지 저장 실패
+
+저장은 같은 폴더의 `.tmp` 이미지에 먼저 쓰고 다시 읽어 검증한 다음 정식 이미지로 이동한다. 호스트 용량 부족이나 JSON 쓰기 오류가 발생하면 dirty 상태를 유지하며 오류를 반환한다. 공간 확보 후 `disk save`를 재시도한다.
+
+게스트 용량 부족은 데이터 손상으로 처리하지 않는다. 파일 쓰기·언어 설치·패키지 설치가 사전 검사에서 `NO_SPACE`로 중단된다. 불필요한 가상 파일을 삭제한 후 작업을 다시 실행한다.

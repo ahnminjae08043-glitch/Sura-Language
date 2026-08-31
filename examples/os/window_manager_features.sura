@@ -1,4 +1,5 @@
-# Window focus, z-order, hit-test, drag, close, and boundary coverage.
+# Window focus, z-order, hit-test, drag, resize, minimize, maximize,
+# fullscreen, close, and boundary coverage.
 
 import "../../stdlib/freestanding/window_manager.sura"
 
@@ -35,5 +36,38 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   window_manager_pointer_move(manager, 2000, 2000, 1)
   window_manager_pointer_release(manager)
   if second.x != 440 or second.y != 312 then return 16
+
+  # Bottom-right interactive resize remains inside the work area.
+  if not window_manager_restore(manager, 2) then return 17
+  second.x is 180
+  second.y is 140
+  second.width is 360
+  second.height is 240
+  if window_manager_pointer_press(manager, 535, 375) != 2 then return 18
+  if manager.resizing_id != 2 then return 19
+  if not window_manager_pointer_move(manager, 700, 500, 1) then return 20
+  window_manager_pointer_release(manager)
+  if second.width != 521 or second.height != 361 then return 21
+
+  if not window_manager_minimize(manager, 2) then return 22
+  if second.visible != 0 or second.state != window_state_minimized() then return 23
+  if not window_manager_show(manager, 2) then return 24
+  if second.visible == 0 or second.state != window_state_normal() then return 25
+
+  original_x: i64 is second.x
+  original_y: i64 is second.y
+  original_width: u64 is second.width
+  original_height: u64 is second.height
+  if not window_manager_maximize(manager, 2) then return 26
+  if second.x != 0 or second.y != 0 or second.width != 800 or second.height != 552 then return 27
+  if second.state != window_state_maximized() then return 28
+  if not window_manager_restore(manager, 2) then return 29
+  if second.x != original_x or second.y != original_y then return 30
+  if second.width != original_width or second.height != original_height then return 31
+
+  if not window_manager_fullscreen(manager, 2) then return 32
+  if second.width != 800 or second.height != 600 or second.state != window_state_fullscreen() then return 33
+  if not window_manager_toggle_fullscreen(manager, 2) then return 34
+  if second.state != window_state_normal() or second.height != original_height then return 35
   return 0
 end

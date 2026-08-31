@@ -1,0 +1,160 @@
+# Executed QEMU Intel HDA controller and codec-verb gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/hda.sura"
+
+hda_gate_map is static.zero(65536, 4096)
+hda_gate_device is static.struct(PciDevice)
+hda_gate_controller is static.struct(HdaController)
+hda_gate_stream is static.struct(HdaOutputStream)
+hda_gate_response is static.zero(8, 8)
+
+hda_gate_pci_marker is static.utf8("SURA_HDA_PCI_OK")
+hda_gate_reset_marker is static.utf8("SURA_HDA_RESET_OK")
+hda_gate_codec_marker is static.utf8("SURA_HDA_CODEC_OK")
+hda_gate_vendor_marker is static.utf8("SURA_HDA_VENDOR_OK")
+hda_gate_root_marker is static.utf8("SURA_HDA_ROOT_NODES_OK")
+hda_gate_afg_marker is static.utf8("SURA_HDA_AUDIO_FUNCTION_GROUP_OK")
+hda_gate_pcm_marker is static.utf8("SURA_HDA_PCM_CAPS_OK")
+hda_gate_widgets_marker is static.utf8("SURA_HDA_OUTPUT_WIDGETS_OK")
+hda_gate_bdl_marker is static.utf8("SURA_HDA_PCM_BDL_OK")
+hda_gate_running_marker is static.utf8("SURA_HDA_STREAM_RUNNING_OK")
+hda_gate_position_marker is static.utf8("SURA_HDA_LPIB_ADVANCED_OK")
+hda_gate_done_marker is static.utf8("SURA_HDA_EXECUTED_OK")
+
+hda_gate_map_size: usize is 65536
+hda_gate_map_key: u64 is 0
+hda_gate_descriptor_size: usize is 0
+hda_gate_descriptor_version: u32 is 0
+hda_gate_dma_address: u64 is 0
+
+func hda_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func hda_gate_line(text: ptr) do
+  if not serial_write_cstr(1016, text, 64, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global hda_gate_map_size, hda_gate_map_key, hda_gate_descriptor_size, hda_gate_descriptor_version, hda_gate_dma_address
+  uefi.write("Sura Intel HDA executed gate")
+  uefi.newline()
+  if uefi.allocate_pages(0, 2, 48, addr_of(hda_gate_dma_address)) != 0 or hda_gate_dma_address == 0 then
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    hda_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(hda_gate_map_size), hda_gate_map, addr_of(hda_gate_map_key), addr_of(hda_gate_descriptor_size), addr_of(hda_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(hda_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 1
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then
+    hda_gate_exit(2)
+    return 2
+  end
+
+  device: ptr[PciDevice] is hda_gate_device
+  controller: ptr[HdaController] is hda_gate_controller
+  if not hda_pci_find(device) then
+    hda_gate_exit(3)
+    return 3
+  end
+  if not hda_gate_line(hda_gate_pci_marker) then hda_gate_exit(4)
+  if not hda_controller_init(controller, device, 100000000) then
+    hda_gate_exit(5)
+    return 5
+  end
+  if not hda_gate_line(hda_gate_reset_marker) then hda_gate_exit(6)
+  codec: u64 is hda_codec_first(controller)
+  if codec > 14 then
+    hda_gate_exit(7)
+    return 7
+  end
+  if not hda_gate_line(hda_gate_codec_marker) then hda_gate_exit(8)
+
+  if not hda_get_parameter(controller, codec, 0, 0, hda_gate_response, 100000000) then
+    hda_gate_exit(9)
+    return 9
+  end
+  vendor: u64 is mem.read32(hda_gate_response)
+  if vendor == 0 or vendor == u64("0xffffffff") then
+    hda_gate_exit(10)
+    return 10
+  end
+  if not hda_gate_line(hda_gate_vendor_marker) then hda_gate_exit(11)
+  if not hda_get_parameter(controller, codec, 0, 4, hda_gate_response, 100000000) then
+    hda_gate_exit(12)
+    return 12
+  end
+  root_nodes: u64 is mem.read32(hda_gate_response)
+  if ((root_nodes >> 16) & 255) == 0 or (root_nodes & 255) == 0 then
+    hda_gate_exit(13)
+    return 13
+  end
+  if not hda_gate_line(hda_gate_root_marker) then hda_gate_exit(14)
+  afg: u64 is hda_find_audio_function_group(controller, codec, hda_gate_response, 100000000)
+  if afg == 0 then
+    hda_gate_exit(15)
+    return 15
+  end
+  if not hda_gate_line(hda_gate_afg_marker) then hda_gate_exit(16)
+  if not hda_get_parameter(controller, codec, afg, 10, hda_gate_response, 100000000) then
+    hda_gate_exit(17)
+    return 17
+  end
+  pcm_caps: u64 is mem.read32(hda_gate_response)
+  if pcm_caps == 0 or pcm_caps == u64("0xffffffff") then
+    hda_gate_exit(18)
+    return 18
+  end
+  if not hda_gate_line(hda_gate_pcm_marker) then hda_gate_exit(19)
+
+  stream: ptr[HdaOutputStream] is hda_gate_stream
+  if not hda_output_prepare_48k_s16_stereo(stream, controller, codec, afg, hda_gate_dma_address, hda_gate_dma_address) then
+    hda_gate_exit(20)
+    return 20
+  end
+  if stream.converter == 0 or stream.pin == 0 then
+    hda_gate_exit(21)
+    return 21
+  end
+  if not hda_gate_line(hda_gate_widgets_marker) then hda_gate_exit(22)
+  if mem.read64(stream.bdl) != stream.samples_physical or mem.read32(ptr.add(stream.bdl, 8)) != stream.sample_bytes or stream.sample_bytes != 192000 then
+    hda_gate_exit(23)
+    return 23
+  end
+  if not hda_gate_line(hda_gate_bdl_marker) then hda_gate_exit(24)
+  if not hda_output_start(stream, 100000000) then
+    hda_gate_exit(25)
+    return 25
+  end
+  if not hda_gate_line(hda_gate_running_marker) then hda_gate_exit(26)
+  if not hda_output_wait_position(stream, 180000, 1000000000) then
+    hda_gate_exit(27)
+    return 27
+  end
+  if not hda_gate_line(hda_gate_position_marker) then hda_gate_exit(28)
+  if not hda_output_stop(stream, 100000000) then
+    hda_gate_exit(29)
+    return 29
+  end
+  if not hda_controller_stop(controller, 100000000) then
+    hda_gate_exit(30)
+    return 30
+  end
+  if not hda_gate_line(hda_gate_done_marker) then hda_gate_exit(31)
+  hda_gate_exit(16)
+  return 0
+end

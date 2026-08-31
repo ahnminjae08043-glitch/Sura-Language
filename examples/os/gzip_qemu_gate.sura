@@ -1,0 +1,121 @@
+# Executed gzip/DEFLATE stored, fixed-Huffman, and dynamic-Huffman gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/http_content.sura"
+
+gzip_gate_memory_map is static.zero(65536, 4096)
+gzip_gate_output is static.zero(16384, 16)
+gzip_gate_scratch is static.zero(4096, 16)
+gzip_gate_corrupt is static.zero(512, 16)
+gzip_gate_http_buffer is static.zero(512, 16)
+gzip_gate_http_workspace is static.zero(4608, 16)
+gzip_gate_http_length is static.zero(8, 8)
+gzip_gate_http_info is static.struct(Http1ResponseInfo)
+
+gzip_gate_stored is static.bytes([31, 139, 8, 0, 0, 0, 0, 0, 4, 10, 1, 24, 0, 231, 255, 115, 116, 111, 114, 101, 100, 32, 98, 108, 111, 99, 107, 58, 32, 83, 117, 114, 97, 32, 103, 122, 105, 112, 10, 97, 146, 170, 22, 24, 0, 0, 0], 1)
+gzip_gate_fixed is static.bytes([31, 139, 8, 0, 0, 0, 0, 0, 2, 10, 75, 203, 172, 72, 77, 81, 72, 202, 201, 79, 206, 182, 82, 40, 46, 45, 74, 196, 70, 112, 1, 0, 121, 28, 90, 210, 38, 0, 0, 0], 1)
+gzip_gate_dynamic is static.bytes([31, 139, 8, 0, 0, 0, 0, 0, 2, 10, 237, 205, 193, 13, 2, 49, 12, 69, 193, 86, 126, 1, 136, 74, 246, 70, 5, 33, 177, 86, 150, 54, 241, 146, 56, 253, 115, 160, 9, 14, 175, 129, 153, 35, 166, 117, 249, 189, 118, 87, 139, 43, 166, 150, 167, 74, 183, 124, 168, 198, 88, 86, 211, 114, 79, 149, 230, 183, 175, 234, 227, 148, 93, 158, 79, 189, 172, 169, 133, 204, 247, 234, 209, 148, 214, 239, 152, 242, 81, 189, 121, 219, 35, 181, 83, 87, 121, 199, 52, 89, 254, 104, 83, 47, 231, 40, 42, 151, 127, 118, 121, 234, 224, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 230, 254, 203, 251, 11, 203, 54, 12, 240, 112, 48, 0, 0], 1)
+gzip_gate_http_response is static.bytes([72, 84, 84, 80, 47, 49, 46, 49, 32, 50, 48, 48, 32, 79, 75, 13, 10, 67, 111, 110, 116, 101, 110, 116, 45, 76, 101, 110, 103, 116, 104, 58, 32, 52, 48, 13, 10, 67, 111, 110, 116, 101, 110, 116, 45, 69, 110, 99, 111, 100, 105, 110, 103, 58, 32, 103, 122, 105, 112, 13, 10, 13, 10, 31, 139, 8, 0, 0, 0, 0, 0, 2, 10, 75, 203, 172, 72, 77, 81, 72, 202, 201, 79, 206, 182, 82, 40, 46, 45, 74, 196, 70, 112, 1, 0, 121, 28, 90, 210, 38, 0, 0, 0], 1)
+gzip_gate_zlib is static.bytes([120, 156, 11, 240, 115, 87, 168, 202, 201, 76, 82, 72, 203, 47, 205, 75, 73, 44, 201, 204, 207, 3, 0, 65, 178, 7, 14], 1)
+
+gzip_gate_stored_text is static.utf8("stored block: Sura gzip\n")
+gzip_gate_fixed_text is static.utf8("fixed block: sura sura sura sura sura\n")
+gzip_gate_dynamic_phrase is static.utf8("Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. ")
+gzip_gate_crc_text is static.utf8("123456789")
+gzip_gate_zlib_text is static.utf8("PNG zlib foundation")
+gzip_gate_marker is static.utf8("SURA_GZIP_INFLATE_OK\r\n")
+
+gzip_gate_map_size: usize is 65536
+gzip_gate_map_key: u64 is 0
+gzip_gate_descriptor_size: usize is 0
+gzip_gate_descriptor_version: u32 is 0
+
+func gzip_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func gzip_gate_equal(expected: ptr, byte_count: u64) do
+  if expected == 0 then return false
+  cursor: u64 is 0
+  while cursor < byte_count do
+    if mem.read8(ptr.add(gzip_gate_output, cursor)) != mem.read8(ptr.add(expected, cursor)) then return false
+    cursor += 1
+  end
+  return true
+end
+
+func gzip_gate_dynamic_equal() do
+  cursor: u64 is 0
+  while cursor < 12400 do
+    if mem.read8(ptr.add(gzip_gate_output, cursor)) != mem.read8(ptr.add(gzip_gate_dynamic_phrase, cursor % 124)) then return false
+    cursor += 1
+  end
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global gzip_gate_map_size, gzip_gate_map_key
+  global gzip_gate_descriptor_size, gzip_gate_descriptor_version
+  uefi.write("Sura gzip and DEFLATE test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  invalid: u64 is u64("0xffffffffffffffff")
+
+  if gzip_crc32(gzip_gate_crc_text, 9) != u64("0xcbf43926") then gzip_gate_exit(1)
+  output_bytes: u64 is gzip_decompress(gzip_gate_stored, 47, gzip_gate_output, 16384, gzip_gate_scratch, 4096)
+  if output_bytes != 24 or not gzip_gate_equal(gzip_gate_stored_text, 24) then gzip_gate_exit(2)
+  output_bytes is gzip_decompress(gzip_gate_fixed, 40, gzip_gate_output, 16384, gzip_gate_scratch, 4096)
+  if output_bytes != 38 or not gzip_gate_equal(gzip_gate_fixed_text, 38) then gzip_gate_exit(3)
+  output_bytes is gzip_decompress(gzip_gate_dynamic, 171, gzip_gate_output, 16384, gzip_gate_scratch, 4096)
+  if output_bytes != 12400 then gzip_gate_exit(4)
+  if not gzip_gate_dynamic_equal() then gzip_gate_exit(5)
+
+  cursor: u64 is 0
+  while cursor < 171 do
+    mem.write8(ptr.add(gzip_gate_corrupt, cursor), mem.read8(ptr.add(gzip_gate_dynamic, cursor)))
+    cursor += 1
+  end
+  mem.write8(ptr.add(gzip_gate_corrupt, 163), mem.read8(ptr.add(gzip_gate_corrupt, 163)) ^ 1)
+  if gzip_decompress(gzip_gate_corrupt, 171, gzip_gate_output, 16384, gzip_gate_scratch, 4096) != invalid then gzip_gate_exit(6)
+  if gzip_decompress(gzip_gate_fixed, 40, gzip_gate_output, 37, gzip_gate_scratch, 4096) != invalid then gzip_gate_exit(7)
+  if gzip_decompress(gzip_gate_dynamic, 170, gzip_gate_output, 16384, gzip_gate_scratch, 4096) != invalid then gzip_gate_exit(8)
+  if gzip_decompress(gzip_gate_stored, 47, gzip_gate_output, 16384, gzip_gate_scratch, 4095) != invalid then gzip_gate_exit(9)
+
+  cursor is 0
+  while cursor < 103 do
+    mem.write8(ptr.add(gzip_gate_http_buffer, cursor), mem.read8(ptr.add(gzip_gate_http_response, cursor)))
+    cursor += 1
+  end
+  info: ptr[Http1ResponseInfo] is gzip_gate_http_info
+  if http1_response_inspect(gzip_gate_http_buffer, 103, false, info) != 1 then gzip_gate_exit(12)
+  if info.content_encoding != 1 or info.header_bytes != 63 or info.body_bytes != 40 then gzip_gate_exit(13)
+  mem.write64(gzip_gate_http_length, 103)
+  if not http1_response_decode_content(gzip_gate_http_buffer, gzip_gate_http_length, 512, info, gzip_gate_http_workspace, 4608) then gzip_gate_exit(14)
+  if mem.read64(gzip_gate_http_length) != 101 or info.body_bytes != 38 or info.content_encoding != 0 then gzip_gate_exit(15)
+  cursor is 0
+  while cursor < 38 do
+    if mem.read8(ptr.add(gzip_gate_http_buffer, 63 + cursor)) != mem.read8(ptr.add(gzip_gate_fixed_text, cursor)) then gzip_gate_exit(15)
+    cursor += 1
+  end
+  output_bytes is zlib_decompress(gzip_gate_zlib, 27, gzip_gate_output, 16384, gzip_gate_scratch, 4096)
+  if output_bytes != 19 or not gzip_gate_equal(gzip_gate_zlib_text, 19) then gzip_gate_exit(17)
+  if gzip_adler32(gzip_gate_zlib_text, 19) != u64("0x41b2070e") then gzip_gate_exit(18)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    gzip_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(gzip_gate_map_size), gzip_gate_memory_map, addr_of(gzip_gate_map_key), addr_of(gzip_gate_descriptor_size), addr_of(gzip_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(gzip_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then gzip_gate_exit(10)
+  if not serial_write_buffer(1016, gzip_gate_marker, 22, 1000000) then gzip_gate_exit(11)
+  gzip_gate_exit(16)
+  return 0
+end

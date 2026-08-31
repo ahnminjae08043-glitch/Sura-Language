@@ -21,12 +21,22 @@ import "src/packages.sura"
 import "src/network.sura"
 import "src/monitor.sura"
 import "src/snapshots.sura"
+import "src/persistence.sura"
+import "src/languages.sura"
 import "src/kernel.sura"
 import "src/bootloader.sura"
 import "src/shell.sura"
 
-func suraos_new_machine(host_echo) do
+func suraos_new_machine(host_echo, disk_path, persistent, autosave) do
   kernel is kernel_create(16 * 1024 * 1024, 8, 20260717)
+  kernel.persistence is persistence_create(disk_path, persistent, autosave)
+  if persistent then
+    loaded is persistence_load(kernel)
+    if not loaded.ok then
+      print("SuraOS disk load failed: " + loaded.message)
+      return nil
+    end
+  end
   loader is bootloader_create(boot_config_default())
   kernel.bootloader is loader
   boot is bootloader_run(loader, kernel)
@@ -50,7 +60,7 @@ end
 
 func suraos_run_smoke() do
   state is {passed: 0, failed: 0, failures: []}
-  machine is suraos_new_machine(false)
+  machine is suraos_new_machine(false, "", false, false)
   suraos_smoke_assert(machine != nil, "machine creation", state)
   if machine == nil then
     print("SuraOS smoke: FAIL (boot)")
@@ -101,7 +111,7 @@ func suraos_run_smoke() do
 end
 
 func suraos_run_demo() do
-  machine is suraos_new_machine(true)
+  machine is suraos_new_machine(true, "", false, false)
   if machine == nil then return false
   kernel is machine.kernel
   shell is machine.shell
@@ -114,11 +124,47 @@ func suraos_run_demo() do
 end
 
 mode is "--demo"
-if argc() > 0 then mode is argv()[0]
+disk_path is "suraos.disk.json"
+persistent is false
+autosave is true
+ephemeral is false
+index is 0
+while index < argc() do
+  argument is argv()[index]
+  if argument == "--interactive" or argument == "--smoke" or argument == "--demo" then
+    mode is argument
+  elif argument == "--disk" and index + 1 < argc() then
+    index += 1
+    disk_path is argv()[index]
+    persistent is true
+  elif argument == "--persist" then
+    persistent is true
+  elif argument == "--ephemeral" then
+    persistent is false
+    ephemeral is true
+  elif argument == "--no-autosave" then
+    autosave is false
+  end
+  index += 1
+end
+if mode == "--interactive" and not persistent and not ephemeral then persistent is true
 
 if mode == "--interactive" then
-  machine is suraos_new_machine(true)
-  if machine != nil then shell_run_interactive(machine.shell, machine.kernel)
+  machine is suraos_new_machine(true, disk_path, persistent, autosave)
+  if machine != nil then
+    status is persistence_status(machine.kernel)
+    if not status.enabled then
+      print("[disk] ephemeral mode (changes will not survive exit)")
+    elif status.loaded then
+      print("[disk] restored " + status.host_path)
+    else
+      print("[disk] new virtual disk " + status.host_path)
+    end
+    shell_run_interactive(machine.shell, machine.kernel)
+    saved is persistence_autosave(machine.kernel)
+    if not saved.ok then print("[disk] autosave failed: " + saved.message)
+    if saved.ok and saved.value.saved then print("[disk] saved " + saved.value.path)
+  end
 elif mode == "--smoke" then
   suraos_run_smoke()
 else

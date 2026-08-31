@@ -1,0 +1,153 @@
+# Executed allocation-free WebAssembly MVP integer runtime gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/browser_wasm.sura"
+
+browser_wasm_gate_memory_map is static.zero(65536, 4096)
+browser_wasm_gate_reader is static.struct(BrowserWasmReader)
+browser_wasm_gate_vm_reader is static.struct(BrowserWasmReader)
+browser_wasm_gate_types is static.struct(BrowserWasmType, 8)
+browser_wasm_gate_param_types is static.zero(256, 16)
+browser_wasm_gate_functions is static.struct(BrowserWasmFunction, 8)
+browser_wasm_gate_local_types is static.zero(256, 16)
+browser_wasm_gate_exports is static.struct(BrowserWasmExport, 8)
+browser_wasm_gate_validation is static.zero(256, 16)
+browser_wasm_gate_module is static.struct(BrowserWasmModule)
+browser_wasm_gate_stack is static.struct(BrowserWasmValue, 64)
+browser_wasm_gate_locals is static.struct(BrowserWasmValue, 64)
+browser_wasm_gate_controls is static.struct(BrowserWasmControl, 32)
+browser_wasm_gate_vm is static.struct(BrowserWasmVm)
+browser_wasm_gate_arguments is static.struct(BrowserWasmValue, 8)
+browser_wasm_gate_result is static.struct(BrowserWasmValue)
+
+browser_wasm_gate_arithmetic is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 7, 1, 96, 2, 127, 127, 1, 127, 3, 2, 1, 0, 7, 7, 1, 3, 114, 117, 110, 0, 0, 10, 12, 1, 10, 0, 32, 0, 32, 1, 106, 65, 3, 108, 11], 16)
+browser_wasm_gate_choose is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 13, 2, 96, 1, 127, 1, 127, 96, 3, 127, 127, 127, 1, 127, 3, 3, 2, 0, 1, 7, 10, 1, 6, 99, 104, 111, 111, 115, 101, 0, 1, 10, 26, 2, 7, 0, 32, 0, 65, 2, 108, 11, 16, 0, 32, 2, 4, 127, 32, 0, 16, 0, 5, 32, 1, 16, 0, 11, 11], 16)
+browser_wasm_gate_spin is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 7, 8, 1, 4, 115, 112, 105, 110, 0, 0, 10, 9, 1, 7, 0, 3, 64, 12, 0, 11, 11], 16)
+browser_wasm_gate_bad_branch is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0, 10, 6, 1, 4, 0, 12, 1, 11], 16)
+browser_wasm_gate_unsupported is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 5, 3, 1, 0, 1], 16)
+browser_wasm_gate_malformed_leb is static.bytes([0, 97, 115, 109, 1, 0, 0, 0, 1, 128, 128, 128, 128, 16], 16)
+browser_wasm_gate_bad_magic is static.bytes([1, 97, 115, 109, 1, 0, 0, 0], 16)
+browser_wasm_gate_run_name is static.utf8("run")
+browser_wasm_gate_choose_name is static.utf8("choose")
+browser_wasm_gate_spin_name is static.utf8("spin")
+browser_wasm_gate_marker is static.utf8("SURA_BROWSER_WASM_OK\r\n")
+
+browser_wasm_gate_map_size: usize is 65536
+browser_wasm_gate_map_key: u64 is 0
+browser_wasm_gate_descriptor_size: usize is 0
+browser_wasm_gate_descriptor_version: u32 is 0
+
+func browser_wasm_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func browser_wasm_gate_configure_module() do
+  module: ptr[BrowserWasmModule] is browser_wasm_gate_module
+  module.reader is browser_wasm_gate_reader
+  module.types is browser_wasm_gate_types
+  module.type_capacity is 8
+  module.param_types is browser_wasm_gate_param_types
+  module.param_type_capacity is 32
+  module.functions is browser_wasm_gate_functions
+  module.function_capacity is 8
+  module.local_types is browser_wasm_gate_local_types
+  module.local_type_capacity is 32
+  module.exports is browser_wasm_gate_exports
+  module.export_capacity is 8
+  module.validation is browser_wasm_gate_validation
+  module.validation_capacity is 32
+  module.error is browser_wasm_error_none()
+  return true
+end
+
+func browser_wasm_gate_configure_vm(instruction_limit: u64) do
+  vm: ptr[BrowserWasmVm] is browser_wasm_gate_vm
+  vm.reader is browser_wasm_gate_vm_reader
+  vm.stack is browser_wasm_gate_stack
+  vm.stack_capacity is 64
+  vm.locals is browser_wasm_gate_locals
+  vm.local_capacity is 64
+  vm.controls is browser_wasm_gate_controls
+  vm.control_capacity is 32
+  vm.instruction_limit is instruction_limit
+  vm.call_depth_limit is 8
+  return browser_wasm_vm_init(browser_wasm_gate_module, vm)
+end
+
+func browser_wasm_gate_expect_parse_error(input: ptr, input_bytes: u64, expected: u64) do
+  module: ptr[BrowserWasmModule] is browser_wasm_gate_module
+  if browser_wasm_module_parse(input, input_bytes, module) then return false
+  return module.error == expected
+end
+
+func browser_wasm_gate_run() do
+  module: ptr[BrowserWasmModule] is browser_wasm_gate_module
+  vm: ptr[BrowserWasmVm] is browser_wasm_gate_vm
+  result: ptr[BrowserWasmValue] is browser_wasm_gate_result
+  first: ptr[BrowserWasmValue] is browser_wasm_value_at(browser_wasm_gate_arguments, 0)
+  second: ptr[BrowserWasmValue] is browser_wasm_value_at(browser_wasm_gate_arguments, 1)
+  third: ptr[BrowserWasmValue] is browser_wasm_value_at(browser_wasm_gate_arguments, 2)
+
+  if not browser_wasm_module_parse(browser_wasm_gate_arithmetic, 44, module) then return 1
+  if module.type_count != 1 or module.function_count != 1 or module.export_count != 1 then return 2
+  if not browser_wasm_gate_configure_vm(128) then return 3
+  if not browser_wasm_value_set(first, browser_wasm_type_i32(), 7) then return 4
+  if not browser_wasm_value_set(second, browser_wasm_type_i32(), 5) then return 5
+  if not browser_wasm_invoke(vm, browser_wasm_gate_run_name, 3, browser_wasm_gate_arguments, 2, result) then return 6
+  if result.kind != browser_wasm_type_i32() or result.number != 36 then return 7
+
+  if not browser_wasm_module_parse(browser_wasm_gate_choose, 68, module) then return 8
+  if module.type_count != 2 or module.function_count != 2 or module.export_count != 1 then return 9
+  if not browser_wasm_gate_configure_vm(256) then return 10
+  if not browser_wasm_value_set(first, browser_wasm_type_i32(), 5) then return 11
+  if not browser_wasm_value_set(second, browser_wasm_type_i32(), 9) then return 12
+  if not browser_wasm_value_set(third, browser_wasm_type_i32(), 1) then return 13
+  if not browser_wasm_invoke(vm, browser_wasm_gate_choose_name, 6, browser_wasm_gate_arguments, 3, result) then return 14
+  if result.kind != browser_wasm_type_i32() or result.number != 10 then return 15
+  if not browser_wasm_value_set(third, browser_wasm_type_i32(), 0) then return 16
+  if not browser_wasm_invoke(vm, browser_wasm_gate_choose_name, 6, browser_wasm_gate_arguments, 3, result) then return 17
+  if result.kind != browser_wasm_type_i32() or result.number != 18 then return 18
+
+  if not browser_wasm_module_parse(browser_wasm_gate_spin, 39, module) then return 19
+  if not browser_wasm_gate_configure_vm(16) then return 20
+  if browser_wasm_invoke(vm, browser_wasm_gate_spin_name, 4, browser_wasm_gate_arguments, 0, result) then return 21
+  if vm.error != browser_wasm_error_instruction_limit() or vm.instruction_count != 16 then return 22
+
+  if not browser_wasm_gate_expect_parse_error(browser_wasm_gate_bad_magic, 8, browser_wasm_error_magic()) then return 23
+  if not browser_wasm_gate_expect_parse_error(browser_wasm_gate_unsupported, 13, browser_wasm_error_unsupported()) then return 24
+  if not browser_wasm_gate_expect_parse_error(browser_wasm_gate_malformed_leb, 14, browser_wasm_error_leb128()) then return 25
+  if not browser_wasm_gate_expect_parse_error(browser_wasm_gate_bad_branch, 26, browser_wasm_error_control()) then return 26
+  module.type_capacity is 0
+  if not browser_wasm_gate_expect_parse_error(browser_wasm_gate_arithmetic, 44, browser_wasm_error_capacity()) then return 27
+  module.type_capacity is 8
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global browser_wasm_gate_map_size, browser_wasm_gate_map_key
+  global browser_wasm_gate_descriptor_size, browser_wasm_gate_descriptor_version
+  uefi.write("Sura browser WebAssembly test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  if not browser_wasm_gate_configure_module() then return 2
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    browser_wasm_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(browser_wasm_gate_map_size), browser_wasm_gate_memory_map, addr_of(browser_wasm_gate_map_key), addr_of(browser_wasm_gate_descriptor_size), addr_of(browser_wasm_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(browser_wasm_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then browser_wasm_gate_exit(3)
+  status: u64 is browser_wasm_gate_run()
+  if status != 0 then browser_wasm_gate_exit(32 + status)
+  if not serial_write_buffer(1016, browser_wasm_gate_marker, 22, 1000000) then browser_wasm_gate_exit(60)
+  browser_wasm_gate_exit(16)
+  return 0
+end

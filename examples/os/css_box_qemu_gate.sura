@@ -1,0 +1,161 @@
+# Executed CSS box geometry and basic block/inline flow gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/css_box.sura"
+
+css_box_gate_memory_map is static.zero(65536, 4096)
+css_box_gate_nodes is static.zero(1280, 16)
+css_box_gate_attributes is static.zero(512, 16)
+css_box_gate_rules is static.zero(384, 16)
+css_box_gate_rule_styles is static.zero(2304, 16)
+css_box_gate_computed is static.zero(4608, 16)
+css_box_gate_boxes is static.zero(2304, 16)
+css_box_gate_scratch is static.zero(640, 16)
+css_box_gate_document is static.struct(HtmlDomDocument)
+css_box_gate_stylesheet is static.struct(CssStylesheet)
+css_box_gate_html is static.utf8("<html><body class=\"page\"><div id=\"hero\" style=\"margin-left:9px;color:#ff6600;box-sizing:border-box\">Box</div><p>Hidden</p></body></html>")
+css_box_gate_wrap_html is static.utf8("<div style=\"width:40px;font-size:10px;line-height:12px\">ABCDEF<span>GHIJ</span>KL</div>")
+css_box_gate_flex_html is static.utf8("<div><span>A</span><span>B</span></div>")
+css_box_gate_dimension_html is static.utf8("<div><span>A</span></div>")
+css_box_gate_position_html is static.utf8("<div><span>A</span><p>B</p></div>")
+css_box_gate_source is static.utf8("body { color:#123456; margin:8px 16px; } .page { background-color:#abc; padding:4px; } #hero { width:200px; height:40px; border-width:1px 2px 3px 4px; } div { width:100px; display:block; } p { display:none; }")
+css_box_gate_flex_source is static.utf8("div{display:flex;width:100px;height:30px;justify-content:space-between;align-items:center;gap:4px}span{display:block;width:30px;height:10px}")
+css_box_gate_grid_source is static.utf8("div{display:grid;width:100px;grid-template-columns:repeat(2,1fr);gap:6px 10px}span{display:block;height:10px}")
+css_box_gate_dimension_source is static.utf8("div{display:block;width:100%;min-width:170px;max-width:240px;min-height:50vh;margin:0 auto}span{display:block;width:calc(100% - 12px);height:10px}")
+css_box_gate_position_source is static.utf8("div{position:relative;width:200px;height:100px}span{position:absolute;width:30px;height:10px;top:12px;right:16px}p{display:block;width:20px;height:10px}")
+css_box_gate_marker is static.utf8("SURA_CSS_BOX_OK\r\n")
+
+css_box_gate_map_size: usize is 65536
+css_box_gate_map_key: u64 is 0
+css_box_gate_descriptor_size: usize is 0
+css_box_gate_descriptor_version: u32 is 0
+
+func css_box_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func css_box_gate_box(index: u64) do
+  return ptr.add(css_box_gate_boxes, index * 144)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global css_box_gate_map_size, css_box_gate_map_key
+  global css_box_gate_descriptor_size, css_box_gate_descriptor_version
+  uefi.write("Sura CSS box test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  document: ptr[HtmlDomDocument] is css_box_gate_document
+  document.nodes is css_box_gate_nodes
+  document.node_capacity is 16
+  document.attributes is css_box_gate_attributes
+  document.attribute_capacity is 16
+  if not html_dom_parse(css_box_gate_html, 136, document) then css_box_gate_exit(1)
+
+  stylesheet: ptr[CssStylesheet] is css_box_gate_stylesheet
+  stylesheet.rules is css_box_gate_rules
+  stylesheet.styles is css_box_gate_rule_styles
+  stylesheet.capacity is 8
+  if not css_stylesheet_parse(css_box_gate_source, 208, stylesheet) then css_box_gate_exit(2)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(3)
+
+  count: u64 is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 320, 200)
+  if count != 5 then css_box_gate_exit(4)
+  root: ptr[CssBox] is css_box_gate_box(0)
+  html: ptr[CssBox] is css_box_gate_box(1)
+  body: ptr[CssBox] is css_box_gate_box(2)
+  hero: ptr[CssBox] is css_box_gate_box(3)
+  text: ptr[CssBox] is css_box_gate_box(4)
+  if root.node_index != 0 or root.first_child != 1 or root.width != 320 or root.height != 64 then css_box_gate_exit(5)
+  if html.parent_box != 0 or html.first_child != 2 or html.width != 320 or html.height != 64 then css_box_gate_exit(6)
+  if body.x != 16 or body.y != 8 or body.width != 288 or body.height != 48 or body.outer_height != 64 then css_box_gate_exit(7)
+  if body.content_x != 20 or body.content_y != 12 or body.content_width != 280 or body.content_height != 40 then css_box_gate_exit(8)
+  if hero.parent_box != 2 or hero.x != 29 or hero.y != 12 or hero.width != 200 or hero.height != 40 then css_box_gate_exit(9)
+  if hero.content_x != 33 or hero.content_y != 13 or hero.content_width != 194 or hero.content_height != 36 then css_box_gate_exit(10)
+  if hero.outer_width != 209 or hero.outer_height != 40 or hero.first_child != 4 then css_box_gate_exit(11)
+  if text.flags != 1 or text.display != 2 or text.x != 33 or text.y != 13 or text.width != 30 or text.height != 20 then css_box_gate_exit(12)
+  if text.next_sibling != u64("0xffffffffffffffff") or hero.next_sibling != u64("0xffffffffffffffff") then css_box_gate_exit(13)
+  if css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 4, 320, 200) != 0 then css_box_gate_exit(14)
+
+  if not html_dom_parse(css_box_gate_wrap_html, 87, document) then css_box_gate_exit(19)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(20)
+  count is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 100, 100)
+  if count != 6 then css_box_gate_exit(21)
+  root is css_box_gate_box(0)
+  hero is css_box_gate_box(1)
+  text is css_box_gate_box(2)
+  span: ptr[CssBox] is css_box_gate_box(3)
+  span_text: ptr[CssBox] is css_box_gate_box(4)
+  final_text: ptr[CssBox] is css_box_gate_box(5)
+  if root.width != 100 or root.height != 24 or hero.width != 40 or hero.height != 24 then css_box_gate_exit(22)
+  if text.x != 0 or text.y != 0 or text.width != 36 or text.height != 12 then css_box_gate_exit(23)
+  if span.x != 0 or span.y != 12 or span.width != 24 or span.height != 12 then css_box_gate_exit(24)
+  if span_text.x != 0 or span_text.y != 12 or span_text.width != 24 then css_box_gate_exit(25)
+  if final_text.x != 24 or final_text.y != 12 or final_text.width != 12 then css_box_gate_exit(26)
+
+  if not html_dom_parse(css_box_gate_flex_html, 39, document) then css_box_gate_exit(27)
+  if not css_stylesheet_parse(css_box_gate_flex_source, 140, stylesheet) then css_box_gate_exit(28)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(29)
+  count is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 100, 100)
+  if count != 6 then css_box_gate_exit(30)
+  root is css_box_gate_box(0)
+  hero is css_box_gate_box(1)
+  span is css_box_gate_box(2)
+  second_span: ptr[CssBox] is css_box_gate_box(4)
+  if hero.display != 4 or root.height != 30 or hero.width != 100 or hero.height != 30 then css_box_gate_exit(31)
+  if span.x != 0 or span.y != 10 or span.width != 30 or second_span.x != 70 or second_span.y != 10 or second_span.width != 30 then css_box_gate_exit(32)
+
+  if not css_stylesheet_parse(css_box_gate_grid_source, 109, stylesheet) then css_box_gate_exit(33)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(34)
+  count is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 100, 100)
+  if count != 6 then css_box_gate_exit(35)
+  root is css_box_gate_box(0)
+  hero is css_box_gate_box(1)
+  span is css_box_gate_box(2)
+  second_span is css_box_gate_box(4)
+  if hero.display != 5 or hero.width != 100 or hero.height != 10 or root.height != 10 then css_box_gate_exit(36)
+  if span.x != 0 or span.y != 0 or span.width != 45 or second_span.x != 55 or second_span.y != 0 or second_span.width != 45 then css_box_gate_exit(37)
+
+  if not html_dom_parse(css_box_gate_dimension_html, 25, document) then css_box_gate_exit(38)
+  if not css_stylesheet_parse(css_box_gate_dimension_source, 146, stylesheet) then css_box_gate_exit(39)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(40)
+  count is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 320, 200)
+  if count != 4 then css_box_gate_exit(41)
+  root is css_box_gate_box(0)
+  hero is css_box_gate_box(1)
+  span is css_box_gate_box(2)
+  if root.width != 320 or root.height != 100 then css_box_gate_exit(42)
+  if hero.x != 40 or hero.width != 240 or hero.height != 100 or hero.content_width != 240 or hero.content_height != 100 or hero.outer_width != 320 then css_box_gate_exit(43)
+  if span.x != 40 or span.width != 228 or span.height != 10 then css_box_gate_exit(44)
+
+  if not html_dom_parse(css_box_gate_position_html, 33, document) then css_box_gate_exit(45)
+  if not css_stylesheet_parse(css_box_gate_position_source, 152, stylesheet) then css_box_gate_exit(46)
+  if not css_compute_document(document, stylesheet, css_box_gate_computed, 16, css_box_gate_scratch, 640) then css_box_gate_exit(47)
+  count is css_box_layout(document, css_box_gate_computed, css_box_gate_boxes, 16, 320, 200)
+  if count != 6 then css_box_gate_exit(48)
+  root is css_box_gate_box(0)
+  hero is css_box_gate_box(1)
+  span is css_box_gate_box(2)
+  paragraph: ptr[CssBox] is css_box_gate_box(4)
+  if root.width != 320 or root.height != 100 or hero.width != 200 or hero.height != 100 then css_box_gate_exit(49)
+  if span.x != 154 or span.y != 12 or span.width != 30 or span.height != 10 then css_box_gate_exit(50)
+  if paragraph.x != 0 or paragraph.y != 0 or paragraph.width != 20 or paragraph.height != 10 then css_box_gate_exit(51)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    css_box_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(css_box_gate_map_size), css_box_gate_memory_map, addr_of(css_box_gate_map_key), addr_of(css_box_gate_descriptor_size), addr_of(css_box_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(css_box_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then css_box_gate_exit(15)
+  if not serial_write_buffer(1016, css_box_gate_marker, 17, 1000000) then css_box_gate_exit(16)
+  css_box_gate_exit(16)
+  return 0
+end

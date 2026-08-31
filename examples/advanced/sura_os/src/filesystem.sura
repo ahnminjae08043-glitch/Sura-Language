@@ -50,6 +50,41 @@ func fs_mark_error(fs) do
   fs.errors += 1
 end
 
+func fs_free_bytes(fs) do
+  free is fs.capacity - fs.used
+  if free < 0 then return 0
+  return free
+end
+
+func fs_write_delta(fs, path, content, cwd) do
+  normalized is osutil_normalize_path(path, cwd)
+  node is fs_get(fs, normalized, "/")
+  old_size is 0
+  if node != nil and node.kind == SURAOS_NODE_FILE then old_size is node.size
+  delta is ("" + content).len() - old_size
+  if delta < 0 then return 0
+  return delta
+end
+
+func fs_can_store(fs, bytes) do
+  required is floor(bytes)
+  if required < 0 then required is 0
+  return required <= fs_free_bytes(fs)
+end
+
+func fs_pressure(fs) do
+  percent is osutil_percent(fs.used, fs.capacity)
+  state is "normal"
+  if fs_free_bytes(fs) == 0 then
+    state is "full"
+  elif percent >= 95 then
+    state is "critical"
+  elif percent >= 85 then
+    state is "warning"
+  end
+  return {state: state, percent: percent, free: fs_free_bytes(fs), used: fs.used, capacity: fs.capacity}
+end
+
 func fs_add_child(parent, name) do
   children is parent.children
   if not children.contains(name) then children.push(name)
@@ -130,17 +165,30 @@ end
 func fs_write_file(fs, path, content, user, cwd, tick) do
   normalized is osutil_normalize_path(path, cwd)
   node is fs_get(fs, normalized, "/")
+  text is "" + content
+  if text.len() > SURAOS_MAX_FILE_BYTES then return osutil_fail(SURAOS_ERR_LIMIT, "file exceeds maximum size")
+  old_size is 0
+  if node != nil then
+    if node.kind == SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_IS_DIR, "path is a directory")
+    if node.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_INVALID, "node is not a regular file")
+    if not fs_can(node, user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not writable")
+    old_size is node.size
+  else
+    parent is fs_get(fs, osutil_parent_path(normalized), "/")
+    if parent == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "parent directory not found")
+    if parent.kind != SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_NOT_DIR, "parent is not a directory")
+    if not fs_can(parent, user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "parent is not writable")
+  end
+  projected is fs.used - old_size + text.len()
+  if projected > fs.capacity then
+    fs_mark_error(fs)
+    return osutil_fail(SURAOS_ERR_NO_SPACE, "virtual disk full: need " + (projected - fs.capacity) + " more byte(s)")
+  end
   if node == nil then
     created is fs_create_node(fs, normalized, SURAOS_NODE_FILE, user, SURAOS_PERM_DEFAULT_FILE, tick)
     if not created.ok then return created
     node is created.value
   end
-  if node.kind == SURAOS_NODE_DIR then return osutil_fail(SURAOS_ERR_IS_DIR, "path is a directory")
-  if node.kind != SURAOS_NODE_FILE then return osutil_fail(SURAOS_ERR_INVALID, "node is not a regular file")
-  if not fs_can(node, user, "write") then return osutil_fail(SURAOS_ERR_PERMISSION, "file is not writable")
-  text is "" + content
-  if text.len() > SURAOS_MAX_FILE_BYTES then return osutil_fail(SURAOS_ERR_LIMIT, "file exceeds maximum size")
-  old_size is node.size
   node.content is text
   node.size is text.len()
   node.modified_tick is tick
@@ -413,7 +461,8 @@ func fs_format_default(fs, tick) do
 end
 
 func fs_usage(fs) do
-  return {label: fs.label, capacity: fs.capacity, used: fs.used, free: fs.capacity - fs.used, utilization: osutil_percent(fs.used, fs.capacity), nodes: fs.nodes.keys().len(), reads: fs.reads, writes: fs.writes, creates: fs.creates, deletes: fs.deletes, opens: fs.opens, closes: fs.closes, errors: fs.errors, dirty: fs.dirty}
+  pressure is fs_pressure(fs)
+  return {label: fs.label, capacity: fs.capacity, used: fs.used, free: pressure.free, utilization: pressure.percent, pressure: pressure.state, nodes: fs.nodes.keys().len(), reads: fs.reads, writes: fs.writes, creates: fs.creates, deletes: fs.deletes, opens: fs.opens, closes: fs.closes, errors: fs.errors, dirty: fs.dirty}
 end
 
 func fs_validate(fs) do
@@ -436,6 +485,7 @@ func fs_validate(fs) do
     end
   end
   if calculated_used != fs.used then errors.push("filesystem used-byte counter mismatch")
+  if fs.used > fs.capacity then errors.push("filesystem exceeds capacity")
   return {ok: errors.len() == 0, errors: errors, calculated_used: calculated_used}
 end
 
@@ -470,12 +520,32 @@ end
 func fs_save_host(fs, host_path) do
   validation is fs_validate(fs)
   if not validation.ok then return osutil_fail(SURAOS_ERR_INVALID, "refusing to save invalid filesystem")
-  file_write_json(host_path, fs_export(fs))
+  temporary_path is host_path + ".tmp"
+  try
+    file_write_json(temporary_path, fs_export(fs))
+    verified is fs_import(file_read_json(temporary_path))
+    if not verified.ok then
+      file_delete(temporary_path)
+      return osutil_fail(SURAOS_ERR_IO, "temporary disk image verification failed")
+    end
+    file_move(temporary_path, host_path, true)
+  catch error
+    try
+      if file_exists(temporary_path) then file_delete(temporary_path)
+    catch cleanup_error
+      # Preserve the original save error; a later save may reuse the temp path.
+    end
+    return osutil_fail(SURAOS_ERR_IO, "disk image save failed: " + error)
+  end
   fs.dirty is false
   return osutil_ok(host_path)
 end
 
 func fs_load_host(host_path) do
   if not file_exists(host_path) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "disk image not found")
-  return fs_import(file_read_json(host_path))
+  try
+    return fs_import(file_read_json(host_path))
+  catch error
+    return osutil_fail(SURAOS_ERR_IO, "disk image load failed: " + error)
+  end
 end

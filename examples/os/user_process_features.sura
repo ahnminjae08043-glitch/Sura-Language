@@ -20,6 +20,10 @@ physical_bitmap is static.zero(16, 16)
 owned_pages is static.u64([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 8)
 process_mappings is static.struct(ProcessMapping, 16)
 process_stack is static.struct(ProcessStack)
+process_event_queue is static.struct(IpcQueue)
+process_event_messages is static.struct(IpcMessage, 8)
+process_event is static.struct(IpcMessage)
+received_event is static.struct(IpcMessage)
 kernel_stack is static.zero(16384, 16)
 idle_stack is static.zero(16384, 16)
 tss_state is static.zero(104, 16)
@@ -57,6 +61,7 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
 
     state: ptr[UserProcessScheduler] is scheduler
     scheduler_ready: bool is user_process_scheduler_init(state, config)
+    event_queue_ready: bool is ipc_queue_init(process_event_queue, process_event_messages, 8)
 
     creation: ptr[UserProcessCreate] is process_config
     creation.address_space is space
@@ -66,7 +71,18 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
     creation.user_stack_pointer is process_stack.initial_rsp
     creation.argument is 7
     creation.user_gs_base is 0
+    creation.event_queue is process_event_queue
     process_id: u64 is user_process_create(state, creation)
+
+    event: ptr[IpcMessage] is process_event
+    event.kind is 1
+    # Deliberately bogus identities: the trusted delivery path replaces them.
+    event.source is 99
+    event.target is 99
+    event.value0 is 42
+    event_posted: bool is user_process_post_event(state, 0, process_id, event)
+    event_received: bool is user_process_receive_event(state, process_id, received_event)
+    terminated: bool is user_process_terminate(state, process_id, 137)
 
     # Vector 32 is an example local-APIC timer. Vector 130 is the DPL-3 yield
     # gate. Vector 14 uses the hardware-error-code ABI.

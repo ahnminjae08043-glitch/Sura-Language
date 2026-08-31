@@ -1,0 +1,178 @@
+# Executed allocation-free browser JavaScript bytecode VM gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/browser_js.sura"
+
+browser_js_gate_memory_map is static.zero(65536, 4096)
+browser_js_gate_code is static.struct(BrowserJsInstruction, 32)
+browser_js_gate_error_code is static.struct(BrowserJsInstruction, 4)
+browser_js_gate_constants is static.struct(BrowserJsValue, 8)
+browser_js_gate_stack is static.struct(BrowserJsValue, 16)
+browser_js_gate_globals is static.struct(BrowserJsValue, 4)
+browser_js_gate_scratch is static.struct(BrowserJsValue)
+browser_js_gate_program is static.struct(BrowserJsProgram)
+browser_js_gate_vm is static.struct(BrowserJsVm)
+browser_js_gate_string is static.utf8("sura")
+browser_js_gate_marker is static.utf8("SURA_BROWSER_JS_VM_OK\r\n")
+browser_js_gate_host_bias is static.zero(8, 8)
+browser_js_gate_host_calls is static.zero(8, 8)
+
+browser_js_gate_map_size: usize is 65536
+browser_js_gate_map_key: u64 is 0
+browser_js_gate_descriptor_size: usize is 0
+browser_js_gate_descriptor_version: u32 is 0
+
+func browser_js_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func browser_js_gate_instruction(base: ptr, index: u64, opcode: u64, a: u64, b: u64) do
+  instruction: ptr[BrowserJsInstruction] is ptr.add(base, index * 24)
+  instruction.opcode is opcode
+  instruction.a is a
+  instruction.b is b
+  return true
+end
+
+func browser_js_gate_number(index: u64, number: i64) do
+  value: ptr[BrowserJsValue] is browser_js_value_at(browser_js_gate_constants, index)
+  return browser_js_value_number(value, number)
+end
+
+func browser_js_gate_host(context: ptr, host_id: u64, arguments: ptr, argument_count: u64, result: ptr[BrowserJsValue]) do
+  if context == 0 or arguments == 0 or result == 0 then return 1
+  if host_id != 7 or argument_count != 2 then return 2
+  left: ptr[BrowserJsValue] is browser_js_value_at(arguments, 0)
+  right: ptr[BrowserJsValue] is browser_js_value_at(arguments, 1)
+  if left.kind != browser_js_kind_number() or right.kind != browser_js_kind_number() then return 3
+  mem.write64(browser_js_gate_host_calls, mem.read64(browser_js_gate_host_calls) + 1)
+  if not browser_js_value_number(result, left.number + right.number + mem.read64(context)) then return 4
+  return 0
+end
+
+func browser_js_gate_expect_error(vm: ptr[BrowserJsVm], opcode: u64, a: u64, b: u64, expected: u64) do
+  program: ptr[BrowserJsProgram] is vm.program
+  if not browser_js_gate_instruction(browser_js_gate_error_code, 0, opcode, a, b) then return false
+  program.code is browser_js_gate_error_code
+  program.code_count is 1
+  vm.instruction_limit is 8
+  if not browser_js_vm_restart(vm) then return false
+  if browser_js_execute(vm) then return false
+  return vm.error == expected
+end
+
+func browser_js_gate_build_program() do
+  if not browser_js_gate_number(0, 7) then return false
+  if not browser_js_gate_number(1, 5) then return false
+  if not browser_js_gate_number(2, 30) then return false
+  if not browser_js_gate_number(3, 10) then return false
+  if not browser_js_gate_number(4, -1) then return false
+  value: ptr[BrowserJsValue] is browser_js_value_at(browser_js_gate_constants, 5)
+  if not browser_js_value_string(value, browser_js_gate_string, 4) then return false
+  if not browser_js_gate_number(6, 2) then return false
+
+  if not browser_js_gate_instruction(browser_js_gate_code, 0, browser_js_op_constant(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 1, browser_js_op_constant(), 1, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 2, browser_js_op_multiply(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 3, browser_js_op_set_global(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 4, browser_js_op_pop(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 5, browser_js_op_get_global(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 6, browser_js_op_constant(), 2, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 7, browser_js_op_greater(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 8, browser_js_op_jump_if_false(), 14, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 9, browser_js_op_get_global(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 10, browser_js_op_constant(), 3, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 11, browser_js_op_host_call(), 7, 2) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 12, browser_js_op_set_global(), 1, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 13, browser_js_op_jump(), 16, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 14, browser_js_op_constant(), 4, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 15, browser_js_op_set_global(), 1, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 16, browser_js_op_pop(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 17, browser_js_op_constant(), 5, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 18, browser_js_op_constant(), 5, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 19, browser_js_op_equal(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 20, browser_js_op_set_global(), 2, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 21, browser_js_op_pop(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 22, browser_js_op_get_global(), 1, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 23, browser_js_op_constant(), 6, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 24, browser_js_op_divide(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 25, browser_js_op_constant(), 2, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 26, browser_js_op_less(), 0, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 27, browser_js_op_set_global(), 3, 0) then return false
+  if not browser_js_gate_instruction(browser_js_gate_code, 28, browser_js_op_halt(), 0, 0) then return false
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global browser_js_gate_map_size, browser_js_gate_map_key
+  global browser_js_gate_descriptor_size, browser_js_gate_descriptor_version
+  uefi.write("Sura browser JavaScript VM test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  if not browser_js_gate_build_program() then browser_js_gate_exit(1)
+
+  program: ptr[BrowserJsProgram] is browser_js_gate_program
+  program.code is browser_js_gate_code
+  program.code_count is 29
+  program.constants is browser_js_gate_constants
+  program.constant_count is 7
+  program.global_count is 4
+
+  vm: ptr[BrowserJsVm] is browser_js_gate_vm
+  vm.stack is browser_js_gate_stack
+  vm.stack_capacity is 16
+  vm.globals is browser_js_gate_globals
+  vm.global_capacity is 4
+  vm.scratch is browser_js_gate_scratch
+  vm.instruction_limit is 128
+  vm.host_context is browser_js_gate_host_bias
+  vm.host_callback is addr_of(browser_js_gate_host)
+  mem.write64(browser_js_gate_host_bias, 5)
+  mem.write64(browser_js_gate_host_calls, 0)
+  if not browser_js_vm_init(program, vm) then browser_js_gate_exit(2)
+  if not browser_js_execute(vm) then browser_js_gate_exit(3)
+  if vm.error != browser_js_error_none() or vm.instruction_count != 27 or vm.stack_count != 1 then browser_js_gate_exit(4)
+  first: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, 0)
+  second: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, 1)
+  third: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, 2)
+  fourth: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, 3)
+  result: ptr[BrowserJsValue] is browser_js_result(vm)
+  if first.kind != browser_js_kind_number() or first.number != 35 then browser_js_gate_exit(5)
+  if second.kind != browser_js_kind_number() or second.number != 50 then browser_js_gate_exit(6)
+  if third.kind != browser_js_kind_boolean() or third.number != 1 then browser_js_gate_exit(7)
+  if fourth.kind != browser_js_kind_boolean() or fourth.number != 1 then browser_js_gate_exit(8)
+  if result == 0 or result.kind != browser_js_kind_boolean() or result.number != 1 then browser_js_gate_exit(9)
+  if mem.read64(browser_js_gate_host_calls) != 1 then browser_js_gate_exit(10)
+
+  if not browser_js_gate_expect_error(vm, 99, 0, 0, browser_js_error_opcode()) then browser_js_gate_exit(11)
+  if not browser_js_gate_expect_error(vm, browser_js_op_pop(), 0, 0, browser_js_error_stack_underflow()) then browser_js_gate_exit(12)
+  if not browser_js_gate_expect_error(vm, browser_js_op_constant(), 99, 0, browser_js_error_constant()) then browser_js_gate_exit(13)
+  if not browser_js_gate_expect_error(vm, browser_js_op_get_global(), 99, 0, browser_js_error_global()) then browser_js_gate_exit(14)
+  if not browser_js_gate_expect_error(vm, browser_js_op_jump(), 99, 0, browser_js_error_jump()) then browser_js_gate_exit(15)
+  if not browser_js_gate_expect_error(vm, browser_js_op_host_call(), 7, 1, browser_js_error_argument_count()) then browser_js_gate_exit(16)
+
+  if not browser_js_gate_instruction(browser_js_gate_error_code, 0, browser_js_op_jump(), 0, 0) then browser_js_gate_exit(17)
+  program.code is browser_js_gate_error_code
+  program.code_count is 1
+  vm.instruction_limit is 5
+  if not browser_js_vm_restart(vm) or browser_js_execute(vm) then browser_js_gate_exit(18)
+  if vm.error != browser_js_error_instruction_limit() or vm.instruction_count != 5 then browser_js_gate_exit(19)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    browser_js_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(browser_js_gate_map_size), browser_js_gate_memory_map, addr_of(browser_js_gate_map_key), addr_of(browser_js_gate_descriptor_size), addr_of(browser_js_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(browser_js_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then browser_js_gate_exit(20)
+  if not serial_write_buffer(1016, browser_js_gate_marker, 23, 1000000) then browser_js_gate_exit(21)
+  browser_js_gate_exit(16)
+  return 0
+end

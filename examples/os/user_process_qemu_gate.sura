@@ -1,0 +1,338 @@
+# Executed QEMU gate for the preemptive Ring-3 process scheduler.
+#
+# Process A reports once and then spins forever. A periodic local-APIC timer
+# must preempt it so process B can run in a different CR3, post an IPC event,
+# and deliberately fault on an unmapped address. The kernel must isolate that
+# fault, resume A, receive B's event, and remain alive long enough for a later
+# timer interrupt to emit every success marker.
+
+import "../../stdlib/freestanding/user_process.sura"
+import "../../stdlib/freestanding/timer.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+gate_processes is static.struct(UserProcess, 4)
+gate_scheduler is static.struct(UserProcessScheduler)
+gate_scheduler_config is static.struct(UserProcessSchedulerConfig)
+gate_create_config is static.struct(UserProcessCreate)
+
+gate_allocator is static.struct(PhysicalAllocator)
+gate_arena is static.zero(524288, 4096)
+gate_bitmap is static.zero(16, 16)
+
+gate_space_a is static.struct(ProcessAddressSpace)
+gate_space_b is static.struct(ProcessAddressSpace)
+gate_buffers_a is static.struct(ProcessSpaceBuffers)
+gate_buffers_b is static.struct(ProcessSpaceBuffers)
+gate_owned_a is static.zero(256, 16)
+gate_owned_b is static.zero(256, 16)
+gate_mappings_a is static.struct(ProcessMapping, 8)
+gate_mappings_b is static.struct(ProcessMapping, 8)
+gate_stack_a is static.struct(ProcessStack)
+gate_stack_b is static.struct(ProcessStack)
+
+gate_kernel_stack_a is static.zero(16384, 16)
+gate_kernel_stack_b is static.zero(16384, 16)
+gate_idle_stack is static.zero(16384, 16)
+gate_tss is static.zero(104, 16)
+gate_idt is static.zero(4096, 16)
+
+# null, kernel code, kernel data, user data, user code, two TSS slots.
+gate_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+# A: report through INT 0x80, then spin forever without yielding.
+gate_code_a is static.bytes([184, 1, 0, 0, 0, 205, 128, 243, 144, 235, 252, 144, 144, 144, 144, 144], 16)
+# B: post one event through INT 0x80, then read address zero and page fault.
+gate_code_b is static.bytes([184, 2, 0, 0, 0, 205, 128, 49, 192, 72, 139, 0, 235, 254, 144, 144], 16)
+
+gate_queue_a is static.struct(IpcQueue)
+gate_queue_b is static.struct(IpcQueue)
+gate_messages_a is static.struct(IpcMessage, 8)
+gate_messages_b is static.struct(IpcMessage, 8)
+gate_send_message is static.struct(IpcMessage)
+gate_received_message is static.struct(IpcMessage)
+
+gate_memory_map is static.zero(65536, 4096)
+gate_map_size: usize is 65536
+gate_map_key: u64 is 0
+gate_descriptor_size: usize is 0
+gate_descriptor_version: u32 is 0
+
+gate_kernel_root: ptr is 0
+gate_process_a_id: u64 is 0
+gate_process_b_id: u64 is 0
+gate_process_a_seen: u64 is 0
+gate_process_b_posted: u64 is 0
+gate_process_a_root: ptr is 0
+gate_process_b_root: ptr is 0
+
+gate_preempt_marker is static.utf8("SURA_USER_PROCESS_PREEMPT_OK")
+gate_ipc_marker is static.utf8("SURA_USER_PROCESS_IPC_OK")
+gate_fault_marker is static.utf8("SURA_USER_PROCESS_FAULT_ISOLATED")
+gate_cr3_marker is static.utf8("SURA_USER_PROCESS_CR3_ISOLATED")
+gate_failure_marker is static.utf8("SURA_USER_PROCESS_GATE_FAILED")
+
+func gate_write(text: ptr) do
+  return serial_write_cstr(1016, text, 96, 1000000)
+end
+
+func gate_newline() do
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  return true
+end
+
+func gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func gate_fail(code: u64) do
+  gate_write(gate_failure_marker)
+  serial_write_byte(1016, 32, 1000000)
+  if code >= 10 then serial_write_byte(1016, 48 + ((code / 10) % 10), 1000000)
+  serial_write_byte(1016, 48 + (code % 10), 1000000)
+  gate_newline()
+  gate_exit(code)
+end
+
+func gate_prepare_space(space: ptr[ProcessAddressSpace], buffers: ptr[ProcessSpaceBuffers], owned: ptr, mappings: ptr, stack: ptr[ProcessStack], code: ptr) do
+  buffers.owned_pages is owned
+  buffers.owned_capacity is 32
+  buffers.mappings is mappings
+  buffers.mapping_capacity is 8
+  if not process_space_init(space, gate_allocator, gate_kernel_root, buffers) then return false
+
+  # The UEFI image and kernel currently execute from the low identity map.
+  # Share that PML4 slot as supervisor-only. User code lives in PML4 slot 2.
+  kernel_entry: u64 is paging.read(gate_kernel_root, 0)
+  if not paging.present(kernel_entry) then return false
+  paging.write(space.root, 0, kernel_entry & ~4)
+
+  user_code: u64 is u64("0x0000010000400000")
+  user_stack_top: u64 is u64("0x0000010000800000")
+  if not process_space_map_page(space, user_code, true, false) then return false
+  if not process_copy_to_user(space, user_code, code, 16) then return false
+  if not process_space_protect_page(space, user_code, false, true) then return false
+  if not process_space_map_stack(space, user_stack_top, 2, 1, stack) then return false
+  return true
+end
+
+func gate_invalid_opcode(frame: ptr[UserInterruptFrame]) interrupt do
+  gate_fail(6)
+  return
+end
+
+func gate_general_protection(frame: ptr[UserInterruptFrame]) interrupt_error do
+  gate_fail(7)
+  return
+end
+
+func gate_syscall(frame: ptr[UserInterruptFrame]) interrupt do
+  global gate_process_a_seen, gate_process_b_posted, gate_process_a_root, gate_process_b_root
+  if frame == 0 or (frame.cs & 3) != 3 then
+    gate_fail(8)
+    return
+  end
+
+  state: ptr[UserProcessScheduler] is gate_scheduler
+  current_id: u64 is user_process_current_id(state)
+  if frame.rax == 1 and current_id == gate_process_a_id then
+    gate_process_a_root is paging.root()
+    if gate_process_a_root != gate_space_a.root then
+      gate_fail(9)
+      return
+    end
+    gate_process_a_seen is 1
+    frame.rax is 0
+    return
+  end
+
+  if frame.rax == 2 and current_id == gate_process_b_id then
+    gate_process_b_root is paging.root()
+    if gate_process_b_root != gate_space_b.root or gate_process_b_root == gate_process_a_root then
+      gate_fail(10)
+      return
+    end
+    message: ptr[IpcMessage] is gate_send_message
+    ipc_message_clear(message)
+    message.kind is 77
+    message.source is 999
+    message.target is 999
+    message.value0 is u64("0x53555241")
+    if not user_process_post_event(state, current_id, gate_process_a_id, message) then
+      gate_fail(11)
+      return
+    end
+    if message.source != gate_process_b_id or message.target != gate_process_a_id then
+      gate_fail(12)
+      return
+    end
+    gate_process_b_posted is 1
+    frame.rax is 0
+    return
+  end
+
+  gate_fail(13)
+  return
+end
+
+func gate_check_completion() do
+  if gate_process_a_seen == 0 or gate_process_b_posted == 0 then return false
+  state: ptr[UserProcessScheduler] is gate_scheduler
+  if user_process_state(state, gate_process_b_id) != 3 then return false
+  if user_process_fault_address(state, gate_process_b_id) != 0 then return false
+  if (user_process_fault_error(state, gate_process_b_id) & 4) == 0 then return false
+  if gate_process_a_root == 0 or gate_process_b_root == 0 or gate_process_a_root == gate_process_b_root then return false
+
+  a_index: u64 is user_process_find_index(state, gate_process_a_id)
+  b_index: u64 is user_process_find_index(state, gate_process_b_id)
+  if a_index >= state.capacity or b_index >= state.capacity then return false
+  process_a: ptr[UserProcess] is user_process_at(state, a_index)
+  process_b: ptr[UserProcess] is user_process_at(state, b_index)
+  if process_a.switches < 2 or process_b.switches < 1 then return false
+  if gate_queue_a.count != 1 then return false
+
+  received: ptr[IpcMessage] is gate_received_message
+  if not user_process_receive_event(state, gate_process_a_id, received) then gate_fail(14)
+  if received.kind != 77 or received.source != gate_process_b_id or received.target != gate_process_a_id then gate_fail(15)
+  if received.value0 != u64("0x53555241") or received.sequence != 1 then gate_fail(16)
+
+  gate_write(gate_preempt_marker)
+  gate_newline()
+  gate_write(gate_ipc_marker)
+  gate_newline()
+  gate_write(gate_fault_marker)
+  gate_newline()
+  gate_write(gate_cr3_marker)
+  gate_newline()
+  gate_exit(16)
+  return true
+end
+
+func gate_timer_interrupt(frame: ptr) interrupt do
+  state: ptr[UserProcessScheduler] is gate_scheduler
+  selected: bool is user_process_select(state, frame, true, false)
+  apic.eoi()
+  if gate_check_completion() then return
+  if state.ticks > 1000 then
+    gate_fail(17)
+    return
+  end
+  if not selected then return
+
+  kind: u64 is state.resume_kind
+  target: ptr is user_process_activate_selected(state)
+  if target == 0 then
+    gate_fail(18)
+    return
+  end
+  if kind == 1 then
+    resumed_user: bool is user.resume(target)
+  else
+    resumed_idle: bool is preempt.resume(target)
+  end
+  gate_fail(19)
+  return
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global gate_map_size, gate_map_key, gate_descriptor_size, gate_descriptor_version
+  global gate_kernel_root, gate_process_a_id, gate_process_b_id
+
+  uefi.write("Sura executed preemptive user-process QEMU gate")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    gate_exit(1)
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(gate_map_size), gate_memory_map, addr_of(gate_map_key), addr_of(gate_descriptor_size), addr_of(gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then
+    gate_fail(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  io.out8(33, 255)
+  io.out8(161, 255)
+  gate_kernel_root is paging.root()
+  if gate_kernel_root == 0 then gate_fail(3)
+
+  cpu.tss_set_rsp(gate_tss, 0, ptr.add(gate_idle_stack, 16384))
+  cpu.tss_set_iomap(gate_tss, 104)
+  cpu.gdt_set_tss(gate_gdt, 5, gate_tss, 103)
+  cpu.load_gdt(gate_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  cpu.idt_set_gate(gate_idt, 6, addr_of(gate_invalid_opcode), 8, 0, 142)
+  cpu.idt_set_gate(gate_idt, 13, addr_of(gate_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(gate_idt, 14, addr_of(user_process_page_fault_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(gate_idt, 48, addr_of(gate_timer_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(gate_idt, 128, addr_of(gate_syscall), 8, 0, 238)
+  cpu.idt_set_gate(gate_idt, 130, addr_of(user_process_yield_interrupt), 8, 0, 238)
+  cpu.load_idt(gate_idt, 4096)
+
+  if not process_enable_nx() then gate_fail(4)
+  if not pmem_reset(gate_allocator, gate_bitmap, 16, gate_arena, 128) then gate_fail(20)
+  if not pmem_release_range(gate_allocator, gate_arena, 128) then gate_fail(21)
+  if not gate_prepare_space(gate_space_a, gate_buffers_a, gate_owned_a, gate_mappings_a, gate_stack_a, gate_code_a) then gate_fail(22)
+  if not gate_prepare_space(gate_space_b, gate_buffers_b, gate_owned_b, gate_mappings_b, gate_stack_b, gate_code_b) then gate_fail(23)
+  if gate_space_a.root == gate_space_b.root then gate_fail(24)
+
+  if not ipc_queue_init(gate_queue_a, gate_messages_a, 8) then gate_fail(25)
+  if not ipc_queue_init(gate_queue_b, gate_messages_b, 8) then gate_fail(26)
+
+  scheduler_config: ptr[UserProcessSchedulerConfig] is gate_scheduler_config
+  scheduler_config.processes is gate_processes
+  scheduler_config.capacity is 4
+  scheduler_config.tss is gate_tss
+  scheduler_config.kernel_root is gate_kernel_root
+  scheduler_config.kernel_gs_base is 0
+  scheduler_config.idle_stack_base is gate_idle_stack
+  scheduler_config.idle_stack_size is 16384
+  if not user_process_scheduler_init(gate_scheduler, scheduler_config) then gate_fail(27)
+
+  create: ptr[UserProcessCreate] is gate_create_config
+  create.address_space is gate_space_a
+  create.kernel_stack_base is gate_kernel_stack_a
+  create.kernel_stack_size is 16384
+  create.entry is u64("0x0000010000400000")
+  create.user_stack_pointer is gate_stack_a.initial_rsp
+  create.argument is 0
+  create.user_gs_base is 0
+  create.event_queue is gate_queue_a
+  gate_process_a_id is user_process_create(gate_scheduler, create)
+  if gate_process_a_id == 0 then gate_fail(28)
+
+  create.address_space is gate_space_b
+  create.kernel_stack_base is gate_kernel_stack_b
+  create.user_stack_pointer is gate_stack_b.initial_rsp
+  create.event_queue is gate_queue_b
+  gate_process_b_id is user_process_create(gate_scheduler, create)
+  if gate_process_b_id == 0 or gate_process_b_id == gate_process_a_id then gate_fail(29)
+
+  if apic.mode() == 0 then gate_fail(30)
+  apic.write(240, 511)
+  sample: u64 is apic_timer_calibrate_pit(11932, 16, 10000000)
+  timer_count: u64 is apic_timer_count_for_hz(sample, 11932, 100)
+  if timer_count == 0 then timer_count is 1000000
+  if not apic_timer_configure(48, timer_count, 16, true) then gate_fail(31)
+
+  # Enter the scheduler from a real ring-0 interrupt frame. It resumes process
+  # A in CPL 3, and the APIC timer must provide every later context switch.
+  started: bool is interrupt.invoke(130)
+  gate_fail(32)
+  return 32
+end

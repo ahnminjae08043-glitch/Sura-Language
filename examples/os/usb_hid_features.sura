@@ -1,0 +1,54 @@
+# Deterministic USB HID report-to-event conversion checks.
+
+import "../../stdlib/freestanding/usb_hid.sura"
+
+usb_hid_down_keys is static.zero(65, 8)
+usb_hid_key_decoder is static.struct(KeyEventDecoder)
+usb_hid_key_event is static.struct(KeyEvent)
+usb_hid_previous is static.bytes([0, 0, 0, 0, 0, 0, 0, 0], 1)
+usb_hid_current is static.bytes([2, 0, 4, 0, 0, 0, 0, 0], 1)
+usb_hid_cursor is static.zero(8, 8)
+usb_hid_mouse_decoder is static.struct(PointerEventDecoder)
+usb_hid_pointer_event is static.struct(PointerEvent)
+usb_hid_mouse_report is static.bytes([1, 5, 253, 1], 1)
+usb_hid_mouse_release is static.bytes([0, 0, 0, 0], 1)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura USB HID feature test")
+  uefi.newline()
+  decoder: ptr[KeyEventDecoder] is usb_hid_key_decoder
+  key_event: ptr[KeyEvent] is usb_hid_key_event
+  cursor: ptr is usb_hid_cursor
+  if not key_event_decoder_init(decoder, usb_hid_down_keys, 65, key_event_key_hangul()) then return 1
+
+  mem.write64(cursor, 0)
+  if not usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 2
+  if key_event.physical_key != 42 or key_event.pressed != 1 then return 3
+  if not usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 4
+  if key_event.physical_key != 30 or key_event.unicode != 65 or key_event.pressed != 1 then return 5
+  if usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 6
+
+  if not usb_hid_keyboard_report_copy(usb_hid_previous, usb_hid_current, 8) then return 7
+  index: u64 is 0
+  while index < 8 do
+    mem.write8(ptr.add(usb_hid_current, index), 0)
+    index += 1
+  end
+  mem.write64(cursor, 0)
+  if not usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 8
+  if key_event.physical_key != 42 or key_event.released != 1 then return 9
+  if not usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 10
+  if key_event.physical_key != 30 or key_event.released != 1 then return 11
+  if usb_hid_keyboard_next_event(decoder, usb_hid_previous, usb_hid_current, 8, cursor, key_event) then return 12
+
+  pointer_decoder: ptr[PointerEventDecoder] is usb_hid_mouse_decoder
+  pointer_event: ptr[PointerEvent] is usb_hid_pointer_event
+  if not pointer_event_decoder_init(pointer_decoder, 100, 80) then return 13
+  if not usb_hid_mouse_feed_report(pointer_decoder, usb_hid_mouse_report, 4, pointer_event) then return 14
+  if pointer_event.x != 55 or pointer_event.y != 37 then return 15
+  if pointer_event.delta_x != 5 or pointer_event.delta_y != -3 then return 16
+  if pointer_event.wheel != 1 or pointer_event.buttons != 1 or pointer_event.pressed != 1 then return 17
+  if not usb_hid_mouse_feed_report(pointer_decoder, usb_hid_mouse_release, 4, pointer_event) then return 18
+  if pointer_event.released != 1 or pointer_event.moved != 0 then return 19
+  return 0
+end

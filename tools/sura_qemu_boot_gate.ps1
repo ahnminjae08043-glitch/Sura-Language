@@ -4,6 +4,7 @@ param(
     [string]$Qemu = "",
     [string]$Firmware = "",
     [string]$DataDisk = "",
+    [switch]$PersistDataDisk,
     [switch]$EnableNetwork,
     [int]$TimeoutSeconds = 30,
     [string]$ExpectedEfiText = "Sura QEMU boot gate",
@@ -13,6 +14,18 @@ param(
     [int]$SerialInputDelayMilliseconds = 5000,
     [int]$SerialInputIntervalMilliseconds = 100,
     [string[]]$AdditionalExpectedSerialMarkers = @(),
+    [string[]]$AdditionalQemuArguments = @(),
+    [ValidateRange(0, 1024)]
+    [int]$TcgTranslationCacheMiB = 0,
+    [string]$QmpSendKey = "",
+    [string]$QmpInputDevice = "",
+    [int]$QmpInputDelayMilliseconds = 2000,
+    [switch]$QmpKeyDownOnly,
+    [int]$QmpMouseDeltaX = 0,
+    [int]$QmpMouseDeltaY = 0,
+    [string]$QmpScreendumpPath = "",
+    [switch]$DisablePs2,
+    [switch]$HeadlessVnc,
     [switch]$CompileOnly
 )
 
@@ -90,7 +103,83 @@ function ConvertTo-NativeArgument {
     return $builder.ToString()
 }
 
+function Get-FreeTcpPort {
+    $listener = [System.Net.Sockets.TcpListener]::new(
+        [System.Net.IPAddress]::Loopback,
+        0
+    )
+    try {
+        $listener.Start()
+        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    }
+    finally {
+        $listener.Stop()
+    }
+}
+
+function Get-FreeVncDisplay {
+    foreach ($display in 40..99) {
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback,
+            5900 + $display
+        )
+        try {
+            $listener.Start()
+            return $display
+        }
+        catch {
+        }
+        finally {
+            $listener.Stop()
+        }
+    }
+    throw "No free local VNC display was found"
+}
+
+function Connect-Qmp {
+    param([int]$Port, [datetime]$Deadline)
+    while ([datetime]::UtcNow -lt $Deadline) {
+        $client = [System.Net.Sockets.TcpClient]::new()
+        try {
+            $client.Connect("127.0.0.1", $Port)
+            return $client
+        }
+        catch {
+            $client.Dispose()
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    throw "Could not connect to QEMU QMP on port $Port"
+}
+
+function Invoke-Qmp {
+    param(
+        [System.IO.StreamReader]$Reader,
+        [System.IO.StreamWriter]$Writer,
+        [hashtable]$Command
+    )
+    $Writer.WriteLine(($Command | ConvertTo-Json -Compress -Depth 8))
+    $Writer.Flush()
+    while ($true) {
+        $line = $Reader.ReadLine()
+        if ($null -eq $line) { throw "QEMU QMP connection closed" }
+        $response = $line | ConvertFrom-Json
+        if ($null -ne $response.error) {
+            throw "QEMU QMP error: $($response.error | ConvertTo-Json -Compress)"
+        }
+        if ($response.PSObject.Properties.Name -contains "return") {
+            return $response.return
+        }
+    }
+}
+
 try {
+    if ($PersistDataDisk -and [string]::IsNullOrWhiteSpace($DataDisk)) {
+        throw "PersistDataDisk requires DataDisk"
+    }
+    if ($PersistDataDisk -and $CompileOnly) {
+        throw "PersistDataDisk cannot be used with CompileOnly"
+    }
     if ($TimeoutSeconds -lt 1 -or $TimeoutSeconds -gt 300) {
         throw "TimeoutSeconds must be 1..300"
     }
@@ -105,6 +194,49 @@ try {
     if ([string]::IsNullOrWhiteSpace($ExpectedEfiText) -or
         [string]::IsNullOrWhiteSpace($ExpectedMarker)) {
         throw "ExpectedEfiText and ExpectedMarker must not be empty"
+    }
+    if ($AdditionalQemuArguments.Count -gt 128) {
+        throw "AdditionalQemuArguments supports at most 128 values"
+    }
+    if ($QmpInputDelayMilliseconds -lt 0 -or
+        $QmpInputDelayMilliseconds -gt $TimeoutSeconds * 1000) {
+        throw "QmpInputDelayMilliseconds must be 0..TimeoutSeconds*1000"
+    }
+    if ($QmpMouseDeltaX -lt -32768 -or $QmpMouseDeltaX -gt 32767 -or
+        $QmpMouseDeltaY -lt -32768 -or $QmpMouseDeltaY -gt 32767) {
+        throw "QmpMouseDeltaX and QmpMouseDeltaY must be -32768..32767"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($QmpScreendumpPath)) {
+        if ($QmpScreendumpPath.IndexOf([char]0) -ge 0 -or
+            $QmpScreendumpPath.Contains("`r") -or
+            $QmpScreendumpPath.Contains("`n")) {
+            throw "QmpScreendumpPath contains an invalid value"
+        }
+        $screendumpParent = Split-Path -Parent ([System.IO.Path]::GetFullPath($QmpScreendumpPath))
+        if ([string]::IsNullOrWhiteSpace($screendumpParent) -or
+            -not (Test-Path -LiteralPath $screendumpParent -PathType Container)) {
+            throw "QmpScreendumpPath parent directory was not found"
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($QmpSendKey) -and
+        ($QmpSendKey.IndexOf([char]0) -ge 0 -or
+         $QmpSendKey.Contains("`r") -or
+         $QmpSendKey.Contains("`n") -or
+         $QmpSendKey.Length -gt 32)) {
+        throw "QmpSendKey contains an invalid value"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($QmpInputDevice) -and
+        ($QmpInputDevice.IndexOf([char]0) -ge 0 -or
+         $QmpInputDevice.Contains("`r") -or
+         $QmpInputDevice.Contains("`n") -or
+         $QmpInputDevice.Length -gt 64)) {
+        throw "QmpInputDevice contains an invalid value"
+    }
+    foreach ($argument in $AdditionalQemuArguments) {
+        if ($null -eq $argument -or $argument.IndexOf([char]0) -ge 0 -or
+            $argument.Contains("`r") -or $argument.Contains("`n")) {
+            throw "AdditionalQemuArguments contains an invalid value"
+        }
     }
     if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
         throw "Sura engine was not found: $Engine"
@@ -159,10 +291,22 @@ try {
     $process.StartInfo.RedirectStandardInput = $SerialInputLines.Count -gt 0
     $process.StartInfo.RedirectStandardOutput = $true
     $process.StartInfo.RedirectStandardError = $true
+    $machineOptions = "q35,accel=tcg"
+    if ($TcgTranslationCacheMiB -gt 0) {
+        $machineOptions = "q35"
+    }
+    if ($DisablePs2) {
+        $machineOptions += ",i8042=off"
+    }
+    $displayOptions = "none"
+    if ($HeadlessVnc) {
+        $vncDisplay = Get-FreeVncDisplay
+        $displayOptions = "vnc=127.0.0.1:$vncDisplay"
+    }
     $qemuArguments = @(
-        "-machine", "q35,accel=tcg",
+        "-machine", $machineOptions,
         "-m", "256M",
-        "-display", "none",
+        "-display", $displayOptions,
         "-monitor", "none",
         "-serial", "stdio",
         "-no-reboot",
@@ -171,6 +315,21 @@ try {
         "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
         "-boot", "c"
     )
+    if ($TcgTranslationCacheMiB -gt 0) {
+        $qemuArguments += @(
+            "-accel", "tcg,tb-size=$TcgTranslationCacheMiB"
+        )
+    }
+    $qmpPort = 0
+    $useQmp = -not [string]::IsNullOrWhiteSpace($QmpSendKey) -or
+        $QmpMouseDeltaX -ne 0 -or $QmpMouseDeltaY -ne 0 -or
+        -not [string]::IsNullOrWhiteSpace($QmpScreendumpPath)
+    if ($useQmp) {
+        $qmpPort = Get-FreeTcpPort
+        $qemuArguments += @(
+            "-qmp", "tcp:127.0.0.1:$qmpPort,server=on,wait=off"
+        )
+    }
     if (-not [string]::IsNullOrWhiteSpace($temporaryDataDisk)) {
         $qemuArguments += @(
             "-drive", "file=$temporaryDataDisk,format=raw,if=ide,index=1"
@@ -181,6 +340,9 @@ try {
             "-netdev", "user,id=suranet",
             "-device", "virtio-net-pci,netdev=suranet,disable-modern=on,mac=52:54:00:12:34:56"
         )
+    }
+    if ($AdditionalQemuArguments.Count -gt 0) {
+        $qemuArguments += $AdditionalQemuArguments
     }
     if ($process.StartInfo.PSObject.Properties.Name -contains "ArgumentList") {
         foreach ($argument in $qemuArguments) {
@@ -198,6 +360,114 @@ try {
     if (-not $process.Start()) { throw "QEMU did not start" }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
+    if ($useQmp) {
+        Start-Sleep -Milliseconds $QmpInputDelayMilliseconds
+        $qmpClient = Connect-Qmp $qmpPort ([datetime]::UtcNow.AddSeconds(5))
+        try {
+            $qmpStream = $qmpClient.GetStream()
+            $qmpStream.ReadTimeout = 5000
+            $qmpReader = [System.IO.StreamReader]::new(
+                $qmpStream,
+                [System.Text.Encoding]::UTF8,
+                $false,
+                1024,
+                $true
+            )
+            $qmpWriter = [System.IO.StreamWriter]::new(
+                $qmpStream,
+                [System.Text.UTF8Encoding]::new($false),
+                1024,
+                $true
+            )
+            $qmpWriter.NewLine = "`n"
+            $greeting = $qmpReader.ReadLine()
+            if ([string]::IsNullOrWhiteSpace($greeting) -or
+                -not $greeting.Contains('"QMP"')) {
+                throw "QEMU did not return a QMP greeting"
+            }
+            [void](Invoke-Qmp $qmpReader $qmpWriter @{ execute = "qmp_capabilities" })
+            try {
+                if (-not [string]::IsNullOrWhiteSpace($QmpSendKey) -and
+                    $QmpKeyDownOnly) {
+                    $inputArguments = @{
+                        events = @(
+                            @{
+                                type = "key"
+                                data = @{
+                                    down = $true
+                                    key = @{
+                                        type = "qcode"
+                                        data = $QmpSendKey
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($QmpInputDevice)) {
+                        $inputArguments.device = $QmpInputDevice
+                    }
+                    [void](Invoke-Qmp $qmpReader $qmpWriter @{
+                        execute = "input-send-event"
+                        arguments = $inputArguments
+                    })
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($QmpSendKey) -and
+                        [string]::IsNullOrWhiteSpace($QmpInputDevice)) {
+                    [void](Invoke-Qmp $qmpReader $qmpWriter @{
+                        execute = "human-monitor-command"
+                        arguments = @{ "command-line" = "sendkey $QmpSendKey" }
+                    })
+                }
+                elseif (-not [string]::IsNullOrWhiteSpace($QmpSendKey)) {
+                    [void](Invoke-Qmp $qmpReader $qmpWriter @{
+                        execute = "input-send-event"
+                        arguments = @{
+                            device = $QmpInputDevice
+                            events = @(
+                                @{
+                                    type = "key"
+                                    data = @{
+                                        down = $true
+                                        key = @{
+                                            type = "qcode"
+                                            data = $QmpSendKey
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    })
+                }
+                if ($QmpMouseDeltaX -ne 0 -or $QmpMouseDeltaY -ne 0) {
+                    [void](Invoke-Qmp $qmpReader $qmpWriter @{
+                        execute = "human-monitor-command"
+                        arguments = @{
+                            "command-line" = "mouse_move $QmpMouseDeltaX $QmpMouseDeltaY"
+                        }
+                    })
+                }
+                if (-not [string]::IsNullOrWhiteSpace($QmpScreendumpPath)) {
+                    [void](Invoke-Qmp $qmpReader $qmpWriter @{
+                        execute = "screendump"
+                        arguments = @{
+                            filename = [System.IO.Path]::GetFullPath($QmpScreendumpPath)
+                            format = "ppm"
+                        }
+                    })
+                }
+            }
+            catch {
+                # A successful injected event may let a short boot gate exit
+                # before QMP can return its empty response.
+                if (-not $process.HasExited) { throw }
+            }
+        }
+        finally {
+            if ($null -ne $qmpWriter) { $qmpWriter.Dispose() }
+            if ($null -ne $qmpReader) { $qmpReader.Dispose() }
+            $qmpClient.Dispose()
+        }
+    }
     if ($SerialInputLines.Count -gt 0) {
         Start-Sleep -Milliseconds $SerialInputDelayMilliseconds
         foreach ($line in $SerialInputLines) {
@@ -227,6 +497,9 @@ try {
         if (-not $serialOutput.Contains($marker)) {
             throw "QEMU boot output is missing marker '$marker':`n$serialOutput`n$diagnosticOutput"
         }
+    }
+    if ($PersistDataDisk) {
+        Copy-Item -LiteralPath $temporaryDataDisk -Destination $DataDisk -Force
     }
 
     "sura_qemu_boot_gate: PASS (exit=$($process.ExitCode), marker=$ExpectedMarker)"

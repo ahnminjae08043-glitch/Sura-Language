@@ -1,0 +1,149 @@
+# Executed QEMU VirtIO GPU 2D scanout gate.
+#
+# The gate leaves UEFI, initializes the transitional legacy VirtIO PCI
+# transport, creates a host-visible 2D resource, attaches guest backing pages,
+# selects scanout zero, transfers a deterministic test image, and waits for
+# the host-side screenshot verifier before releasing the resource.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/framebuffer.sura"
+import "../../stdlib/freestanding/virtio_gpu.sura"
+
+virtio_gpu_gate_map is static.zero(65536, 4096)
+virtio_gpu_gate_device is static.struct(PciDevice)
+virtio_gpu_gate_transport is static.struct(VirtioPciTransport)
+virtio_gpu_gate_context is static.struct(VirtioGpuContext)
+virtio_gpu_gate_surface is static.struct(FramebufferSurface)
+
+virtio_gpu_gate_pci_marker is static.utf8("SURA_VIRTIO_GPU_PCI_OK")
+virtio_gpu_gate_transport_marker is static.utf8("SURA_VIRTIO_GPU_TRANSPORT_OK")
+virtio_gpu_gate_display_marker is static.utf8("SURA_VIRTIO_GPU_DISPLAY_INFO_OK")
+virtio_gpu_gate_resource_marker is static.utf8("SURA_VIRTIO_GPU_RESOURCE_OK")
+virtio_gpu_gate_backing_marker is static.utf8("SURA_VIRTIO_GPU_BACKING_OK")
+virtio_gpu_gate_scanout_marker is static.utf8("SURA_VIRTIO_GPU_SCANOUT_OK")
+virtio_gpu_gate_transfer_marker is static.utf8("SURA_VIRTIO_GPU_TRANSFER_OK")
+virtio_gpu_gate_screen_marker is static.utf8("SURA_VIRTIO_GPU_SCREEN_READY")
+virtio_gpu_gate_release_marker is static.utf8("SURA_VIRTIO_GPU_RELEASE_OK")
+virtio_gpu_gate_done_marker is static.utf8("SURA_VIRTIO_GPU_EXECUTED_OK")
+
+virtio_gpu_gate_map_size: usize is 65536
+virtio_gpu_gate_map_key: u64 is 0
+virtio_gpu_gate_descriptor_size: usize is 0
+virtio_gpu_gate_descriptor_version: u32 is 0
+virtio_gpu_gate_dma_address: u64 is 0
+virtio_gpu_gate_backing_address: u64 is 0
+
+func virtio_gpu_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func virtio_gpu_gate_line(text: ptr) do
+  if not serial_write_cstr(1016, text, 64, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global virtio_gpu_gate_map_size, virtio_gpu_gate_map_key, virtio_gpu_gate_descriptor_size, virtio_gpu_gate_descriptor_version, virtio_gpu_gate_dma_address, virtio_gpu_gate_backing_address
+  uefi.write("Sura VirtIO GPU executed gate")
+  uefi.newline()
+  if uefi.allocate_pages(0, 2, 6, addr_of(virtio_gpu_gate_dma_address)) != 0 or virtio_gpu_gate_dma_address == 0 then
+    return 1
+  end
+  if uefi.allocate_pages(0, 2, 300, addr_of(virtio_gpu_gate_backing_address)) != 0 or virtio_gpu_gate_backing_address == 0 then
+    return 2
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    virtio_gpu_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(virtio_gpu_gate_map_size), virtio_gpu_gate_map, addr_of(virtio_gpu_gate_map_key), addr_of(virtio_gpu_gate_descriptor_size), addr_of(virtio_gpu_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(virtio_gpu_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 3
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then
+    virtio_gpu_gate_exit(2)
+    return 4
+  end
+
+  device: ptr[PciDevice] is virtio_gpu_gate_device
+  transport: ptr[VirtioPciTransport] is virtio_gpu_gate_transport
+  context: ptr[VirtioGpuContext] is virtio_gpu_gate_context
+  surface: ptr[FramebufferSurface] is virtio_gpu_gate_surface
+  if not virtio_gpu_find_pci(device) then
+    virtio_gpu_gate_exit(3)
+    return 5
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_pci_marker) then virtio_gpu_gate_exit(4)
+  if not virtio_gpu_init(context, transport, device, virtio_gpu_gate_dma_address, virtio_gpu_gate_dma_address, 24576) then
+    virtio_gpu_gate_exit(5)
+    return 6
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_transport_marker) then virtio_gpu_gate_exit(6)
+  if not virtio_gpu_get_display_info(context, 100000000) then
+    virtio_gpu_gate_exit(7)
+    return 7
+  end
+  if context.width != 640 or context.height != 480 or context.scanout_id != 0 then
+    virtio_gpu_gate_exit(8)
+    return 8
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_display_marker) then virtio_gpu_gate_exit(9)
+  if not fb_surface_init(surface, virtio_gpu_gate_backing_address, 640, 480, 640, 1) then
+    virtio_gpu_gate_exit(10)
+    return 10
+  end
+
+  background: u32 is fb_rgb(surface, 12, 24, 48)
+  red_panel: u32 is fb_rgb(surface, 240, 60, 40)
+  green_panel: u32 is fb_rgb(surface, 40, 220, 100)
+  blue_panel: u32 is fb_rgb(surface, 50, 120, 250)
+  white: u32 is fb_rgb(surface, 245, 245, 245)
+  if not fb_clear(surface, background) then virtio_gpu_gate_exit(11)
+  fb_fill_rect(surface, 32, 32, 160, 120, red_panel)
+  fb_fill_rect(surface, 220, 165, 200, 150, green_panel)
+  fb_fill_rect(surface, 460, 340, 140, 100, blue_panel)
+  fb_rect_outline(surface, 16, 16, 608, 448, white)
+
+  if not virtio_gpu_resource_create_2d(context, 1, 100000000) then
+    virtio_gpu_gate_exit(12)
+    return 12
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_resource_marker) then virtio_gpu_gate_exit(13)
+  if not virtio_gpu_attach_backing(context, virtio_gpu_gate_backing_address, virtio_gpu_gate_backing_address, 1228800, 100000000) then
+    virtio_gpu_gate_exit(14)
+    return 14
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_backing_marker) then virtio_gpu_gate_exit(15)
+  if not virtio_gpu_set_scanout(context, 100000000) then
+    virtio_gpu_gate_exit(16)
+    return 16
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_scanout_marker) then virtio_gpu_gate_exit(17)
+  if not virtio_gpu_present(context, 0, 0, 640, 480, 100000000) then
+    virtio_gpu_gate_exit(18)
+    return 18
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_transfer_marker) then virtio_gpu_gate_exit(19)
+  if not virtio_gpu_gate_line(virtio_gpu_gate_screen_marker) then virtio_gpu_gate_exit(20)
+
+  # The wrapper captures the QEMU display and then sends one serial byte.
+  host_ack: u64 is serial_read_byte(1016, u64("0xffffffffffffffff"))
+  if host_ack == 65535 then virtio_gpu_gate_exit(21)
+  if not virtio_gpu_release(context, 100000000) then
+    virtio_gpu_gate_exit(22)
+    return 22
+  end
+  if not virtio_gpu_gate_line(virtio_gpu_gate_release_marker) then virtio_gpu_gate_exit(23)
+  if not virtio_gpu_stop(context) then virtio_gpu_gate_exit(24)
+  if not virtio_gpu_gate_line(virtio_gpu_gate_done_marker) then virtio_gpu_gate_exit(25)
+  virtio_gpu_gate_exit(16)
+  return 0
+end

@@ -5,8 +5,10 @@ import "../../stdlib/freestanding/desktop_apps.sura"
 file_state is static.struct(FileExplorerState)
 editor_state is static.struct(TextEditorState)
 editor_buffer is static.zero(64, 16)
+editor_clipboard is static.zero(64, 16)
 calculator_state is static.struct(CalculatorState)
 calculator_buffer is static.zero(16, 16)
+calculator_expression is static.zero(32, 16)
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   uefi.write("Sura desktop apps feature test")
@@ -26,8 +28,18 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   text_editor_input(editor, 79)
   text_editor_input(editor, 83)
   text_editor_input(editor, 8)
-  if editor.length != 6 or editor.dirty == 0 then return 4
+  text_editor_input(editor, 13)
+  if editor.length != 7 or editor.dirty == 0 then return 4
   if mem.read8(ptr.add(editor_buffer, 5)) != 79 then return 5
+  if mem.read8(ptr.add(editor_buffer, 6)) != 10 then return 5
+  if editor.cursor != 7 or editor.selection_anchor != 7 then return 12
+  if not text_editor_move_left(editor, true) or not text_editor_move_left(editor, true) then return 13
+  if text_editor_selection_start(editor) != 5 or text_editor_selection_end(editor) != 7 then return 14
+  if text_editor_copy_selection(editor, editor_clipboard, 64) != 2 then return 15
+  if mem.read8(editor_clipboard) != 79 or mem.read8(ptr.add(editor_clipboard, 1)) != 10 then return 16
+  if not text_editor_delete_selection(editor) or editor.length != 5 or editor.cursor != 5 then return 17
+  if not text_editor_input(editor, 88) or editor.length != 6 or mem.read8(ptr.add(editor_buffer, 5)) != 88 then return 18
+  if not text_editor_select_all(editor) or text_editor_selection_start(editor) != 0 or text_editor_selection_end(editor) != 6 then return 19
 
   calculator: ptr[CalculatorState] is calculator_state
   calculator_reset(calculator)
@@ -40,6 +52,8 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if calculator_display_value(calculator) != 42 then return 7
   if not calculator_format(calculator, calculator_buffer, 16) then return 8
   if mem.read8(calculator_buffer) != 52 or mem.read8(ptr.add(calculator_buffer, 1)) != 50 then return 9
+  if not calculator_format_expression(calculator, calculator_expression, 32) then return 20
+  if mem.read8(calculator_expression) != 49 or mem.read8(ptr.add(calculator_expression, 3)) != 43 or mem.read8(ptr.add(calculator_expression, 8)) != 61 or mem.read8(ptr.add(calculator_expression, 10)) != 52 or mem.read8(ptr.add(calculator_expression, 11)) != 50 then return 21
   calculator_input(calculator, 47)
   calculator_input(calculator, 48)
   if calculator_input(calculator, 61) then return 10

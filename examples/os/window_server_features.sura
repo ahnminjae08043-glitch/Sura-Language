@@ -1,0 +1,298 @@
+# App-owned surfaces, damage-only composition, clipboard, theme/scale, and
+# crashed-owner cleanup through the user-space-compatible WindowServer.
+
+import "../../stdlib/freestanding/window_server.sura"
+import "../../stdlib/freestanding/ui.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+manager_state is static.struct(WindowManager)
+window_storage is static.struct(DesktopWindow, 4)
+server_state is static.struct(WindowServer)
+server_config is static.struct(WindowServerConfig)
+surface_config is static.struct(WindowServerSurfaceConfig)
+surface_storage is static.struct(WindowServerSurface, 4)
+damage_storage is static.struct(WindowServerDamage, 8)
+monitor_storage is static.struct(WindowServerMonitor, 2)
+monitor_config is static.struct(WindowServerMonitor)
+animation_storage is static.struct(WindowServerAnimation, 4)
+animation_config is static.struct(WindowServerAnimationConfig)
+output_pixels is static.zero(256000, 16)
+first_pixels is static.zero(38400, 16)
+second_pixels is static.zero(38400, 16)
+updated_pixels is static.zero(38400, 16)
+monitor_output is static.zero(128000, 16)
+clipboard_storage is static.zero(64, 16)
+clipboard_output is static.zero(64, 16)
+clipboard_text is static.utf8("Sura clipboard")
+drag_storage is static.zero(64, 16)
+drag_output is static.zero(64, 16)
+drag_text is static.utf8("/문서/메모.txt")
+ui_theme_state is static.struct(UiTheme)
+ui_context_state is static.struct(UiContext)
+ui_nodes is static.struct(UiNode, 4)
+ui_node_config is static.struct(UiNodeConfig)
+ui_surface_state is static.struct(UiSurface)
+ui_accessibility_events is static.struct(UiAccessibilityEvent, 8)
+ui_accessibility_output is static.struct(UiAccessibilityEvent)
+ui_button_text is static.utf8("Open")
+ui_button_accessible is static.utf8("Open document")
+window_server_gate_memory_map is static.zero(65536, 4096)
+window_server_gate_marker is static.utf8("SURA_WINDOW_SERVER_OK\r\n")
+
+window_server_gate_map_size: usize is 65536
+window_server_gate_map_key: u64 is 0
+window_server_gate_descriptor_size: usize is 0
+window_server_gate_descriptor_version: u32 is 0
+
+func window_server_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func fill_pixels(pixels: ptr, count: u64, color: u64) do
+  if pixels == 0 then return false
+  index: u64 is 0
+  while index < count do
+    mem.write32(ptr.add(pixels, index * 4), color)
+    index += 1
+  end
+  return true
+end
+
+func pixel_at(pixels: ptr, stride: u64, x: u64, y: u64) do
+  if pixels == 0 then return 0
+  return mem.read32(ptr.add(pixels, (y * stride + x) * 4))
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global window_server_gate_map_size, window_server_gate_map_key
+  global window_server_gate_descriptor_size, window_server_gate_descriptor_version
+  uefi.write("Sura window server test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  manager: ptr[WindowManager] is manager_state
+  if not window_manager_init(manager, window_storage, 4, 320, 200, 40) then window_server_gate_exit(1)
+  if not window_manager_add(manager, 1, 10, 10, 120, 80) then window_server_gate_exit(2)
+  if not window_manager_add(manager, 2, 60, 40, 120, 80) then window_server_gate_exit(3)
+  if not window_manager_focus(manager, 2) then window_server_gate_exit(4)
+
+  if not fill_pixels(first_pixels, 9600, 287454020) then window_server_gate_exit(5)
+  if not fill_pixels(second_pixels, 9600, 2864434397) then window_server_gate_exit(6)
+
+  config: ptr[WindowServerConfig] is server_config
+  config.manager is manager
+  config.surfaces is surface_storage
+  config.surface_capacity is 4
+  config.damages is damage_storage
+  config.damage_capacity is 8
+  config.output_pixels is output_pixels
+  config.output_width is 320
+  config.output_height is 200
+  config.output_stride is 320
+  config.clipboard is clipboard_storage
+  config.clipboard_capacity is 64
+  config.monitors is monitor_storage
+  config.monitor_capacity is 2
+  config.animations is animation_storage
+  config.animation_capacity is 4
+  config.drag_payload is drag_storage
+  config.drag_capacity is 64
+  config.output_origin_x is 0
+  config.output_origin_y is 0
+  server: ptr[WindowServer] is server_state
+  if not window_server_init(server, config) then window_server_gate_exit(7)
+  if not window_server_set_background(server, 66051) then window_server_gate_exit(8)
+  monitor: ptr[WindowServerMonitor] is monitor_config
+  monitor.id is 1
+  monitor.x is 0
+  monitor.y is 0
+  monitor.width is 160
+  monitor.height is 200
+  monitor.scale_percent is 100
+  monitor.primary is 1
+  monitor.active is 1
+  if not window_server_add_monitor(server, monitor) then window_server_gate_exit(50)
+  monitor.id is 2
+  monitor.x is 160
+  monitor.width is 160
+  monitor.scale_percent is 150
+  monitor.primary is 0
+  if not window_server_add_monitor(server, monitor) then window_server_gate_exit(51)
+  secondary: ptr[WindowServerMonitor] is window_server_find_monitor(server, 2)
+  if server.monitor_count != 2 or secondary == 0 or secondary.scale_percent != 150 then window_server_gate_exit(52)
+
+  app: ptr[WindowServerSurfaceConfig] is surface_config
+  app.owner_pid is 101
+  app.window_id is 1
+  app.pixels is first_pixels
+  app.width is 120
+  app.height is 80
+  app.stride is 120
+  if not window_server_register_surface(server, app) then window_server_gate_exit(9)
+  app.owner_pid is 202
+  app.window_id is 2
+  app.pixels is second_pixels
+  if not window_server_register_surface(server, app) then window_server_gate_exit(10)
+
+  if not window_server_damage_add(server, 0, 0, 320, 200) then window_server_gate_exit(11)
+  if not window_server_compose(server) then window_server_gate_exit(12)
+  if pixel_at(output_pixels, 320, 2, 2) != 66051 then window_server_gate_exit(13)
+  if pixel_at(output_pixels, 320, 20, 20) != 287454020 then window_server_gate_exit(14)
+  if pixel_at(output_pixels, 320, 70, 50) != 2864434397 then window_server_gate_exit(15)
+  if not window_server_present_monitor(server, 2, monitor_output, 160) then window_server_gate_exit(53)
+  if pixel_at(monitor_output, 160, 0, 50) != 2864434397 then window_server_gate_exit(54)
+
+  # App-owned surface updates become visible only after an explicit commit,
+  # and only the app-relative damage is queued.
+  if not fill_pixels(updated_pixels, 9600, 1122867) then window_server_gate_exit(55)
+  app.owner_pid is 202
+  app.window_id is 2
+  app.pixels is updated_pixels
+  app.width is 120
+  app.height is 80
+  app.stride is 120
+  if not window_server_stage_surface(server, app) then window_server_gate_exit(56)
+  staged_damage: ptr[WindowServerDamage] is window_server_damage_at(server, 0)
+  staged_damage.x is 0
+  staged_damage.y is 0
+  staged_damage.width is 20
+  staged_damage.height is 20
+  if not window_server_commit_surface(server, 202, 2, staged_damage) then window_server_gate_exit(57)
+  if server.damage_count != 1 then window_server_gate_exit(58)
+  if not window_server_compose(server) then window_server_gate_exit(59)
+  if pixel_at(output_pixels, 320, 70, 50) != 1122867 then window_server_gate_exit(60)
+
+  # A drag payload crosses process ownership only after hit testing identifies
+  # a different top-level app and that target accepts the drop.
+  if not window_server_drag_begin(server, 101, 1, drag_text, 18) then window_server_gate_exit(61)
+  if not window_server_drag_update(server, 70, 50) then window_server_gate_exit(62)
+  if server.drag_target_owner != 202 or server.drag_target_window != 2 then window_server_gate_exit(63)
+  if window_server_drag_copy(server, 202, drag_output, 64) != 18 then window_server_gate_exit(64)
+  if mem.read8(ptr.add(drag_output, 8)) != 235 then window_server_gate_exit(65)
+  if not window_server_drag_finish(server, 202, true) then window_server_gate_exit(66)
+
+  # Window geometry and opacity animations advance from elapsed time instead
+  # of blocking pointer input.
+  animation: ptr[WindowServerAnimationConfig] is animation_config
+  animation.window_id is 1
+  animation.kind is window_animation_move()
+  animation.duration_ms is 100
+  animation.to_x is 30
+  animation.to_y is 20
+  animation.to_width is 120
+  animation.to_height is 80
+  animation.to_opacity is 100
+  if not window_server_animation_start(server, animation) then window_server_gate_exit(67)
+  if not window_server_animation_tick(server, 50) then window_server_gate_exit(68)
+  moving: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  if moving.x != 20 or moving.y != 15 or server.animation_count != 1 then window_server_gate_exit(69)
+  if not window_server_animation_tick(server, 50) then window_server_gate_exit(70)
+  if moving.x != 30 or moving.y != 20 or server.animation_count != 0 then window_server_gate_exit(71)
+  if not window_server_damage_reset(server) then window_server_gate_exit(72)
+
+  animation.kind is window_animation_opacity()
+  animation.duration_ms is 100
+  animation.to_opacity is 40
+  if moving.state != window_state_normal() or moving.visible == 0 then window_server_gate_exit(88)
+  if window_server_find_surface(server, 1) == 0 then window_server_gate_exit(89)
+  if server.animations == 0 or server.animation_capacity != 4 then window_server_gate_exit(90)
+  first_animation: ptr[WindowServerAnimation] is window_server_animation_at(server, 0)
+  if first_animation == 0 or first_animation.active != 0 then window_server_gate_exit(91)
+  if not window_server_animation_start(server, animation) then window_server_gate_exit(100 + server.last_error)
+  if not window_server_animation_tick(server, 50) then window_server_gate_exit(74)
+  first_surface: ptr[WindowServerSurface] is window_server_find_surface(server, 1)
+  if first_surface == 0 or first_surface.opacity_percent != 70 then window_server_gate_exit(75)
+  if not window_server_animation_tick(server, 50) then window_server_gate_exit(76)
+  if first_surface.opacity_percent != 40 or server.animation_count != 0 then window_server_gate_exit(77)
+  if not window_server_set_surface_opacity(server, 101, 1, 100) then window_server_gate_exit(78)
+  if not window_server_damage_reset(server) then window_server_gate_exit(79)
+
+  if not window_server_clipboard_set(server, 101, clipboard_text, 14) then window_server_gate_exit(16)
+  if window_server_clipboard_copy(server, clipboard_output, 64) != 14 then window_server_gate_exit(17)
+  if mem.read8(ptr.add(clipboard_output, 5)) != 99 then window_server_gate_exit(18)
+  if not window_server_set_theme(server, 1) then window_server_gate_exit(19)
+  if not window_server_set_scale(server, 150) then window_server_gate_exit(20)
+  if server.theme != 1 or server.scale_percent != 150 then window_server_gate_exit(21)
+
+  # A separate app can build interactive controls using only the common UI
+  # library and its own surface.
+  theme: ptr[UiTheme] is ui_theme_state
+  if not ui_theme_init(theme, true) then window_server_gate_exit(30)
+  ui: ptr[UiContext] is ui_context_state
+  if not ui_init(ui, ui_nodes, 4, theme, 150) then window_server_gate_exit(31)
+  if not ui_accessibility_bind(ui, ui_accessibility_events, 8) then window_server_gate_exit(80)
+  node_config: ptr[UiNodeConfig] is ui_node_config
+  node_config.id is 10
+  node_config.role is ui_role_button()
+  node_config.x is 8
+  node_config.y is 8
+  node_config.width is 64
+  node_config.height is 28
+  node_config.label is ui_button_text
+  node_config.label_bytes is 4
+  node_config.accessible_name is ui_button_accessible
+  node_config.accessible_name_bytes is 13
+  if not ui_add(ui, node_config) then window_server_gate_exit(32)
+  if ui_pointer_press(ui, 20, 20) != 10 or ui.focus_id != 10 then window_server_gate_exit(33)
+  accessibility: ptr[UiAccessibilityEvent] is ui_accessibility_output
+  if not ui_accessibility_pop(ui, accessibility) then window_server_gate_exit(81)
+  if accessibility.kind != ui_accessibility_focus_event() or accessibility.node_id != 10 then window_server_gate_exit(82)
+  if not ui_accessibility_pop(ui, accessibility) then window_server_gate_exit(83)
+  if accessibility.kind != ui_accessibility_action_event() or accessibility.value != 1 then window_server_gate_exit(84)
+  if not ui_set_state(ui, 10, true, false) then window_server_gate_exit(85)
+  if not ui_accessibility_pop(ui, accessibility) or accessibility.kind != ui_accessibility_state_event() then window_server_gate_exit(86)
+  if not ui_set_state(ui, 10, true, true) then window_server_gate_exit(87)
+  if not ui_accessibility_pop(ui, accessibility) or accessibility.kind != ui_accessibility_state_event() then window_server_gate_exit(92)
+  if not ui_focus(ui, 10) then window_server_gate_exit(93)
+  if not ui_accessibility_pop(ui, accessibility) or accessibility.kind != ui_accessibility_focus_event() then window_server_gate_exit(94)
+  accessible: ptr[UiNode] is ui_accessible_node(ui, 0)
+  if accessible == 0 or accessible.role != ui_role_button() or accessible.accessible_name_bytes != 13 then window_server_gate_exit(34)
+  ui_surface: ptr[UiSurface] is ui_surface_state
+  ui_surface.pixels is second_pixels
+  ui_surface.width is 120
+  ui_surface.height is 80
+  ui_surface.stride is 120
+  if not ui_draw(ui, ui_surface) then window_server_gate_exit(35)
+  if pixel_at(second_pixels, 120, 20, 20) != theme.control_active then window_server_gate_exit(36)
+
+  # Removing a failed app's owner closes only that app and the server keeps
+  # composing the surviving app into the same output.
+  if window_server_unregister_owner(server, 202) != 1 then window_server_gate_exit(22)
+  if manager.active_id != 1 or server.active == 0 then window_server_gate_exit(23)
+  if not window_server_damage_add(server, 0, 0, 320, 200) then window_server_gate_exit(24)
+  if not window_server_compose(server) then window_server_gate_exit(25)
+  if pixel_at(output_pixels, 320, 70, 50) != 287454020 then window_server_gate_exit(26)
+  if server.surface_count != 1 or server.generation < 5 then window_server_gate_exit(27)
+
+  surviving: ptr[DesktopWindow] is window_manager_find(manager, 1)
+  if not window_manager_resize(manager, 1, 150, 100) then window_server_gate_exit(37)
+  if surviving.width != 150 or surviving.height != 100 then window_server_gate_exit(38)
+  if not window_manager_maximize(manager, 1) then window_server_gate_exit(39)
+  if surviving.width != 320 or surviving.height != 160 or surviving.state != window_state_maximized() then window_server_gate_exit(40)
+  if not window_manager_restore(manager, 1) then window_server_gate_exit(41)
+  if surviving.width != 150 or surviving.height != 100 then window_server_gate_exit(42)
+  if not window_manager_fullscreen(manager, 1) then window_server_gate_exit(43)
+  if surviving.width != 320 or surviving.height != 200 or surviving.state != window_state_fullscreen() then window_server_gate_exit(44)
+  if not window_manager_restore(manager, 1) then window_server_gate_exit(45)
+  if not window_manager_minimize(manager, 1) then window_server_gate_exit(46)
+  if surviving.visible != 0 or surviving.state != window_state_minimized() then window_server_gate_exit(47)
+  if not window_manager_show(manager, 1) then window_server_gate_exit(48)
+  if surviving.visible == 0 or surviving.state != window_state_normal() then window_server_gate_exit(49)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    window_server_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(window_server_gate_map_size), window_server_gate_memory_map, addr_of(window_server_gate_map_key), addr_of(window_server_gate_descriptor_size), addr_of(window_server_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(window_server_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then window_server_gate_exit(28)
+  if not serial_write_buffer(1016, window_server_gate_marker, 23, 1000000) then window_server_gate_exit(29)
+  window_server_gate_exit(16)
+  return 0
+end

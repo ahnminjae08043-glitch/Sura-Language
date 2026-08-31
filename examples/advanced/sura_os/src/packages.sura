@@ -263,6 +263,20 @@ func pkg_install_manifest(manager, kernel, manifest, transaction) do
   return osutil_ok(record)
 end
 
+func pkg_install_required_bytes(kernel, manifests) do
+  desired is {}
+  for manifest in manifests do
+    for path in manifest.files.keys() do
+      desired[path] is "" + manifest.files[path]
+    end
+  end
+  required is 2048
+  for path in desired.keys() do
+    required += fs_write_delta(kernel.fs, path, desired[path], "/")
+  end
+  return required
+end
+
 func pkg_install(manager, kernel, name, constraint) do
   transaction is pkg_transaction_begin(manager, "install", name, kernel.clock.tick)
   resolution is pkg_resolve(manager, name, constraint)
@@ -271,6 +285,12 @@ func pkg_install(manager, kernel, name, constraint) do
     transaction.errors is resolution.errors
     return osutil_fail(SURAOS_ERR_NOT_FOUND, resolution.errors.join(", "))
   end
+  required is pkg_install_required_bytes(kernel, resolution.manifests)
+  if not fs_can_store(kernel.fs, required) then
+    transaction.status is "failed"
+    transaction.errors is ["not enough virtual disk space"]
+    return osutil_fail(SURAOS_ERR_NO_SPACE, "package transaction needs up to " + required + " byte(s), free " + fs_free_bytes(kernel.fs))
+  end
   for manifest in resolution.manifests do
     installed is pkg_install_manifest(manager, kernel, manifest, transaction)
     if not installed.ok then
@@ -278,8 +298,12 @@ func pkg_install(manager, kernel, name, constraint) do
       return installed
     end
   end
+  database_result is pkg_database_sync(manager, kernel)
+  if not database_result.ok then
+    transaction.status is "failed"
+    return database_result
+  end
   transaction.status is "committed"
-  pkg_database_sync(manager, kernel)
   return osutil_ok(transaction)
 end
 

@@ -1,0 +1,88 @@
+# Executes SHA-384 known-answer and padding-boundary tests after
+# ExitBootServices.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/sha384.sura"
+
+sha384_gate_memory_map is static.zero(65536, 4096)
+sha384_gate_state is static.struct(Sha384State)
+sha384_gate_block is static.zero(128, 16)
+sha384_gate_schedule is static.zero(640, 16)
+sha384_gate_digest is static.zero(48, 16)
+sha384_gate_message is static.zero(112, 16)
+sha384_gate_abc is static.bytes([97, 98, 99], 1)
+sha384_gate_empty_expected is static.bytes([56, 176, 96, 167, 81, 172, 150, 56, 76, 217, 50, 126, 177, 177, 227, 106, 33, 253, 183, 17, 20, 190, 7, 67, 76, 12, 199, 191, 99, 246, 225, 218, 39, 78, 222, 191, 231, 111, 101, 251, 213, 26, 210, 241, 72, 152, 185, 91], 1)
+sha384_gate_abc_expected is static.bytes([203, 0, 117, 63, 69, 163, 94, 139, 181, 160, 61, 105, 154, 198, 80, 7, 39, 44, 50, 171, 14, 222, 209, 99, 26, 139, 96, 90, 67, 255, 91, 237, 128, 134, 7, 43, 161, 231, 204, 35, 88, 186, 236, 161, 52, 200, 37, 167], 1)
+sha384_gate_111_expected is static.bytes([60, 55, 149, 80, 81, 203, 92, 48, 38, 249, 77, 85, 29, 91, 94, 42, 195, 141, 87, 42, 228, 224, 113, 114, 8, 95, 237, 129, 248, 70, 107, 143, 144, 220, 35, 168, 255, 205, 234, 11, 141, 142, 88, 232, 253, 172, 200, 10], 1)
+sha384_gate_112_expected is static.bytes([24, 125, 78, 7, 203, 48, 97, 3, 198, 153, 103, 191, 84, 77, 13, 251, 233, 4, 37, 119, 89, 156, 115, 195, 48, 171, 192, 203, 100, 198, 18, 54, 213, 237, 86, 94, 225, 145, 25, 216, 195, 23, 121, 163, 143, 121, 31, 205], 1)
+sha384_gate_marker is static.utf8("SURA_SHA384_OK\r\n")
+
+sha384_gate_map_size: usize is 65536
+sha384_gate_map_key: u64 is 0
+sha384_gate_descriptor_size: usize is 0
+sha384_gate_descriptor_version: u32 is 0
+
+func sha384_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func sha384_gate_equal(first: ptr, second: ptr, byte_count: u64) do
+  if first == 0 or second == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(first, index)) ^ mem.read8(ptr.add(second, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func sha384_gate_run() do
+  if not sha384_digest(0, 0, sha384_gate_digest, sha384_gate_state, sha384_gate_block, sha384_gate_schedule) then return 1
+  if not sha384_gate_equal(sha384_gate_digest, sha384_gate_empty_expected, 48) then return 2
+
+  if not sha384_init(sha384_gate_state, sha384_gate_block, sha384_gate_schedule) then return 3
+  if not sha384_update(sha384_gate_state, sha384_gate_abc, 1) then return 4
+  if not sha384_update(sha384_gate_state, ptr.add(sha384_gate_abc, 1), 2) then return 5
+  if not sha384_final(sha384_gate_state, sha384_gate_digest) then return 6
+  if not sha384_gate_equal(sha384_gate_digest, sha384_gate_abc_expected, 48) then return 7
+
+  index: u64 is 0
+  while index < 112 do
+    mem.write8(ptr.add(sha384_gate_message, index), 97)
+    index += 1
+  end
+  if not sha384_digest(sha384_gate_message, 111, sha384_gate_digest, sha384_gate_state, sha384_gate_block, sha384_gate_schedule) then return 8
+  if not sha384_gate_equal(sha384_gate_digest, sha384_gate_111_expected, 48) then return 9
+  if not sha384_digest(sha384_gate_message, 112, sha384_gate_digest, sha384_gate_state, sha384_gate_block, sha384_gate_schedule) then return 10
+  if not sha384_gate_equal(sha384_gate_digest, sha384_gate_112_expected, 48) then return 11
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global sha384_gate_map_size, sha384_gate_map_key
+  global sha384_gate_descriptor_size, sha384_gate_descriptor_version
+  uefi.write("Sura SHA-384 test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    sha384_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(sha384_gate_map_size), sha384_gate_memory_map, addr_of(sha384_gate_map_key), addr_of(sha384_gate_descriptor_size), addr_of(sha384_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(sha384_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then sha384_gate_exit(40)
+  status: u64 is sha384_gate_run()
+  if status != 0 then sha384_gate_exit(40 + status)
+  if not serial_write_buffer(1016, sha384_gate_marker, 16, 1000000) then sha384_gate_exit(60)
+  sha384_gate_exit(16)
+  return 0
+end

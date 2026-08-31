@@ -1,0 +1,458 @@
+# Firmware-executed FAT32 allocation, mutation, deletion, and remount gate.
+#
+# The in-memory volume uses the minimum legal FAT32 data-cluster count so the
+# production mount validator and both FAT copies are exercised unchanged.
+
+import "../../stdlib/freestanding/fat32_vfs.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+fat32_gate_device is static.struct(BlockDevice)
+fat32_gate_context is static.struct(RamBlockContext)
+fat32_gate_volume_a is static.struct(Fat32Volume)
+fat32_gate_volume_b is static.struct(Fat32Volume)
+fat32_gate_volume_c is static.struct(Fat32Volume)
+fat32_gate_file is static.struct(Fat32DirEntry)
+fat32_gate_other is static.struct(Fat32DirEntry)
+fat32_gate_third is static.struct(Fat32DirEntry)
+fat32_gate_long_name is static.struct(Fat32LongName)
+fat32_gate_vfs_filesystem is static.struct(Fat32Vfs)
+fat32_gate_vfs_config is static.struct(Fat32VfsConfig)
+fat32_gate_vfs_handles is static.struct(Fat32VfsHandle, 4)
+fat32_gate_vfs_scratch is static.struct(Fat32DirEntry)
+fat32_gate_vfs_interface is static.struct(VfsFileSystem)
+fat32_gate_vfs_state is static.struct(VfsState)
+fat32_gate_vfs_mounts is static.struct(VfsMount, 2)
+fat32_gate_vfs_file_a is static.struct(VfsFile)
+fat32_gate_vfs_file_b is static.struct(VfsFile)
+fat32_gate_vfs_stat is static.struct(VfsStat)
+fat32_gate_vfs_entry is static.struct(VfsDirEntry)
+fat32_gate_disk is static.zero(34089472, 4096)
+fat32_gate_sector is static.zero(4096, 4096)
+fat32_gate_payload is static.zero(1024, 16)
+fat32_gate_read is static.zero(1024, 16)
+fat32_gate_input_utf16 is static.zero(512, 16)
+fat32_gate_disk_utf16 is static.zero(520, 16)
+fat32_gate_long_output is static.zero(512, 16)
+fat32_gate_max_name is static.zero(255, 16)
+fat32_gate_alias_a is static.zero(12, 16)
+fat32_gate_alias_b is static.zero(12, 16)
+fat32_gate_file_name is static.bytes([80, 69, 82, 83, 73, 83, 84, 32, 84, 88, 84], 1)
+fat32_gate_renamed_name is static.bytes([82, 69, 78, 65, 77, 69, 68, 32, 84, 88, 84], 1)
+fat32_gate_directory_name is static.bytes([68, 79, 67, 83, 32, 32, 32, 32, 32, 32, 32], 1)
+fat32_gate_child_name is static.bytes([67, 72, 73, 76, 68, 32, 32, 32, 84, 88, 84], 1)
+fat32_gate_boundary_name is static.bytes([66, 79, 85, 78, 68, 65, 82, 89, 32, 32, 32], 1)
+fat32_gate_mixed_short is static.bytes([77, 73, 88, 69, 68, 32, 32, 32, 84, 88, 84], 1)
+fat32_gate_mixed_long is static.bytes([77, 73, 88, 69, 68, 46, 84, 88, 84], 1)
+fat32_gate_korean_directory is static.bytes([235, 172, 184, 236, 132, 156], 1)
+fat32_gate_korean_file is static.bytes([235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+fat32_gate_korean_renamed is static.bytes([234, 184, 180, 32, 237, 149, 156, 234, 184, 128, 32, 235, 169, 148, 235, 170, 168, 32, 237, 140, 140, 236, 157, 188, 46, 115, 117, 114, 97], 1)
+fat32_gate_korean_second is static.bytes([235, 145, 144, 235, 178, 136, 236, 167, 184, 46, 116, 120, 116], 1)
+fat32_gate_short_fallback is static.bytes([83, 85, 82, 65, 126, 49, 46, 84, 88, 84], 1)
+fat32_gate_vfs_root is static.bytes([47], 1)
+fat32_gate_vfs_directory is static.bytes([47, 235, 172, 184, 236, 132, 156], 1)
+fat32_gate_vfs_file_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+fat32_gate_vfs_renamed_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 234, 184, 176, 235, 161, 157, 46, 115, 117, 114, 97], 1)
+fat32_gate_vfs_expected_directory is static.bytes([235, 172, 184, 236, 132, 156], 1)
+fat32_gate_vfs_expected_file is static.bytes([235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+fat32_gate_vfs_payload is static.bytes([83, 85, 82, 65, 32, 79, 83], 1)
+fat32_gate_vfs_append is static.bytes([33], 1)
+fat32_gate_vfs_expected_payload is static.bytes([83, 85, 82, 65, 32, 79, 83, 33], 1)
+fat32_gate_vfs_name_output is static.zero(64, 16)
+fat32_gate_memory_map is static.zero(65536, 4096)
+fat32_gate_remount_marker is static.utf8("SURA_FAT32_REMOUNT_OK\r\n")
+fat32_gate_lfn_utf8_marker is static.utf8("SURA_FAT32_LFN_UTF8_OK\r\n")
+fat32_gate_lfn_corrupt_marker is static.utf8("SURA_FAT32_LFN_CORRUPT_OK\r\n")
+fat32_gate_vfs_utf8_marker is static.utf8("SURA_FAT32_VFS_UTF8_OK\r\n")
+fat32_gate_vfs_remount_marker is static.utf8("SURA_FAT32_VFS_REMOUNT_OK\r\n")
+fat32_gate_mutation_marker is static.utf8("SURA_FAT32_MUTATION_OK\r\n")
+fat32_gate_vfs_count: u64 is 0
+fat32_gate_map_size: usize is 65536
+fat32_gate_map_key: u64 is 0
+fat32_gate_descriptor_size: usize is 0
+fat32_gate_descriptor_version: u32 is 0
+
+func fat32_gate_format() do
+  boot: ptr is fat32_gate_disk
+  mem.write16(ptr.add(boot, 11), 512)
+  mem.write8(ptr.add(boot, 13), 1)
+  mem.write16(ptr.add(boot, 14), 32)
+  mem.write8(ptr.add(boot, 16), 2)
+  mem.write16(ptr.add(boot, 17), 0)
+  mem.write16(ptr.add(boot, 19), 0)
+  mem.write32(ptr.add(boot, 32), 66581)
+  mem.write32(ptr.add(boot, 36), 512)
+  mem.write16(ptr.add(boot, 42), 0)
+  mem.write32(ptr.add(boot, 44), 2)
+  mem.write16(ptr.add(boot, 48), 65535)
+  mem.write16(ptr.add(boot, 510), 43605)
+
+  first_fat: ptr is ptr.add(fat32_gate_disk, 16384)
+  second_fat: ptr is ptr.add(fat32_gate_disk, 278528)
+  mem.write32(first_fat, 268435448)
+  mem.write32(ptr.add(first_fat, 4), 268435455)
+  mem.write32(ptr.add(first_fat, 8), 268435455)
+  mem.write32(second_fat, 268435448)
+  mem.write32(ptr.add(second_fat, 4), 268435455)
+  mem.write32(ptr.add(second_fat, 8), 268435455)
+  return true
+end
+
+func fat32_gate_fill(buffer: ptr, byte_count: u64, seed: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    mem.write8(ptr.add(buffer, index), (index * 17 + seed) & 255)
+    index += 1
+  end
+  return true
+end
+
+func fat32_gate_equal(left: ptr, right: ptr, byte_count: u64) do
+  if left == 0 or right == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(left, index)) != mem.read8(ptr.add(right, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func fat32_gate_zero(buffer: ptr, byte_count: u64) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(buffer, index)) != 0 then return false
+    index += 1
+  end
+  return true
+end
+
+func fat32_gate_fat_copy(cluster: u64, second: bool) do
+  offset: u64 is 16384 + cluster * 4
+  if second then offset is 278528 + cluster * 4
+  return mem.read32(ptr.add(fat32_gate_disk, offset)) & 268435455
+end
+
+func fat32_gate_name_input(text: ptr, length: u64) do
+  name: ptr[Fat32LongName] is fat32_gate_long_name
+  name.utf8 is text
+  name.utf8_length is length
+  name.utf8_capacity is length
+  name.input_utf16 is fat32_gate_input_utf16
+  name.input_utf16_capacity is 256
+  name.input_utf16_length is 0
+  name.disk_utf16 is fat32_gate_disk_utf16
+  name.disk_utf16_capacity is 260
+  name.disk_utf16_length is 0
+  name.short_name is fat32_gate_alias_b
+  name.short_name_capacity is 12
+  name.excluded_lba is u64("0xffffffffffffffff")
+  name.excluded_offset is u64("0xffffffffffffffff")
+  name.sequence is 0
+  name.checksum is 0
+  return name
+end
+
+func fat32_gate_name_output() do
+  name: ptr[Fat32LongName] is fat32_gate_long_name
+  name.utf8 is fat32_gate_long_output
+  name.utf8_length is 0
+  name.utf8_capacity is 512
+  name.input_utf16 is fat32_gate_input_utf16
+  name.input_utf16_capacity is 256
+  name.input_utf16_length is 0
+  name.disk_utf16 is fat32_gate_disk_utf16
+  name.disk_utf16_capacity is 260
+  name.disk_utf16_length is 0
+  name.short_name is fat32_gate_alias_b
+  name.short_name_capacity is 12
+  name.excluded_lba is u64("0xffffffffffffffff")
+  name.excluded_offset is u64("0xffffffffffffffff")
+  name.sequence is 0
+  name.checksum is 0
+  return name
+end
+
+func fat32_gate_vfs_start(volume: ptr[Fat32Volume]) do
+  filesystem: ptr[Fat32Vfs] is fat32_gate_vfs_filesystem
+  config: ptr[Fat32VfsConfig] is fat32_gate_vfs_config
+  config.volume is volume
+  config.sector_buffer is fat32_gate_sector
+  config.handles is fat32_gate_vfs_handles
+  config.handle_capacity is 4
+  config.scratch_entry is fat32_gate_vfs_scratch
+  config.long_name is fat32_gate_long_name
+  config.input_utf16 is fat32_gate_input_utf16
+  config.input_utf16_capacity is 256
+  config.disk_utf16 is fat32_gate_disk_utf16
+  config.disk_utf16_capacity is 260
+  config.short_name is fat32_gate_alias_b
+  config.short_name_capacity is 12
+  if not fat32_vfs_init(filesystem, config) then return false
+  if not fat32_vfs_bind(filesystem, fat32_gate_vfs_interface) then return false
+  if not vfs_init(fat32_gate_vfs_state, fat32_gate_vfs_mounts, 2) then return false
+  return vfs_mount(fat32_gate_vfs_state, fat32_gate_vfs_root, 1, fat32_gate_vfs_interface)
+end
+
+func fat32_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func fat32_gate_fail(code: u64) do
+  serial_write_byte(1016, 69, 1000000)
+  serial_write_byte(1016, 48 + ((code / 100) % 10), 1000000)
+  serial_write_byte(1016, 48 + ((code / 10) % 10), 1000000)
+  serial_write_byte(1016, 48 + (code % 10), 1000000)
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  fat32_gate_exit(code)
+  return code
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global fat32_gate_map_size, fat32_gate_map_key
+  global fat32_gate_descriptor_size, fat32_gate_descriptor_version
+  uefi.write("Sura FAT32 persistent mutation feature test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  if not fat32_gate_format() then return fat32_gate_fail(2)
+
+  device: ptr[BlockDevice] is fat32_gate_device
+  context: ptr[RamBlockContext] is fat32_gate_context
+  if not ram_block_bind(device, context, fat32_gate_disk, 34089472, 512, 0) then return fat32_gate_fail(3)
+  volume_a: ptr[Fat32Volume] is fat32_gate_volume_a
+  if not fat32_mount(volume_a, device, 0, fat32_gate_sector) then return fat32_gate_fail(4)
+  if volume_a.cluster_count != 65525 or volume_a.root_cluster != 2 then return fat32_gate_fail(5)
+
+  file: ptr[Fat32DirEntry] is fat32_gate_file
+  other: ptr[Fat32DirEntry] is fat32_gate_other
+  if not fat32_create_short(volume_a, 2, fat32_gate_file_name, false, file, fat32_gate_sector) then return fat32_gate_fail(6)
+  if file.file_size != 0 or file.first_cluster != 0 then return fat32_gate_fail(7)
+  if not fat32_resize_file(volume_a, file, 1500, fat32_gate_sector) then return fat32_gate_fail(8)
+  if file.first_cluster != 3 or file.file_size != 1500 then return fat32_gate_fail(9)
+  if fat32_gate_fat_copy(3, false) != 4 or fat32_gate_fat_copy(3, true) != 4 then return fat32_gate_fail(10)
+  if fat32_gate_fat_copy(4, false) != 5 or fat32_gate_fat_copy(4, true) != 5 then return fat32_gate_fail(11)
+  if not fat32_is_end_of_chain(fat32_gate_fat_copy(5, false)) then return fat32_gate_fail(12)
+  if not fat32_is_end_of_chain(fat32_gate_fat_copy(5, true)) then return fat32_gate_fail(13)
+
+  if not fat32_gate_fill(fat32_gate_payload, 700, 3) then return fat32_gate_fail(14)
+  if not fat32_write_range(volume_a, file, 400, fat32_gate_payload, 700, fat32_gate_sector) then return fat32_gate_fail(15)
+  if not fat32_read_range(volume_a, file, 400, fat32_gate_read, 700, fat32_gate_sector) then return fat32_gate_fail(16)
+  if not fat32_gate_equal(fat32_gate_payload, fat32_gate_read, 700) then return fat32_gate_fail(17)
+
+  if not fat32_resize_file(volume_a, file, 600, fat32_gate_sector) then return fat32_gate_fail(18)
+  if fat32_gate_fat_copy(5, false) != 0 or fat32_gate_fat_copy(5, true) != 0 then return fat32_gate_fail(19)
+  if not fat32_read_range(volume_a, file, 400, fat32_gate_read, 200, fat32_gate_sector) then return fat32_gate_fail(20)
+  if not fat32_gate_equal(fat32_gate_payload, fat32_gate_read, 200) then return fat32_gate_fail(21)
+  if not fat32_resize_file(volume_a, file, 1300, fat32_gate_sector) then return fat32_gate_fail(22)
+  if not fat32_read_range(volume_a, file, 600, fat32_gate_read, 700, fat32_gate_sector) then return fat32_gate_fail(23)
+  if not fat32_gate_zero(fat32_gate_read, 700) then return fat32_gate_fail(24)
+
+  if not fat32_gate_fill(fat32_gate_payload, 200, 44) then return fat32_gate_fail(49)
+  if not fat32_write_range(volume_a, file, 1000, fat32_gate_payload, 200, fat32_gate_sector) then return fat32_gate_fail(50)
+  if not fat32_resize_file(volume_a, file, 1100, fat32_gate_sector) then return fat32_gate_fail(51)
+  if not fat32_resize_file(volume_a, file, 1200, fat32_gate_sector) then return fat32_gate_fail(52)
+  if not fat32_read_range(volume_a, file, 1100, fat32_gate_read, 100, fat32_gate_sector) then return fat32_gate_fail(53)
+  if not fat32_gate_zero(fat32_gate_read, 100) then return fat32_gate_fail(54)
+  if not fat32_resize_file(volume_a, file, 1300, fat32_gate_sector) then return fat32_gate_fail(55)
+  if not fat32_read_range(volume_a, file, 1200, fat32_gate_read, 100, fat32_gate_sector) then return fat32_gate_fail(56)
+  if not fat32_gate_zero(fat32_gate_read, 100) then return fat32_gate_fail(57)
+
+  if not fat32_gate_fill(fat32_gate_payload, 700, 91) then return fat32_gate_fail(25)
+  if not fat32_write_range(volume_a, file, 511, fat32_gate_payload, 700, fat32_gate_sector) then return fat32_gate_fail(26)
+  if not fat32_rename_short(volume_a, 2, file, fat32_gate_renamed_name, fat32_gate_sector) then return fat32_gate_fail(27)
+  if fat32_find_root_short(volume_a, fat32_gate_file_name, other, fat32_gate_sector) then return fat32_gate_fail(28)
+  if not fat32_find_root_short(volume_a, fat32_gate_renamed_name, other, fat32_gate_sector) then return fat32_gate_fail(29)
+
+  if not fat32_create_short(volume_a, 2, fat32_gate_directory_name, true, other, fat32_gate_sector) then return fat32_gate_fail(30)
+  directory_cluster: u64 is other.first_cluster
+  if not fat32_create_short(volume_a, directory_cluster, fat32_gate_child_name, false, file, fat32_gate_sector) then return fat32_gate_fail(31)
+  if fat32_delete_entry(volume_a, other, fat32_gate_sector) then return fat32_gate_fail(32)
+  if not fat32_delete_entry(volume_a, file, fat32_gate_sector) then return fat32_gate_fail(33)
+  if not fat32_delete_entry(volume_a, other, fat32_gate_sector) then return fat32_gate_fail(34)
+  if fat32_gate_fat_copy(directory_cluster, false) != 0 then return fat32_gate_fail(35)
+  if fat32_gate_fat_copy(directory_cluster, true) != 0 then return fat32_gate_fail(36)
+
+  volume_b: ptr[Fat32Volume] is fat32_gate_volume_b
+  if not fat32_mount(volume_b, device, 0, fat32_gate_sector) then return fat32_gate_fail(37)
+  if not fat32_find_root_short(volume_b, fat32_gate_renamed_name, file, fat32_gate_sector) then return fat32_gate_fail(38)
+  if file.file_size != 1300 or file.first_cluster != 3 then return fat32_gate_fail(39)
+  if not fat32_read_range(volume_b, file, 511, fat32_gate_read, 700, fat32_gate_sector) then return fat32_gate_fail(40)
+  if not fat32_gate_equal(fat32_gate_payload, fat32_gate_read, 700) then return fat32_gate_fail(41)
+  if fat32_find_root_short(volume_b, fat32_gate_directory_name, other, fat32_gate_sector) then return fat32_gate_fail(42)
+  if not fat32_delete_entry(volume_b, file, fat32_gate_sector) then return fat32_gate_fail(43)
+  if fat32_gate_fat_copy(3, false) != 0 or fat32_gate_fat_copy(3, true) != 0 then return fat32_gate_fail(44)
+  if fat32_gate_fat_copy(4, false) != 0 or fat32_gate_fat_copy(4, true) != 0 then return fat32_gate_fail(45)
+  if fat32_gate_fat_copy(5, false) != 0 or fat32_gate_fat_copy(5, true) != 0 then return fat32_gate_fail(46)
+
+  volume_c: ptr[Fat32Volume] is fat32_gate_volume_c
+  if not fat32_mount(volume_c, device, 0, fat32_gate_sector) then return fat32_gate_fail(47)
+  if fat32_find_root_short(volume_c, fat32_gate_renamed_name, file, fat32_gate_sector) then return fat32_gate_fail(48)
+
+  if not fat32_create_short(volume_c, 2, fat32_gate_mixed_short, false, file, fat32_gate_sector) then return fat32_gate_fail(114)
+  long_name: ptr[Fat32LongName] is fat32_gate_name_input(fat32_gate_mixed_long, 9)
+  if fat32_create_long(volume_c, 2, long_name, false, other, fat32_gate_sector) then return fat32_gate_fail(115)
+  long_name is fat32_gate_name_input(fat32_gate_mixed_long, 9)
+  if not fat32_find_long(volume_c, 2, long_name, other, fat32_gate_sector) then return fat32_gate_fail(116)
+  if other.lfn_entry_count != 0 or not fat32_delete_entry(volume_c, other, fat32_gate_sector) then return fat32_gate_fail(117)
+
+  long_name is fat32_gate_name_input(fat32_gate_korean_directory, 6)
+  if not fat32_create_long(volume_c, 2, long_name, true, other, fat32_gate_sector) then return fat32_gate_fail(58)
+  long_directory_cluster: u64 is other.first_cluster
+  if other.lfn_entry_count != 1 or not fat32_cluster_valid(volume_c, long_directory_cluster) then return fat32_gate_fail(59)
+  long_name is fat32_gate_name_input(fat32_gate_korean_file, 10)
+  if not fat32_create_long(volume_c, long_directory_cluster, long_name, false, file, fat32_gate_sector) then return fat32_gate_fail(60)
+  if file.lfn_entry_count != 1 then return fat32_gate_fail(61)
+  if not fat32_copy_bytes(fat32_gate_alias_a, long_name.short_name, 11) then return fat32_gate_fail(62)
+  if not fat32_resize_file(volume_c, file, 700, fat32_gate_sector) then return fat32_gate_fail(63)
+  if not fat32_gate_fill(fat32_gate_payload, 700, 77) then return fat32_gate_fail(64)
+  if not fat32_write_range(volume_c, file, 0, fat32_gate_payload, 700, fat32_gate_sector) then return fat32_gate_fail(65)
+
+  third: ptr[Fat32DirEntry] is fat32_gate_third
+  long_name is fat32_gate_name_input(fat32_gate_korean_second, 13)
+  if not fat32_create_long(volume_c, long_directory_cluster, long_name, false, third, fat32_gate_sector) then return fat32_gate_fail(66)
+  if fat32_gate_equal(fat32_gate_alias_a, long_name.short_name, 11) then return fat32_gate_fail(67)
+
+  long_name is fat32_gate_name_output()
+  if not fat32_list_long(volume_c, 2, 0, other, long_name, fat32_gate_sector) then return fat32_gate_fail(68)
+  if long_name.utf8_length != 6 or not fat32_gate_equal(fat32_gate_long_output, fat32_gate_korean_directory, 6) then return fat32_gate_fail(69)
+  long_name is fat32_gate_name_output()
+  if not fat32_list_long(volume_c, long_directory_cluster, 0, file, long_name, fat32_gate_sector) then return fat32_gate_fail(70)
+  if long_name.utf8_length != 10 or not fat32_gate_equal(fat32_gate_long_output, fat32_gate_korean_file, 10) then return fat32_gate_fail(71)
+
+  long_name is fat32_gate_name_input(fat32_gate_korean_renamed, 29)
+  if not fat32_rename_long(volume_c, file, long_name, fat32_gate_sector) then return fat32_gate_fail(72)
+  if file.lfn_entry_count != 2 then return fat32_gate_fail(73)
+  long_name is fat32_gate_name_input(fat32_gate_korean_file, 10)
+  if fat32_find_long(volume_c, long_directory_cluster, long_name, third, fat32_gate_sector) then return fat32_gate_fail(74)
+  long_name is fat32_gate_name_input(fat32_gate_korean_renamed, 29)
+  if not fat32_find_long(volume_c, long_directory_cluster, long_name, file, fat32_gate_sector) then return fat32_gate_fail(75)
+
+  if not fat32_mount(volume_a, device, 0, fat32_gate_sector) then return fat32_gate_fail(76)
+  long_name is fat32_gate_name_input(fat32_gate_korean_directory, 6)
+  if not fat32_find_long(volume_a, 2, long_name, other, fat32_gate_sector) then return fat32_gate_fail(77)
+  long_directory_cluster is other.first_cluster
+  long_name is fat32_gate_name_input(fat32_gate_korean_renamed, 29)
+  if not fat32_find_long(volume_a, long_directory_cluster, long_name, file, fat32_gate_sector) then return fat32_gate_fail(78)
+  if file.file_size != 700 then return fat32_gate_fail(79)
+  if not fat32_read_range(volume_a, file, 0, fat32_gate_read, 700, fat32_gate_sector) then return fat32_gate_fail(80)
+  if not fat32_gate_equal(fat32_gate_payload, fat32_gate_read, 700) then return fat32_gate_fail(81)
+  if fat32_delete_entry(volume_a, other, fat32_gate_sector) then return fat32_gate_fail(82)
+  long_name is fat32_gate_name_input(fat32_gate_korean_second, 13)
+  if not fat32_find_long(volume_a, long_directory_cluster, long_name, third, fat32_gate_sector) then return fat32_gate_fail(83)
+  if not fat32_delete_entry(volume_a, third, fat32_gate_sector) then return fat32_gate_fail(84)
+  if not fat32_delete_entry(volume_a, file, fat32_gate_sector) then return fat32_gate_fail(85)
+  if not fat32_delete_entry(volume_a, other, fat32_gate_sector) then return fat32_gate_fail(86)
+
+  if not fat32_mount(volume_b, device, 0, fat32_gate_sector) then return fat32_gate_fail(87)
+  long_name is fat32_gate_name_input(fat32_gate_korean_directory, 6)
+  if fat32_find_long(volume_b, 2, long_name, other, fat32_gate_sector) then return fat32_gate_fail(88)
+
+  if not fat32_create_short(volume_b, 2, fat32_gate_boundary_name, true, other, fat32_gate_sector) then return fat32_gate_fail(100)
+  boundary_cluster: u64 is other.first_cluster
+  max_index: u64 is 0
+  while max_index < 255 do
+    mem.write8(ptr.add(fat32_gate_max_name, max_index), 65)
+    max_index += 1
+  end
+  long_name is fat32_gate_name_input(fat32_gate_max_name, 255)
+  if not fat32_create_long(volume_b, boundary_cluster, long_name, false, file, fat32_gate_sector) then return fat32_gate_fail(101)
+  if file.lfn_entry_count != 20 or file.lfn_start_index != 2 or file.directory_index != 22 then return fat32_gate_fail(102)
+  boundary_next: u64 is fat32_read_fat_entry(volume_b, boundary_cluster, fat32_gate_sector)
+  if not fat32_cluster_valid(volume_b, boundary_next) then return fat32_gate_fail(103)
+  long_name is fat32_gate_name_output()
+  if not fat32_list_long(volume_b, boundary_cluster, 0, file, long_name, fat32_gate_sector) then return fat32_gate_fail(104)
+  if long_name.utf8_length != 255 or not fat32_gate_equal(fat32_gate_long_output, fat32_gate_max_name, 255) then return fat32_gate_fail(105)
+  if not fat32_mount(volume_c, device, 0, fat32_gate_sector) then return fat32_gate_fail(106)
+  if not fat32_find_short(volume_c, 2, fat32_gate_boundary_name, other, fat32_gate_sector) then return fat32_gate_fail(107)
+  boundary_cluster is other.first_cluster
+  long_name is fat32_gate_name_input(fat32_gate_max_name, 255)
+  if not fat32_find_long(volume_c, boundary_cluster, long_name, file, fat32_gate_sector) then return fat32_gate_fail(108)
+  if not fat32_delete_entry(volume_c, file, fat32_gate_sector) then return fat32_gate_fail(109)
+  if not fat32_delete_entry(volume_c, other, fat32_gate_sector) then return fat32_gate_fail(110)
+  if fat32_gate_fat_copy(boundary_cluster, false) != 0 or fat32_gate_fat_copy(boundary_cluster, true) != 0 then return fat32_gate_fail(111)
+  if fat32_gate_fat_copy(boundary_next, false) != 0 or fat32_gate_fat_copy(boundary_next, true) != 0 then return fat32_gate_fail(112)
+  if not fat32_mount(volume_b, device, 0, fat32_gate_sector) then return fat32_gate_fail(113)
+
+  long_name is fat32_gate_name_input(fat32_gate_korean_file, 10)
+  if not fat32_create_long(volume_b, 2, long_name, false, file, fat32_gate_sector) then return fat32_gate_fail(89)
+  lfn_lba: u64 is fat32_directory_slot_lba(volume_b, 2, file.lfn_start_index, false, fat32_gate_sector)
+  if lfn_lba == 0 then return fat32_gate_fail(90)
+  lfn_offset: u64 is (file.lfn_start_index % (volume_b.bytes_per_sector / 32)) * 32
+  if not block_read(device, lfn_lba, 1, fat32_gate_sector) then return fat32_gate_fail(91)
+  lfn_entry: ptr is ptr.add(fat32_gate_sector, lfn_offset)
+  mem.write8(ptr.add(lfn_entry, 13), (mem.read8(ptr.add(lfn_entry, 13)) + 1) & 255)
+  if not block_write(device, lfn_lba, 1, fat32_gate_sector) then return fat32_gate_fail(92)
+  if not block_flush(device) then return fat32_gate_fail(93)
+  long_name is fat32_gate_name_input(fat32_gate_korean_file, 10)
+  if fat32_find_long(volume_b, 2, long_name, other, fat32_gate_sector) then return fat32_gate_fail(94)
+  long_name is fat32_gate_name_output()
+  if not fat32_list_long(volume_b, 2, 0, file, long_name, fat32_gate_sector) then return fat32_gate_fail(95)
+  if file.lfn_entry_count != 0 or long_name.utf8_length != 10 then return fat32_gate_fail(96)
+  if not fat32_gate_equal(fat32_gate_long_output, fat32_gate_short_fallback, 10) then return fat32_gate_fail(97)
+  if not fat32_delete_entry(volume_b, file, fat32_gate_sector) then return fat32_gate_fail(98)
+  if not fat32_mount(volume_c, device, 0, fat32_gate_sector) then return fat32_gate_fail(99)
+  long_name is fat32_gate_name_output()
+  if fat32_list_long(volume_c, 2, 0, file, long_name, fat32_gate_sector) then return fat32_gate_fail(57)
+
+  if not fat32_gate_vfs_start(volume_c) then return fat32_gate_fail(118)
+  if not vfs_create(fat32_gate_vfs_state, fat32_gate_vfs_directory, 7, vfs_kind_directory, 493) then return fat32_gate_fail(119)
+  if not vfs_create(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, vfs_kind_file, 420) then return fat32_gate_fail(120)
+  vfs_file_a: ptr[VfsFile] is fat32_gate_vfs_file_a
+  vfs_file_b: ptr[VfsFile] is fat32_gate_vfs_file_b
+  if not vfs_open(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, vfs_open_read | vfs_open_write, vfs_file_a) then return fat32_gate_fail(121)
+  if not vfs_write(vfs_file_a, fat32_gate_vfs_payload, 7, addr_of(fat32_gate_vfs_count)) then return fat32_gate_fail(122)
+  if fat32_gate_vfs_count != 7 or vfs_file_a.size != 7 then return fat32_gate_fail(123)
+  if vfs_open(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, vfs_open_read, vfs_file_b) then return fat32_gate_fail(124)
+  if not vfs_close(vfs_file_a) then return fat32_gate_fail(125)
+  vfs_stat_result: ptr[VfsStat] is fat32_gate_vfs_stat
+  if not vfs_stat(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, vfs_stat_result) then return fat32_gate_fail(126)
+  if vfs_stat_result.kind != vfs_kind_file or vfs_stat_result.size != 7 then return fat32_gate_fail(127)
+  vfs_entry: ptr[VfsDirEntry] is fat32_gate_vfs_entry
+  vfs_entry.name is fat32_gate_vfs_name_output
+  vfs_entry.name_capacity is 64
+  if not vfs_list(fat32_gate_vfs_state, fat32_gate_vfs_root, 1, 0, vfs_entry) then return fat32_gate_fail(128)
+  if vfs_entry.kind != vfs_kind_directory or vfs_entry.name_length != 6 then return fat32_gate_fail(129)
+  if not fat32_gate_equal(vfs_entry.name, fat32_gate_vfs_expected_directory, 6) then return fat32_gate_fail(130)
+  if not vfs_list(fat32_gate_vfs_state, fat32_gate_vfs_directory, 7, 0, vfs_entry) then return fat32_gate_fail(131)
+  if vfs_entry.kind != vfs_kind_file or vfs_entry.name_length != 10 then return fat32_gate_fail(132)
+  if not fat32_gate_equal(vfs_entry.name, fat32_gate_vfs_expected_file, 10) then return fat32_gate_fail(133)
+  if not vfs_rename(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, fat32_gate_vfs_renamed_path, 19) then return fat32_gate_fail(134)
+  if vfs_stat(fat32_gate_vfs_state, fat32_gate_vfs_file_path, 18, vfs_stat_result) then return fat32_gate_fail(135)
+  if not vfs_open(fat32_gate_vfs_state, fat32_gate_vfs_renamed_path, 19, vfs_open_read | vfs_open_write | vfs_open_append, vfs_file_a) then return fat32_gate_fail(136)
+  if vfs_file_a.position != 7 then return fat32_gate_fail(137)
+  if not vfs_write(vfs_file_a, fat32_gate_vfs_append, 1, addr_of(fat32_gate_vfs_count)) then return fat32_gate_fail(138)
+  if not vfs_seek(vfs_file_a, 0) then return fat32_gate_fail(139)
+  if not vfs_read(vfs_file_a, fat32_gate_read, 8, addr_of(fat32_gate_vfs_count)) then return fat32_gate_fail(140)
+  if fat32_gate_vfs_count != 8 or not fat32_gate_equal(fat32_gate_read, fat32_gate_vfs_expected_payload, 8) then return fat32_gate_fail(141)
+  if not vfs_close(vfs_file_a) then return fat32_gate_fail(142)
+  if vfs_remove(fat32_gate_vfs_state, fat32_gate_vfs_directory, 7, true) then return fat32_gate_fail(143)
+  if not vfs_remove(fat32_gate_vfs_state, fat32_gate_vfs_renamed_path, 19, false) then return fat32_gate_fail(144)
+  if not vfs_remove(fat32_gate_vfs_state, fat32_gate_vfs_directory, 7, false) then return fat32_gate_fail(145)
+  if not fat32_mount(volume_a, device, 0, fat32_gate_sector) then return fat32_gate_fail(146)
+  if not fat32_gate_vfs_start(volume_a) then return fat32_gate_fail(147)
+  if vfs_stat(fat32_gate_vfs_state, fat32_gate_vfs_directory, 7, vfs_stat_result) then return fat32_gate_fail(148)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    fat32_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(fat32_gate_map_size), fat32_gate_memory_map, addr_of(fat32_gate_map_key), addr_of(fat32_gate_descriptor_size), addr_of(fat32_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(fat32_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then fat32_gate_exit(2)
+  if not serial_write_buffer(1016, fat32_gate_remount_marker, 23, 1000000) then fat32_gate_exit(3)
+  if not serial_write_buffer(1016, fat32_gate_lfn_utf8_marker, 24, 1000000) then fat32_gate_exit(4)
+  if not serial_write_buffer(1016, fat32_gate_lfn_corrupt_marker, 27, 1000000) then fat32_gate_exit(5)
+  if not serial_write_buffer(1016, fat32_gate_vfs_utf8_marker, 24, 1000000) then fat32_gate_exit(6)
+  if not serial_write_buffer(1016, fat32_gate_vfs_remount_marker, 27, 1000000) then fat32_gate_exit(7)
+  if not serial_write_buffer(1016, fat32_gate_mutation_marker, 24, 1000000) then fat32_gate_exit(8)
+  fat32_gate_exit(16)
+  return 0
+end

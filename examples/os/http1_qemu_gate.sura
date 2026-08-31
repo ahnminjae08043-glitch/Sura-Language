@@ -1,0 +1,127 @@
+# Executed HTTP/1.1 response-framing and chunk-decoding gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/http1.sura"
+
+http1_gate_memory_map is static.zero(65536, 4096)
+http1_gate_buffer is static.zero(4096, 16)
+http1_gate_length is static.zero(8, 8)
+http1_gate_info is static.struct(Http1ResponseInfo)
+
+http1_gate_content_length is static.utf8("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nHello")
+http1_gate_chunked is static.utf8("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;foo=bar\r\npedia\r\n0\r\nX-Test: ok\r\n\r\n")
+http1_gate_conflict is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")
+http1_gate_bad_chunk is static.utf8("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZ\r\nbad\r\n0\r\n\r\n")
+http1_gate_close_body is static.utf8("HTTP/1.0 200 OK\r\nServer: test\r\n\r\nclose-body")
+http1_gate_short_body is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfour")
+http1_gate_duplicate_length is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n")
+http1_gate_no_body is static.utf8("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+http1_gate_large_length is static.utf8("HTTP/1.1 200 OK\r\nContent-Length: 1052493\r\n\r\n")
+http1_gate_hello is static.utf8("Hello")
+http1_gate_wikipedia is static.utf8("Wikipedia")
+http1_gate_close_expected is static.utf8("close-body")
+http1_gate_marker is static.utf8("SURA_HTTP1_FRAMING_OK\r\n")
+
+http1_gate_map_size: usize is 65536
+http1_gate_map_key: u64 is 0
+http1_gate_descriptor_size: usize is 0
+http1_gate_descriptor_version: u32 is 0
+
+func http1_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func http1_gate_load(text: ptr) do
+  if text == 0 then return 0
+  cursor: u64 is 0
+  while cursor < 4095 and mem.read8(ptr.add(text, cursor)) != 0 do
+    mem.write8(ptr.add(http1_gate_buffer, cursor), mem.read8(ptr.add(text, cursor)))
+    cursor += 1
+  end
+  mem.write8(ptr.add(http1_gate_buffer, cursor), 0)
+  return cursor
+end
+
+func http1_gate_body_equal(info: ptr[Http1ResponseInfo], expected: ptr, expected_length: u64) do
+  if info == 0 or expected == 0 or info.body_bytes != expected_length then return false
+  cursor: u64 is 0
+  while cursor < expected_length do
+    if mem.read8(ptr.add(http1_gate_buffer, info.header_bytes + cursor)) != mem.read8(ptr.add(expected, cursor)) then
+      return false
+    end
+    cursor += 1
+  end
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global http1_gate_map_size, http1_gate_map_key
+  global http1_gate_descriptor_size, http1_gate_descriptor_version
+  uefi.write("Sura HTTP/1.1 framing test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  if mem.read8(ptr.add(http1_gate_content_length, 15)) != 13 then http1_gate_exit(1)
+
+  info: ptr[Http1ResponseInfo] is http1_gate_info
+  bytes: u64 is http1_gate_load(http1_gate_content_length)
+  header_bytes: u64 is http1_find_header_end(http1_gate_buffer, bytes)
+  if header_bytes == 0 then http1_gate_exit(40)
+  status_end: u64 is http1_find_crlf(http1_gate_buffer, 0, header_bytes)
+  if http1_status_code(http1_gate_buffer, status_end) != 200 then http1_gate_exit(41)
+  header_line_end: u64 is http1_find_crlf(http1_gate_buffer, status_end + 2, header_bytes)
+  if not http1_name_equal(http1_gate_buffer, status_end + 2, 14, http1_content_length_name, 14) then http1_gate_exit(42)
+  if http1_content_length_value(http1_gate_buffer, status_end + 17, header_line_end) != 5 then http1_gate_exit(43)
+  if http1_response_inspect(http1_gate_buffer, bytes - 1, false, info) != 0 then http1_gate_exit(2)
+  inspect_state: u64 is http1_response_inspect(http1_gate_buffer, bytes, false, info)
+  if inspect_state != 1 then http1_gate_exit(30 + inspect_state)
+  if info.framing != 1 or info.status_code != 200 then http1_gate_exit(4)
+  if not http1_gate_body_equal(info, http1_gate_hello, 5) then http1_gate_exit(5)
+
+  bytes is http1_gate_load(http1_gate_chunked)
+  if http1_response_inspect(http1_gate_buffer, bytes - 1, false, info) != 0 then http1_gate_exit(6)
+  inspect_state is http1_response_inspect(http1_gate_buffer, bytes, false, info)
+  if inspect_state != 1 then http1_gate_exit(50 + inspect_state)
+  if info.framing != 2 or info.body_bytes != 9 then http1_gate_exit(8)
+  mem.write64(http1_gate_length, bytes)
+  if not http1_response_dechunk(http1_gate_buffer, http1_gate_length, 4096, info) then http1_gate_exit(9)
+  if mem.read64(http1_gate_length) != info.header_bytes + 9 then http1_gate_exit(10)
+  if not http1_gate_body_equal(info, http1_gate_wikipedia, 9) then http1_gate_exit(11)
+
+  bytes is http1_gate_load(http1_gate_conflict)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 2 then http1_gate_exit(12)
+  bytes is http1_gate_load(http1_gate_bad_chunk)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 2 then http1_gate_exit(13)
+
+  bytes is http1_gate_load(http1_gate_close_body)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 0 then http1_gate_exit(14)
+  if http1_response_inspect(http1_gate_buffer, bytes, true, info) != 1 then http1_gate_exit(15)
+  if info.framing != 0 or not http1_gate_body_equal(info, http1_gate_close_expected, 10) then http1_gate_exit(16)
+
+  bytes is http1_gate_load(http1_gate_short_body)
+  if http1_response_inspect(http1_gate_buffer, bytes, true, info) != 2 then http1_gate_exit(17)
+  bytes is http1_gate_load(http1_gate_duplicate_length)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 2 then http1_gate_exit(18)
+  bytes is http1_gate_load(http1_gate_no_body)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 1 then http1_gate_exit(19)
+  if info.status_code != 204 or info.body_bytes != 0 or info.message_bytes != bytes then http1_gate_exit(20)
+  bytes is http1_gate_load(http1_gate_large_length)
+  if http1_response_inspect(http1_gate_buffer, bytes, false, info) != 0 then http1_gate_exit(23)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    http1_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(http1_gate_map_size), http1_gate_memory_map, addr_of(http1_gate_map_key), addr_of(http1_gate_descriptor_size), addr_of(http1_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(http1_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then http1_gate_exit(21)
+  if not serial_write_buffer(1016, http1_gate_marker, 23, 1000000) then http1_gate_exit(22)
+  http1_gate_exit(16)
+  return 0
+end

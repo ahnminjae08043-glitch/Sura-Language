@@ -1,0 +1,248 @@
+# Executes the pinned multi-root trust store after ExitBootServices.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/sha256.sura"
+import "../../stdlib/freestanding/rsa_sha256.sura"
+import "../../stdlib/freestanding/rsa_sha384.sura"
+import "../../stdlib/freestanding/x509_chain.sura"
+import "../../os/trust_store.sura"
+
+trust_store_gate_memory_map is static.zero(65536, 4096)
+trust_store_gate_sha_state is static.struct(Sha256State)
+trust_store_gate_sha_block is static.zero(64, 16)
+trust_store_gate_sha_schedule is static.zero(512, 16)
+trust_store_gate_digest is static.zero(32, 16)
+trust_store_gate_rsa_workspace is static.struct(RsaPublicWorkspace)
+trust_store_gate_rsa_buffers is static.struct(RsaPublicBuffers)
+trust_store_gate_rsa_modulus is static.zero(1024, 16)
+trust_store_gate_rsa_operand is static.zero(1024, 16)
+trust_store_gate_rsa_base is static.zero(1024, 16)
+trust_store_gate_rsa_result is static.zero(1024, 16)
+trust_store_gate_rsa_r2 is static.zero(1024, 16)
+trust_store_gate_rsa_temporary is static.zero(2064, 16)
+trust_store_gate_rsa_encoded is static.zero(512, 16)
+trust_store_gate_tampered_signature is static.zero(512, 16)
+trust_store_gate_rsa_sha256_workspace is static.struct(RsaSha256Workspace)
+trust_store_gate_rsa_sha256_buffers is static.struct(RsaSha256Buffers)
+trust_store_gate_rsa_sha256_request is static.struct(RsaSha256VerifyRequest)
+trust_store_gate_rsa_sha256_message_hash is static.zero(32, 16)
+trust_store_gate_rsa_sha256_mgf_hash is static.zero(32, 16)
+trust_store_gate_rsa_sha256_mask is static.zero(512, 16)
+trust_store_gate_rsa_sha256_database is static.zero(512, 16)
+trust_store_gate_rsa_sha256_hash_input is static.zero(72, 16)
+trust_store_gate_rsa_sha384_workspace is static.struct(RsaSha384Workspace)
+trust_store_gate_rsa_sha384_buffers is static.struct(RsaSha384Buffers)
+trust_store_gate_rsa_sha384_request is static.struct(RsaSha384VerifyRequest)
+trust_store_gate_sha384_state is static.struct(Sha384State)
+trust_store_gate_sha384_block is static.zero(128, 16)
+trust_store_gate_sha384_schedule is static.zero(640, 16)
+trust_store_gate_rsa_sha384_message_hash is static.zero(48, 16)
+trust_store_gate_x509_workspace is static.struct(X509Workspace)
+trust_store_gate_x509_buffers is static.struct(X509Buffers)
+trust_store_gate_reader0 is static.struct(DerReader)
+trust_store_gate_reader1 is static.struct(DerReader)
+trust_store_gate_reader2 is static.struct(DerReader)
+trust_store_gate_reader3 is static.struct(DerReader)
+trust_store_gate_element0 is static.struct(DerElement)
+trust_store_gate_element1 is static.struct(DerElement)
+trust_store_gate_element2 is static.struct(DerElement)
+trust_store_gate_element3 is static.struct(DerElement)
+trust_store_gate_element4 is static.struct(DerElement)
+trust_store_gate_element5 is static.struct(DerElement)
+trust_store_gate_root0 is static.struct(X509Certificate)
+trust_store_gate_time is static.struct(X509DateTime)
+trust_store_gate_marker is static.utf8("SURA_TRUST_STORE_OK\r\n")
+
+trust_store_gate_map_size: usize is 65536
+trust_store_gate_map_key: u64 is 0
+trust_store_gate_descriptor_size: usize is 0
+trust_store_gate_descriptor_version: u32 is 0
+
+func trust_store_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func trust_store_gate_equal(first: ptr, second: ptr, byte_count: u64) do
+  if first == 0 or second == 0 then return false
+  difference: u64 is 0
+  index: u64 is 0
+  while index < byte_count do
+    difference is difference | (mem.read8(ptr.add(first, index)) ^ mem.read8(ptr.add(second, index)))
+    index += 1
+  end
+  return difference == 0
+end
+
+func trust_store_gate_digest_valid(der: ptr, der_bytes: u64, expected: ptr) do
+  if not sha256_digest(der, der_bytes, trust_store_gate_digest, trust_store_gate_sha_state, trust_store_gate_sha_block, trust_store_gate_sha_schedule) then return false
+  return trust_store_gate_equal(trust_store_gate_digest, expected, 32)
+end
+
+func trust_store_gate_root_valid(root: ptr[X509Certificate]) do
+  if root == 0 or root.der == 0 or root.der_bytes == 0 then return false
+  if root.has_basic_constraints == 0 or root.is_ca == 0 then return false
+  if root.has_key_usage != 0 and (root.key_usage & 1024) == 0 then return false
+  if (root.signature_algorithm != 1 and root.signature_algorithm != 4) or root.modulus == 0 then return false
+  if root.modulus_bytes < 256 or root.modulus_bytes > 512 or root.exponent != 65537 then return false
+  if root.issuer_bytes != root.subject_bytes then return false
+  if not trust_store_gate_equal(root.issuer, root.subject, root.issuer_bytes) then return false
+  return x509_certificate_time_valid(root, u64("20260719000000"), trust_store_gate_time)
+end
+
+func trust_store_gate_root_signature_valid(root: ptr[X509Certificate]) do
+  if root == 0 then return false
+  if root.signature_algorithm == 1 then
+    request: ptr[RsaSha256VerifyRequest] is trust_store_gate_rsa_sha256_request
+    request.modulus is root.modulus
+    request.modulus_bytes is root.modulus_bytes
+    request.exponent is root.exponent
+    request.signature is root.signature
+    request.signature_bytes is root.signature_bytes
+    request.message is root.tbs
+    request.message_bytes is root.tbs_bytes
+    return rsa_pkcs1_v15_sha256_verify(trust_store_gate_rsa_sha256_workspace, request)
+  end
+  if root.signature_algorithm == 4 then
+    request: ptr[RsaSha384VerifyRequest] is trust_store_gate_rsa_sha384_request
+    request.modulus is root.modulus
+    request.modulus_bytes is root.modulus_bytes
+    request.exponent is root.exponent
+    request.signature is root.signature
+    request.signature_bytes is root.signature_bytes
+    request.message is root.tbs
+    request.message_bytes is root.tbs_bytes
+    return rsa_pkcs1_v15_sha384_verify(trust_store_gate_rsa_sha384_workspace, request)
+  end
+  return false
+end
+
+func trust_store_gate_root_tamper_rejected(root: ptr[X509Certificate]) do
+  if root == 0 or root.signature == 0 or root.signature_bytes == 0 or root.signature_bytes > 512 then return false
+  index: u64 is 0
+  while index < root.signature_bytes do
+    mem.write8(ptr.add(trust_store_gate_tampered_signature, index), mem.read8(ptr.add(root.signature, index)))
+    index += 1
+  end
+  last: u64 is root.signature_bytes - 1
+  mem.write8(ptr.add(trust_store_gate_tampered_signature, last), mem.read8(ptr.add(trust_store_gate_tampered_signature, last)) ^ 1)
+  if root.signature_algorithm == 1 then
+    request: ptr[RsaSha256VerifyRequest] is trust_store_gate_rsa_sha256_request
+    request.modulus is root.modulus
+    request.modulus_bytes is root.modulus_bytes
+    request.exponent is root.exponent
+    request.signature is trust_store_gate_tampered_signature
+    request.signature_bytes is root.signature_bytes
+    request.message is root.tbs
+    request.message_bytes is root.tbs_bytes
+    return not rsa_pkcs1_v15_sha256_verify(trust_store_gate_rsa_sha256_workspace, request)
+  end
+  if root.signature_algorithm == 4 then
+    request: ptr[RsaSha384VerifyRequest] is trust_store_gate_rsa_sha384_request
+    request.modulus is root.modulus
+    request.modulus_bytes is root.modulus_bytes
+    request.exponent is root.exponent
+    request.signature is trust_store_gate_tampered_signature
+    request.signature_bytes is root.signature_bytes
+    request.message is root.tbs
+    request.message_bytes is root.tbs_bytes
+    return not rsa_pkcs1_v15_sha384_verify(trust_store_gate_rsa_sha384_workspace, request)
+  end
+  return false
+end
+
+func trust_store_gate_run() do
+  if os_trust_root_count == 0 or os_trust_root_count > 16 then return 1
+
+  buffers: ptr[X509Buffers] is trust_store_gate_x509_buffers
+  buffers.reader0 is trust_store_gate_reader0
+  buffers.reader1 is trust_store_gate_reader1
+  buffers.reader2 is trust_store_gate_reader2
+  buffers.reader3 is trust_store_gate_reader3
+  buffers.element0 is trust_store_gate_element0
+  buffers.element1 is trust_store_gate_element1
+  buffers.element2 is trust_store_gate_element2
+  buffers.element3 is trust_store_gate_element3
+  buffers.element4 is trust_store_gate_element4
+  buffers.element5 is trust_store_gate_element5
+  workspace: ptr[X509Workspace] is trust_store_gate_x509_workspace
+  if not x509_workspace_init(workspace, buffers) then return 2
+
+  rsa_buffers: ptr[RsaPublicBuffers] is trust_store_gate_rsa_buffers
+  rsa_buffers.modulus is trust_store_gate_rsa_modulus
+  rsa_buffers.operand is trust_store_gate_rsa_operand
+  rsa_buffers.base is trust_store_gate_rsa_base
+  rsa_buffers.result is trust_store_gate_rsa_result
+  rsa_buffers.r2 is trust_store_gate_rsa_r2
+  rsa_buffers.temporary is trust_store_gate_rsa_temporary
+  rsa_buffers.encoded is trust_store_gate_rsa_encoded
+  rsa_buffers.encoded_capacity is 512
+  rsa_buffers.limb_capacity is 128
+  if not rsa_public_workspace_init(trust_store_gate_rsa_workspace, rsa_buffers) then return 7
+
+  sha256_buffers: ptr[RsaSha256Buffers] is trust_store_gate_rsa_sha256_buffers
+  sha256_buffers.rsa_workspace is trust_store_gate_rsa_workspace
+  sha256_buffers.sha_state is trust_store_gate_sha_state
+  sha256_buffers.sha_block is trust_store_gate_sha_block
+  sha256_buffers.sha_schedule is trust_store_gate_sha_schedule
+  sha256_buffers.message_hash is trust_store_gate_rsa_sha256_message_hash
+  sha256_buffers.mgf_hash is trust_store_gate_rsa_sha256_mgf_hash
+  sha256_buffers.mask is trust_store_gate_rsa_sha256_mask
+  sha256_buffers.mask_capacity is 512
+  sha256_buffers.database is trust_store_gate_rsa_sha256_database
+  sha256_buffers.database_capacity is 512
+  sha256_buffers.hash_input is trust_store_gate_rsa_sha256_hash_input
+  sha256_buffers.hash_input_capacity is 72
+  if not rsa_sha256_workspace_init(trust_store_gate_rsa_sha256_workspace, sha256_buffers) then return 8
+
+  sha384_buffers: ptr[RsaSha384Buffers] is trust_store_gate_rsa_sha384_buffers
+  sha384_buffers.rsa_workspace is trust_store_gate_rsa_workspace
+  sha384_buffers.sha_state is trust_store_gate_sha384_state
+  sha384_buffers.sha_block is trust_store_gate_sha384_block
+  sha384_buffers.sha_schedule is trust_store_gate_sha384_schedule
+  sha384_buffers.message_hash is trust_store_gate_rsa_sha384_message_hash
+  if not rsa_sha384_workspace_init(trust_store_gate_rsa_sha384_workspace, sha384_buffers) then return 9
+
+  index: u64 is 0
+  while index < os_trust_root_count do
+    der: ptr is os_trust_root_der(index)
+    der_bytes: u64 is os_trust_root_der_bytes(index)
+    fingerprint: ptr is os_trust_root_sha256(index)
+    if der == 0 or der_bytes == 0 or fingerprint == 0 then return 3
+    if not trust_store_gate_digest_valid(der, der_bytes, fingerprint) then return 4
+    if not x509_parse(der, der_bytes, workspace, trust_store_gate_root0) then return 5
+    if not trust_store_gate_root_valid(trust_store_gate_root0) then return 6
+    if not trust_store_gate_root_signature_valid(trust_store_gate_root0) then return 10
+    if not x509_verify_link(trust_store_gate_root0, trust_store_gate_root0, trust_store_gate_rsa_sha256_workspace, trust_store_gate_rsa_sha256_request, trust_store_gate_rsa_sha384_workspace, trust_store_gate_rsa_sha384_request) then return 11
+    if not trust_store_gate_root_tamper_rejected(trust_store_gate_root0) then return 12
+    index += 1
+  end
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global trust_store_gate_map_size, trust_store_gate_map_key
+  global trust_store_gate_descriptor_size, trust_store_gate_descriptor_version
+  uefi.write("Sura trust store test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    trust_store_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(trust_store_gate_map_size), trust_store_gate_memory_map, addr_of(trust_store_gate_map_key), addr_of(trust_store_gate_descriptor_size), addr_of(trust_store_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(trust_store_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then trust_store_gate_exit(40)
+  status: u64 is trust_store_gate_run()
+  if status != 0 then trust_store_gate_exit(40 + status)
+  if not serial_write_buffer(1016, trust_store_gate_marker, 21, 1000000) then trust_store_gate_exit(60)
+  trust_store_gate_exit(16)
+  return 0
+end

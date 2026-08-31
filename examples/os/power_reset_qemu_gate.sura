@@ -1,0 +1,57 @@
+# Executed FADT RESET_REG gate for QEMU/OVMF.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/power.sura"
+
+power_reset_map is static.zero(65536, 4096)
+power_reset_control is static.struct(AcpiPowerControl)
+power_reset_fadt_marker is static.utf8("SURA_ACPI_RESET_FADT_OK")
+power_reset_register_marker is static.utf8("SURA_ACPI_RESET_REGISTER_OK")
+power_reset_armed_marker is static.utf8("SURA_ACPI_RESET_ARMED")
+
+power_reset_map_size: usize is 65536
+power_reset_map_key: u64 is 0
+power_reset_descriptor_size: usize is 0
+power_reset_descriptor_version: u32 is 0
+
+func power_reset_fail(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func power_reset_line(text: ptr) do
+  if not serial_write_cstr(1016, text, 64, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global power_reset_map_size, power_reset_map_key, power_reset_descriptor_size, power_reset_descriptor_version
+  uefi.write("Sura ACPI reset executed gate")
+  uefi.newline()
+  control: ptr[AcpiPowerControl] is power_reset_control
+  if not power_discover(system_table, control) or control.reset_ready == 0 then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    power_reset_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(power_reset_map_size), power_reset_map, addr_of(power_reset_map_key), addr_of(power_reset_descriptor_size), addr_of(power_reset_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(power_reset_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 2
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then power_reset_fail(3)
+  if not power_reset_line(power_reset_fadt_marker) then power_reset_fail(4)
+  if not power_reset_line(power_reset_register_marker) then power_reset_fail(5)
+  if not power_reset_line(power_reset_armed_marker) then power_reset_fail(6)
+  if not power_reset(control) then power_reset_fail(7)
+  while true do
+    cpu.halt()
+  end
+  return 0
+end

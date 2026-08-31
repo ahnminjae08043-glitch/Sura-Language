@@ -1,0 +1,104 @@
+# Executed browser form-control state gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/browser_form.sura"
+
+browser_form_gate_memory_map is static.zero(65536, 4096)
+browser_form_gate_nodes is static.zero(1024, 16)
+browser_form_gate_attributes is static.zero(1024, 16)
+browser_form_gate_controls is static.zero(280, 16)
+browser_form_gate_values is static.zero(160, 16)
+browser_form_gate_serialized is static.zero(128, 16)
+browser_form_gate_document is static.struct(HtmlDomDocument)
+browser_form_gate_state is static.struct(BrowserFormState)
+browser_form_gate_source is static.utf8("<form action=\"/login\" method=\"post\"><input type=\"text\" name=\"user\" value=\"su\"><input type=\"password\" name=\"pass\"><input type=\"checkbox\" name=\"keep\" checked><input name=\"off\" disabled><button type=\"submit\">Go</button></form>")
+browser_form_gate_ra is static.utf8("ra")
+browser_form_gate_reserved is static.bytes([32, 38, 61, 43], 1)
+browser_form_gate_korean is static.utf8("한글")
+browser_form_gate_marker is static.utf8("SURA_BROWSER_FORM_OK\r\n")
+browser_form_gate_query_without_checkbox is static.utf8("user=sura&pass=ra+%26%3D%2B")
+browser_form_gate_query_with_checkbox is static.utf8("user=sura&pass=ra+%26%3D%2B&keep=on")
+
+browser_form_gate_map_size: usize is 65536
+browser_form_gate_map_key: u64 is 0
+browser_form_gate_descriptor_size: usize is 0
+browser_form_gate_descriptor_version: u32 is 0
+
+func browser_form_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func browser_form_gate_bytes_equal(input: ptr, expected: ptr, count: u64) do
+  index: u64 is 0
+  while index < count do
+    if mem.read8(ptr.add(input, index)) != mem.read8(ptr.add(expected, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global browser_form_gate_map_size, browser_form_gate_map_key
+  global browser_form_gate_descriptor_size, browser_form_gate_descriptor_version
+  uefi.write("Sura browser form test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  document: ptr[HtmlDomDocument] is browser_form_gate_document
+  document.nodes is browser_form_gate_nodes
+  document.node_capacity is 16
+  document.attributes is browser_form_gate_attributes
+  document.attribute_capacity is 32
+  if not html_dom_parse(browser_form_gate_source, 223, document) then browser_form_gate_exit(1)
+
+  state: ptr[BrowserFormState] is browser_form_gate_state
+  state.controls is browser_form_gate_controls
+  state.values is browser_form_gate_values
+  state.capacity is 5
+  state.value_stride is 32
+  if not browser_form_init(document, state) then browser_form_gate_exit(2)
+  if state.count != 5 or state.focused != u64("0xffffffffffffffff") then browser_form_gate_exit(3)
+  user: ptr[BrowserFormControl] is browser_form_control_at(state, 0)
+  password: ptr[BrowserFormControl] is browser_form_control_at(state, 1)
+  checkbox: ptr[BrowserFormControl] is browser_form_control_at(state, 2)
+  disabled: ptr[BrowserFormControl] is browser_form_control_at(state, 3)
+  submit: ptr[BrowserFormControl] is browser_form_control_at(state, 4)
+  if user.kind != 1 or password.kind != 2 or checkbox.kind != 3 or submit.kind != 4 then browser_form_gate_exit(4)
+  if user.form_node != 1 or password.form_node != 1 or checkbox.form_node != 1 then browser_form_gate_exit(5)
+  if user.value_bytes != 2 or not browser_form_gate_bytes_equal(browser_form_value_at(state, 0), ptr.add(browser_form_gate_source, 74), 2) then browser_form_gate_exit(6)
+  if not browser_form_focus(state, 0) or not browser_form_insert(state, browser_form_gate_ra, 2) then browser_form_gate_exit(7)
+  if user.value_bytes != 4 then browser_form_gate_exit(8)
+  if mem.read8(browser_form_value_at(state, 0)) != 115 or mem.read8(ptr.add(browser_form_value_at(state, 0), 3)) != 97 then browser_form_gate_exit(9)
+  if not browser_form_insert(state, browser_form_gate_korean, 6) then browser_form_gate_exit(10)
+  if user.value_bytes != 10 or not browser_form_backspace(state) or user.value_bytes != 7 then browser_form_gate_exit(11)
+  if not browser_form_backspace(state) or user.value_bytes != 4 then browser_form_gate_exit(12)
+  if not browser_form_focus(state, 1) or not browser_form_insert(state, browser_form_gate_ra, 2) then browser_form_gate_exit(13)
+  if not browser_form_insert(state, browser_form_gate_reserved, 4) then browser_form_gate_exit(14)
+  if (checkbox.flags & 2) == 0 or not browser_form_toggle(state, 2) or (checkbox.flags & 2) != 0 then browser_form_gate_exit(15)
+  if (disabled.flags & 1) == 0 or browser_form_focus(state, 3) then browser_form_gate_exit(16)
+  if browser_form_find_node(state, submit.node_index) != 4 then browser_form_gate_exit(17)
+  serialized_bytes: u64 is browser_form_serialize(state, user.form_node, browser_form_gate_serialized, 128)
+  if serialized_bytes != 27 or not browser_form_gate_bytes_equal(browser_form_gate_serialized, browser_form_gate_query_without_checkbox, 27) then browser_form_gate_exit(18)
+  if not browser_form_toggle(state, 2) then browser_form_gate_exit(19)
+  serialized_bytes is browser_form_serialize(state, user.form_node, browser_form_gate_serialized, 128)
+  if serialized_bytes != 35 or not browser_form_gate_bytes_equal(browser_form_gate_serialized, browser_form_gate_query_with_checkbox, 35) then browser_form_gate_exit(20)
+  if browser_form_serialize(state, user.form_node, browser_form_gate_serialized, 16) != u64("0xffffffffffffffff") then browser_form_gate_exit(21)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    browser_form_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(browser_form_gate_map_size), browser_form_gate_memory_map, addr_of(browser_form_gate_map_key), addr_of(browser_form_gate_descriptor_size), addr_of(browser_form_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(browser_form_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then browser_form_gate_exit(22)
+  if not serial_write_buffer(1016, browser_form_gate_marker, 22, 1000000) then browser_form_gate_exit(23)
+  browser_form_gate_exit(16)
+  return 0
+end

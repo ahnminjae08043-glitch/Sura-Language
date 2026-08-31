@@ -1,0 +1,68 @@
+# Executed bounded PNG/zlib/filter/RGBA gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/png.sura"
+
+png_gate_memory_map is static.zero(65536, 4096)
+png_gate_output is static.zero(64, 16)
+png_gate_workspace is static.zero(4352, 16)
+png_gate_corrupt is static.zero(160, 16)
+
+png_gate_image is static.bytes([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 3, 0, 0, 0, 5, 8, 2, 0, 0, 0, 15, 19, 193, 245, 0, 0, 0, 13, 116, 69, 88, 116, 83, 117, 114, 97, 0, 80, 78, 71, 32, 103, 97, 116, 101, 163, 132, 161, 155, 0, 0, 0, 24, 73, 68, 65, 84, 120, 156, 99, 224, 146, 51, 146, 211, 181, 49, 178, 113, 99, 52, 178, 113, 19, 225, 231, 18, 225, 231, 98, 210, 160, 136, 32, 34, 0, 0, 0, 25, 73, 68, 65, 84, 144, 19, 129, 32, 230, 80, 111, 71, 57, 113, 126, 57, 113, 126, 22, 13, 57, 17, 136, 44, 0, 163, 63, 5, 217, 77, 120, 227, 31, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130], 1)
+png_gate_expected is static.bytes([10, 30, 50, 255, 30, 45, 60, 255, 50, 60, 70, 255, 50, 60, 70, 255, 70, 75, 80, 255, 90, 90, 90, 255, 90, 90, 90, 255, 110, 105, 100, 255, 130, 120, 110, 255, 130, 120, 110, 255, 150, 135, 120, 255, 170, 150, 130, 255, 170, 150, 130, 255, 190, 165, 140, 255, 210, 180, 150, 255], 1)
+png_gate_marker is static.utf8("SURA_PNG_DECODE_OK\r\n")
+
+png_gate_map_size: usize is 65536
+png_gate_map_key: u64 is 0
+png_gate_descriptor_size: usize is 0
+png_gate_descriptor_version: u32 is 0
+
+func png_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global png_gate_map_size, png_gate_map_key
+  global png_gate_descriptor_size, png_gate_descriptor_version
+  uefi.write("Sura PNG decode test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  result: u64 is png_decode_rgba(png_gate_image, 143, png_gate_output, 64, png_gate_workspace, 4352)
+  if result != u64("0x0000000300000005") then png_gate_exit(1)
+  cursor: u64 is 0
+  while cursor < 60 do
+    if mem.read8(ptr.add(png_gate_output, cursor)) != mem.read8(ptr.add(png_gate_expected, cursor)) then png_gate_exit(2)
+    cursor += 1
+  end
+  if png_decode_rgba(png_gate_image, 143, png_gate_output, 59, png_gate_workspace, 4352) != 0 then png_gate_exit(3)
+  if png_decode_rgba(png_gate_image, 143, png_gate_output, 64, png_gate_workspace, 4194) != 0 then png_gate_exit(4)
+
+  cursor is 0
+  while cursor < 143 do
+    mem.write8(ptr.add(png_gate_corrupt, cursor), mem.read8(ptr.add(png_gate_image, cursor)))
+    cursor += 1
+  end
+  mem.write8(ptr.add(png_gate_corrupt, 70), mem.read8(ptr.add(png_gate_corrupt, 70)) ^ 1)
+  if png_decode_rgba(png_gate_corrupt, 143, png_gate_output, 64, png_gate_workspace, 4352) != 0 then png_gate_exit(5)
+  mem.write8(png_gate_corrupt, 0)
+  if png_decode_rgba(png_gate_corrupt, 143, png_gate_output, 64, png_gate_workspace, 4352) != 0 then png_gate_exit(6)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    png_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(png_gate_map_size), png_gate_memory_map, addr_of(png_gate_map_key), addr_of(png_gate_descriptor_size), addr_of(png_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(png_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then png_gate_exit(7)
+  if not serial_write_buffer(1016, png_gate_marker, 20, 1000000) then png_gate_exit(8)
+  png_gate_exit(16)
+  return 0
+end

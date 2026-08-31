@@ -1,10 +1,13 @@
 param(
-    [string]$Engine = (Join-Path (Split-Path -Parent $PSScriptRoot) "SuraLanguage.exe"),
+    [string]$Engine = (Join-Path (Split-Path -Parent $PSScriptRoot) "build/SuraLanguage_os_next.exe"),
     [string]$Qemu = "",
     [string]$Firmware = "",
-    [int]$TimeoutSeconds = 30,
+    [int]$TimeoutSeconds = 60,
     [switch]$Interactive,
     [switch]$HeadlessInteractive,
+    [switch]$DisableVirtioGpu,
+    [switch]$DisableHda,
+    [switch]$DisableDoom,
     [switch]$CompileOnly
 )
 
@@ -16,6 +19,73 @@ $efi = Join-Path $outputDirectory "SuraOS.efi"
 $disk = Join-Path $outputDirectory "SuraOS.img"
 $dataDisk = Join-Path $outputDirectory "SuraData.img"
 $dataDiskTool = Join-Path $PSScriptRoot "sura_os_data_disk.ps1"
+$doomBuild = Join-Path $root "os/doom/build.ps1"
+$doomElf = Join-Path $root "os/doom/build/doom.elf"
+$doomMarkerText = "SURA_DOOM_ELF_BLOB_V1_20260727!!"
+$doomBlobCapacity = 8MB
+
+function Find-UniqueOsDoomMarker {
+    param(
+        [byte[]]$Bytes,
+        [string]$Label
+    )
+    $text = [System.Text.Encoding]::ASCII.GetString($Bytes)
+    $offset = $text.IndexOf($doomMarkerText, [System.StringComparison]::Ordinal)
+    if ($offset -lt 0) {
+        throw "$Label does not contain the Doom ELF embedding marker"
+    }
+    if ($text.IndexOf($doomMarkerText, $offset + 1, [System.StringComparison]::Ordinal) -ge 0) {
+        throw "$Label contains more than one Doom ELF embedding marker"
+    }
+    return $offset
+}
+
+function Add-OsDoomElf {
+    param(
+        [string]$Path,
+        [byte[]]$ElfBytes,
+        [string]$Label
+    )
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $offset = Find-UniqueOsDoomMarker $bytes $Label
+    if ($offset + $doomBlobCapacity -gt $bytes.Length) {
+        throw "$Label does not contain the complete $doomBlobCapacity-byte Doom storage region"
+    }
+    if ($ElfBytes.Length -gt $doomBlobCapacity) {
+        throw "Doom ELF is $($ElfBytes.Length) bytes; embedding capacity is $doomBlobCapacity"
+    }
+    [Array]::Copy($ElfBytes, 0, $bytes, $offset, $ElfBytes.Length)
+    [System.IO.File]::WriteAllBytes($Path, $bytes)
+    return $offset
+}
+
+function Add-OsDoomApplication {
+    if (-not (Test-Path -LiteralPath $doomBuild -PathType Leaf)) {
+        throw "Doom build script was not found: $doomBuild"
+    }
+    Write-Host "Building the Sura desktop Doom application..."
+    & $doomBuild
+    if (-not $? -or -not (Test-Path -LiteralPath $doomElf -PathType Leaf)) {
+        throw "Doom ELF build failed"
+    }
+    $elfBytes = [System.IO.File]::ReadAllBytes($doomElf)
+    if ($elfBytes.Length -lt 64 -or
+        $elfBytes[0] -ne 0x7f -or $elfBytes[1] -ne 0x45 -or
+        $elfBytes[2] -ne 0x4c -or $elfBytes[3] -ne 0x46 -or
+        $elfBytes[4] -ne 2 -or
+        [BitConverter]::ToUInt16($elfBytes, 16) -ne 2 -or
+        [BitConverter]::ToUInt16($elfBytes, 18) -ne 62) {
+        throw "Doom build did not produce a static x86-64 ELF executable"
+    }
+    $elfEntry = [BitConverter]::ToUInt64($elfBytes, 24)
+    if ((($elfEntry -shr 39) -band 0x1ff) -ne 2) {
+        throw ("Doom ELF entry 0x{0:x} is not linked in PML4 slot 2" -f $elfEntry)
+    }
+    $efiOffset = Add-OsDoomElf $efi $elfBytes "SuraOS.efi"
+    $diskOffset = Add-OsDoomElf $disk $elfBytes "SuraOS.img"
+    Write-Host ("Doom embedded: ELF={0} bytes, EFI offset={1}, disk offset={2}" -f
+        $elfBytes.Length, $efiOffset, $diskOffset)
+}
 
 function Resolve-OsQemu {
     param([string]$Requested)
@@ -171,6 +241,8 @@ try {
     if (-not (Test-Path -LiteralPath $Engine -PathType Leaf)) {
         throw "Sura engine was not found: $Engine"
     }
+    $Engine = (Resolve-Path -LiteralPath $Engine).Path
+    Write-Host "sura_os_engine: $Engine"
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
         throw "Sura OS source was not found: $source"
     }
@@ -186,7 +258,17 @@ try {
     $compileExitCode = $LASTEXITCODE
     $ErrorActionPreference = $previousErrorActionPreference
     if ($compileExitCode -ne 0) {
-        throw "Sura OS compile failed:`n$($compileOutput -join "`n")"
+        $compileText = $compileOutput -join "`n"
+        if ($compileText -match "unknown freestanding intrinsic or function 'cpu\.rdrand'") {
+            $currentOsEngine = Join-Path $root "build/SuraLanguage_os_next.exe"
+            if (Test-Path -LiteralPath $currentOsEngine -PathType Leaf) {
+                throw "Sura OS compile failed because this engine predates the cpu.rdrand OS intrinsic. Run again with -Engine `"$currentOsEngine`".`n$compileText"
+            }
+        }
+        throw "Sura OS compile failed:`n$compileText"
+    }
+    if (-not $DisableDoom) {
+        Add-OsDoomApplication
     }
 
     if ($Interactive) {
@@ -201,12 +283,13 @@ try {
         $serialStream = $null
         try {
             Write-Host "Sura OS interactive shell"
-            Write-Host "Type help for commands. Type shutdown to close QEMU."
+            Write-Host "Type help for commands. Type shutdown or reboot to close QEMU."
             $serialPort = Get-OsFreeTcpPort
             $displayBackend = "gtk"
             if ($HeadlessInteractive) { $displayBackend = "none" }
             $qemuArguments = @(
                 "-machine", "q35,accel=tcg",
+                "-cpu", "max",
                 "-m", "256M",
                 "-display", $displayBackend,
                 "-monitor", "none",
@@ -217,9 +300,24 @@ try {
                 "-drive", "file=$interactiveDataDisk,format=raw,if=ide,index=1",
                 "-netdev", "user,id=suranet",
                 "-device", "virtio-net-pci,netdev=suranet,disable-modern=on,mac=52:54:00:12:34:56",
+                "-device", "qemu-xhci,id=sura-xhci",
+                "-device", "usb-kbd,id=sura-kbd,bus=sura-xhci.0",
+                "-device", "usb-mouse,id=sura-mouse,bus=sura-xhci.0",
                 "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
                 "-boot", "c"
             )
+            if (-not $DisableVirtioGpu) {
+                $qemuArguments += @(
+                    "-device", "virtio-gpu-pci,disable-legacy=on,edid=off,xres=1280,yres=800"
+                )
+            }
+            if (-not $DisableHda) {
+                $qemuArguments += @(
+                    "-audiodev", "none,id=sura-audio",
+                    "-device", "ich9-intel-hda,id=sura-hda,msi=off",
+                    "-device", "hda-output,audiodev=sura-audio"
+                )
+            }
             $qemuProcess = New-Object System.Diagnostics.Process
             $qemuProcess.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
             $qemuProcess.StartInfo.FileName = $qemuPath
@@ -286,23 +384,24 @@ try {
             while (-not $qemuProcess.HasExited) {
                 $command = Read-Host
                 if ($null -eq $command) {
-                    throw "Interactive input was closed before shutdown"
+                    throw "Interactive input was closed before a shutdown or reboot request"
                 }
                 $commandBytes = [System.Text.Encoding]::ASCII.GetBytes($command + "`n")
                 $serialStream.Write($commandBytes, 0, $commandBytes.Length)
                 $serialStream.Flush()
                 Start-Sleep -Milliseconds 100
                 [void](Read-OsSerialAvailable $serialStream 400)
-                if ($command.Trim().ToLowerInvariant() -eq "shutdown") {
+                $normalizedCommand = $command.Trim().ToLowerInvariant()
+                if ($normalizedCommand -eq "shutdown" -or $normalizedCommand -eq "reboot") {
                     break
                 }
             }
             if (-not $qemuProcess.WaitForExit(10000)) {
-                throw "Interactive QEMU did not exit after shutdown"
+                throw "Interactive QEMU did not exit after the requested power action"
             }
             [void](Read-OsSerialTail $serialStream)
             $qemuExitCode = $qemuProcess.ExitCode
-            if ($qemuExitCode -ne 33 -and $qemuExitCode -ne 35) {
+            if ($qemuExitCode -ne 0 -and $qemuExitCode -ne 33 -and $qemuExitCode -ne 35 -and $qemuExitCode -ne 37) {
                 $qemuDiagnostics = $qemuStderrTask.GetAwaiter().GetResult()
                 throw "Interactive QEMU closed with unexpected exit code $qemuExitCode`n$qemuDiagnostics"
             }
@@ -344,6 +443,52 @@ try {
         return
     }
 
+    $graphicsMarker = "SURA_OS_VIRTIO_GPU_READY"
+    $audioMarker = "SURA_OS_HDA_AUDIO_READY"
+    $osQemuArguments = @(
+        "-device", "qemu-xhci,id=sura-xhci",
+        "-device", "usb-kbd,id=sura-kbd,bus=sura-xhci.0",
+        "-device", "usb-mouse,id=sura-mouse,bus=sura-xhci.0"
+    )
+    if ($DisableHda) {
+        $audioMarker = "SURA_OS_HDA_AUDIO_UNAVAILABLE"
+    }
+    else {
+        $osQemuArguments += @(
+            "-audiodev", "none,id=sura-audio",
+            "-device", "ich9-intel-hda,id=sura-hda,msi=off",
+            "-device", "hda-output,audiodev=sura-audio"
+        )
+    }
+    if ($DisableVirtioGpu) {
+        $graphicsMarker = "SURA_OS_VIRTIO_GPU_FALLBACK"
+    }
+    else {
+        $osQemuArguments = @(
+            "-device", "virtio-gpu-pci,disable-legacy=on,edid=off,xres=1280,yres=800"
+        ) + $osQemuArguments
+    }
+    $osExpectedMarkers = @(
+        "SURA_OS_ACPI_POWER_READY", "SURA_OS_ACPI_POWER_OFF_ARMED",
+        $graphicsMarker, $audioMarker,
+        "SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK",
+        "SURA_OS_PS2_READY", "SURA_OS_XHCI_INPUT_READY", "SURA_OS_INPUT_EVENT_OK",
+        "SURA_OS_KEYBOARD_OK", "SURA_OS_MOUSE_OK", "SURA_OS_STORAGE_READY",
+        "SURA_OS_STORAGE_AHCI_READY",
+        "SURA_OS_STORAGE_READ_OK", "SURA_OS_SURAFS_READY", "SURA_OS_SETTINGS_READY",
+        "SURA_OS_DESKTOP_STATE_READY", "SURA_OS_DHCP_OK", "SURA_OS_NETWORK_READY",
+        "SURA_OS_ARP_OK", "SURA_OS_UDP_OK", "SURA_OS_DNS_OK", "SURA_OS_TCP_OK",
+        "SURA_OS_HTTP_OK", "SURA_OS_BROWSER_APP_OK", "SURA_OS_BROWSER_CSS_OK",
+        "SURA_OS_BROWSER_DOM_BOX_OK",
+        "SURA_OS_CALCULATOR_RING3_READY", "SURA_OS_EDITOR_RING3_READY",
+        "SURA_OS_FILES_RING3_READY", "SURA_OS_TERMINAL_RING3_READY",
+        "SURA_OS_SYSTEM_RING3_READY", "SURA_OS_USER_SCHEDULER_READY",
+        "SURA_OS_TERMINAL_RING3_OK", "SURA_OS_TERMINAL_CR3_OK", "dns example.com: ",
+        "commands: help status mem about clear shutdown reboot", "kernel: ready",
+        "free physical pages: ", "Sura OS: freestanding x86-64 kernel running in QEMU",
+        "SURA_OS_CLEAR_OK"
+    )
+
     & (Join-Path $PSScriptRoot "sura_qemu_boot_gate.ps1") `
         -Engine $Engine `
         -Source $source `
@@ -354,11 +499,16 @@ try {
         -TimeoutSeconds $TimeoutSeconds `
         -ExpectedEfiText "Sura OS virtual machine" `
         -ExpectedMarker "SURA_OS_SHUTDOWN" `
-        -ExpectedExitCode 33 `
-        -SerialInputLines @("status", "mem", "shutdown") `
-        -SerialInputDelayMilliseconds 8000 `
+        -ExpectedExitCode 0 `
+        -SerialInputLines @("help", "status", "mem", "about", "clear", "shutdown") `
+        -SerialInputDelayMilliseconds 9500 `
         -SerialInputIntervalMilliseconds 1000 `
-        -AdditionalExpectedSerialMarkers @("SURA_OS_DESKTOP_OK", "SURA_OS_WINDOW_READY", "SURA_OS_RTC_OK", "SURA_OS_PS2_READY", "SURA_OS_STORAGE_READY", "SURA_OS_STORAGE_READ_OK", "SURA_OS_SETTINGS_READY", "SURA_OS_DESKTOP_STATE_READY", "SURA_OS_DHCP_OK", "SURA_OS_NETWORK_READY", "SURA_OS_ARP_OK", "SURA_OS_UDP_OK", "SURA_OS_DNS_OK", "SURA_OS_TCP_OK", "SURA_OS_HTTP_OK", "SURA_OS_BROWSER_APP_OK", "SURA_OS_BROWSER_CSS_OK", "SURA_OS_CALCULATOR_RING3_READY", "SURA_OS_EDITOR_RING3_READY", "SURA_OS_FILES_RING3_READY", "SURA_OS_TERMINAL_RING3_READY", "SURA_OS_SYSTEM_RING3_READY", "SURA_OS_TERMINAL_RING3_OK", "SURA_OS_TERMINAL_CR3_OK", "dns example.com: ", "kernel: ready", "free physical pages: ") `
+        -AdditionalExpectedSerialMarkers $osExpectedMarkers `
+        -AdditionalQemuArguments $osQemuArguments `
+        -QmpSendKey "shift 1000" `
+        -QmpMouseDeltaX 40 `
+        -QmpMouseDeltaY 20 `
+        -QmpInputDelayMilliseconds 7500 `
         -CompileOnly:$CompileOnly
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

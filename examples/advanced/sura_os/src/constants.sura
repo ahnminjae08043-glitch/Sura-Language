@@ -60,6 +60,7 @@ SURAOS_ERR_IO is -12
 SURAOS_ERR_TIMEOUT is -13
 SURAOS_ERR_FAULT is -14
 SURAOS_ERR_NO_CHILD is -15
+SURAOS_ERR_NO_SPACE is -16
 
 SURAOS_PERM_READ is 4
 SURAOS_PERM_WRITE is 2
@@ -158,6 +159,7 @@ func suraos_error_name(code) do
   if code == SURAOS_ERR_TIMEOUT then return "TIMEOUT"
   if code == SURAOS_ERR_FAULT then return "FAULT"
   if code == SURAOS_ERR_NO_CHILD then return "NO_CHILD"
+  if code == SURAOS_ERR_NO_SPACE then return "NO_SPACE"
   return "UNKNOWN_ERROR"
 end
 

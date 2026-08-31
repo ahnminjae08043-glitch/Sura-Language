@@ -1,0 +1,18 @@
+# Compile coverage for the desktop xHCI input bridge.
+
+import "../../stdlib/freestanding/ps2.sura"
+import "../../os/input.sura"
+
+func os_keyboard_event(event: ptr[KeyEvent]) do
+  return event != 0
+end
+
+func os_pointer_event(event: ptr[PointerEvent]) do
+  return event != 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura xHCI input integration feature test")
+  uefi.newline()
+  return 0
+end

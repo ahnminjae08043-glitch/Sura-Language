@@ -1,0 +1,173 @@
+# Firmware-executed Unicode and Korean two-set composition self-check.
+
+import "../../stdlib/freestanding/text_input.sura"
+import "../../stdlib/freestanding/ps2.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+text_input_state is static.struct(TextInputState)
+text_input_result is static.struct(TextInputResult)
+text_input_keyboard is static.struct(Ps2KeyboardState)
+text_input_key_event is static.struct(KeyEvent)
+text_input_utf8 is static.zero(16, 16)
+text_input_phrase_scans is static.u64([32, 37, 31, 31, 22, 32, 34, 37, 20, 25, 32, 21], 8)
+text_input_phrase_expected is static.u64([50504, 45397, 54616, 49464, 50836], 8)
+text_input_phrase_actual is static.zero(40, 16)
+text_input_memory_map is static.zero(65536, 4096)
+text_input_marker is static.utf8("SURA_TEXT_INPUT_OK\r\n")
+text_input_key_marker is static.utf8("SURA_KEY_EVENT_OK\r\n")
+text_input_phrase_marker is static.utf8("SURA_TEXT_INPUT_ANNYEONGHASEYO_OK\r\n")
+text_input_map_size: usize is 65536
+text_input_map_key: u64 is 0
+text_input_descriptor_size: usize is 0
+text_input_descriptor_version: u32 is 0
+text_input_phrase_count: u64 is 0
+
+func text_input_qemu_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func text_input_scan(state: ptr[TextInputState], keyboard: ptr[Ps2KeyboardState], event: ptr[KeyEvent], result: ptr[TextInputResult], scan: u64) do
+  if not ps2_keyboard_feed(keyboard, scan) then return false
+  if not ps2_keyboard_to_event(keyboard, event) then return false
+  return text_input_feed_key_event(state, event, result)
+end
+
+func text_input_phrase_collect(result: ptr[TextInputResult]) do
+  global text_input_phrase_count
+  if result == 0 or result.committed_count > 2 then return false
+  index: u64 is 0
+  while index < result.committed_count do
+    if text_input_phrase_count >= 5 then return false
+    codepoint: u64 is result.committed0
+    if index == 1 then codepoint is result.committed1
+    mem.write64(ptr.index(text_input_phrase_actual, text_input_phrase_count, 8), codepoint)
+    text_input_phrase_count += 1
+    index += 1
+  end
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global text_input_map_size, text_input_map_key
+  global text_input_descriptor_size, text_input_descriptor_version
+  uefi.write("Sura Unicode and Korean text input test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 20
+
+  state: ptr[TextInputState] is text_input_state
+  result: ptr[TextInputResult] is text_input_result
+  keyboard: ptr[Ps2KeyboardState] is text_input_keyboard
+  event: ptr[KeyEvent] is text_input_key_event
+  if not text_input_reset(state) then return 1
+  if not ps2_keyboard_reset(keyboard) then return 2
+  if not text_input_scan(state, keyboard, event, result, 242) then return 3
+  if event.physical_key != key_event_key_hangul() or state.hangul != 1 then return 4
+
+  # Physical Set-1 positions g, k, s, r, m, f -> 한글.
+  if not text_input_scan(state, keyboard, event, result, 34) then return 5
+  if not text_input_scan(state, keyboard, event, result, 162) then return 6
+  if not text_input_scan(state, keyboard, event, result, 37) then return 7
+  if not text_input_scan(state, keyboard, event, result, 165) then return 8
+  if not text_input_scan(state, keyboard, event, result, 31) then return 9
+  if not text_input_scan(state, keyboard, event, result, 159) then return 10
+  if not text_input_scan(state, keyboard, event, result, 19) then return 11
+  if result.committed_count != 1 or result.committed0 != 54620 then return 12
+  if not text_input_scan(state, keyboard, event, result, 147) then return 13
+  if not text_input_scan(state, keyboard, event, result, 50) then return 14
+  if not text_input_scan(state, keyboard, event, result, 178) then return 15
+  if not text_input_scan(state, keyboard, event, result, 33) then return 16
+  if not text_input_scan(state, keyboard, event, result, 161) then return 17
+  if not text_input_scan(state, keyboard, event, result, 57) then return 18
+  if result.committed_count != 2 or result.committed0 != 44544 or result.committed1 != 32 then return 19
+  if not text_input_scan(state, keyboard, event, result, 185) then return 20
+
+  if text_input_utf8_write(54620, text_input_utf8, 16) != 3 then return 5
+  if text_input_utf8_write(44544, ptr.add(text_input_utf8, 3), 13) != 3 then return 6
+  if mem.read8(text_input_utf8) != 237 or mem.read8(ptr.add(text_input_utf8, 1)) != 149 or mem.read8(ptr.add(text_input_utf8, 2)) != 156 then return 7
+  if mem.read8(ptr.add(text_input_utf8, 3)) != 234 or mem.read8(ptr.add(text_input_utf8, 4)) != 184 or mem.read8(ptr.add(text_input_utf8, 5)) != 128 then return 8
+
+  # Key-up, repeat, Shift, Caps, Ctrl, and Alt are preserved in KeyEvent.
+  if not ps2_keyboard_feed(keyboard, 58) or not ps2_keyboard_to_event(keyboard, event) then return 21
+  if event.pressed != 1 or (event.modifiers & key_event_modifier_caps()) == 0 then return 22
+  if not ps2_keyboard_feed(keyboard, 30) or not ps2_keyboard_to_event(keyboard, event) then return 23
+  if event.unicode != 65 or event.repeated != 0 then return 24
+  if not ps2_keyboard_feed(keyboard, 30) or not ps2_keyboard_to_event(keyboard, event) then return 25
+  if event.repeated != 1 then return 26
+  if not ps2_keyboard_feed(keyboard, 158) or not ps2_keyboard_to_event(keyboard, event) then return 27
+  if event.released != 1 or event.pressed != 0 then return 28
+  if not ps2_keyboard_feed(keyboard, 42) or not ps2_keyboard_to_event(keyboard, event) then return 29
+  if (event.modifiers & key_event_modifier_shift()) == 0 then return 30
+  if not ps2_keyboard_feed(keyboard, 29) or not ps2_keyboard_to_event(keyboard, event) then return 31
+  if not ps2_keyboard_feed(keyboard, 56) or not ps2_keyboard_to_event(keyboard, event) then return 32
+  if (event.modifiers & (key_event_modifier_ctrl() | key_event_modifier_alt())) != (key_event_modifier_ctrl() | key_event_modifier_alt()) then return 33
+  if not ps2_keyboard_feed(keyboard, 184) then return 34
+  if not ps2_keyboard_feed(keyboard, 157) then return 35
+  if not ps2_keyboard_feed(keyboard, 170) then return 36
+
+  # Caps Lock does not change Korean physical-position mapping.
+  text_input_reset(state)
+  if not text_input_set_hangul(state, true, result) then return 37
+  if not text_input_scan(state, keyboard, event, result, 19) then return 38
+  if result.composing != 12593 then return 39
+  if not text_input_scan(state, keyboard, event, result, 147) then return 40
+
+  # Compound vowel and final deletion preserve a valid composition preview.
+  text_input_reset(state)
+  text_input_set_hangul(state, true, result)
+  text_input_scan(state, keyboard, event, result, 19)
+  text_input_scan(state, keyboard, event, result, 147)
+  text_input_scan(state, keyboard, event, result, 35)
+  text_input_scan(state, keyboard, event, result, 163)
+  text_input_scan(state, keyboard, event, result, 37)
+  text_input_scan(state, keyboard, event, result, 165)
+  if result.composing != 44284 then return 41
+  text_input_scan(state, keyboard, event, result, 19)
+  if result.composing != 44285 then return 42
+  if not text_input_scan(state, keyboard, event, result, 147) then return 43
+  if not text_input_scan(state, keyboard, event, result, 14) or result.composing != 44284 then return 44
+
+  # Exact completion requirement: physical d k s s u d g k t p d y positions
+  # compose "안녕하세요", including final migration before the next vowel.
+  text_input_reset(state)
+  ps2_keyboard_reset(keyboard)
+  if not text_input_set_hangul(state, true, result) then return 45
+  phrase_index: u64 is 0
+  while phrase_index < 12 do
+    scan: u64 is mem.read64(ptr.index(text_input_phrase_scans, phrase_index, 8))
+    if not text_input_scan(state, keyboard, event, result, scan) then return 46
+    if not text_input_phrase_collect(result) then return 47
+    if not text_input_scan(state, keyboard, event, result, scan + 128) then return 48
+    if result.committed_count != 0 then return 49
+    phrase_index += 1
+  end
+  if not text_input_result_clear(result) then return 50
+  if not text_input_commit(state, result) then return 51
+  if not text_input_phrase_collect(result) or text_input_phrase_count != 5 then return 52
+  phrase_index is 0
+  while phrase_index < 5 do
+    if mem.read64(ptr.index(text_input_phrase_actual, phrase_index, 8)) != mem.read64(ptr.index(text_input_phrase_expected, phrase_index, 8)) then
+      return 53
+    end
+    phrase_index += 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    text_input_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(text_input_map_size), text_input_memory_map, addr_of(text_input_map_key), addr_of(text_input_descriptor_size), addr_of(text_input_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(text_input_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then text_input_qemu_exit(2)
+  if not serial_write_buffer(1016, text_input_key_marker, 19, 1000000) then text_input_qemu_exit(3)
+  if not serial_write_buffer(1016, text_input_phrase_marker, 35, 1000000) then text_input_qemu_exit(3)
+  if not serial_write_buffer(1016, text_input_marker, 20, 1000000) then text_input_qemu_exit(3)
+  text_input_qemu_exit(16)
+  return 0
+end

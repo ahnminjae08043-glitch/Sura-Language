@@ -5,6 +5,8 @@ import "../../stdlib/freestanding/ps2.sura"
 
 ps2_keyboard_state is static.struct(Ps2KeyboardState)
 ps2_mouse_state is static.struct(Ps2MouseState)
+ps2_key_event is static.struct(KeyEvent)
+ps2_pointer_event is static.struct(PointerEvent)
 
 func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   uefi.write("Sura PS/2 feature test")
@@ -18,15 +20,34 @@ func efi_main(image_handle: u64, system_table: ptr) -> u64 do
   if keyboard.left_shift != 1 or keyboard.pressed != 1 then return 4
   if not ps2_keyboard_feed(keyboard, 30) then return 5
   if keyboard.ascii != 65 then return 6
+  event: ptr[KeyEvent] is ps2_key_event
+  if not ps2_keyboard_to_event(keyboard, event) then return 19
+  if event.physical_key != 30 or event.unicode != 65 or event.pressed != 1 or event.sequence == 0 then return 20
+  if not ps2_keyboard_feed(keyboard, 158) then return 21
+  if not ps2_keyboard_to_event(keyboard, event) or event.released != 1 or event.unicode != 0 then return 22
   if not ps2_keyboard_feed(keyboard, 170) then return 7
   if keyboard.left_shift != 0 then return 8
   if not ps2_keyboard_feed(keyboard, 14) or keyboard.ascii != 8 then return 9
   if not ps2_keyboard_feed(keyboard, 28) or keyboard.ascii != 10 then return 10
+  if not ps2_keyboard_feed(keyboard, 29) then return 23
+  if (keyboard.modifiers & key_event_modifier_ctrl()) == 0 then return 24
+  if not ps2_keyboard_feed(keyboard, 46) or keyboard.ascii != 0 then return 25
+  if not ps2_keyboard_feed(keyboard, 174) then return 26
+  if not ps2_keyboard_feed(keyboard, 157) then return 27
+  if (keyboard.modifiers & key_event_modifier_ctrl()) != 0 then return 28
+  if not ps2_keyboard_feed(keyboard, 48) then return 29
+  if not ps2_keyboard_feed(keyboard, 48) or keyboard.repeated != 1 then return 30
+  if not ps2_keyboard_feed(keyboard, 176) then return 31
+  if not ps2_keyboard_feed(keyboard, 242) then return 32
+  if not ps2_keyboard_to_event(keyboard, event) or event.physical_key != key_event_key_hangul() then return 33
 
   if ps2_mouse_feed(mouse, 40) then return 11
   if ps2_mouse_feed(mouse, 5) then return 12
   if not ps2_mouse_feed(mouse, 253) then return 13
   if mouse.x != 55 or mouse.y != 43 or mouse.moved != 1 then return 14
+  pointer: ptr[PointerEvent] is ps2_pointer_event
+  if not ps2_mouse_to_event(mouse, pointer) then return 34
+  if pointer.x != 55 or pointer.y != 43 or pointer.delta_x != 5 or pointer.delta_y != 3 then return 35
   if ps2_mouse_feed(mouse, 9) then return 15
   if ps2_mouse_feed(mouse, 0) then return 16
   if not ps2_mouse_feed(mouse, 0) then return 17

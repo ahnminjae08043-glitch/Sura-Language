@@ -1,0 +1,275 @@
+# Executed QEMU xHCI controller gate.
+#
+# This leaves UEFI, takes ownership of a real emulated xHCI PCI function,
+# resets and runs it with caller-owned DMA rings, resets one attached port,
+# addresses that USB device, reads its Device Descriptor through endpoint 0,
+# and finally executes Disable Slot.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/xhci.sura"
+import "../../stdlib/freestanding/usb_hid.sura"
+
+xhci_gate_memory_map is static.zero(65536, 4096)
+xhci_gate_device is static.struct(PciDevice)
+xhci_gate_controller is static.struct(XhciController)
+xhci_gate_dma is static.struct(XhciDma)
+xhci_gate_command is static.struct(XhciCommandRing)
+xhci_gate_event is static.struct(XhciEventRing)
+xhci_gate_result is static.struct(XhciCommandResult)
+xhci_gate_device_dma is static.struct(XhciDeviceDma)
+xhci_gate_ep0 is static.struct(XhciTransferRing)
+xhci_gate_usb_device is static.struct(XhciDevice)
+xhci_gate_transfer_result is static.struct(XhciTransferResult)
+xhci_gate_hid is static.struct(XhciHidEndpoint)
+xhci_gate_hid_ring is static.struct(XhciTransferRing)
+xhci_gate_key_decoder is static.struct(KeyEventDecoder)
+xhci_gate_key_event is static.struct(KeyEvent)
+xhci_gate_key_down is static.zero(65, 8)
+xhci_gate_key_previous is static.zero(8, 8)
+xhci_gate_key_cursor is static.zero(8, 8)
+
+xhci_gate_pci_marker is static.utf8("SURA_XHCI_PCI_OK")
+xhci_gate_reset_marker is static.utf8("SURA_XHCI_RESET_OK")
+xhci_gate_port_marker is static.utf8("SURA_XHCI_PORT_OK")
+xhci_gate_command_marker is static.utf8("SURA_XHCI_COMMAND_OK")
+xhci_gate_address_marker is static.utf8("SURA_XHCI_ADDRESS_OK")
+xhci_gate_descriptor_marker is static.utf8("SURA_XHCI_DESCRIPTOR_OK")
+xhci_gate_hid_descriptor_marker is static.utf8("SURA_XHCI_HID_DESCRIPTOR_OK")
+xhci_gate_hid_configured_marker is static.utf8("SURA_XHCI_HID_CONFIGURED_OK")
+xhci_gate_hid_running_marker is static.utf8("SURA_XHCI_HID_ENDPOINT_RUNNING")
+xhci_gate_hid_ready_marker is static.utf8("SURA_XHCI_HID_READY")
+xhci_gate_hid_report_marker is static.utf8("SURA_XHCI_HID_REPORT_OK")
+xhci_gate_hid_event_marker is static.utf8("SURA_XHCI_HID_EVENT_OK")
+xhci_gate_done_marker is static.utf8("SURA_XHCI_EXECUTED_OK")
+xhci_gate_hex_digits is static.utf8("0123456789ABCDEF")
+
+xhci_gate_map_size: usize is 65536
+xhci_gate_map_key: u64 is 0
+xhci_gate_descriptor_size: usize is 0
+xhci_gate_descriptor_version: u32 is 0
+xhci_gate_dma_address: u64 is 0
+
+func xhci_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func xhci_gate_line(text: ptr) do
+  if not serial_write_cstr(1016, text, 64, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func xhci_gate_hex_byte(value: u64) do
+  if value > 255 then return false
+  high: u64 is mem.read8(ptr.add(xhci_gate_hex_digits, (value >> 4) & 15))
+  low: u64 is mem.read8(ptr.add(xhci_gate_hex_digits, value & 15))
+  if not serial_write_byte(1016, high, 1000000) then return false
+  if not serial_write_byte(1016, low, 1000000) then return false
+  return serial_write_byte(1016, 32, 1000000)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global xhci_gate_map_size, xhci_gate_map_key, xhci_gate_descriptor_size, xhci_gate_descriptor_version, xhci_gate_dma_address
+  uefi.write("Sura xHCI executed gate")
+  uefi.newline()
+  if uefi.allocate_pages(0, 2, 10, addr_of(xhci_gate_dma_address)) != 0 or xhci_gate_dma_address == 0 then
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    xhci_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(xhci_gate_map_size), xhci_gate_memory_map, addr_of(xhci_gate_map_key), addr_of(xhci_gate_descriptor_size), addr_of(xhci_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(xhci_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 2
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then
+    xhci_gate_exit(2)
+    return 3
+  end
+
+  device: ptr[PciDevice] is xhci_gate_device
+  controller: ptr[XhciController] is xhci_gate_controller
+  dma: ptr[XhciDma] is xhci_gate_dma
+  command: ptr[XhciCommandRing] is xhci_gate_command
+  event: ptr[XhciEventRing] is xhci_gate_event
+  result: ptr[XhciCommandResult] is xhci_gate_result
+  device_dma: ptr[XhciDeviceDma] is xhci_gate_device_dma
+  ep0: ptr[XhciTransferRing] is xhci_gate_ep0
+  usb_device: ptr[XhciDevice] is xhci_gate_usb_device
+  transfer_result: ptr[XhciTransferResult] is xhci_gate_transfer_result
+  hid: ptr[XhciHidEndpoint] is xhci_gate_hid
+  hid_ring: ptr[XhciTransferRing] is xhci_gate_hid_ring
+
+  if not xhci_pci_find(device) then
+    xhci_gate_exit(3)
+    return 4
+  end
+  if not xhci_gate_line(xhci_gate_pci_marker) then xhci_gate_exit(4)
+  bar: u64 is xhci_pci_bar_physical(device)
+  if bar == 0 or not xhci_pci_enable(device) then
+    xhci_gate_exit(5)
+    return 5
+  end
+  if not xhci_controller_attach(controller, bar, 100000000) then
+    xhci_gate_exit(6)
+    return 6
+  end
+  if not xhci_dma_configure(dma, xhci_gate_dma_address, xhci_gate_dma_address, 16384) then
+    xhci_gate_exit(7)
+    return 7
+  end
+  requested_slots: u64 is controller.max_slots
+  if requested_slots > 8 then requested_slots is 8
+  if not xhci_controller_start(controller, dma, command, event, requested_slots) then
+    xhci_gate_exit(8)
+    return 8
+  end
+  if not xhci_gate_line(xhci_gate_reset_marker) then xhci_gate_exit(9)
+  if xhci_connected_port_count(controller) < 2 then
+    xhci_gate_exit(10)
+    return 10
+  end
+  if not xhci_gate_line(xhci_gate_port_marker) then xhci_gate_exit(11)
+  port_id: u64 is xhci_first_connected_port(controller)
+  if port_id == 0 or not xhci_port_reset(controller, port_id) then
+    xhci_gate_exit(12)
+    return 12
+  end
+
+  if not xhci_enable_slot(command, event, result) then
+    xhci_gate_exit(13)
+    return 13
+  end
+  enabled_slot: u64 is result.slot_id
+  if enabled_slot == 0 then
+    xhci_gate_exit(14)
+    return 14
+  end
+  if not xhci_device_init(usb_device, controller, enabled_slot, port_id) then
+    xhci_gate_exit(15)
+    return 15
+  end
+  device_dma_base: u64 is xhci_gate_dma_address + 16384
+  if not xhci_device_dma_configure(device_dma, device_dma_base, device_dma_base, 24576) then
+    xhci_gate_exit(16)
+    return 16
+  end
+  if not xhci_device_context_configure(usb_device, dma, device_dma, ep0) then
+    xhci_gate_exit(17)
+    return 17
+  end
+  if not xhci_address_device(usb_device, command, event, result) then
+    xhci_gate_exit(18)
+    return 18
+  end
+  if not xhci_gate_line(xhci_gate_address_marker) then xhci_gate_exit(19)
+  if not xhci_control_get_descriptor(usb_device, event, 256, 18, transfer_result) then
+    xhci_gate_exit(20)
+    return 20
+  end
+  descriptor: ptr is device_dma.data
+  if mem.read8(descriptor) != 18 or mem.read8(ptr.add(descriptor, 1)) != 1 then
+    xhci_gate_exit(21)
+    return 21
+  end
+  if mem.read8(ptr.add(descriptor, 7)) == 0 then
+    xhci_gate_exit(22)
+    return 22
+  end
+  if not xhci_gate_line(xhci_gate_descriptor_marker) then xhci_gate_exit(23)
+  if not xhci_control_get_descriptor(usb_device, event, 512, 9, transfer_result) then
+    xhci_gate_exit(24)
+    return 24
+  end
+  configuration_length: u64 is mem.read16(ptr.add(device_dma.data, 2))
+  if configuration_length < 9 or configuration_length > 4096 then
+    xhci_gate_exit(25)
+    return 25
+  end
+  if not xhci_control_get_descriptor(usb_device, event, 512, configuration_length, transfer_result) then
+    xhci_gate_exit(26)
+    return 26
+  end
+  if not xhci_hid_parse_configuration(device_dma.data, configuration_length, hid) then
+    xhci_gate_exit(27)
+    return 27
+  end
+  if not xhci_gate_line(xhci_gate_hid_descriptor_marker) then xhci_gate_exit(28)
+  if not xhci_hid_configure_endpoint(usb_device, command, event, hid, hid_ring, result) then
+    xhci_gate_exit(29)
+    return 29
+  end
+  if not xhci_control_set_configuration(usb_device, event, hid.configuration_value, transfer_result) then
+    xhci_gate_exit(30)
+    return 30
+  end
+  if not xhci_hid_set_boot_protocol(usb_device, event, hid, transfer_result) then
+    xhci_gate_exit(31)
+    return 31
+  end
+  if not xhci_gate_line(xhci_gate_hid_configured_marker) then xhci_gate_exit(32)
+  output_endpoint: ptr is ptr.add(device_dma.output_context, hid.endpoint_id * controller.context_size)
+  if (mem.read32(output_endpoint) & 7) != 1 then
+    xhci_gate_exit(43)
+    return 43
+  end
+  if not xhci_gate_line(xhci_gate_hid_running_marker) then xhci_gate_exit(44)
+  if hid.protocol != 1 then
+    xhci_gate_exit(33)
+    return 33
+  end
+  if not xhci_gate_line(xhci_gate_hid_ready_marker) then xhci_gate_exit(34)
+  report_trb: u64 is xhci_hid_post_report(usb_device, hid, hid_ring)
+  if report_trb == 0 then
+    xhci_gate_exit(35)
+    return 35
+  end
+  if not xhci_transfer_wait(event, enabled_slot, hid.endpoint_id, report_trb, transfer_result) then
+    xhci_gate_exit(36)
+    return 36
+  end
+  found_a: u64 is 0
+  report_index: u64 is 0
+  while report_index < hid.max_packet_size do
+    report_byte: u64 is mem.read8(ptr.add(device_dma.report, report_index))
+    xhci_gate_hex_byte(report_byte)
+    if report_index >= 2 and report_byte == 4 then found_a is 1
+    report_index += 1
+  end
+  serial_write_byte(1016, 10, 1000000)
+  if found_a == 0 then
+    xhci_gate_exit(37)
+    return 37
+  end
+  if not xhci_gate_line(xhci_gate_hid_report_marker) then xhci_gate_exit(38)
+  key_decoder: ptr[KeyEventDecoder] is xhci_gate_key_decoder
+  key_event: ptr[KeyEvent] is xhci_gate_key_event
+  if not key_event_decoder_init(key_decoder, xhci_gate_key_down, 65, key_event_key_hangul()) then xhci_gate_exit(45)
+  mem.write64(xhci_gate_key_cursor, 0)
+  decoded_a: u64 is 0
+  while usb_hid_keyboard_next_event(key_decoder, xhci_gate_key_previous, device_dma.report, hid.max_packet_size, xhci_gate_key_cursor, key_event) do
+    if key_event.physical_key == 30 and key_event.unicode == 97 and key_event.pressed != 0 then decoded_a is 1
+  end
+  if decoded_a == 0 then xhci_gate_exit(46)
+  if not xhci_gate_line(xhci_gate_hid_event_marker) then xhci_gate_exit(47)
+  if not xhci_disable_slot(command, event, enabled_slot, result) then
+    xhci_gate_exit(39)
+    return 39
+  end
+  if not xhci_gate_line(xhci_gate_command_marker) then xhci_gate_exit(40)
+  if not xhci_stop(controller) then
+    xhci_gate_exit(41)
+    return 41
+  end
+  if not xhci_gate_line(xhci_gate_done_marker) then xhci_gate_exit(42)
+  xhci_gate_exit(16)
+  return 0
+end

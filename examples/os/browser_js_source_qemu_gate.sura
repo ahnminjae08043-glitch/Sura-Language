@@ -1,0 +1,124 @@
+# Executed JavaScript source-to-bytecode compiler and VM gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/browser_js_source.sura"
+
+browser_js_source_gate_memory_map is static.zero(65536, 4096)
+browser_js_source_gate_code is static.struct(BrowserJsInstruction, 128)
+browser_js_source_gate_constants is static.struct(BrowserJsValue, 32)
+browser_js_source_gate_bindings is static.struct(BrowserJsBinding, 16)
+browser_js_source_gate_stack is static.struct(BrowserJsValue, 32)
+browser_js_source_gate_globals is static.struct(BrowserJsValue, 16)
+browser_js_source_gate_scratch is static.struct(BrowserJsValue)
+browser_js_source_gate_program is static.struct(BrowserJsProgram)
+browser_js_source_gate_compiler is static.struct(BrowserJsSourceCompiler)
+browser_js_source_gate_vm is static.struct(BrowserJsVm)
+browser_js_source_gate_source is static.utf8("const threshold = 10; let score = 7 * 5; const passed = score > threshold; if (passed) { let selected = score + 5; } else { let rejected = 1; } if (score < threshold) { let wrong = 2; } else { let fallback = 9; } const half = selected / 2; const same = \"sura\" === \"sura\";")
+browser_js_source_gate_assignment is static.utf8("let x=4;x=x+6;")
+browser_js_source_gate_undefined is static.utf8("let x = missing;")
+browser_js_source_gate_escape is static.utf8("let x = \"bad\\n\";")
+browser_js_source_gate_marker is static.utf8("SURA_BROWSER_JS_SOURCE_OK\r\n")
+
+browser_js_source_gate_map_size: usize is 65536
+browser_js_source_gate_map_key: u64 is 0
+browser_js_source_gate_descriptor_size: usize is 0
+browser_js_source_gate_descriptor_version: u32 is 0
+
+func browser_js_source_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func browser_js_source_gate_value(vm: ptr[BrowserJsVm], slot: u64, kind: u64, number: i64) do
+  value: ptr[BrowserJsValue] is browser_js_value_at(vm.globals, slot)
+  if value == 0 or value.kind != kind then return false
+  return value.number == number
+end
+
+func browser_js_source_gate_configure() do
+  compiler: ptr[BrowserJsSourceCompiler] is browser_js_source_gate_compiler
+  compiler.code is browser_js_source_gate_code
+  compiler.code_capacity is 128
+  compiler.constants is browser_js_source_gate_constants
+  compiler.constant_capacity is 32
+  compiler.bindings is browser_js_source_gate_bindings
+  compiler.binding_capacity is 16
+
+  vm: ptr[BrowserJsVm] is browser_js_source_gate_vm
+  vm.stack is browser_js_source_gate_stack
+  vm.stack_capacity is 32
+  vm.globals is browser_js_source_gate_globals
+  vm.global_capacity is 16
+  vm.scratch is browser_js_source_gate_scratch
+  vm.instruction_limit is 256
+  vm.host_context is 0
+  vm.host_callback is 0
+  return true
+end
+
+func browser_js_source_gate_run() do
+  compiler: ptr[BrowserJsSourceCompiler] is browser_js_source_gate_compiler
+  program: ptr[BrowserJsProgram] is browser_js_source_gate_program
+  vm: ptr[BrowserJsVm] is browser_js_source_gate_vm
+  if not browser_js_source_compile(browser_js_source_gate_source, 271, program, compiler) then return 1
+  if compiler.error != browser_js_source_error_none() or program.global_count != 9 then return 2
+  if program.code_count == 0 or program.code_count > 128 or program.constant_count != 10 then return 3
+  if not browser_js_vm_init(program, vm) or not browser_js_execute(vm) then return 4
+  if vm.error != browser_js_error_none() or vm.stack_count != 0 then return 5
+  if not browser_js_source_gate_value(vm, 0, browser_js_kind_number(), 10) then return 6
+  if not browser_js_source_gate_value(vm, 1, browser_js_kind_number(), 35) then return 7
+  if not browser_js_source_gate_value(vm, 2, browser_js_kind_boolean(), 1) then return 8
+  if not browser_js_source_gate_value(vm, 3, browser_js_kind_number(), 40) then return 9
+  if not browser_js_source_gate_value(vm, 4, browser_js_kind_undefined(), 0) then return 10
+  if not browser_js_source_gate_value(vm, 5, browser_js_kind_undefined(), 0) then return 11
+  if not browser_js_source_gate_value(vm, 6, browser_js_kind_number(), 9) then return 12
+  if not browser_js_source_gate_value(vm, 7, browser_js_kind_number(), 20) then return 13
+  if not browser_js_source_gate_value(vm, 8, browser_js_kind_boolean(), 1) then return 14
+
+  # Assignment to an existing binding stores the expression result.
+  if not browser_js_source_compile(browser_js_source_gate_assignment, 14, program, compiler) then return 15
+  if not browser_js_vm_init(program, vm) or not browser_js_execute(vm) then return 16
+  if not browser_js_source_gate_value(vm, 0, browser_js_kind_number(), 10) then return 17
+
+  # Unknown identifiers and unsupported string escapes fail at compile time.
+  if browser_js_source_compile(browser_js_source_gate_undefined, 16, program, compiler) then return 18
+  if compiler.error != browser_js_source_error_undefined() then return 19
+  if browser_js_source_compile(browser_js_source_gate_escape, 16, program, compiler) then return 20
+  if compiler.error != browser_js_source_error_token() then return 21
+
+  # Code output is capacity checked rather than writing past the caller buffer.
+  compiler.code_capacity is 2
+  if browser_js_source_compile(browser_js_source_gate_source, 271, program, compiler) then return 22
+  if compiler.error != browser_js_source_error_code_capacity() then return 23
+  compiler.code_capacity is 128
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global browser_js_source_gate_map_size, browser_js_source_gate_map_key
+  global browser_js_source_gate_descriptor_size, browser_js_source_gate_descriptor_version
+  uefi.write("Sura browser JavaScript source test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  browser_js_source_gate_configure()
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    browser_js_source_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(browser_js_source_gate_map_size), browser_js_source_gate_memory_map, addr_of(browser_js_source_gate_map_key), addr_of(browser_js_source_gate_descriptor_size), addr_of(browser_js_source_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(browser_js_source_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then browser_js_source_gate_exit(21)
+
+  status: u64 is browser_js_source_gate_run()
+  if status != 0 then browser_js_source_gate_exit(21 + status)
+  if not serial_write_buffer(1016, browser_js_source_gate_marker, 27, 1000000) then browser_js_source_gate_exit(42)
+  browser_js_source_gate_exit(16)
+  return 0
+end

@@ -1,0 +1,217 @@
+.name crystal-dungeon
+.entry start
+
+.data title ========================================
+.data title2        CRYSTAL DUNGEON : SVM32
+.data title3 ========================================
+.data choose Choose a gate by writing 1, 2, or 3 to choice.txt.
+.data gate1 [Gate 1] Ember Cave - easy monster, 100 reward
+.data gate2 [Gate 2] Ancient Forest - strong monster, 160 reward
+.data gate3 [Gate 3] Void Citadel - boss monster, 260 reward
+.data hit You strike the monster for:
+.data monster_left Monster HP remaining:
+.data hurt The monster strikes you for:
+.data player_left Player HP remaining:
+.data victory VICTORY! The crystal is yours.
+.data defeat DEFEAT... change the gate or try again.
+.data score_label Final score:
+.data turns_label Battle turns:
+.data new_high NEW HIGH SCORE:
+.data old_high Current high score:
+.data bad_choice Invalid choice. Use 1, 2, or 3.
+.data missing_choice choice.txt is missing. Create it before running.
+.data choice_path /home/user/games/crystal-dungeon/choice.txt
+.data last_path /home/user/games/crystal-dungeon/last-score.txt
+.data high_path /home/user/games/crystal-dungeon/high-score.txt
+.data mode_read r
+.data mode_write w
+
+start:
+MOVI R0 @title
+SYSCALL PRINT
+MOVI R0 @title2
+SYSCALL PRINT
+MOVI R0 @title3
+SYSCALL PRINT
+MOVI R0 @choose
+SYSCALL PRINT
+
+# Read the player's gate choice from the persistent virtual disk.
+MOVI R0 @choice_path
+MOVI R1 @mode_read
+SYSCALL OPEN
+CMP R0 0
+JL choice_missing
+MOV R5 R0
+MOV R0 R5
+MOVI R1 8
+SYSCALL READ
+MOV R6 R0
+MOV R0 R5
+SYSCALL CLOSE
+
+CMP R6 1
+JZ select_gate_1
+CMP R6 2
+JZ select_gate_2
+CMP R6 3
+JZ select_gate_3
+JMP choice_invalid
+
+select_gate_1:
+MOVI R0 @gate1
+SYSCALL PRINT
+MOVI R2 55
+MOVI R3 100
+MOVI R4 100
+MOVI R5 0
+JMP battle
+
+select_gate_2:
+MOVI R0 @gate2
+SYSCALL PRINT
+MOVI R2 85
+MOVI R3 100
+MOVI R4 160
+MOVI R5 0
+JMP battle
+
+select_gate_3:
+MOVI R0 @gate3
+SYSCALL PRINT
+MOVI R2 130
+MOVI R3 100
+MOVI R4 260
+MOVI R5 0
+JMP battle
+
+# R2=monster HP, R3=player HP, R4=reward, R5=turn counter.
+battle:
+INC R5
+MOVI R0 12
+MOVI R1 31
+SYSCALL RANDOM
+MOV R1 R0
+SUB R2 R1
+MOVI R0 @hit
+SYSCALL PRINT
+MOV R0 R1
+SYSCALL PRINT_NUMBER
+MOVI R0 @monster_left
+SYSCALL PRINT
+MOV R0 R2
+SYSCALL PRINT_NUMBER
+CMP R2 0
+JLE won
+
+MOVI R0 6
+MOVI R1 23
+SYSCALL RANDOM
+MOV R1 R0
+SUB R3 R1
+MOVI R0 @hurt
+SYSCALL PRINT
+MOV R0 R1
+SYSCALL PRINT_NUMBER
+MOVI R0 @player_left
+SYSCALL PRINT
+MOV R0 R3
+SYSCALL PRINT_NUMBER
+CMP R3 0
+JLE lost
+JMP battle
+
+won:
+MOVI R0 @victory
+SYSCALL PRINT
+ADD R4 R3
+SUB R4 R5
+JMP finish
+
+lost:
+MOVI R0 @defeat
+SYSCALL PRINT
+MOV R4 R5
+MOVI R1 5
+MUL R4 R1
+
+finish:
+MOVI R0 @score_label
+SYSCALL PRINT
+MOV R0 R4
+SYSCALL PRINT_NUMBER
+MOVI R0 @turns_label
+SYSCALL PRINT
+MOV R0 R5
+SYSCALL PRINT_NUMBER
+CALL save_last_score
+CALL update_high_score
+MOVI R0 0
+SYSCALL EXIT
+
+save_last_score:
+MOVI R0 @last_path
+MOVI R1 @mode_write
+SYSCALL OPEN
+CMP R0 0
+JL save_last_done
+MOV R6 R0
+MOV R0 R6
+MOV R1 R4
+SYSCALL WRITE
+MOV R0 R6
+SYSCALL CLOSE
+save_last_done:
+RET
+
+update_high_score:
+MOVI R0 @high_path
+MOVI R1 @mode_read
+SYSCALL OPEN
+CMP R0 0
+JL write_high_score
+MOV R6 R0
+MOV R0 R6
+MOVI R1 32
+SYSCALL READ
+MOV R7 R0
+MOV R0 R6
+SYSCALL CLOSE
+CMP R4 R7
+JG write_high_score
+MOVI R0 @old_high
+SYSCALL PRINT
+MOV R0 R7
+SYSCALL PRINT_NUMBER
+RET
+
+write_high_score:
+MOVI R0 @high_path
+MOVI R1 @mode_write
+SYSCALL OPEN
+CMP R0 0
+JL high_score_done
+MOV R6 R0
+MOV R0 R6
+MOV R1 R4
+SYSCALL WRITE
+MOV R0 R6
+SYSCALL CLOSE
+MOVI R0 @new_high
+SYSCALL PRINT
+MOV R0 R4
+SYSCALL PRINT_NUMBER
+high_score_done:
+RET
+
+choice_missing:
+MOVI R0 @missing_choice
+SYSCALL PRINT
+MOVI R0 2
+SYSCALL EXIT
+
+choice_invalid:
+MOVI R0 @bad_choice
+SYSCALL PRINT
+MOVI R0 2
+SYSCALL EXIT

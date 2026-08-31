@@ -1,0 +1,108 @@
+# Executed bounded HTML DOM tree and attribute gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/html_dom.sura"
+
+html_dom_gate_memory_map is static.zero(65536, 4096)
+html_dom_gate_nodes is static.zero(1280, 16)
+html_dom_gate_attributes is static.zero(512, 16)
+html_dom_gate_document is static.struct(HtmlDomDocument)
+html_dom_gate_source is static.utf8("<!doctype html><html><body class=\"page\"><h1>수라</h1><p id=p1>Hello <a href='/docs'>docs</a><br><img src=\"hero.png\" alt='그림'></p><!--x--></body></html>")
+html_dom_gate_hero is static.utf8("hero.png")
+html_dom_gate_korean is static.utf8("수라")
+html_dom_gate_bad is static.utf8("<div><!-- incomplete")
+html_dom_gate_form is static.utf8("<form action=\"/login\" method=\"post\"><label for=\"user\">User</label><input type=\"text\" name=\"user\" value=\"sura\" placeholder=\"Account\"><button type=\"submit\">Sign in</button></form>")
+html_dom_gate_script is static.utf8("<script>if (x < 3) { x = 3; }</script><p>ok</p>")
+html_dom_gate_marker is static.utf8("SURA_HTML_DOM_OK\r\n")
+
+html_dom_gate_map_size: usize is 65536
+html_dom_gate_map_key: u64 is 0
+html_dom_gate_descriptor_size: usize is 0
+html_dom_gate_descriptor_version: u32 is 0
+
+func html_dom_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global html_dom_gate_map_size, html_dom_gate_map_key
+  global html_dom_gate_descriptor_size, html_dom_gate_descriptor_version
+  uefi.write("Sura HTML DOM test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  document: ptr[HtmlDomDocument] is html_dom_gate_document
+  document.nodes is html_dom_gate_nodes
+  document.node_capacity is 16
+  document.attributes is html_dom_gate_attributes
+  document.attribute_capacity is 16
+  if not html_dom_parse(html_dom_gate_source, 157, document) then html_dom_gate_exit(1)
+  if document.node_count != 11 or document.attribute_count != 5 or document.current != 0 then html_dom_gate_exit(2)
+
+  root: ptr[HtmlDomNode] is html_dom_node(document, 0)
+  html: ptr[HtmlDomNode] is html_dom_node(document, 1)
+  body: ptr[HtmlDomNode] is html_dom_node(document, 2)
+  heading: ptr[HtmlDomNode] is html_dom_node(document, 3)
+  korean: ptr[HtmlDomNode] is html_dom_node(document, 4)
+  paragraph: ptr[HtmlDomNode] is html_dom_node(document, 5)
+  link: ptr[HtmlDomNode] is html_dom_node(document, 7)
+  line_break: ptr[HtmlDomNode] is html_dom_node(document, 9)
+  image: ptr[HtmlDomNode] is html_dom_node(document, 10)
+  if root.first_child != 1 or html.parent != 0 or html.first_child != 2 then html_dom_gate_exit(3)
+  if body.first_child != 3 or heading.next_sibling != 5 or paragraph.parent != 2 then html_dom_gate_exit(4)
+  if heading.first_child != 4 or korean.kind != 2 or korean.source_bytes != 6 then html_dom_gate_exit(5)
+  if not html_dom_token_equal(html_dom_gate_source, korean.source_start, korean.source_bytes, html_dom_gate_korean, 6) then html_dom_gate_exit(6)
+  if paragraph.first_child != 6 or link.parent != 5 or link.first_child != 8 then html_dom_gate_exit(7)
+  if line_break.tag != 14 or image.tag != 15 or image.next_sibling != u64("0xffffffffffffffff") then html_dom_gate_exit(8)
+
+  source_attribute: ptr[HtmlDomAttribute] is html_dom_find_attribute(document, 10, 4)
+  if source_attribute == 0 or source_attribute.has_value == 0 or source_attribute.source_bytes != 8 then html_dom_gate_exit(9)
+  if not html_dom_token_equal(html_dom_gate_source, source_attribute.source_start, source_attribute.source_bytes, html_dom_gate_hero, 8) then html_dom_gate_exit(10)
+  if html_dom_find_attribute(document, 10, 5) == 0 then html_dom_gate_exit(11)
+
+  document.node_capacity is 10
+  if html_dom_parse(html_dom_gate_source, 157, document) then html_dom_gate_exit(12)
+  document.node_capacity is 16
+  document.attribute_capacity is 4
+  if html_dom_parse(html_dom_gate_source, 157, document) then html_dom_gate_exit(13)
+  document.attribute_capacity is 16
+  if html_dom_parse(html_dom_gate_bad, 20, document) then html_dom_gate_exit(14)
+  if not html_dom_parse(html_dom_gate_form, 177, document) then html_dom_gate_exit(18)
+  if document.node_count != 7 or document.attribute_count != 8 then html_dom_gate_exit(19)
+  form: ptr[HtmlDomNode] is html_dom_node(document, 1)
+  label: ptr[HtmlDomNode] is html_dom_node(document, 2)
+  input: ptr[HtmlDomNode] is html_dom_node(document, 4)
+  button: ptr[HtmlDomNode] is html_dom_node(document, 5)
+  if form.tag != 30 or label.tag != 33 or input.tag != 31 or button.tag != 32 then html_dom_gate_exit(20)
+  if form.first_child != 2 or label.next_sibling != 4 or input.next_sibling != 5 then html_dom_gate_exit(21)
+  if html_dom_find_attribute(document, 1, 14) == 0 or html_dom_find_attribute(document, 1, 15) == 0 then html_dom_gate_exit(22)
+  if html_dom_find_attribute(document, 2, 19) == 0 then html_dom_gate_exit(23)
+  if html_dom_find_attribute(document, 4, 9) == 0 or html_dom_find_attribute(document, 4, 10) == 0 or html_dom_find_attribute(document, 4, 11) == 0 or html_dom_find_attribute(document, 4, 16) == 0 then html_dom_gate_exit(24)
+  if html_dom_find_attribute(document, 5, 9) == 0 then html_dom_gate_exit(25)
+  if not html_dom_parse(html_dom_gate_script, 47, document) then html_dom_gate_exit(26)
+  if document.node_count != 5 or document.attribute_count != 0 or document.current != 0 then html_dom_gate_exit(27)
+  script: ptr[HtmlDomNode] is html_dom_node(document, 1)
+  script_text: ptr[HtmlDomNode] is html_dom_node(document, 2)
+  following_paragraph: ptr[HtmlDomNode] is html_dom_node(document, 3)
+  if script.tag != 17 or script.first_child != 2 or script_text.kind != 2 or script_text.source_bytes != 21 then html_dom_gate_exit(28)
+  if mem.read8(ptr.add(html_dom_gate_script, script_text.source_start + 6)) != 60 then html_dom_gate_exit(29)
+  if script.next_sibling != 3 or following_paragraph.tag != 5 or following_paragraph.first_child != 4 then html_dom_gate_exit(30)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    html_dom_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(html_dom_gate_map_size), html_dom_gate_memory_map, addr_of(html_dom_gate_map_key), addr_of(html_dom_gate_descriptor_size), addr_of(html_dom_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(html_dom_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then html_dom_gate_exit(15)
+  if not serial_write_buffer(1016, html_dom_gate_marker, 18, 1000000) then html_dom_gate_exit(17)
+  html_dom_gate_exit(16)
+  return 0
+end

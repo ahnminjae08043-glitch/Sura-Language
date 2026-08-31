@@ -1,0 +1,83 @@
+# Persistent virtual-disk controller.
+#
+# The guest shell can only save to the host path selected when SuraOS starts.
+# Guest paths and host paths are deliberately kept separate.
+
+func persistence_create(host_path, enabled, autosave) do
+  return {host_path: host_path, enabled: enabled, autosave: autosave, loaded: false, new_disk: false, loads: 0, saves: 0, failures: 0, last_error: "", last_action: "none", last_saved_tick: -1}
+end
+
+func persistence_status(kernel) do
+  controller is kernel.persistence
+  if controller == nil then
+    return {enabled: false, autosave: false, loaded: false, new_disk: false, host_path: "", dirty: kernel.fs.dirty, loads: 0, saves: 0, failures: 0, last_error: "", last_action: "none", last_saved_tick: -1}
+  end
+  return {enabled: controller.enabled, autosave: controller.autosave, loaded: controller.loaded, new_disk: controller.new_disk, host_path: controller.host_path, dirty: kernel.fs.dirty, loads: controller.loads, saves: controller.saves, failures: controller.failures, last_error: controller.last_error, last_action: controller.last_action, last_saved_tick: controller.last_saved_tick}
+end
+
+func persistence_record_failure(controller, message, action) do
+  controller.failures += 1
+  controller.last_error is message
+  controller.last_action is action
+end
+
+func persistence_load(kernel) do
+  controller is kernel.persistence
+  if controller == nil or not controller.enabled then return osutil_fail(SURAOS_ERR_PERMISSION, "persistent disk is disabled")
+  if controller.host_path.trim().len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "disk image path is empty")
+  if not file_exists(controller.host_path) then
+    controller.new_disk is true
+    controller.loaded is false
+    controller.last_action is "new"
+    controller.last_error is ""
+    return osutil_ok({created: true, path: controller.host_path})
+  end
+  result is fs_load_host(controller.host_path)
+  if not result.ok then
+    persistence_record_failure(controller, result.message, "load-failed")
+    return result
+  end
+  kernel.fs is result.value
+  controller.loaded is true
+  controller.new_disk is false
+  controller.loads += 1
+  controller.last_action is "loaded"
+  controller.last_error is ""
+  return osutil_ok({created: false, path: controller.host_path})
+end
+
+func persistence_save(kernel, force) do
+  controller is kernel.persistence
+  if controller == nil or not controller.enabled then return osutil_fail(SURAOS_ERR_PERMISSION, "persistent disk is disabled")
+  if controller.host_path.trim().len() == 0 then return osutil_fail(SURAOS_ERR_INVALID, "disk image path is empty")
+  if not force and not kernel.fs.dirty then
+    controller.last_action is "clean"
+    return osutil_ok({saved: false, path: controller.host_path})
+  end
+  result is fs_save_host(kernel.fs, controller.host_path)
+  if not result.ok then
+    persistence_record_failure(controller, result.message, "save-failed")
+    return result
+  end
+  controller.saves += 1
+  controller.new_disk is false
+  controller.last_saved_tick is kernel.clock.tick
+  controller.last_action is "saved"
+  controller.last_error is ""
+  return osutil_ok({saved: true, path: controller.host_path})
+end
+
+func persistence_autosave(kernel) do
+  controller is kernel.persistence
+  if controller == nil or not controller.enabled or not controller.autosave then
+    return osutil_ok({saved: false, path: ""})
+  end
+  return persistence_save(kernel, false)
+end
+
+func persistence_set_autosave(kernel, enabled) do
+  controller is kernel.persistence
+  if controller == nil or not controller.enabled then return osutil_fail(SURAOS_ERR_PERMISSION, "persistent disk is disabled")
+  controller.autosave is enabled
+  return osutil_ok(enabled)
+end

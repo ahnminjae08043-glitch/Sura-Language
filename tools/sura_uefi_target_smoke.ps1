@@ -9,6 +9,8 @@ param(
     [string]$DesktopAppsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/desktop_apps_features.sura"),
     [string]$RtcSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/rtc_features.sura"),
     [string]$Ps2Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ps2_features.sura"),
+    [string]$UsbHidSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/usb_hid_features.sura"),
+    [string]$TextInputSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/text_input_features.sura"),
     [string]$MemorySource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memory_kernel.sura"),
     [string]$SchedulerSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/scheduler_features.sura"),
     [string]$PreemptiveSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/preemptive_timer_features.sura"),
@@ -16,16 +18,22 @@ param(
     [string]$UserModeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_mode_features.sura"),
     [string]$ProcessElfSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/process_elf_features.sura"),
     [string]$UserProcessSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/user_process_features.sura"),
+    [string]$IpcSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ipc_features.sura"),
+    [string]$ProcessSyscallSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/process_syscall_features.sura"),
     [string]$PciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pci_features.sura"),
     [string]$AcpiSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/acpi_features.sura"),
     [string]$ApStartupSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ap_startup_features.sura"),
     [string]$BlockSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/block_features.sura"),
     [string]$Fat32Source = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/fat32_features.sura"),
     [string]$VfsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/vfs_features.sura"),
+    [string]$MemFsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/memfs_features.sura"),
+    [string]$SuraFsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/surafs_qemu_gate.sura"),
+    [string]$IntegerSemanticsSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/integer_semantics_qemu_gate.sura"),
     [string]$GptSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/gpt_features.sura"),
     [string]$PartitionSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/partition_features.sura"),
     [string]$AhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ahci_features.sura"),
     [string]$NvmeSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/nvme_features.sura"),
+    [string]$XhciSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/xhci_features.sura"),
     [string]$PcieSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/pcie_features.sura"),
     [string]$IoApicSource = (Join-Path (Split-Path -Parent $PSScriptRoot) "examples/os/ioapic_features.sura")
 )
@@ -101,6 +109,12 @@ try {
     if (-not (Test-Path -LiteralPath $Ps2Source)) {
         throw "Sura PS/2 feature source not found: $Ps2Source"
     }
+    if (-not (Test-Path -LiteralPath $UsbHidSource)) {
+        throw "Sura USB HID feature source not found: $UsbHidSource"
+    }
+    if (-not (Test-Path -LiteralPath $TextInputSource)) {
+        throw "Sura text-input feature source not found: $TextInputSource"
+    }
     if (-not (Test-Path -LiteralPath $MemorySource)) {
         throw "Sura freestanding memory source not found: $MemorySource"
     }
@@ -122,6 +136,12 @@ try {
     if (-not (Test-Path -LiteralPath $UserProcessSource)) {
         throw "Sura freestanding user-process source not found: $UserProcessSource"
     }
+    if (-not (Test-Path -LiteralPath $IpcSource)) {
+        throw "Sura freestanding IPC source not found: $IpcSource"
+    }
+    if (-not (Test-Path -LiteralPath $ProcessSyscallSource)) {
+        throw "Sura freestanding process-syscall source not found: $ProcessSyscallSource"
+    }
     if (-not (Test-Path -LiteralPath $PciSource)) {
         throw "Sura freestanding PCI source not found: $PciSource"
     }
@@ -140,6 +160,15 @@ try {
     if (-not (Test-Path -LiteralPath $VfsSource)) {
         throw "Sura freestanding VFS source not found: $VfsSource"
     }
+    if (-not (Test-Path -LiteralPath $MemFsSource)) {
+        throw "Sura freestanding memfs source not found: $MemFsSource"
+    }
+    if (-not (Test-Path -LiteralPath $SuraFsSource)) {
+        throw "Sura freestanding SuraFS source not found: $SuraFsSource"
+    }
+    if (-not (Test-Path -LiteralPath $IntegerSemanticsSource)) {
+        throw "Sura freestanding integer-semantics source not found: $IntegerSemanticsSource"
+    }
     if (-not (Test-Path -LiteralPath $GptSource)) {
         throw "Sura freestanding GPT source not found: $GptSource"
     }
@@ -151,6 +180,9 @@ try {
     }
     if (-not (Test-Path -LiteralPath $NvmeSource)) {
         throw "Sura freestanding NVMe source not found: $NvmeSource"
+    }
+    if (-not (Test-Path -LiteralPath $XhciSource)) {
+        throw "Sura freestanding xHCI source not found: $XhciSource"
     }
     if (-not (Test-Path -LiteralPath $PcieSource)) {
         throw "Sura freestanding PCIe source not found: $PcieSource"
@@ -431,6 +463,37 @@ try {
         throw "Freestanding PS/2 feature image is missing its diagnostic"
     }
 
+    $usbHidEfi = Join-Path $temp "USB_HID.EFI"
+    $usbHidOutput = & $Engine --target uefi-x86_64 --out $usbHidEfi $UsbHidSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding USB HID feature compile failed:`n$($usbHidOutput -join "`n")"
+    }
+    $usbHidBytes = [System.IO.File]::ReadAllBytes($usbHidEfi)
+    if ($usbHidBytes.Length -lt 20000 -or
+        $usbHidBytes[0] -ne 0x4d -or $usbHidBytes[1] -ne 0x5a) {
+        throw "Freestanding USB HID feature image is invalid"
+    }
+    $usbHidUtf16 = [System.Text.Encoding]::Unicode.GetString($usbHidBytes)
+    if ($usbHidUtf16 -notmatch "Sura USB HID feature test") {
+        throw "Freestanding USB HID feature image is missing its diagnostic"
+    }
+
+    $textInputEfi = Join-Path $temp "TEXT_INPUT.EFI"
+    $textInputOutput = & $Engine --target uefi-x86_64 --out $textInputEfi $TextInputSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding text-input feature compile failed:`n$($textInputOutput -join "`n")"
+    }
+    $textInputBytes = [System.IO.File]::ReadAllBytes($textInputEfi)
+    if ($textInputBytes.Length -lt 90000 -or
+        $textInputBytes[0] -ne 0x4d -or $textInputBytes[1] -ne 0x5a) {
+        throw "Freestanding text-input feature image is invalid"
+    }
+    $textInputUtf16 = [System.Text.Encoding]::Unicode.GetString($textInputBytes)
+    if ($textInputUtf16 -notmatch "Sura Unicode and Korean text input test" -or
+        -not (Test-ByteSequence $textInputBytes ([System.Text.Encoding]::ASCII.GetBytes("SURA_TEXT_INPUT_OK")))) {
+        throw "Freestanding text-input feature image is missing its diagnostics"
+    }
+
     $memoryEfi = Join-Path $temp "MEMORY.EFI"
     $memoryOutput = & $Engine --target uefi-x86_64 --out $memoryEfi $MemorySource 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -607,6 +670,38 @@ try {
         }
     }
 
+    $ipcEfi = Join-Path $temp "IPC.EFI"
+    $ipcOutput = & $Engine --target uefi-x86_64 --out $ipcEfi $IpcSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding IPC feature compile failed:`n$($ipcOutput -join "`n")"
+    }
+    $ipcBytes = [System.IO.File]::ReadAllBytes($ipcEfi)
+    if ($ipcBytes.Length -lt 8000 -or
+        $ipcBytes[0] -ne 0x4d -or $ipcBytes[1] -ne 0x5a) {
+        throw "Freestanding IPC feature image is invalid"
+    }
+    $ipcUtf16 = [System.Text.Encoding]::Unicode.GetString($ipcBytes)
+    if ($ipcUtf16 -notmatch "Sura checked IPC event-queue feature test" -or
+        -not (Test-ByteSequence $ipcBytes ([System.Text.Encoding]::ASCII.GetBytes("SURA_IPC_QUEUE_OK")))) {
+        throw "Freestanding IPC feature image is missing its diagnostics"
+    }
+
+    $processSyscallEfi = Join-Path $temp "PROCESS_SYSCALL.EFI"
+    $processSyscallOutput = & $Engine --target uefi-x86_64 --out $processSyscallEfi $ProcessSyscallSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding process-syscall feature compile failed:`n$($processSyscallOutput -join "`n")"
+    }
+    $processSyscallBytes = [System.IO.File]::ReadAllBytes($processSyscallEfi)
+    if ($processSyscallBytes.Length -lt 250000 -or
+        $processSyscallBytes[0] -ne 0x4d -or $processSyscallBytes[1] -ne 0x5a) {
+        throw "Freestanding process-syscall feature image is invalid"
+    }
+    $processSyscallUtf16 = [System.Text.Encoding]::Unicode.GetString($processSyscallBytes)
+    if ($processSyscallUtf16 -notmatch "Sura checked process syscall boundary test" -or
+        -not (Test-ByteSequence $processSyscallBytes ([System.Text.Encoding]::ASCII.GetBytes("SURA_PROCESS_SYSCALL_OK")))) {
+        throw "Freestanding process-syscall feature image is missing its diagnostics"
+    }
+
     $pciEfi = Join-Path $temp "PCI.EFI"
     $pciOutput = & $Engine --target uefi-x86_64 --out $pciEfi $PciSource 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -737,6 +832,59 @@ try {
         throw "Freestanding VFS feature image is missing its mount-dispatch path"
     }
 
+    $memfsEfi = Join-Path $temp "MEMFS.EFI"
+    $memfsOutput = & $Engine --target uefi-x86_64 --out $memfsEfi $MemFsSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding memfs feature compile failed:`n$($memfsOutput -join "`n")"
+    }
+    $memfsBytes = [System.IO.File]::ReadAllBytes($memfsEfi)
+    if ($memfsBytes.Length -lt 100000 -or
+        $memfsBytes[0] -ne 0x4d -or $memfsBytes[1] -ne 0x5a) {
+        throw "Freestanding memfs feature image is invalid"
+    }
+    $memfsUtf16 = [System.Text.Encoding]::Unicode.GetString($memfsBytes)
+    if ($memfsUtf16 -notmatch "Sura writable UTF-8 memfs feature test") {
+        throw "Freestanding memfs feature image is missing its diagnostic"
+    }
+    $memfsMarker = [System.Text.Encoding]::ASCII.GetBytes("SURA_MEMFS_MUTATION_OK")
+    if (-not (Test-ByteSequence $memfsBytes $memfsMarker)) {
+        throw "Freestanding memfs feature image is missing its executed-gate marker"
+    }
+
+    $surafsEfi = Join-Path $temp "SURAFS.EFI"
+    $surafsOutput = & $Engine --target uefi-x86_64 --out $surafsEfi $SuraFsSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding SuraFS feature compile failed:`n$($surafsOutput -join "`n")"
+    }
+    $surafsBytes = [System.IO.File]::ReadAllBytes($surafsEfi)
+    if ($surafsBytes.Length -lt 400000 -or
+        $surafsBytes[0] -ne 0x4d -or $surafsBytes[1] -ne 0x5a) {
+        throw "Freestanding SuraFS feature image is invalid"
+    }
+    $surafsUtf16 = [System.Text.Encoding]::Unicode.GetString($surafsBytes)
+    if ($surafsUtf16 -notmatch "SuraFS persistent recovery feature test") {
+        throw "Freestanding SuraFS feature image is missing its diagnostic"
+    }
+    $surafsMarker = [System.Text.Encoding]::ASCII.GetBytes("SURA_SURAFS_RECOVERY_OK")
+    if (-not (Test-ByteSequence $surafsBytes $surafsMarker)) {
+        throw "Freestanding SuraFS feature image is missing its recovery marker"
+    }
+
+    $integerSemanticsEfi = Join-Path $temp "INTEGER_SEMANTICS.EFI"
+    $integerSemanticsOutput = & $Engine --target uefi-x86_64 --out $integerSemanticsEfi $IntegerSemanticsSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding integer-semantics compile failed:`n$($integerSemanticsOutput -join "`n")"
+    }
+    $integerSemanticsBytes = [System.IO.File]::ReadAllBytes($integerSemanticsEfi)
+    if ($integerSemanticsBytes.Length -lt 60000 -or
+        $integerSemanticsBytes[0] -ne 0x4d -or $integerSemanticsBytes[1] -ne 0x5a) {
+        throw "Freestanding integer-semantics image is invalid"
+    }
+    $integerSemanticsMarker = [System.Text.Encoding]::ASCII.GetBytes("SURA_INTEGER_SEMANTICS_OK")
+    if (-not (Test-ByteSequence $integerSemanticsBytes $integerSemanticsMarker)) {
+        throw "Freestanding integer-semantics image is missing its executed-gate marker"
+    }
+
     $gptEfi = Join-Path $temp "GPT.EFI"
     $gptOutput = & $Engine --target uefi-x86_64 --out $gptEfi $GptSource 2>&1
     if ($LASTEXITCODE -ne 0) {
@@ -825,6 +973,30 @@ try {
     )) {
         if (-not (Test-ByteSequence $nvmeBytes $requiredSequence)) {
             throw "Freestanding NVMe feature image is missing a required queue or PRP value"
+        }
+    }
+
+    $xhciEfi = Join-Path $temp "XHCI.EFI"
+    $xhciOutput = & $Engine --target uefi-x86_64 --out $xhciEfi $XhciSource 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Freestanding xHCI feature compile failed:`n$($xhciOutput -join "`n")"
+    }
+    $xhciBytes = [System.IO.File]::ReadAllBytes($xhciEfi)
+    if ($xhciBytes.Length -lt 50000 -or
+        $xhciBytes[0] -ne 0x4d -or $xhciBytes[1] -ne 0x5a) {
+        throw "Freestanding xHCI feature image is invalid"
+    }
+    $xhciUtf16 = [System.Text.Encoding]::Unicode.GetString($xhciBytes)
+    if ($xhciUtf16 -notmatch "Sura xHCI feature test") {
+        throw "Freestanding xHCI feature image is missing its diagnostic"
+    }
+    foreach ($requiredSequence in @(
+        ([byte[]](0x00, 0x10, 0x40, 0x00)),
+        ([byte[]](0x00, 0x20, 0x40, 0x00)),
+        ([byte[]](0x00, 0x01, 0x00, 0x00))
+    )) {
+        if (-not (Test-ByteSequence $xhciBytes $requiredSequence)) {
+            throw "Freestanding xHCI feature image is missing a required DMA-ring value"
         }
     }
 
@@ -1197,7 +1369,7 @@ end
         -Pattern "circular freestanding import" `
         -Description "Circular freestanding import"
 
-    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), desktop_shell=$($desktopShellBytes.Length), desktop_apps=$($desktopAppsBytes.Length), rtc=$($rtcBytes.Length), ps2=$($ps2Bytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length) bytes)"
+    "sura_uefi_target_smoke: PASS (hello=$($bytes.Length), features=$($featureBytes.Length), framebuffer=$($framebufferBytes.Length), terminal=$($textTerminalBytes.Length), window=$($windowManagerBytes.Length), desktop_shell=$($desktopShellBytes.Length), desktop_apps=$($desktopAppsBytes.Length), rtc=$($rtcBytes.Length), ps2=$($ps2Bytes.Length), usb_hid=$($usbHidBytes.Length), text_input=$($textInputBytes.Length), integer_semantics=$($integerSemanticsBytes.Length), memory=$($memoryBytes.Length), scheduler=$($schedulerBytes.Length), preempt=$($preemptiveBytes.Length), syscall=$($syscallBytes.Length), user=$($userModeBytes.Length), process_elf=$($processElfBytes.Length), user_process=$($userProcessBytes.Length), ipc=$($ipcBytes.Length), process_syscall=$($processSyscallBytes.Length), pci=$($pciBytes.Length), pcie=$($pcieBytes.Length), acpi=$($acpiBytes.Length), ioapic=$($ioApicBytes.Length), ap=$($apStartupBytes.Length), block=$($blockBytes.Length), fat32=$($fat32Bytes.Length), vfs=$($vfsBytes.Length), memfs=$($memfsBytes.Length), surafs=$($surafsBytes.Length), gpt=$($gptBytes.Length), partition=$($partitionBytes.Length), ahci=$($ahciBytes.Length), nvme=$($nvmeBytes.Length), xhci=$($xhciBytes.Length) bytes)"
 }
 finally {
     if (Test-Path -LiteralPath $temp) {

@@ -17,6 +17,8 @@ import "../src/packages.sura"
 import "../src/network.sura"
 import "../src/monitor.sura"
 import "../src/snapshots.sura"
+import "../src/persistence.sura"
+import "../src/languages.sura"
 import "../src/kernel.sura"
 import "../src/bootloader.sura"
 import "../src/shell.sura"
@@ -108,6 +110,45 @@ imported_disk is fs_import(disk_data)
 assert_eq(imported_disk.ok, true)
 assert_eq(fs_validate(imported_disk.value).ok, true)
 
+# Capacity enforcement is atomic: failed writes preserve old content and do not
+# leave empty files behind.
+capacity_disk is fs_create(0)
+fs_format_default(capacity_disk, 0)
+assert_eq(fs_write_file(capacity_disk, "/home/user/keep.txt", "old", "user", "/", 1).ok, true)
+capacity_disk.capacity is capacity_disk.used
+full_overwrite is fs_write_file(capacity_disk, "/home/user/keep.txt", "a longer replacement", "user", "/", 2)
+assert_eq(full_overwrite.ok, false)
+assert_eq(full_overwrite.code, SURAOS_ERR_NO_SPACE)
+assert_eq(fs_read_file(capacity_disk, "/home/user/keep.txt", "user", "/").value, "old")
+full_create is fs_write_file(capacity_disk, "/home/user/partial.txt", "x", "user", "/", 3)
+assert_eq(full_create.ok, false)
+assert_eq(fs_get(capacity_disk, "/home/user/partial.txt", "/") == nil, true)
+assert_eq(fs_write_file(capacity_disk, "/home/user/keep.txt", "", "user", "/", 4).ok, true)
+assert_eq(fs_pressure(capacity_disk).state != "full", true)
+full_kernel is kernel_create(1024 * 1024, 4, 76)
+full_filesystem is full_kernel.fs
+full_filesystem.capacity is full_filesystem.used
+language_full_result is language_install(full_kernel.languages, full_kernel, "sura-mini", "user")
+assert_eq(language_full_result.ok, false)
+assert_eq(language_full_result.code, SURAOS_ERR_NO_SPACE)
+assert_eq(fs_get(full_kernel.fs, language_install_path("user", "sura-mini"), "/") == nil, true)
+package_full_result is pkg_install(full_kernel.packages, full_kernel, "sura-base", "1.0.0")
+assert_eq(package_full_result.ok, false)
+assert_eq(package_full_result.code, SURAOS_ERR_NO_SPACE)
+
+# A versioned host image restores the same guest files into a new kernel.
+persistence_path is "suraos-persistence-test.disk.json"
+if file_exists(persistence_path) then file_delete(persistence_path)
+persistence_kernel is kernel_create(1024 * 1024, 4, 77)
+persistence_kernel.persistence is persistence_create(persistence_path, true, true)
+assert_eq(fs_write_file(persistence_kernel.fs, "/home/user/saved.txt", "survives restart", "user", "/", 1).ok, true)
+assert_eq(persistence_save(persistence_kernel, true).ok, true)
+restored_kernel is kernel_create(1024 * 1024, 4, 78)
+restored_kernel.persistence is persistence_create(persistence_path, true, true)
+assert_eq(persistence_load(restored_kernel).ok, true)
+assert_eq(fs_read_file(restored_kernel.fs, "/home/user/saved.txt", "user", "/").value, "survives restart")
+file_delete(persistence_path)
+
 # Users, groups, login sessions and capability checks.
 security is security_create()
 security_bootstrap(security)
@@ -174,6 +215,21 @@ assert_eq(fs_get(kernel.fs, "/usr/share/doc/sura-manual/quickstart.txt", "/") !=
 assert_eq(pkg_verify(kernel.packages, kernel, "").ok, true)
 assert_eq(pkg_required_by(kernel.packages, "sura-base")[0], "sura-manual")
 assert_eq(pkg_remove(kernel.packages, kernel, "sura-base", false).ok, false)
+
+# Guest languages install to the virtual disk and execute virtual source files.
+mini_install is language_install(kernel.languages, kernel, "sura-mini", "user")
+assert_eq(mini_install.ok, true)
+mini_source is "set value 6\nmul value 7\nprint answer=$value\nwrite result.txt $value\n"
+assert_eq(fs_write_file(kernel.fs, "/home/user/program.sura", mini_source, "user", "/", kernel.clock.tick).ok, true)
+mini_run is language_run_file(kernel.languages, kernel, "/home/user/program.sura", "user", "/home/user", "")
+assert_eq(mini_run.ok, true)
+assert_eq(mini_run.value.output[0], "answer=42")
+assert_eq(fs_read_file(kernel.fs, "/home/user/result.txt", "user", "/").value, "42")
+svm_install is language_install(kernel.languages, kernel, "svm32", "user")
+assert_eq(svm_install.ok, true)
+svm_run is language_run_file(kernel.languages, kernel, svm_install.value.example, "user", "/", "")
+assert_eq(svm_run.ok, true)
+assert_eq(svm_run.value.exit_code, 0)
 
 # Virtual loopback network, route lookup, firewall and sockets.
 assert_eq(net_ipv4_valid("127.0.0.1"), true)

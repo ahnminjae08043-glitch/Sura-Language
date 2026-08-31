@@ -1,0 +1,45 @@
+# Executable xHCI DMA-layout and command/event-ring self-check.
+# PCI discovery, ownership handoff, reset, run, and command submission compile
+# here; tools/sura_xhci_qemu_gate.ps1 executes them against QEMU's controller.
+
+import "../../stdlib/freestanding/xhci.sura"
+
+xhci_feature_controller is static.struct(XhciController)
+xhci_feature_device is static.struct(PciDevice)
+xhci_feature_dma is static.struct(XhciDma)
+xhci_feature_command is static.struct(XhciCommandRing)
+xhci_feature_event is static.struct(XhciEventRing)
+xhci_feature_result is static.struct(XhciCommandResult)
+xhci_feature_memory is static.zero(16384, 4096)
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  uefi.write("Sura xHCI feature test")
+  uefi.newline()
+  dma: ptr[XhciDma] is xhci_feature_dma
+  controller: ptr[XhciController] is xhci_feature_controller
+  command: ptr[XhciCommandRing] is xhci_feature_command
+  event: ptr[XhciEventRing] is xhci_feature_event
+  if not xhci_dma_configure(dma, xhci_feature_memory, u64("0x00400000"), 16384) then return 1
+  if not xhci_command_ring_init(command, controller, dma) then return 2
+  if not xhci_event_ring_init(event, controller, dma) then return 3
+  link: ptr is ptr.add(command.trbs, 255 * 16)
+  if mem.read64(link) != u64("0x00401000") then return 4
+  if mem.read32(ptr.add(link, 12)) != ((6 << 10) | 3) then return 5
+  if mem.read64(dma.erst) != u64("0x00402000") then return 6
+  if mem.read32(ptr.add(dma.erst, 8)) != 256 then return 7
+  if xhci_scratchpad_count((3 << 27) | (7 << 21)) != 103 then return 8
+
+  if 0 == 1 then
+    device: ptr[PciDevice] is xhci_feature_device
+    result: ptr[XhciCommandResult] is xhci_feature_result
+    found: bool is xhci_pci_find(device)
+    bar: u64 is xhci_pci_bar_physical(device)
+    enabled: bool is xhci_pci_enable(device)
+    attached: bool is xhci_controller_attach(controller, bar, 1000000)
+    started: bool is xhci_controller_start(controller, dma, command, event, 8)
+    slot_enabled: bool is xhci_enable_slot(command, event, result)
+    slot_disabled: bool is xhci_disable_slot(command, event, result.slot_id, result)
+    stopped: bool is xhci_stop(controller)
+  end
+  return 0
+end

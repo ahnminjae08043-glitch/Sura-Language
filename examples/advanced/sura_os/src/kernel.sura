@@ -18,7 +18,8 @@ func kernel_create(memory_size, quantum, seed) do
   monitor is monitor_create(256)
   monitor_install_default_rules(monitor)
   snapshots is snapshot_manager_create(16)
-  return {name: SURAOS_NAME, version: SURAOS_VERSION, architecture: SURAOS_ARCH, booted: false, shutdown_requested: false, shutdown_reason: "", panic: nil, clock: system_clock, memory: mem_create(memory_size), fs: filesystem, devices: devices, security: security, scheduler: scheduler, log: log, processes: {}, process_count: 0, next_pid: 1, total_created: 0, total_exited: 0, current_user: "user", session_id: -1, programs: {}, next_message_id: 1, syscalls: 0, interrupts: 0, boot_messages: [], config: {hostname: "sura-machine", max_cycles: 10000, reap_automatically: false}, services: services, packages: packages, network: network, monitor: monitor, snapshots: snapshots, bootloader: nil}
+  languages is language_manager_create()
+  return {name: SURAOS_NAME, version: SURAOS_VERSION, architecture: SURAOS_ARCH, booted: false, shutdown_requested: false, shutdown_reason: "", panic: nil, clock: system_clock, memory: mem_create(memory_size), fs: filesystem, devices: devices, security: security, scheduler: scheduler, log: log, processes: {}, process_count: 0, next_pid: 1, total_created: 0, total_exited: 0, current_user: "user", session_id: -1, programs: {}, next_message_id: 1, syscalls: 0, interrupts: 0, boot_messages: [], config: {hostname: "sura-machine", max_cycles: 10000, reap_automatically: false}, services: services, packages: packages, network: network, monitor: monitor, snapshots: snapshots, languages: languages, persistence: nil, bootloader: nil}
 end
 
 func kernel_boot_message(kernel, message) do

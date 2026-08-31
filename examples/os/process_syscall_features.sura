@@ -1,0 +1,145 @@
+# Firmware-executed checked process syscall and IPC boundary test.
+#
+# It builds a real checked user address space, copies a forged message from
+# user memory, authenticates the sender, delivers it to another process queue,
+# and copies it back to a checked user destination. Yield/exit entry paths are
+# compiled and installed but are only entered after a real ring-3 launch.
+
+import "../../stdlib/freestanding/process_syscall.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+process_syscall_state is static.struct(ProcessSyscallState)
+process_syscall_scratch is static.struct(IpcMessage)
+process_syscall_table is static.struct(SoftwareSyscallTable)
+process_syscall_handlers is static.u64([0, 0, 0, 0, 0, 0, 0, 0], 8)
+process_syscall_idt is static.zero(4096, 16)
+
+process_syscall_scheduler is static.struct(UserProcessScheduler)
+process_syscall_processes is static.struct(UserProcess, 2)
+process_syscall_queue is static.struct(IpcQueue)
+process_syscall_queue_storage is static.struct(IpcMessage, 2)
+process_syscall_receiver_kernel_stack is static.zero(4096, 16)
+
+process_syscall_allocator is static.struct(PhysicalAllocator)
+process_syscall_space is static.struct(ProcessAddressSpace)
+process_syscall_buffers is static.struct(ProcessSpaceBuffers)
+process_syscall_kernel_root is static.zero(4096, 4096)
+process_syscall_arena is static.zero(131072, 4096)
+process_syscall_bitmap is static.zero(16, 16)
+process_syscall_owned_pages is static.zero(512, 16)
+process_syscall_mappings is static.struct(ProcessMapping, 8)
+process_syscall_input is static.struct(IpcMessage)
+process_syscall_output is static.struct(IpcMessage)
+
+process_syscall_memory_map is static.zero(65536, 4096)
+process_syscall_marker is static.utf8("SURA_PROCESS_SYSCALL_OK\r\n")
+process_syscall_map_size: usize is 65536
+process_syscall_map_key: u64 is 0
+process_syscall_descriptor_size: usize is 0
+process_syscall_descriptor_version: u32 is 0
+
+func process_syscall_qemu_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global process_syscall_map_size, process_syscall_map_key
+  global process_syscall_descriptor_size, process_syscall_descriptor_version
+  global user_process_scheduler_active
+  uefi.write("Sura checked process syscall boundary test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 20
+
+  allocator: ptr[PhysicalAllocator] is process_syscall_allocator
+  if not pmem_reset(allocator, process_syscall_bitmap, 16, process_syscall_arena, 32) then return 1
+  if not pmem_release_range(allocator, process_syscall_arena, 32) then return 2
+
+  buffers: ptr[ProcessSpaceBuffers] is process_syscall_buffers
+  buffers.owned_pages is process_syscall_owned_pages
+  buffers.owned_capacity is 64
+  buffers.mappings is process_syscall_mappings
+  buffers.mapping_capacity is 8
+
+  space: ptr[ProcessAddressSpace] is process_syscall_space
+  if not process_space_init(space, allocator, process_syscall_kernel_root, buffers) then return 3
+  user_input: u64 is u64("0x0000000000600000")
+  user_output: u64 is user_input + sizeof(IpcMessage)
+  if not process_space_map_page(space, user_input, true, false) then return 4
+
+  input: ptr[IpcMessage] is process_syscall_input
+  ipc_message_clear(input)
+  input.kind is 41
+  input.source is 999
+  input.target is 888
+  input.value0 is 2026
+  if not process_copy_to_user(space, user_input, input, sizeof(IpcMessage)) then return 5
+
+  queue: ptr[IpcQueue] is process_syscall_queue
+  if not ipc_queue_init(queue, process_syscall_queue_storage, 2) then return 6
+
+  scheduler: ptr[UserProcessScheduler] is process_syscall_scheduler
+  scheduler.processes is process_syscall_processes
+  scheduler.capacity is 2
+  scheduler.current is 0
+  scheduler.process_count is 2
+  scheduler.runnable_count is 2
+  scheduler.initialized is 1
+  user_process_scheduler_active is scheduler
+
+  sender: ptr[UserProcess] is user_process_at(scheduler, 0)
+  receiver: ptr[UserProcess] is user_process_at(scheduler, 1)
+  user_process_clear(sender)
+  user_process_clear(receiver)
+  sender.id is 1
+  sender.address_space is space
+  sender.state is 1
+  receiver.id is 2
+  receiver.address_space is space
+  receiver.frame is user.frame_init(ptr.add(process_syscall_receiver_kernel_stack, 4096), u64("0x0000000000400000"), u64("0x00000000007ffff8"), 0, 35, 27)
+  if receiver.frame == 0 then return 19
+  receiver.state is 4
+  receiver.event_queue is queue
+  scheduler.runnable_count is 1
+
+  table: ptr[SoftwareSyscallTable] is process_syscall_table
+  if not syscall_table_init(table, process_syscall_handlers, 8, u64("0xffffffffffffffff")) then return 7
+  if not process_syscall_init(process_syscall_state, scheduler, table, process_syscall_scratch) then return 8
+  cpu.idt_set_gate(process_syscall_idt, 128, addr_of(process_software_syscall_dispatch), 8, 0, 238)
+
+  if process_syscall_getpid(0, 0, 0, 0, 0) != 1 then return 9
+  if process_syscall_send(2, user_input, 0, 0, 0) != process_syscall_ok() then return 10
+  if receiver.state != 1 or receiver.wakes != 1 or scheduler.runnable_count != 2 then return 20
+  if queue.count != 1 then return 11
+
+  scheduler.current is 1
+  if process_syscall_getpid(0, 0, 0, 0, 0) != 2 then return 12
+  if process_syscall_receive(user_output, 0, 0, 0, 0) != process_syscall_ok() then return 13
+  output: ptr[IpcMessage] is process_syscall_output
+  if not process_copy_from_user(space, output, user_output, sizeof(IpcMessage)) then return 14
+  if output.kind != 41 or output.source != 1 or output.target != 2 or output.value0 != 2026 then return 15
+  if process_syscall_receive(user_output, 0, 0, 0, 0) != process_syscall_would_block() then return 16
+  if process_syscall_receive(7, 0, 0, 0, 0) != process_syscall_bad_address() then return 17
+  if not user_process_block_current(scheduler, receiver.frame) then return 21
+  if receiver.state != 4 or receiver.blocks != 1 or scheduler.runnable_count != 1 then return 22
+  if not user_process_wake(scheduler, receiver.id) then return 23
+  if receiver.state != 1 or receiver.wakes != 2 or scheduler.runnable_count != 2 then return 24
+  if not process_space_destroy(space) then return 18
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    process_syscall_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(process_syscall_map_size), process_syscall_memory_map, addr_of(process_syscall_map_key), addr_of(process_syscall_descriptor_size), addr_of(process_syscall_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(process_syscall_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then process_syscall_qemu_exit(2)
+  if not serial_write_buffer(1016, process_syscall_marker, 25, 1000000) then process_syscall_qemu_exit(3)
+  process_syscall_qemu_exit(16)
+  return 0
+end

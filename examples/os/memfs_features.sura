@@ -1,0 +1,182 @@
+# Firmware-executed writable VFS/memfs and UTF-8 filename gate.
+
+import "../../stdlib/freestanding/memfs.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+memfs_state is static.struct(MemFs)
+memfs_storage is static.struct(MemFsStorage)
+memfs_nodes is static.struct(MemFsNode, 16)
+memfs_names is static.zero(1024, 16)
+memfs_data is static.zero(4096, 16)
+memfs_interface is static.struct(VfsFileSystem)
+memfs_vfs is static.struct(VfsState)
+memfs_mounts is static.struct(VfsMount, 2)
+memfs_file is static.struct(VfsFile)
+memfs_stat_result is static.struct(VfsStat)
+memfs_dir_entry is static.struct(VfsDirEntry)
+memfs_entry_name is static.zero(64, 16)
+memfs_read_buffer is static.zero(64, 16)
+memfs_copy_workspace is static.struct(VfsCopyWorkspace)
+memfs_copy_source_paths is static.zero(512, 16)
+memfs_copy_destination_paths is static.zero(512, 16)
+memfs_copy_source_lengths is static.zero(64, 16)
+memfs_copy_destination_lengths is static.zero(64, 16)
+memfs_copy_ordinals is static.zero(64, 16)
+memfs_copy_entry_name is static.zero(64, 16)
+memfs_copy_file_buffer is static.zero(64, 16)
+memfs_copy_source_file is static.struct(VfsFile)
+memfs_copy_destination_file is static.struct(VfsFile)
+memfs_copy_stat is static.struct(VfsStat)
+memfs_copy_entry is static.struct(VfsDirEntry)
+memfs_copy_source_count is static.zero(8, 8)
+memfs_copy_destination_count is static.zero(8, 8)
+memfs_root is static.bytes([47], 1)
+memfs_directory is static.bytes([47, 235, 172, 184, 236, 132, 156], 1)
+memfs_file_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+memfs_renamed_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 234, 184, 176, 235, 161, 157, 46, 116, 120, 116], 1)
+memfs_copied_directory is static.bytes([47, 99, 111, 112, 121], 1)
+memfs_copied_path is static.bytes([47, 99, 111, 112, 121, 47, 234, 184, 176, 235, 161, 157, 46, 116, 120, 116], 1)
+memfs_copy_descendant is static.bytes([47, 99, 111, 112, 121, 47, 99, 104, 105, 108, 100], 1)
+memfs_created_path is static.bytes([47, 236, 131, 136, 46, 115, 117, 114, 97], 1)
+memfs_expected_name is static.bytes([235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+memfs_invalid_path is static.bytes([47, 192, 175], 1)
+memfs_payload is static.bytes([83, 85, 82, 65, 32, 79, 83], 1)
+memfs_replacement is static.bytes([65, 84, 79, 77], 1)
+memfs_append_byte is static.bytes([33], 1)
+memfs_memory_map is static.zero(65536, 4096)
+memfs_utf8_marker is static.utf8("SURA_MEMFS_UTF8_OK\r\n")
+memfs_mutation_marker is static.utf8("SURA_MEMFS_MUTATION_OK\r\n")
+memfs_copy_tree_marker is static.utf8("SURA_MEMFS_COPY_TREE_OK\r\n")
+memfs_count: u64 is 0
+memfs_map_size: usize is 65536
+memfs_map_key: u64 is 0
+memfs_descriptor_size: usize is 0
+memfs_descriptor_version: u32 is 0
+
+func memfs_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func memfs_gate_fail(code: u64) do
+  serial_write_byte(1016, 69, 1000000)
+  serial_write_byte(1016, 48 + ((code / 10) % 10), 1000000)
+  serial_write_byte(1016, 48 + (code % 10), 1000000)
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  memfs_gate_exit(code)
+  return code
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global memfs_count, memfs_map_size, memfs_map_key, memfs_descriptor_size, memfs_descriptor_version
+  uefi.write("Sura writable UTF-8 memfs feature test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 30
+
+  filesystem: ptr[MemFs] is memfs_state
+  interface: ptr[VfsFileSystem] is memfs_interface
+  state: ptr[VfsState] is memfs_vfs
+  file: ptr[VfsFile] is memfs_file
+  stat: ptr[VfsStat] is memfs_stat_result
+  entry: ptr[VfsDirEntry] is memfs_dir_entry
+  entry.name is memfs_entry_name
+  entry.name_capacity is 64
+
+  storage: ptr[MemFsStorage] is memfs_storage
+  storage.nodes is memfs_nodes
+  storage.node_capacity is 16
+  storage.names is memfs_names
+  storage.name_stride is 64
+  storage.data is memfs_data
+  storage.data_stride is 256
+  init_status: u64 is memfs_init_status(filesystem, storage)
+  if init_status != 0 then return memfs_gate_fail(30 + init_status)
+  if not memfs_bind(filesystem, interface) then return memfs_gate_fail(2)
+  if not vfs_init(state, memfs_mounts, 2) then return memfs_gate_fail(3)
+  if not vfs_mount(state, memfs_root, 1, interface) then return memfs_gate_fail(4)
+  if not vfs_create(state, memfs_directory, 7, vfs_kind_directory, 493) then return memfs_gate_fail(5)
+  if not vfs_create(state, memfs_file_path, 18, vfs_kind_file, 420) then return memfs_gate_fail(6)
+  if filesystem.generation != 3 then return memfs_gate_fail(89)
+  if vfs_create(state, memfs_invalid_path, 3, vfs_kind_file, 420) then return memfs_gate_fail(7)
+  if not vfs_open(state, memfs_file_path, 18, vfs_open_read | vfs_open_write, file) then return memfs_gate_fail(8)
+  if not vfs_write(file, memfs_payload, 7, addr_of(memfs_count)) then return memfs_gate_fail(91)
+  if memfs_count != 7 then return memfs_gate_fail(92)
+  if not vfs_seek(file, 0) then return memfs_gate_fail(10)
+  if not vfs_read(file, memfs_read_buffer, 7, addr_of(memfs_count)) or memfs_count != 7 then return memfs_gate_fail(11)
+  if not memfs_bytes_equal(memfs_read_buffer, memfs_payload, 7) then return memfs_gate_fail(12)
+  generation_before_replace: u64 is filesystem.generation
+  if not vfs_replace(file, memfs_replacement, 4) then return memfs_gate_fail(93)
+  if filesystem.generation != generation_before_replace + 1 or file.size != 4 or file.position != 4 then return memfs_gate_fail(94)
+  if not vfs_seek(file, 0) then return memfs_gate_fail(95)
+  if not vfs_read(file, memfs_read_buffer, 7, addr_of(memfs_count)) or memfs_count != 4 then return memfs_gate_fail(96)
+  if not memfs_bytes_equal(memfs_read_buffer, memfs_replacement, 4) then return memfs_gate_fail(97)
+  if not vfs_resize(file, 20) or not vfs_close(file) then return memfs_gate_fail(13)
+  if not vfs_stat(state, memfs_file_path, 18, stat) or stat.size != 20 then return memfs_gate_fail(14)
+  if not vfs_list(state, memfs_directory, 7, 0, entry) then return memfs_gate_fail(15)
+  if entry.name_length != 10 or not memfs_bytes_equal(entry.name, memfs_expected_name, 10) then return memfs_gate_fail(16)
+  if not vfs_rename(state, memfs_file_path, 18, memfs_renamed_path, 18) then return memfs_gate_fail(17)
+  if vfs_stat(state, memfs_file_path, 18, stat) then return memfs_gate_fail(18)
+  if not vfs_stat(state, memfs_renamed_path, 18, stat) or stat.size != 20 then return memfs_gate_fail(19)
+  if not vfs_open(state, memfs_renamed_path, 18, vfs_open_write | vfs_open_append, file) then return memfs_gate_fail(20)
+  if file.position != 20 then return memfs_gate_fail(21)
+  if not vfs_write(file, memfs_append_byte, 1, addr_of(memfs_count)) or file.size != 21 then return memfs_gate_fail(22)
+  if not vfs_close(file) then return memfs_gate_fail(23)
+
+  copy_workspace: ptr[VfsCopyWorkspace] is memfs_copy_workspace
+  copy_workspace.source_paths is memfs_copy_source_paths
+  copy_workspace.destination_paths is memfs_copy_destination_paths
+  copy_workspace.source_lengths is memfs_copy_source_lengths
+  copy_workspace.destination_lengths is memfs_copy_destination_lengths
+  copy_workspace.ordinals is memfs_copy_ordinals
+  copy_workspace.stack_capacity is 8
+  copy_workspace.path_capacity is 64
+  copy_workspace.entry_name is memfs_copy_entry_name
+  copy_workspace.entry_name_capacity is 64
+  copy_workspace.file_buffer is memfs_copy_file_buffer
+  copy_workspace.file_buffer_capacity is 64
+  copy_workspace.source_file is memfs_copy_source_file
+  copy_workspace.destination_file is memfs_copy_destination_file
+  copy_workspace.source_count is memfs_copy_source_count
+  copy_workspace.destination_count is memfs_copy_destination_count
+  copy_workspace.stat is memfs_copy_stat
+  copy_workspace.entry is memfs_copy_entry
+  if not vfs_copy_tree(state, memfs_directory, 7, memfs_copied_directory, 5, copy_workspace) then return memfs_gate_fail(34)
+  if not vfs_stat(state, memfs_copied_path, 16, stat) or stat.size != 21 then return memfs_gate_fail(35)
+  if not vfs_open(state, memfs_copied_path, 16, vfs_open_read, file) then return memfs_gate_fail(36)
+  if not vfs_read(file, memfs_read_buffer, 21, addr_of(memfs_count)) or memfs_count != 21 then return memfs_gate_fail(37)
+  if not vfs_close(file) then return memfs_gate_fail(38)
+  if not memfs_bytes_equal(memfs_read_buffer, memfs_replacement, 4) or mem.read8(ptr.add(memfs_read_buffer, 20)) != 33 then return memfs_gate_fail(39)
+  if vfs_copy_tree(state, memfs_copied_directory, 5, memfs_copy_descendant, 11, copy_workspace) then return memfs_gate_fail(40)
+
+  if not vfs_open(state, memfs_created_path, 9, vfs_open_read | vfs_open_write | vfs_open_create, file) then return memfs_gate_fail(27)
+  if file.size != 0 then return memfs_gate_fail(28)
+  if not vfs_write(file, memfs_payload, 7, addr_of(memfs_count)) or memfs_count != 7 then return memfs_gate_fail(29)
+  if not vfs_close(file) then return memfs_gate_fail(30)
+  if not vfs_open(state, memfs_created_path, 9, vfs_open_write | vfs_open_truncate, file) then return memfs_gate_fail(31)
+  if file.size != 0 or not vfs_close(file) then return memfs_gate_fail(32)
+  if not vfs_remove(state, memfs_created_path, 9, false) then return memfs_gate_fail(33)
+  if vfs_remove(state, memfs_directory, 7, false) then return memfs_gate_fail(24)
+  if not vfs_remove(state, memfs_directory, 7, true) then return memfs_gate_fail(25)
+  if vfs_stat(state, memfs_renamed_path, 18, stat) then return memfs_gate_fail(26)
+  if not vfs_stat(state, memfs_copied_path, 16, stat) or stat.size != 21 then return memfs_gate_fail(41)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    memfs_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(memfs_map_size), memfs_memory_map, addr_of(memfs_map_key), addr_of(memfs_descriptor_size), addr_of(memfs_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(memfs_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then memfs_gate_exit(2)
+  if not serial_write_buffer(1016, memfs_utf8_marker, 20, 1000000) then memfs_gate_exit(3)
+  if not serial_write_buffer(1016, memfs_mutation_marker, 24, 1000000) then memfs_gate_exit(4)
+  if not serial_write_cstr(1016, memfs_copy_tree_marker, 64, 1000000) then memfs_gate_exit(5)
+  memfs_gate_exit(16)
+  return 0
+end

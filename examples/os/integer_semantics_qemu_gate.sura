@@ -1,0 +1,55 @@
+# Executed signed/unsigned integer lowering gate for the freestanding backend.
+
+import "../../stdlib/freestanding/serial.sura"
+
+integer_semantics_memory_map is static.zero(65536, 4096)
+integer_semantics_marker is static.utf8("SURA_INTEGER_SEMANTICS_OK\r\n")
+integer_semantics_map_size: usize is 65536
+integer_semantics_map_key: u64 is 0
+integer_semantics_descriptor_size: usize is 0
+integer_semantics_descriptor_version: u32 is 0
+
+func integer_semantics_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global integer_semantics_map_size, integer_semantics_map_key
+  global integer_semantics_descriptor_size, integer_semantics_descriptor_version
+  uefi.write("Sura signed and unsigned integer semantics test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  maximum: u64 is u64("0xffffffffffffffff")
+  high_bit: u64 is u64("0x8000000000000000")
+  if maximum <= 7 or not (maximum > 7) then return 2
+  if maximum / 255 != u64("0x0101010101010101") then return 3
+  if maximum % 255 != 0 then return 4
+  if high_bit / 2 != u64("0x4000000000000000") then return 5
+  if high_bit >> 63 != 1 then return 6
+  if high_bit < 7 or high_bit <= 7 then return 7
+
+  negative: i64 is -8
+  if negative / 2 != -4 then return 8
+  if negative % 3 != -2 then return 9
+  if negative >> 2 != -2 then return 10
+  if negative >= 0 or not (negative < 0) then return 11
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    integer_semantics_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(integer_semantics_map_size), integer_semantics_memory_map, addr_of(integer_semantics_map_key), addr_of(integer_semantics_descriptor_size), addr_of(integer_semantics_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(integer_semantics_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then integer_semantics_exit(2)
+  if not serial_write_buffer(1016, integer_semantics_marker, 27, 1000000) then integer_semantics_exit(3)
+  integer_semantics_exit(16)
+  return 0
+end

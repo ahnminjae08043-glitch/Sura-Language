@@ -1,0 +1,117 @@
+# Executed JavaScript source, VM, and DOM-host integration gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/browser_js_source.sura"
+import "../../stdlib/freestanding/browser_js_dom.sura"
+
+browser_js_dom_gate_memory_map is static.zero(65536, 4096)
+browser_js_dom_gate_nodes is static.struct(HtmlDomNode, 16)
+browser_js_dom_gate_attributes is static.struct(HtmlDomAttribute, 16)
+browser_js_dom_gate_mutations is static.struct(BrowserJsDomMutation, 4)
+browser_js_dom_gate_code is static.struct(BrowserJsInstruction, 32)
+browser_js_dom_gate_constants is static.struct(BrowserJsValue, 8)
+browser_js_dom_gate_bindings is static.struct(BrowserJsBinding, 4)
+browser_js_dom_gate_stack is static.struct(BrowserJsValue, 8)
+browser_js_dom_gate_globals is static.struct(BrowserJsValue, 4)
+browser_js_dom_gate_scratch is static.struct(BrowserJsValue)
+browser_js_dom_gate_override is static.struct(BrowserJsValue)
+browser_js_dom_gate_document is static.struct(HtmlDomDocument)
+browser_js_dom_gate_host is static.struct(BrowserJsDomHost)
+browser_js_dom_gate_program is static.struct(BrowserJsProgram)
+browser_js_dom_gate_compiler is static.struct(BrowserJsSourceCompiler)
+browser_js_dom_gate_vm is static.struct(BrowserJsVm)
+browser_js_dom_gate_html is static.utf8("<div id=\"status\">Old <span>nested</span></div>")
+browser_js_dom_gate_source is static.utf8("document.getElementById(\"status\").textContent = \"Ready\";")
+browser_js_dom_gate_ready is static.utf8("Ready")
+browser_js_dom_gate_marker is static.utf8("SURA_BROWSER_JS_DOM_OK\r\n")
+
+browser_js_dom_gate_map_size: usize is 65536
+browser_js_dom_gate_map_key: u64 is 0
+browser_js_dom_gate_descriptor_size: usize is 0
+browser_js_dom_gate_descriptor_version: u32 is 0
+
+func browser_js_dom_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func browser_js_dom_gate_equal(first: ptr, second: ptr, byte_count: u64) do
+  index: u64 is 0
+  while index < byte_count do
+    if mem.read8(ptr.add(first, index)) != mem.read8(ptr.add(second, index)) then return false
+    index += 1
+  end
+  return true
+end
+
+func browser_js_dom_gate_run() do
+  document: ptr[HtmlDomDocument] is browser_js_dom_gate_document
+  document.nodes is browser_js_dom_gate_nodes
+  document.node_capacity is 16
+  document.attributes is browser_js_dom_gate_attributes
+  document.attribute_capacity is 16
+  if not html_dom_parse(browser_js_dom_gate_html, 46, document) then return 1
+  if document.node_count != 5 then return 2
+
+  host: ptr[BrowserJsDomHost] is browser_js_dom_gate_host
+  host.mutations is browser_js_dom_gate_mutations
+  host.mutation_capacity is 4
+  if not browser_js_dom_init(host, document) then return 3
+
+  compiler: ptr[BrowserJsSourceCompiler] is browser_js_dom_gate_compiler
+  compiler.code is browser_js_dom_gate_code
+  compiler.code_capacity is 32
+  compiler.constants is browser_js_dom_gate_constants
+  compiler.constant_capacity is 8
+  compiler.bindings is browser_js_dom_gate_bindings
+  compiler.binding_capacity is 4
+  program: ptr[BrowserJsProgram] is browser_js_dom_gate_program
+  if not browser_js_source_compile(browser_js_dom_gate_source, 56, program, compiler) then return 4
+  if program.code_count != 5 or program.constant_count != 2 or program.global_count != 0 then return 5
+
+  vm: ptr[BrowserJsVm] is browser_js_dom_gate_vm
+  vm.stack is browser_js_dom_gate_stack
+  vm.stack_capacity is 8
+  vm.globals is browser_js_dom_gate_globals
+  vm.global_capacity is 4
+  vm.scratch is browser_js_dom_gate_scratch
+  vm.instruction_limit is 32
+  vm.host_context is host
+  vm.host_callback is addr_of(browser_js_dom_host_call)
+  if not browser_js_vm_init(program, vm) or not browser_js_execute(vm) then return 6
+  if vm.error != browser_js_error_none() or vm.stack_count != 0 or host.mutation_count != 1 then return 7
+  mutation: ptr[BrowserJsDomMutation] is browser_js_dom_mutation(host, 0)
+  if mutation.node_index != 1 or mutation.text_bytes != 5 or not browser_js_dom_gate_equal(mutation.text, browser_js_dom_gate_ready, 5) then return 8
+  override: ptr[BrowserJsValue] is browser_js_dom_gate_override
+  if browser_js_dom_text_override(host, 2, override) != 1 then return 9
+  if override.kind != browser_js_kind_string() or override.bytes != 5 or not browser_js_dom_gate_equal(override.data, browser_js_dom_gate_ready, 5) then return 10
+  if browser_js_dom_text_override(host, 4, override) != 2 then return 11
+  return 0
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global browser_js_dom_gate_map_size, browser_js_dom_gate_map_key
+  global browser_js_dom_gate_descriptor_size, browser_js_dom_gate_descriptor_version
+  uefi.write("Sura browser JavaScript DOM test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    browser_js_dom_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(browser_js_dom_gate_map_size), browser_js_dom_gate_memory_map, addr_of(browser_js_dom_gate_map_key), addr_of(browser_js_dom_gate_descriptor_size), addr_of(browser_js_dom_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(browser_js_dom_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then browser_js_dom_gate_exit(12)
+  status: u64 is browser_js_dom_gate_run()
+  if status != 0 then browser_js_dom_gate_exit(12 + status)
+  if not serial_write_buffer(1016, browser_js_dom_gate_marker, 24, 1000000) then browser_js_dom_gate_exit(24)
+  browser_js_dom_gate_exit(16)
+  return 0
+end

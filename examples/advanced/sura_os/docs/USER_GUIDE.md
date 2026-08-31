@@ -209,3 +209,87 @@ boot report는 단계별 PASS/FAIL, 탐지 메모리, 장치 수, 사용자 수,
 
 이 프로젝트는 호스티드 모델이다. 실제 부팅에는 Sura 네이티브 freestanding target, 링커 스크립트, UEFI/BIOS loader, 물리 메모리·인터럽트·드라이버 ABI가 추가로 필요하다. 현재 Sura 런타임 위 예제와는 별도 프로젝트가 되어야 한다.
 
+## 자동 저장과 복원
+
+프로젝트 루트에서 대화형 모드를 실행하면 `suraos.disk.json`이 기본 디스크 이미지가 된다.
+
+```powershell
+..\..\..\SuraLanguage.exe main.sura -- --interactive
+```
+
+첫 실행은 새 디스크로 시작한다. `exit`할 때 dirty 파일시스템을 자동 저장하며, 다음 실행은 해당 이미지를 먼저 검증한 후 복원한다. 다른 이미지를 쓰거나 저장을 끌 수도 있다.
+
+```powershell
+..\..\..\SuraLanguage.exe main.sura -- --interactive --disk school.disk.json
+..\..\..\SuraLanguage.exe main.sura -- --interactive --no-autosave
+..\..\..\SuraLanguage.exe main.sura -- --interactive --ephemeral
+```
+
+```text
+disk usage
+disk status
+disk save
+disk load
+disk autosave off
+disk autosave on
+```
+
+`--no-autosave`는 자동 저장만 끄므로 `disk save`는 사용할 수 있다. `--ephemeral`은 이미지 로드와 저장을 모두 끈다. 디스크 이미지에는 가상 파일과 언어 설치 표식이 저장된다. 실행 중 프로세스, CPU 레지스터, RAM 전체를 재개하는 최대 절전 이미지는 아니다.
+
+## 가상 파일에 프로그램 작성하고 실행하기
+
+### Sura Mini
+
+```text
+lang available
+lang install sura-mini
+edit hello.sura
+```
+
+편집기에 다음을 입력하고 마지막 줄에 `.save`를 입력한다.
+
+```text
+set name SuraOS
+print Hello $name
+set value 6
+mul value 7
+print answer=$value
+write answer.txt $value
+.save
+```
+
+```text
+runfile hello.sura
+cat answer.txt
+```
+
+한 줄로도 만들 수 있다. 세미콜론은 Sura Mini 문장을 나누며, 셸에서 전체 소스를 따옴표로 감싸야 한다.
+
+```text
+write hello.sura "set value 6; mul value 7; print answer=$value"
+runfile hello.sura
+```
+
+지원 문장은 `print`, `set`/`let`, `add`, `sub`, `mul`, `div`, `repeat`, `read`, `write`, `append`, `assert`, `disk`, `exit`이다. 프로그램은 최대 10,000단계, `repeat`는 한 문장당 최대 1,000회로 제한된다. 접근 가능한 대상도 현재 사용자 권한의 가상 파일뿐이다.
+
+### SVM32
+
+```text
+lang install svm32
+runfile /home/user/.local/languages/svm32/examples/hello.sasm
+```
+
+`.sasm` 파일은 어셈블된 뒤 실제 SuraOS PCB를 가진 가상 프로세스로 실행된다. 기존 `assemble`, `run`, `disasm` 명령도 계속 사용할 수 있다.
+
+## 디스크가 가득 찼을 때
+
+```text
+disk usage
+tree /home/user
+rm old-file.txt
+disk usage
+```
+
+85%부터 `warning`, 95%부터 `critical`, 남은 바이트가 0이면 `full`로 표시된다. 새 파일, 기존 파일 확장, 언어 설치, 패키지 설치는 필요한 공간을 먼저 계산한다. 부족하면 `NO_SPACE` 오류를 내고 새 빈 파일이나 반쯤 설치된 언어를 남기지 않는다. 같은 크기 덮어쓰기와 파일 축소·삭제는 가능하다.
+
+호스트 Windows 드라이브가 가득 차면 임시 이미지 쓰기 단계에서 저장이 실패한다. 마지막으로 성공한 정식 이미지에는 손대지 않으며, 공간을 확보한 뒤 현재 세션에서 `disk save`를 다시 실행해야 한다. 저장하지 않고 프로세스를 끝내면 마지막 성공 저장 이후 변경은 사라진다.

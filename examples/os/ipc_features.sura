@@ -1,0 +1,70 @@
+# Compile and firmware-executed feature test for fixed-capacity IPC queues.
+
+import "../../stdlib/freestanding/ipc.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+ipc_storage is static.struct(IpcMessage, 2)
+ipc_queue_state is static.struct(IpcQueue)
+ipc_endpoint_state is static.struct(IpcEndpoint)
+ipc_input is static.struct(IpcMessage)
+ipc_output is static.struct(IpcMessage)
+ipc_memory_map is static.zero(65536, 4096)
+ipc_marker is static.utf8("SURA_IPC_QUEUE_OK\r\n")
+ipc_map_size: usize is 65536
+ipc_map_key: u64 is 0
+ipc_descriptor_size: usize is 0
+ipc_descriptor_version: u32 is 0
+
+func ipc_qemu_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global ipc_map_size, ipc_map_key, ipc_descriptor_size, ipc_descriptor_version
+  uefi.write("Sura checked IPC event-queue feature test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 13
+
+  queue: ptr[IpcQueue] is ipc_queue_state
+  if not ipc_queue_init(queue, ipc_storage, 2) then return 1
+  endpoint: ptr[IpcEndpoint] is ipc_endpoint_state
+  if not ipc_endpoint_init(endpoint, 7, queue) then return 2
+
+  input: ptr[IpcMessage] is ipc_input
+  ipc_message_clear(input)
+  input.kind is 11
+  input.value0 is 101
+  if not ipc_endpoint_send(endpoint, 3, input) then return 3
+  input.kind is 12
+  input.value0 is 202
+  if not ipc_endpoint_post_kernel(endpoint, input) then return 4
+  input.kind is 13
+  if ipc_endpoint_send(endpoint, 3, input) then return 5
+  if queue.dropped != 1 then return 6
+
+  output: ptr[IpcMessage] is ipc_output
+  if ipc_endpoint_receive(endpoint, 8, output) then return 7
+  if not ipc_endpoint_receive(endpoint, 7, output) then return 8
+  if output.sequence != 1 or output.kind != 11 or output.source != 3 or output.target != 7 or output.value0 != 101 then return 9
+  if not ipc_endpoint_receive(endpoint, 7, output) then return 10
+  if output.sequence != 2 or output.kind != 12 or output.source != 0 or output.target != 7 or output.value0 != 202 then return 11
+  if ipc_endpoint_receive(endpoint, 7, output) then return 12
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    ipc_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(ipc_map_size), ipc_memory_map, addr_of(ipc_map_key), addr_of(ipc_descriptor_size), addr_of(ipc_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(ipc_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then ipc_qemu_exit(2)
+  if not serial_write_buffer(1016, ipc_marker, 19, 1000000) then ipc_qemu_exit(3)
+  ipc_qemu_exit(16)
+  return 0
+end

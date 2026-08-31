@@ -1,0 +1,153 @@
+# Executed persistent SuraFS mutation and corrupted-latest-generation recovery.
+
+import "../../stdlib/freestanding/surafs.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+surafs_device is static.struct(BlockDevice)
+surafs_ram_context is static.struct(RamBlockContext)
+surafs_disk is static.zero(262144, 4096)
+surafs_bank_buffer is static.zero(131072, 4096)
+surafs_sector_buffer is static.zero(4096, 4096)
+surafs_open_counts_a is static.zero(128, 16)
+surafs_open_counts_b is static.zero(128, 16)
+surafs_state_a is static.struct(SuraFs)
+surafs_state_b is static.struct(SuraFs)
+surafs_config_a is static.struct(SuraFsConfig)
+surafs_config_b is static.struct(SuraFsConfig)
+surafs_memory_a is static.struct(MemFs)
+surafs_memory_b is static.struct(MemFs)
+surafs_storage_a is static.struct(MemFsStorage)
+surafs_storage_b is static.struct(MemFsStorage)
+surafs_interface_a is static.struct(VfsFileSystem)
+surafs_interface_b is static.struct(VfsFileSystem)
+surafs_vfs_a is static.struct(VfsState)
+surafs_vfs_b is static.struct(VfsState)
+surafs_mounts_a is static.struct(VfsMount, 2)
+surafs_mounts_b is static.struct(VfsMount, 2)
+surafs_file is static.struct(VfsFile)
+surafs_stat_result is static.struct(VfsStat)
+surafs_dir_entry is static.struct(VfsDirEntry)
+surafs_entry_name is static.zero(64, 16)
+surafs_read_buffer is static.zero(64, 16)
+surafs_root is static.bytes([47], 1)
+surafs_directory is static.bytes([47, 235, 172, 184, 236, 132, 156], 1)
+surafs_file_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 235, 169, 148, 235, 170, 168, 46, 116, 120, 116], 1)
+surafs_renamed_path is static.bytes([47, 235, 172, 184, 236, 132, 156, 47, 234, 184, 176, 235, 161, 157, 46, 116, 120, 116], 1)
+surafs_expected_name is static.bytes([234, 184, 176, 235, 161, 157, 46, 116, 120, 116], 1)
+surafs_old_payload is static.bytes([79, 76, 68], 1)
+surafs_new_payload is static.bytes([78, 69, 87], 1)
+surafs_append_payload is static.bytes([33], 1)
+surafs_memory_map is static.zero(65536, 4096)
+surafs_recovery_marker is static.utf8("SURA_SURAFS_RECOVERY_OK\r\n")
+surafs_mutation_marker is static.utf8("SURA_SURAFS_MUTATION_OK\r\n")
+surafs_count: u64 is 0
+surafs_map_size: usize is 65536
+surafs_map_key: u64 is 0
+surafs_descriptor_size: usize is 0
+surafs_descriptor_version: u32 is 0
+
+func surafs_gate_config(config: ptr[SuraFsConfig], memory: ptr[MemFs], storage: ptr[MemFsStorage], open_counts: ptr) do
+  config.device is surafs_device
+  config.start_lba is 4
+  config.bank_buffer is surafs_bank_buffer
+  config.bank_buffer_capacity is 131072
+  config.sector_buffer is surafs_sector_buffer
+  config.open_counts is open_counts
+  config.memory_filesystem is memory
+  config.memory_storage is storage
+  config.node_capacity is 16
+  config.name_stride is 64
+  config.data_stride is 4096
+end
+
+func surafs_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global surafs_count, surafs_map_size, surafs_map_key
+  global surafs_descriptor_size, surafs_descriptor_version
+  uefi.write("SuraFS persistent recovery feature test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+  device: ptr[BlockDevice] is surafs_device
+  if not ram_block_bind(device, surafs_ram_context, surafs_disk, 262144, 512, 0) then return 2
+
+  filesystem_a: ptr[SuraFs] is surafs_state_a
+  config_a: ptr[SuraFsConfig] is surafs_config_a
+  memory_a: ptr[MemFs] is surafs_memory_a
+  storage_a: ptr[MemFsStorage] is surafs_storage_a
+  surafs_gate_config(config_a, memory_a, storage_a, surafs_open_counts_a)
+  if not surafs_format(filesystem_a, config_a) then return 3
+  interface_a: ptr[VfsFileSystem] is surafs_interface_a
+  state_a: ptr[VfsState] is surafs_vfs_a
+  if not surafs_bind(filesystem_a, interface_a) then return 4
+  if not vfs_init(state_a, surafs_mounts_a, 2) then return 5
+  if not vfs_mount(state_a, surafs_root, 1, interface_a) then return 6
+  if not vfs_create(state_a, surafs_directory, 7, vfs_kind_directory, 493) then return 7
+  if not vfs_create(state_a, surafs_file_path, 18, vfs_kind_file, 420) then return 8
+  file: ptr[VfsFile] is surafs_file
+  if not vfs_open(state_a, surafs_file_path, 18, vfs_open_read | vfs_open_write, file) then return 9
+  if not vfs_write(file, surafs_old_payload, 3, addr_of(surafs_count)) or surafs_count != 3 then return 10
+  if not vfs_close(file) then return 11
+  if not vfs_rename(state_a, surafs_file_path, 18, surafs_renamed_path, 18) then return 12
+  if not vfs_open(state_a, surafs_renamed_path, 18, vfs_open_write, file) then return 13
+  if not vfs_write(file, surafs_new_payload, 3, addr_of(surafs_count)) or surafs_count != 3 then return 14
+  if not vfs_close(file) then return 15
+  if filesystem_a.generation < 6 then return 16
+
+  if not memfs_zero(surafs_sector_buffer, 512) then return 17
+  corrupt_lba: u64 is surafs_bank_lba(filesystem_a, filesystem_a.active_bank)
+  if not block_write(device, corrupt_lba, 1, surafs_sector_buffer) then return 18
+  if not block_flush(device) then return 19
+
+  filesystem_b: ptr[SuraFs] is surafs_state_b
+  config_b: ptr[SuraFsConfig] is surafs_config_b
+  memory_b: ptr[MemFs] is surafs_memory_b
+  storage_b: ptr[MemFsStorage] is surafs_storage_b
+  surafs_gate_config(config_b, memory_b, storage_b, surafs_open_counts_b)
+  if not surafs_mount(filesystem_b, config_b) then return 20
+  if filesystem_b.generation != filesystem_a.generation - 1 then return 21
+  interface_b: ptr[VfsFileSystem] is surafs_interface_b
+  state_b: ptr[VfsState] is surafs_vfs_b
+  if not surafs_bind(filesystem_b, interface_b) then return 22
+  if not vfs_init(state_b, surafs_mounts_b, 2) then return 23
+  if not vfs_mount(state_b, surafs_root, 1, interface_b) then return 24
+  if not vfs_open(state_b, surafs_renamed_path, 18, vfs_open_read | vfs_open_write | vfs_open_append, file) then return 25
+  if file.size != 3 or file.position != 3 then return 26
+  if not vfs_seek(file, 0) then return 27
+  if not vfs_read(file, surafs_read_buffer, 3, addr_of(surafs_count)) or surafs_count != 3 then return 28
+  if not memfs_bytes_equal(surafs_read_buffer, surafs_old_payload, 3) then return 29
+  if not vfs_seek(file, 3) then return 30
+  if not vfs_write(file, surafs_append_payload, 1, addr_of(surafs_count)) or surafs_count != 1 then return 31
+  if not vfs_close(file) then return 32
+
+  entry: ptr[VfsDirEntry] is surafs_dir_entry
+  entry.name is surafs_entry_name
+  entry.name_capacity is 64
+  if not vfs_list(state_b, surafs_directory, 7, 0, entry) then return 33
+  if entry.name_length != 10 or not memfs_bytes_equal(entry.name, surafs_expected_name, 10) then return 34
+  if vfs_remove(state_b, surafs_directory, 7, false) then return 35
+  if not vfs_remove(state_b, surafs_directory, 7, true) then return 36
+  stat: ptr[VfsStat] is surafs_stat_result
+  if vfs_stat(state_b, surafs_renamed_path, 18, stat) then return 37
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    surafs_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(surafs_map_size), surafs_memory_map, addr_of(surafs_map_key), addr_of(surafs_descriptor_size), addr_of(surafs_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(surafs_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then surafs_gate_exit(2)
+  if not serial_write_buffer(1016, surafs_recovery_marker, 25, 1000000) then surafs_gate_exit(3)
+  if not serial_write_buffer(1016, surafs_mutation_marker, 25, 1000000) then surafs_gate_exit(4)
+  surafs_gate_exit(16)
+  return 0
+end

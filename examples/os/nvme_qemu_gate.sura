@@ -1,0 +1,187 @@
+# Executed polling NVMe admin-queue, Identify, I/O-queue, and block-I/O gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/nvme.sura"
+
+nvme_gate_memory_map is static.zero(65536, 4096)
+nvme_gate_pci_device is static.struct(PciDevice)
+nvme_gate_controller is static.struct(NvmeController)
+nvme_gate_admin_queue is static.struct(NvmeQueue)
+nvme_gate_io_queue is static.struct(NvmeQueue)
+nvme_gate_dma is static.struct(NvmeDma)
+nvme_gate_disk is static.struct(NvmeDiskContext)
+nvme_gate_block_device is static.struct(BlockDevice)
+nvme_gate_number is static.zero(32, 16)
+
+nvme_gate_pci_marker is static.utf8("SURA_NVME_PCI_OK")
+nvme_gate_admin_marker is static.utf8("SURA_NVME_ADMIN_QUEUE_OK")
+nvme_gate_controller_marker is static.utf8("SURA_NVME_IDENTIFY_CONTROLLER_OK")
+nvme_gate_namespace_marker is static.utf8("SURA_NVME_IDENTIFY_NAMESPACE_OK")
+nvme_gate_io_queue_marker is static.utf8("SURA_NVME_IO_QUEUE_OK")
+nvme_gate_initial_read_marker is static.utf8("SURA_NVME_INITIAL_READ_OK")
+nvme_gate_write_marker is static.utf8("SURA_NVME_WRITE_OK")
+nvme_gate_flush_marker is static.utf8("SURA_NVME_FLUSH_OK")
+nvme_gate_readback_marker is static.utf8("SURA_NVME_READBACK_OK")
+nvme_gate_executed_marker is static.utf8("SURA_NVME_EXECUTED_OK")
+nvme_gate_failure_prefix is static.utf8("SURA_NVME_FAILURE_STAGE=")
+
+nvme_gate_map_size: usize is 65536
+nvme_gate_map_key: u64 is 0
+nvme_gate_descriptor_size: usize is 0
+nvme_gate_descriptor_version: u32 is 0
+nvme_gate_dma_address: u64 is 0
+
+func nvme_gate_serial_text(text: ptr) do
+  return serial_write_cstr(1016, text, 96, 1000000)
+end
+
+func nvme_gate_serial_line(text: ptr) do
+  if not nvme_gate_serial_text(text) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func nvme_gate_serial_u64(value: u64) do
+  if value == 0 then return serial_write_byte(1016, 48, 1000000)
+  index: u64 is 32
+  remaining: u64 is value
+  while remaining != 0 do
+    index -= 1
+    mem.write8(ptr.add(nvme_gate_number, index), 48 + (remaining % 10))
+    remaining is remaining / 10
+  end
+  return serial_write_buffer(1016, ptr.add(nvme_gate_number, index), 32 - index, 1000000)
+end
+
+func nvme_gate_fail(stage: u64) do
+  nvme_gate_serial_text(nvme_gate_failure_prefix)
+  nvme_gate_serial_u64(stage)
+  serial_write_byte(1016, 10, 1000000)
+  io.out32(244, stage + 32)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func nvme_gate_initial_pattern_valid(buffer: ptr) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < 512 do
+    if mem.read8(ptr.add(buffer, index)) != ((index * 7 + 3) & 255) then return false
+    index += 1
+  end
+  return true
+end
+
+func nvme_gate_fill_write_pattern(buffer: ptr) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < 8192 do
+    mem.write8(ptr.add(buffer, index), (index * 13 + 11) & 255)
+    index += 1
+  end
+  return true
+end
+
+func nvme_gate_write_pattern_valid(buffer: ptr) do
+  if buffer == 0 then return false
+  index: u64 is 0
+  while index < 8192 do
+    if mem.read8(ptr.add(buffer, index)) != ((index * 13 + 11) & 255) then return false
+    index += 1
+  end
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global nvme_gate_map_size, nvme_gate_map_key, nvme_gate_descriptor_size, nvme_gate_descriptor_version, nvme_gate_dma_address
+  uefi.write("Sura NVMe executed gate")
+  uefi.newline()
+
+  allocation_status: u64 is uefi.allocate_pages(0, 2, 7, addr_of(nvme_gate_dma_address))
+  if allocation_status != 0 or nvme_gate_dma_address == 0 then return 1
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 4 and exit_status != 0 do
+    nvme_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(nvme_gate_map_size), nvme_gate_memory_map, addr_of(nvme_gate_map_key), addr_of(nvme_gate_descriptor_size), addr_of(nvme_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(nvme_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 2
+
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then nvme_gate_fail(1)
+
+  pci_device: ptr[PciDevice] is nvme_gate_pci_device
+  if not nvme_pci_find(pci_device) then nvme_gate_fail(2)
+  if not nvme_pci_enable(pci_device) then nvme_gate_fail(3)
+  bar_address: u64 is nvme_pci_bar_physical(pci_device)
+  if bar_address == 0 then nvme_gate_fail(4)
+  controller: ptr[NvmeController] is nvme_gate_controller
+  if not nvme_controller_attach(controller, bar_address, 100000000) then nvme_gate_fail(5)
+  if not nvme_gate_serial_line(nvme_gate_pci_marker) then nvme_gate_fail(6)
+
+  dma: ptr[NvmeDma] is nvme_gate_dma
+  dma.admin_submission is nvme_gate_dma_address
+  dma.admin_submission_physical is nvme_gate_dma_address
+  dma.admin_completion is nvme_gate_dma_address + 4096
+  dma.admin_completion_physical is nvme_gate_dma_address + 4096
+  dma.admin_depth is 16
+  dma.io_submission is nvme_gate_dma_address + 8192
+  dma.io_submission_physical is nvme_gate_dma_address + 8192
+  dma.io_completion is nvme_gate_dma_address + 12288
+  dma.io_completion_physical is nvme_gate_dma_address + 12288
+  dma.io_depth is 16
+  dma.identify is nvme_gate_dma_address + 16384
+  dma.identify_physical is nvme_gate_dma_address + 16384
+  dma.data_virtual is nvme_gate_dma_address + 20480
+  dma.data_physical is nvme_gate_dma_address + 20480
+  dma.data_bytes is 8192
+
+  admin: ptr[NvmeQueue] is nvme_gate_admin_queue
+  if not nvme_admin_start(controller, dma, admin) then nvme_gate_fail(7)
+  if not nvme_gate_serial_line(nvme_gate_admin_marker) then nvme_gate_fail(8)
+  if not nvme_identify_controller(controller, admin, dma) then nvme_gate_fail(9)
+  if not nvme_gate_serial_line(nvme_gate_controller_marker) then nvme_gate_fail(10)
+
+  disk: ptr[NvmeDiskContext] is nvme_gate_disk
+  nvme_disk_clear(disk)
+  disk.controller is controller
+  disk.queue is nvme_gate_io_queue
+  disk.dma is dma
+  if not nvme_identify_namespace(disk, admin, dma, 1) then nvme_gate_fail(11)
+  if disk.sector_size != 512 or disk.sector_count < 64 then nvme_gate_fail(12)
+  if not nvme_gate_serial_line(nvme_gate_namespace_marker) then nvme_gate_fail(13)
+
+  io_queue: ptr[NvmeQueue] is nvme_gate_io_queue
+  if not nvme_io_queue_start(controller, dma, admin, io_queue) then nvme_gate_fail(14)
+  if not nvme_gate_serial_line(nvme_gate_io_queue_marker) then nvme_gate_fail(15)
+  block_device: ptr[BlockDevice] is nvme_gate_block_device
+  if not nvme_bind_block_device(block_device, disk) then nvme_gate_fail(16)
+
+  data: ptr is dma.data_virtual
+  nvme_zero(data, 8192)
+  if not block_read(block_device, 8, 1, data) then nvme_gate_fail(17)
+  if not nvme_gate_initial_pattern_valid(data) then nvme_gate_fail(18)
+  if not nvme_gate_serial_line(nvme_gate_initial_read_marker) then nvme_gate_fail(19)
+
+  if not nvme_gate_fill_write_pattern(data) then nvme_gate_fail(20)
+  if not block_write(block_device, 16, 16, data) then nvme_gate_fail(21)
+  if not nvme_gate_serial_line(nvme_gate_write_marker) then nvme_gate_fail(22)
+  if not block_flush(block_device) then nvme_gate_fail(23)
+  if not nvme_gate_serial_line(nvme_gate_flush_marker) then nvme_gate_fail(24)
+
+  nvme_zero(data, 8192)
+  if not block_read(block_device, 16, 16, data) then nvme_gate_fail(25)
+  if not nvme_gate_write_pattern_valid(data) then nvme_gate_fail(26)
+  if not nvme_gate_serial_line(nvme_gate_readback_marker) then nvme_gate_fail(27)
+  if not nvme_gate_serial_line(nvme_gate_executed_marker) then nvme_gate_fail(28)
+  io.out32(244, 16)
+  while true do
+    cpu.halt()
+  end
+  return 0
+end

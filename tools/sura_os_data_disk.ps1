@@ -7,14 +7,18 @@ param(
 $ErrorActionPreference = "Stop"
 
 $sectorSize = 512
-$totalSectors = 131072
+$legacyTotalSectors = 131072
+$totalSectors = 262144
 $partitionFirstLba = 2048
-$partitionSectors = $totalSectors - $partitionFirstLba
+$partitionSectors = $legacyTotalSectors - $partitionFirstLba
+$suraFsFirstLba = $legacyTotalSectors
+$suraFsSectors = $totalSectors - $suraFsFirstLba
 $reservedSectors = 32
 $fatCount = 2
 $fatSectors = 1000
 $dataFirstLba = $partitionFirstLba + $reservedSectors + ($fatCount * $fatSectors)
 $expectedLength = [int64]$totalSectors * $sectorSize
+$legacyLength = [int64]$legacyTotalSectors * $sectorSize
 
 function Set-U16 {
     param([byte[]]$Buffer, [int]$Offset, [uint16]$Value)
@@ -109,7 +113,7 @@ function Test-SuraDataDisk {
         throw "Sura OS data disk was not found: $DiskPath"
     }
     $item = Get-Item -LiteralPath $DiskPath
-    if ($item.Length -ne $expectedLength) {
+    if ($item.Length -ne $expectedLength -and $item.Length -ne $legacyLength) {
         throw "Sura OS data disk has an unexpected size: $($item.Length)"
     }
     $stream = [System.IO.File]::Open(
@@ -124,8 +128,16 @@ function Test-SuraDataDisk {
         if ($read -ne $sectorSize -or (Get-U16 $mbr 510) -ne 0xaa55) {
             throw "Sura OS data disk has an invalid MBR"
         }
-        if ($mbr[450] -ne 0xef -or (Get-U32 $mbr 454) -ne $partitionFirstLba) {
+        if ($mbr[450] -ne 0xef -or
+            (Get-U32 $mbr 454) -ne $partitionFirstLba -or
+            (Get-U32 $mbr 458) -ne $partitionSectors) {
             throw "Sura OS data disk partition entry is invalid"
+        }
+        if ($item.Length -eq $expectedLength -and
+            ($mbr[466] -ne 0x7f -or
+             (Get-U32 $mbr 470) -ne $suraFsFirstLba -or
+             (Get-U32 $mbr 474) -ne $suraFsSectors)) {
+            throw "Sura OS SuraFS partition entry is invalid"
         }
 
         $boot = New-Object byte[] $sectorSize
@@ -175,6 +187,38 @@ function Test-SuraDataDisk {
     return $item
 }
 
+function Upgrade-SuraDataDisk {
+    param([string]$DiskPath)
+    $item = Test-SuraDataDisk $DiskPath
+    if ($item.Length -ne $legacyLength) {
+        return $item
+    }
+    $stream = [System.IO.File]::Open(
+        $item.FullName,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None
+    )
+    try {
+        $stream.SetLength($expectedLength)
+        $mbr = New-Object byte[] $sectorSize
+        $stream.Position = 0
+        if ($stream.Read($mbr, 0, $mbr.Length) -ne $sectorSize) {
+            throw "Sura OS data disk MBR could not be read during upgrade"
+        }
+        $mbr[462] = 0
+        $mbr[466] = 0x7f
+        Set-U32 $mbr 470 ([uint32]$suraFsFirstLba)
+        Set-U32 $mbr 474 ([uint32]$suraFsSectors)
+        Write-At $stream 0 $mbr
+        $stream.Flush($true)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    return Test-SuraDataDisk $DiskPath
+}
+
 try {
     $fullPath = [System.IO.Path]::GetFullPath($Path)
     if ($VerifyOnly) {
@@ -184,8 +228,14 @@ try {
     }
 
     if ((Test-Path -LiteralPath $fullPath -PathType Leaf) -and -not $Force) {
-        $verified = Test-SuraDataDisk $fullPath
-        "sura_os_data_disk: KEEP (path=$($verified.FullName), bytes=$($verified.Length))"
+        $beforeLength = (Get-Item -LiteralPath $fullPath).Length
+        $verified = Upgrade-SuraDataDisk $fullPath
+        if ($beforeLength -eq $legacyLength) {
+            "sura_os_data_disk: UPGRADE PASS (path=$($verified.FullName), bytes=$($verified.Length), surafs_lba=$suraFsFirstLba)"
+        }
+        else {
+            "sura_os_data_disk: KEEP (path=$($verified.FullName), bytes=$($verified.Length))"
+        }
         return
     }
 
@@ -208,6 +258,9 @@ try {
         $mbr[450] = 0xef
         Set-U32 $mbr 454 ([uint32]$partitionFirstLba)
         Set-U32 $mbr 458 ([uint32]$partitionSectors)
+        $mbr[466] = 0x7f
+        Set-U32 $mbr 470 ([uint32]$suraFsFirstLba)
+        Set-U32 $mbr 474 ([uint32]$suraFsSectors)
         Set-U16 $mbr 510 0xaa55
         Write-At $stream 0 $mbr
 

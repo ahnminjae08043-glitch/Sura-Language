@@ -1,0 +1,260 @@
+# Executed QEMU xHCI boot-mouse gate.
+#
+# QEMU exposes a USB keyboard on the first connected port and a USB boot mouse
+# on the second. This gate addresses the second device, configures its HID
+# interrupt-IN endpoint, and verifies a report produced by QMP mouse movement.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/xhci.sura"
+import "../../stdlib/freestanding/usb_hid.sura"
+
+xhci_mouse_map is static.zero(65536, 4096)
+xhci_mouse_pci is static.struct(PciDevice)
+xhci_mouse_controller is static.struct(XhciController)
+xhci_mouse_dma is static.struct(XhciDma)
+xhci_mouse_command is static.struct(XhciCommandRing)
+xhci_mouse_event is static.struct(XhciEventRing)
+xhci_mouse_command_result is static.struct(XhciCommandResult)
+xhci_mouse_device_dma is static.struct(XhciDeviceDma)
+xhci_mouse_ep0 is static.struct(XhciTransferRing)
+xhci_mouse_device is static.struct(XhciDevice)
+xhci_mouse_transfer_result is static.struct(XhciTransferResult)
+xhci_mouse_hid is static.struct(XhciHidEndpoint)
+xhci_mouse_hid_ring is static.struct(XhciTransferRing)
+xhci_mouse_pointer_decoder is static.struct(PointerEventDecoder)
+xhci_mouse_pointer_event is static.struct(PointerEvent)
+
+xhci_mouse_pci_marker is static.utf8("SURA_XHCI_MOUSE_PCI_OK")
+xhci_mouse_reset_marker is static.utf8("SURA_XHCI_MOUSE_RESET_OK")
+xhci_mouse_port_marker is static.utf8("SURA_XHCI_MOUSE_PORT_OK")
+xhci_mouse_address_marker is static.utf8("SURA_XHCI_MOUSE_ADDRESS_OK")
+xhci_mouse_descriptor_marker is static.utf8("SURA_XHCI_MOUSE_DESCRIPTOR_OK")
+xhci_mouse_configured_marker is static.utf8("SURA_XHCI_MOUSE_CONFIGURED_OK")
+xhci_mouse_running_marker is static.utf8("SURA_XHCI_MOUSE_ENDPOINT_RUNNING")
+xhci_mouse_ready_marker is static.utf8("SURA_XHCI_MOUSE_READY")
+xhci_mouse_report_marker is static.utf8("SURA_XHCI_MOUSE_REPORT_OK")
+xhci_mouse_event_marker is static.utf8("SURA_XHCI_MOUSE_EVENT_OK")
+xhci_mouse_command_marker is static.utf8("SURA_XHCI_MOUSE_COMMAND_OK")
+xhci_mouse_done_marker is static.utf8("SURA_XHCI_MOUSE_EXECUTED_OK")
+xhci_mouse_hex_digits is static.utf8("0123456789ABCDEF")
+
+xhci_mouse_map_size: usize is 65536
+xhci_mouse_map_key: u64 is 0
+xhci_mouse_descriptor_size: usize is 0
+xhci_mouse_descriptor_version: u32 is 0
+xhci_mouse_dma_address: u64 is 0
+
+func xhci_mouse_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func xhci_mouse_line(text: ptr) do
+  if not serial_write_cstr(1016, text, 64, 1000000) then return false
+  return serial_write_byte(1016, 10, 1000000)
+end
+
+func xhci_mouse_hex_byte(value: u64) do
+  if value > 255 then return false
+  high: u64 is mem.read8(ptr.add(xhci_mouse_hex_digits, (value >> 4) & 15))
+  low: u64 is mem.read8(ptr.add(xhci_mouse_hex_digits, value & 15))
+  if not serial_write_byte(1016, high, 1000000) then return false
+  if not serial_write_byte(1016, low, 1000000) then return false
+  return serial_write_byte(1016, 32, 1000000)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global xhci_mouse_map_size, xhci_mouse_map_key, xhci_mouse_descriptor_size, xhci_mouse_descriptor_version, xhci_mouse_dma_address
+  uefi.write("Sura xHCI mouse executed gate")
+  uefi.newline()
+  if uefi.allocate_pages(0, 2, 10, addr_of(xhci_mouse_dma_address)) != 0 or xhci_mouse_dma_address == 0 then
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    xhci_mouse_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(xhci_mouse_map_size), xhci_mouse_map, addr_of(xhci_mouse_map_key), addr_of(xhci_mouse_descriptor_size), addr_of(xhci_mouse_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(xhci_mouse_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then return 2
+  cpu.disable_interrupts()
+  if not serial_init(1016, 1) then
+    xhci_mouse_exit(2)
+    return 3
+  end
+
+  pci: ptr[PciDevice] is xhci_mouse_pci
+  controller: ptr[XhciController] is xhci_mouse_controller
+  dma: ptr[XhciDma] is xhci_mouse_dma
+  command: ptr[XhciCommandRing] is xhci_mouse_command
+  event: ptr[XhciEventRing] is xhci_mouse_event
+  command_result: ptr[XhciCommandResult] is xhci_mouse_command_result
+  device_dma: ptr[XhciDeviceDma] is xhci_mouse_device_dma
+  ep0: ptr[XhciTransferRing] is xhci_mouse_ep0
+  device: ptr[XhciDevice] is xhci_mouse_device
+  transfer_result: ptr[XhciTransferResult] is xhci_mouse_transfer_result
+  hid: ptr[XhciHidEndpoint] is xhci_mouse_hid
+  hid_ring: ptr[XhciTransferRing] is xhci_mouse_hid_ring
+
+  if not xhci_pci_find(pci) then
+    xhci_mouse_exit(3)
+    return 4
+  end
+  if not xhci_mouse_line(xhci_mouse_pci_marker) then xhci_mouse_exit(4)
+  bar: u64 is xhci_pci_bar_physical(pci)
+  if bar == 0 or not xhci_pci_enable(pci) then
+    xhci_mouse_exit(5)
+    return 5
+  end
+  if not xhci_controller_attach(controller, bar, 100000000) then
+    xhci_mouse_exit(6)
+    return 6
+  end
+  if not xhci_dma_configure(dma, xhci_mouse_dma_address, xhci_mouse_dma_address, 16384) then
+    xhci_mouse_exit(7)
+    return 7
+  end
+  requested_slots: u64 is controller.max_slots
+  if requested_slots > 8 then requested_slots is 8
+  if not xhci_controller_start(controller, dma, command, event, requested_slots) then
+    xhci_mouse_exit(8)
+    return 8
+  end
+  if not xhci_mouse_line(xhci_mouse_reset_marker) then xhci_mouse_exit(9)
+  if xhci_connected_port_count(controller) < 2 then
+    xhci_mouse_exit(10)
+    return 10
+  end
+  port_id: u64 is xhci_connected_port_at(controller, 2)
+  if port_id == 0 or not xhci_port_reset(controller, port_id) then
+    xhci_mouse_exit(11)
+    return 11
+  end
+  if not xhci_mouse_line(xhci_mouse_port_marker) then xhci_mouse_exit(12)
+
+  if not xhci_enable_slot(command, event, command_result) then
+    xhci_mouse_exit(13)
+    return 13
+  end
+  slot_id: u64 is command_result.slot_id
+  if slot_id == 0 or not xhci_device_init(device, controller, slot_id, port_id) then
+    xhci_mouse_exit(14)
+    return 14
+  end
+  device_dma_base: u64 is xhci_mouse_dma_address + 16384
+  if not xhci_device_dma_configure(device_dma, device_dma_base, device_dma_base, 24576) then
+    xhci_mouse_exit(15)
+    return 15
+  end
+  if not xhci_device_context_configure(device, dma, device_dma, ep0) then
+    xhci_mouse_exit(16)
+    return 16
+  end
+  if not xhci_address_device(device, command, event, command_result) then
+    xhci_mouse_exit(17)
+    return 17
+  end
+  if not xhci_mouse_line(xhci_mouse_address_marker) then xhci_mouse_exit(18)
+
+  if not xhci_control_get_descriptor(device, event, 256, 18, transfer_result) then
+    xhci_mouse_exit(19)
+    return 19
+  end
+  descriptor: ptr is device_dma.data
+  if mem.read8(descriptor) != 18 or mem.read8(ptr.add(descriptor, 1)) != 1 then
+    xhci_mouse_exit(20)
+    return 20
+  end
+  if not xhci_mouse_line(xhci_mouse_descriptor_marker) then xhci_mouse_exit(21)
+
+  if not xhci_control_get_descriptor(device, event, 512, 9, transfer_result) then
+    xhci_mouse_exit(22)
+    return 22
+  end
+  configuration_length: u64 is mem.read16(ptr.add(device_dma.data, 2))
+  if configuration_length < 9 or configuration_length > 4096 then
+    xhci_mouse_exit(23)
+    return 23
+  end
+  if not xhci_control_get_descriptor(device, event, 512, configuration_length, transfer_result) then
+    xhci_mouse_exit(24)
+    return 24
+  end
+  if not xhci_hid_parse_configuration(device_dma.data, configuration_length, hid) then
+    xhci_mouse_exit(25)
+    return 25
+  end
+  if hid.protocol != 2 then
+    xhci_mouse_exit(26)
+    return 26
+  end
+  if not xhci_hid_configure_endpoint(device, command, event, hid, hid_ring, command_result) then
+    xhci_mouse_exit(27)
+    return 27
+  end
+  if not xhci_control_set_configuration(device, event, hid.configuration_value, transfer_result) then
+    xhci_mouse_exit(28)
+    return 28
+  end
+  if not xhci_hid_set_boot_protocol(device, event, hid, transfer_result) then
+    xhci_mouse_exit(29)
+    return 29
+  end
+  if not xhci_mouse_line(xhci_mouse_configured_marker) then xhci_mouse_exit(30)
+  output_endpoint: ptr is ptr.add(device_dma.output_context, hid.endpoint_id * controller.context_size)
+  if (mem.read32(output_endpoint) & 7) != 1 then
+    xhci_mouse_exit(31)
+    return 31
+  end
+  if not xhci_mouse_line(xhci_mouse_running_marker) then xhci_mouse_exit(32)
+  if not xhci_mouse_line(xhci_mouse_ready_marker) then xhci_mouse_exit(33)
+
+  report_trb: u64 is xhci_hid_post_report(device, hid, hid_ring)
+  if report_trb == 0 then
+    xhci_mouse_exit(34)
+    return 34
+  end
+  if not xhci_transfer_wait(event, slot_id, hid.endpoint_id, report_trb, transfer_result) then
+    xhci_mouse_exit(35)
+    return 35
+  end
+  movement: u64 is 0
+  report_index: u64 is 0
+  while report_index < hid.max_packet_size do
+    report_byte: u64 is mem.read8(ptr.add(device_dma.report, report_index))
+    xhci_mouse_hex_byte(report_byte)
+    if report_index > 0 and report_byte != 0 then movement is 1
+    report_index += 1
+  end
+  serial_write_byte(1016, 10, 1000000)
+  if movement == 0 then
+    xhci_mouse_exit(36)
+    return 36
+  end
+  if not xhci_mouse_line(xhci_mouse_report_marker) then xhci_mouse_exit(37)
+  pointer_decoder: ptr[PointerEventDecoder] is xhci_mouse_pointer_decoder
+  pointer_event: ptr[PointerEvent] is xhci_mouse_pointer_event
+  if not pointer_event_decoder_init(pointer_decoder, 1280, 800) then xhci_mouse_exit(42)
+  if not usb_hid_mouse_feed_report(pointer_decoder, device_dma.report, hid.max_packet_size, pointer_event) then xhci_mouse_exit(43)
+  if pointer_event.moved == 0 or (pointer_event.delta_x == 0 and pointer_event.delta_y == 0) then xhci_mouse_exit(44)
+  if not xhci_mouse_line(xhci_mouse_event_marker) then xhci_mouse_exit(45)
+  if not xhci_disable_slot(command, event, slot_id, command_result) then
+    xhci_mouse_exit(38)
+    return 38
+  end
+  if not xhci_mouse_line(xhci_mouse_command_marker) then xhci_mouse_exit(39)
+  if not xhci_stop(controller) then
+    xhci_mouse_exit(40)
+    return 40
+  end
+  if not xhci_mouse_line(xhci_mouse_done_marker) then xhci_mouse_exit(41)
+  xhci_mouse_exit(16)
+  return 0
+end

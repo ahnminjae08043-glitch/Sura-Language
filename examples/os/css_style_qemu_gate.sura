@@ -1,0 +1,171 @@
+# Executed bounded CSS cascade and computed-style gate.
+
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/css_style.sura"
+
+css_gate_memory_map is static.zero(65536, 4096)
+css_gate_nodes is static.zero(1280, 16)
+css_gate_attributes is static.zero(512, 16)
+css_gate_rules is static.zero(384, 16)
+css_gate_rule_styles is static.zero(2304, 16)
+css_gate_computed is static.zero(4608, 16)
+css_gate_scratch is static.zero(640, 16)
+css_gate_custom_entries is static.zero(512, 16)
+css_gate_document is static.struct(HtmlDomDocument)
+css_gate_stylesheet is static.struct(CssStylesheet)
+css_gate_html is static.utf8("<html><body class=\"page\"><div id=\"hero\" style=\"margin-left:9px;color:#ff6600;box-sizing:border-box\">Box</div><p>Hidden</p></body></html>")
+css_gate_source is static.utf8("/*x*/ body { color:#123456; margin:8px 16px; } .page { background-color:#abc; padding:4px; } #hero { width:200px; height:40px; border-width:1px 2px 3px 4px; } div { width:100px; display:block; } p { display:none; }")
+css_gate_bad is static.utf8("body width:1px")
+css_gate_relaxed is static.utf8("@keyframes x{0%{color:#fff}to{color:#000}} body,.page{color:#123456} .page #hero{height:77px} a:hover{color:#fff} div#hero{background:#654321} .page > #hero{padding:2px;width:222px}")
+css_gate_variables is static.utf8(":root{--paper:#f3efe5;--ink:#17201f}.page{color:var(--ink);background:linear-gradient(#00000006 1px,transparent 1px),var(--paper)}#hero{background:#112233cc}")
+css_gate_borders is static.utf8("body{border:2px solid #123;border-top:4px dashed #456}#hero{border-left:3px solid #abc}")
+css_gate_dimensions is static.utf8("body{width:100%;min-width:170px;max-width:620px;min-height:100vh;max-height:760px}#hero{width:calc(100% - 12px);max-width:50vw}")
+css_gate_positions is static.utf8("body{position:relative;top:-7px;left:16px}#hero{position:absolute;top:43px;right:0}p{position:fixed;bottom:10px;right:5px}")
+css_gate_media is static.utf8("body{color:#111111}@media screen and (min-width:700px){body{color:#222222}#hero{width:333px}}@media (max-width:699px){body{color:#333333}}@media print{#hero{width:444px}}")
+css_gate_clamp is static.utf8("clamp(20px, 5vw, 40px)")
+css_gate_line_factor is static.utf8(".9")
+css_gate_marker is static.utf8("SURA_CSS_STYLE_OK\r\n")
+
+css_gate_map_size: usize is 65536
+css_gate_map_key: u64 is 0
+css_gate_descriptor_size: usize is 0
+css_gate_descriptor_version: u32 is 0
+
+func css_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func css_gate_style(index: u64) do
+  return ptr.add(css_gate_computed, index * 288)
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global css_gate_map_size, css_gate_map_key
+  global css_gate_descriptor_size, css_gate_descriptor_version
+  uefi.write("Sura CSS style test")
+  uefi.newline()
+  if not serial_init(1016, 1) then return 1
+
+  document: ptr[HtmlDomDocument] is css_gate_document
+  document.nodes is css_gate_nodes
+  document.node_capacity is 16
+  document.attributes is css_gate_attributes
+  document.attribute_capacity is 16
+  if not html_dom_parse(css_gate_html, 136, document) then css_gate_exit(1)
+  if document.node_count != 7 or document.attribute_count != 3 then css_gate_exit(2)
+
+  stylesheet: ptr[CssStylesheet] is css_gate_stylesheet
+  stylesheet.rules is css_gate_rules
+  stylesheet.styles is css_gate_rule_styles
+  stylesheet.capacity is 8
+  if not css_stylesheet_parse(css_gate_source, 214, stylesheet) then css_gate_exit(3)
+  if stylesheet.count != 5 then css_gate_exit(4)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(5)
+
+  body: ptr[CssComputedStyle] is css_gate_style(2)
+  hero: ptr[CssComputedStyle] is css_gate_style(3)
+  hero_text: ptr[CssComputedStyle] is css_gate_style(4)
+  paragraph: ptr[CssComputedStyle] is css_gate_style(5)
+  paragraph_text: ptr[CssComputedStyle] is css_gate_style(6)
+  if body.color != u64("0x123456") then css_gate_exit(26)
+  if body.background != u64("0xaabbcc") then css_gate_exit(27)
+  if body.margin_top != 8 or body.margin_right != 16 or body.margin_bottom != 8 or body.margin_left != 16 then css_gate_exit(7)
+  if body.padding_top != 4 or body.padding_right != 4 or body.padding_bottom != 4 or body.padding_left != 4 then css_gate_exit(8)
+  if hero.display != 1 or hero.width != 200 or hero.height != 40 then css_gate_exit(9)
+  if hero.border_top != 1 or hero.border_right != 2 or hero.border_bottom != 3 or hero.border_left != 4 then css_gate_exit(10)
+  if hero.margin_left != 9 or hero.color != u64("0xff6600") or hero.box_sizing != 1 then css_gate_exit(11)
+  if hero_text.display != 2 or hero_text.color != u64("0xff6600") then css_gate_exit(12)
+  if paragraph.display != 0 or paragraph.color != u64("0x123456") then css_gate_exit(13)
+  if paragraph_text.display != 2 or paragraph_text.color != u64("0x123456") then css_gate_exit(14)
+
+  stylesheet.capacity is 4
+  if css_stylesheet_parse(css_gate_source, 214, stylesheet) then css_gate_exit(15)
+  stylesheet.capacity is 8
+  if css_stylesheet_parse(css_gate_bad, 14, stylesheet) then css_gate_exit(16)
+  if not css_stylesheet_parse_relaxed(css_gate_relaxed, 181, stylesheet) then css_gate_exit(19)
+  if stylesheet.count != 5 then css_gate_exit(20)
+  first_rule: ptr[CssRule] is stylesheet.rules
+  second_rule: ptr[CssRule] is ptr.add(stylesheet.rules, 48)
+  third_rule: ptr[CssRule] is ptr.add(stylesheet.rules, 96)
+  fourth_rule: ptr[CssRule] is ptr.add(stylesheet.rules, 144)
+  fifth_rule: ptr[CssRule] is ptr.add(stylesheet.rules, 192)
+  if first_rule.selector_kind != 1 or second_rule.selector_kind != 2 or third_rule.selector_kind != 4 then css_gate_exit(21)
+  if fourth_rule.selector_kind != 4 or fifth_rule.selector_kind != 4 then css_gate_exit(24)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(22)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if body.color != u64("0x123456") or hero.height != 77 or hero.width != 222 then css_gate_exit(23)
+  if hero.background != u64("0x654321") or hero.padding_top != 2 or hero.padding_right != 2 or hero.padding_bottom != 2 or hero.padding_left != 2 then css_gate_exit(25)
+  if css_custom_properties_resolve(css_gate_variables, 157, css_gate_custom_entries, 16) != 2 then css_gate_exit(28)
+  if not css_stylesheet_parse_relaxed(css_gate_variables, 157, stylesheet) then css_gate_exit(29)
+  if stylesheet.count != 2 then css_gate_exit(30)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(31)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if body.color != u64("0x17201f") or body.background != u64("0xf3efe5") then css_gate_exit(32)
+  if hero.background != u64("0x112233") then css_gate_exit(33)
+  if not css_stylesheet_parse_relaxed(css_gate_borders, 87, stylesheet) then css_gate_exit(34)
+  if stylesheet.count != 2 then css_gate_exit(35)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(36)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if body.border_top != 4 or body.border_right != 2 or body.border_bottom != 2 or body.border_left != 2 then css_gate_exit(37)
+  if hero.border_left != 3 then css_gate_exit(38)
+  if not css_stylesheet_parse_relaxed(css_gate_dimensions, 127, stylesheet) then css_gate_exit(39)
+  if stylesheet.count != 2 then css_gate_exit(40)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(41)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if css_dimension_resolve(body.width, 800, 800, 600) != 800 then css_gate_exit(42)
+  if css_dimension_resolve(body.min_width, 800, 800, 600) != 170 then css_gate_exit(43)
+  if css_dimension_resolve(body.max_width, 800, 800, 600) != 620 then css_gate_exit(44)
+  if css_dimension_resolve(body.min_height, 600, 800, 600) != 600 then css_gate_exit(45)
+  if css_dimension_resolve(body.max_height, 600, 800, 600) != 760 then css_gate_exit(46)
+  if css_dimension_resolve(hero.width, 300, 800, 600) != 288 then css_gate_exit(47)
+  if css_dimension_resolve(hero.max_width, 300, 800, 600) != 400 then css_gate_exit(48)
+  if not css_stylesheet_parse_relaxed(css_gate_positions, 122, stylesheet) then css_gate_exit(49)
+  if stylesheet.count != 3 then css_gate_exit(50)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(51)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  paragraph is css_gate_style(5)
+  if body.position != 1 or body.top != u64("0xfffffffffffffff9") or body.left != 16 then css_gate_exit(52)
+  if hero.position != 2 or hero.top != 43 or hero.right != 0 then css_gate_exit(53)
+  if paragraph.position != 3 or paragraph.bottom != 10 or paragraph.right != 5 then css_gate_exit(54)
+  if not css_stylesheet_parse_relaxed_viewport(css_gate_media, 170, stylesheet, 800, 600) then css_gate_exit(55)
+  if stylesheet.count != 3 then css_gate_exit(56)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(57)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if body.color != u64("0x222222") or hero.width != 333 then css_gate_exit(58)
+  if not css_stylesheet_parse_relaxed_viewport(css_gate_media, 170, stylesheet, 600, 600) then css_gate_exit(59)
+  if stylesheet.count != 2 then css_gate_exit(60)
+  if not css_compute_document(document, stylesheet, css_gate_computed, 16, css_gate_scratch, 640) then css_gate_exit(61)
+  body is css_gate_style(2)
+  hero is css_gate_style(3)
+  if body.color != u64("0x333333") or hero.width != u64("0xffffffffffffffff") then css_gate_exit(62)
+  clamp_value: u64 is css_font_size_length(css_gate_clamp, 0, 22)
+  if css_font_size_resolve(clamp_value, 600) != 30 then css_gate_exit(39)
+  if css_font_size_resolve(clamp_value, 200) != 20 then css_gate_exit(40)
+  if css_font_size_resolve(clamp_value, 1000) != 40 then css_gate_exit(41)
+  line_factor: u64 is css_line_height_length(css_gate_line_factor, 0, 2)
+  if css_line_height_resolve(line_factor, 30) != 27 then css_gate_exit(42)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    css_gate_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(css_gate_map_size), css_gate_memory_map, addr_of(css_gate_map_key), addr_of(css_gate_descriptor_size), addr_of(css_gate_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(css_gate_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then css_gate_exit(17)
+  if not serial_write_buffer(1016, css_gate_marker, 19, 1000000) then css_gate_exit(18)
+  css_gate_exit(16)
+  return 0
+end

@@ -1,0 +1,234 @@
+# Executed QEMU gate for bounded user execution and kernel input progress.
+#
+# One CPL-3 process spins forever without yielding. A periodic APIC timer must
+# save that process, restore the Ring-0 service frame, and let the simulated
+# kernel input loop make progress. The kernel then reschedules the same process
+# and requires a second timer return, proving that both directions are reusable.
+
+import "../../stdlib/freestanding/user_process.sura"
+import "../../stdlib/freestanding/timer.sura"
+import "../../stdlib/freestanding/serial.sura"
+
+slice_processes is static.struct(UserProcess, 2)
+slice_scheduler is static.struct(UserProcessScheduler)
+slice_scheduler_config is static.struct(UserProcessSchedulerConfig)
+slice_create_config is static.struct(UserProcessCreate)
+
+slice_allocator is static.struct(PhysicalAllocator)
+slice_arena is static.zero(262144, 4096)
+slice_bitmap is static.zero(16, 16)
+slice_space is static.struct(ProcessAddressSpace)
+slice_buffers is static.struct(ProcessSpaceBuffers)
+slice_owned is static.zero(256, 16)
+slice_mappings is static.struct(ProcessMapping, 8)
+slice_stack is static.struct(ProcessStack)
+
+slice_kernel_stack is static.zero(16384, 16)
+slice_idle_stack is static.zero(16384, 16)
+slice_tss is static.zero(104, 16)
+slice_idt is static.zero(4096, 16)
+
+# null, kernel code, kernel data, user data, user code, two TSS slots.
+slice_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+# pause; jump back forever without a syscall or voluntary yield.
+slice_code is static.bytes([243, 144, 235, 252, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144], 16)
+
+slice_memory_map is static.zero(65536, 4096)
+slice_map_size: usize is 65536
+slice_map_key: u64 is 0
+slice_descriptor_size: usize is 0
+slice_descriptor_version: u32 is 0
+
+slice_kernel_root: ptr is 0
+slice_process_id: u64 is 0
+slice_input_polls: u64 is 0
+
+slice_kernel_marker is static.utf8("SURA_USER_PROCESS_KERNEL_SLICE_OK")
+slice_input_marker is static.utf8("SURA_USER_PROCESS_INPUT_PROGRESS_OK")
+slice_resume_marker is static.utf8("SURA_USER_PROCESS_RESUME_OK")
+slice_terminate_marker is static.utf8("SURA_USER_PROCESS_TERMINATE_OK")
+slice_failure_marker is static.utf8("SURA_USER_PROCESS_KERNEL_SLICE_FAILED")
+
+func slice_write(text: ptr) do
+  return serial_write_cstr(1016, text, 96, 1000000)
+end
+
+func slice_newline() do
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  return true
+end
+
+func slice_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func slice_fail(code: u64) do
+  slice_write(slice_failure_marker)
+  serial_write_byte(1016, 32, 1000000)
+  if code >= 10 then serial_write_byte(1016, 48 + ((code / 10) % 10), 1000000)
+  serial_write_byte(1016, 48 + (code % 10), 1000000)
+  slice_newline()
+  slice_exit(code)
+end
+
+func slice_prepare_space() do
+  buffers: ptr[ProcessSpaceBuffers] is slice_buffers
+  buffers.owned_pages is slice_owned
+  buffers.owned_capacity is 32
+  buffers.mappings is slice_mappings
+  buffers.mapping_capacity is 8
+  if not process_space_init(slice_space, slice_allocator, slice_kernel_root, buffers) then return false
+
+  kernel_entry: u64 is paging.read(slice_kernel_root, 0)
+  if not paging.present(kernel_entry) then return false
+  paging.write(slice_space.root, 0, kernel_entry & ~4)
+
+  user_code: u64 is u64("0x0000010000400000")
+  user_stack_top: u64 is u64("0x0000010000800000")
+  if not process_space_map_page(slice_space, user_code, true, false) then return false
+  if not process_copy_to_user(slice_space, user_code, slice_code, 16) then return false
+  if not process_space_protect_page(slice_space, user_code, false, true) then return false
+  if not process_space_map_stack(slice_space, user_stack_top, 2, 1, slice_stack) then return false
+  return true
+end
+
+func slice_invalid_opcode(frame: ptr[UserInterruptFrame]) interrupt do
+  slice_fail(6)
+  return
+end
+
+func slice_general_protection(frame: ptr[UserInterruptFrame]) interrupt_error do
+  slice_fail(7)
+  return
+end
+
+func slice_check_return(expected_slices: u64) do
+  state: ptr[UserProcessScheduler] is slice_scheduler
+  if state.current != state.capacity then slice_fail(40)
+  if paging.root() != slice_kernel_root then slice_fail(41)
+  if state.kernel_slices != expected_slices then slice_fail(42)
+  if state.ticks < expected_slices then slice_fail(43)
+  if state.runnable_count != 1 or state.process_count != 1 then slice_fail(44)
+  index: u64 is user_process_find_index(state, slice_process_id)
+  if index >= state.capacity then slice_fail(45)
+  process: ptr[UserProcess] is user_process_at(state, index)
+  if process.state != 1 or not user.frame_valid(process.frame) then slice_fail(46)
+  space: ptr[ProcessAddressSpace] is process.address_space
+  if space != slice_space or space.root == slice_kernel_root then slice_fail(47)
+  if process.switches < expected_slices then slice_fail(48)
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global slice_map_size, slice_map_key, slice_descriptor_size, slice_descriptor_version
+  global slice_kernel_root, slice_process_id, slice_input_polls
+
+  uefi.write("Sura executed user-process kernel-slice QEMU gate")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    slice_exit(1)
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    slice_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(slice_map_size), slice_memory_map, addr_of(slice_map_key), addr_of(slice_descriptor_size), addr_of(slice_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(slice_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then
+    slice_fail(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  io.out8(33, 255)
+  io.out8(161, 255)
+  slice_kernel_root is paging.root()
+  if slice_kernel_root == 0 then slice_fail(3)
+
+  cpu.tss_set_rsp(slice_tss, 0, ptr.add(slice_idle_stack, 16384))
+  cpu.tss_set_iomap(slice_tss, 104)
+  cpu.gdt_set_tss(slice_gdt, 5, slice_tss, 103)
+  cpu.load_gdt(slice_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  cpu.idt_set_gate(slice_idt, 6, addr_of(slice_invalid_opcode), 8, 0, 142)
+  cpu.idt_set_gate(slice_idt, 13, addr_of(slice_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(slice_idt, 14, addr_of(user_process_page_fault_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(slice_idt, 48, addr_of(user_process_kernel_slice_timer_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(slice_idt, 130, addr_of(user_process_yield_interrupt), 8, 0, 238)
+  cpu.load_idt(slice_idt, 4096)
+
+  if not process_enable_nx() then slice_fail(4)
+  if not pmem_reset(slice_allocator, slice_bitmap, 16, slice_arena, 64) then slice_fail(20)
+  if not pmem_release_range(slice_allocator, slice_arena, 64) then slice_fail(21)
+  if not slice_prepare_space() then slice_fail(22)
+
+  config: ptr[UserProcessSchedulerConfig] is slice_scheduler_config
+  config.processes is slice_processes
+  config.capacity is 2
+  config.tss is slice_tss
+  config.kernel_root is slice_kernel_root
+  config.kernel_gs_base is 0
+  config.idle_stack_base is slice_idle_stack
+  config.idle_stack_size is 16384
+  if not user_process_scheduler_init(slice_scheduler, config) then slice_fail(23)
+
+  create: ptr[UserProcessCreate] is slice_create_config
+  create.address_space is slice_space
+  create.kernel_stack_base is slice_kernel_stack
+  create.kernel_stack_size is 16384
+  create.entry is u64("0x0000010000400000")
+  create.user_stack_pointer is slice_stack.initial_rsp
+  create.argument is 0
+  create.user_gs_base is 0
+  create.event_queue is 0
+  slice_process_id is user_process_create(slice_scheduler, create)
+  if slice_process_id == 0 then slice_fail(24)
+
+  if apic.mode() == 0 then slice_fail(25)
+  apic.write(240, 511)
+  sample: u64 is apic_timer_calibrate_pit(11932, 16, 10000000)
+  timer_count: u64 is apic_timer_count_for_hz(sample, 11932, 100)
+  if timer_count == 0 then timer_count is 1000000
+  if not apic_timer_configure(48, timer_count, 16, true) then slice_fail(26)
+
+  # Each invoke enters the non-yielding process. Vector 48 must return to this
+  # exact Ring-0 continuation so the simulated input loop can poll again.
+  first_started: bool is interrupt.invoke(130)
+  slice_input_polls += 1
+  if not slice_check_return(1) then slice_fail(27)
+
+  second_started: bool is interrupt.invoke(130)
+  slice_input_polls += 1
+  if not slice_check_return(2) then slice_fail(28)
+  if slice_input_polls != 2 or slice_scheduler.switches < 4 then slice_fail(29)
+  if not user_process_terminate(slice_scheduler, slice_process_id, 137) then slice_fail(30)
+  if user_process_state(slice_scheduler, slice_process_id) != 2 then slice_fail(31)
+  if user_process_exit_code(slice_scheduler, slice_process_id) != 137 then slice_fail(32)
+  if slice_scheduler.runnable_count != 0 or slice_scheduler.process_count != 1 then slice_fail(33)
+  if not user_process_reap(slice_scheduler, slice_process_id) then slice_fail(34)
+  if slice_scheduler.runnable_count != 0 or slice_scheduler.process_count != 0 then slice_fail(35)
+
+  slice_write(slice_kernel_marker)
+  slice_newline()
+  slice_write(slice_input_marker)
+  slice_newline()
+  slice_write(slice_resume_marker)
+  slice_newline()
+  slice_write(slice_terminate_marker)
+  slice_newline()
+  slice_exit(16)
+  return 0
+end

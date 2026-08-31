@@ -52,15 +52,15 @@ func shell_command_help(shell, kernel, args) do
   if topic == "" then
     shell_emit(shell, kernel, "SuraOS shell commands")
     shell_emit(shell, kernel, "  help about uname uptime health shutdown boot-report")
-    shell_emit(shell, kernel, "  pwd cd ls tree cat write append touch mkdir rm cp mv stat chmod")
-    shell_emit(shell, kernel, "  ps top kill nice run programs assemble disasm")
+    shell_emit(shell, kernel, "  pwd cd ls tree cat write append edit touch mkdir rm cp mv stat chmod")
+    shell_emit(shell, kernel, "  ps top kill nice run runfile programs assemble disasm lang")
     shell_emit(shell, kernel, "  mem disk devices users whoami id env export history log")
     shell_emit(shell, kernel, "  services service pkg ip monitor snapshot")
     shell_emit(shell, kernel, "  random net-send net-recv echo clear exit")
     shell_emit(shell, kernel, "Use: help <command> for selected details.")
     return
   end
-  details is {run: "run <program> [cycles] - spawn an installed SVM32 program", assemble: "assemble <virtual-file> [name] - assemble source from SuraOS disk", write: "write <path> <text> - replace a virtual file", kill: "kill <pid> [TERM|KILL|STOP|CONT] - queue a process signal", chmod: "chmod <0..7> <path> - change compact owner permissions", export: "export NAME VALUE - set a shell environment variable", shutdown: "shutdown - request an orderly virtual kernel shutdown"}
+  details is {run: "run <program> [cycles] - spawn an installed SVM32 program", runfile: "runfile <virtual-file> [language] - run a file using an installed guest language", lang: "lang available|list|install|remove|run|info - manage guest languages", disk: "disk usage|status|save|load|autosave on|off - manage the persistent virtual disk", edit: "edit <path> - enter lines, then .save or .cancel", assemble: "assemble <virtual-file> [name] - assemble source from SuraOS disk", write: "write <path> <text> - replace a virtual file", kill: "kill <pid> [TERM|KILL|STOP|CONT] - queue a process signal", chmod: "chmod <0..7> <path> - change compact owner permissions", export: "export NAME VALUE - set a shell environment variable", shutdown: "shutdown - request an orderly virtual kernel shutdown"}
   if topic in details then shell_emit(shell, kernel, details[topic]) else shell_emit(shell, kernel, "No detailed help for " + topic)
 end
 
@@ -147,6 +147,42 @@ func shell_command_write(shell, kernel, args, append) do
   if append then result is fs_append_file(kernel.fs, path, content, shell.username, shell.cwd, kernel.clock.tick)
 else result is fs_write_file(kernel.fs, path, content, shell.username, shell.cwd, kernel.clock.tick)
   if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "wrote " + result.value + " bytes")
+end
+
+func shell_command_edit(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "edit requires a virtual path")
+    return
+  end
+  path is osutil_normalize_path(args[0], shell.cwd)
+  existing is fs_get(kernel.fs, path, "/")
+  if existing != nil then
+    if existing.kind != SURAOS_NODE_FILE then
+      shell_error(shell, kernel, "path is not a regular file")
+      return
+    end
+    if not fs_can(existing, shell.username, "write") then
+      shell_error(shell, kernel, "file is not writable")
+      return
+    end
+    shell_emit(shell, kernel, "Replacing " + path + " (" + existing.size + " bytes).")
+  end
+  shell_emit(shell, kernel, "Enter file content. Type .save on its own line to save, or .cancel.")
+  lines is []
+  editing is true
+  while editing do
+    line is input("edit> ")
+    if line == ".cancel" then
+      shell_emit(shell, kernel, "edit cancelled")
+      return
+    elif line == ".save" then
+      editing is false
+    else
+      lines.push(line)
+    end
+  end
+  result is fs_write_file(kernel.fs, path, lines.join("\n"), shell.username, "/", kernel.clock.tick)
+  if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "saved " + result.value + " bytes to " + path)
 end
 
 func shell_command_touch(shell, kernel, args) do
@@ -332,10 +368,129 @@ func shell_command_mem(shell, kernel) do
   end
 end
 
-func shell_command_disk(shell, kernel) do
+func shell_command_disk(shell, kernel, args) do
+  action is "usage"
+  if args.len() > 0 then action is args[0].lower()
+  if action == "save" then
+    result is persistence_save(kernel, true)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "virtual disk saved")
+    return
+  end
+  if action == "load" then
+    if scheduler_live_count(kernel) > 0 then
+      shell_error(shell, kernel, "cannot reload disk while processes are alive")
+      return
+    end
+    result is persistence_load(kernel)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "virtual disk loaded")
+    return
+  end
+  if action == "autosave" then
+    if args.len() < 2 then
+      shell_error(shell, kernel, "disk autosave requires on or off")
+      return
+    end
+    enabled is args[1].lower() == "on"
+    if not enabled and args[1].lower() != "off" then
+      shell_error(shell, kernel, "disk autosave requires on or off")
+      return
+    end
+    result is persistence_set_autosave(kernel, enabled)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "autosave=" + enabled)
+    return
+  end
+  if action == "status" then
+    status is persistence_status(kernel)
+    shell_emit(shell, kernel, "persistent=" + status.enabled + " autosave=" + status.autosave + " loaded=" + status.loaded + " dirty=" + status.dirty)
+    shell_emit(shell, kernel, "image=" + status.host_path + " saves=" + status.saves + " loads=" + status.loads + " last=" + status.last_action)
+    if status.last_error.len() > 0 then shell_emit(shell, kernel, "last error: " + status.last_error)
+    return
+  end
+  if action != "usage" then
+    shell_error(shell, kernel, "unknown disk action: " + action)
+    return
+  end
   usage is fs_usage(kernel.fs)
   shell_emit(shell, kernel, usage.label + ": " + usage.used + "/" + usage.capacity + " bytes (" + usage.utilization + "%)")
-  shell_emit(shell, kernel, "nodes=" + usage.nodes + " reads=" + usage.reads + " writes=" + usage.writes + " dirty=" + usage.dirty)
+  shell_emit(shell, kernel, "free=" + usage.free + " pressure=" + usage.pressure + " nodes=" + usage.nodes + " reads=" + usage.reads + " writes=" + usage.writes + " dirty=" + usage.dirty)
+  if usage.pressure == "critical" or usage.pressure == "full" then shell_emit(shell, kernel, "warning: delete unused virtual files before installing or writing more data")
+end
+
+func shell_command_language(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "lang requires available, list, install, remove, info, or run")
+    return
+  end
+  action is args[0].lower()
+  if action == "available" then
+    for name in osutil_sort_strings(kernel.languages.catalog.keys()) do
+      runtime is kernel.languages.catalog[name]
+      installed is language_is_installed(kernel.languages, kernel.fs, shell.username, name)
+      shell_emit(shell, kernel, osutil_pad_right(name, 12, " ") + " " + runtime.version + " " + runtime.extension + " installed=" + installed + " - " + runtime.description)
+    end
+    return
+  end
+  if action == "list" then
+    installed is language_installed(kernel.languages, kernel.fs, shell.username)
+    if installed.len() == 0 then shell_emit(shell, kernel, "no guest languages installed")
+    for runtime in installed do
+      shell_emit(shell, kernel, runtime.name + " " + runtime.version + " " + runtime.engine)
+    end
+    return
+  end
+  if args.len() < 2 then
+    shell_error(shell, kernel, "lang " + action + " requires a name or path")
+    return
+  end
+  if action == "install" then
+    result is language_install(kernel.languages, kernel, args[1], shell.username)
+    if not result.ok then
+      shell_error(shell, kernel, result.message)
+    elif result.value.already_installed then
+      shell_emit(shell, kernel, result.value.runtime.name + " is already installed")
+    else
+      shell_emit(shell, kernel, "installed " + result.value.runtime.name + " (" + result.value.bytes + " bytes)")
+      shell_emit(shell, kernel, "example: " + result.value.example)
+    end
+    return
+  end
+  if action == "remove" then
+    result is language_remove(kernel.languages, kernel, args[1], shell.username)
+    if not result.ok then shell_error(shell, kernel, result.message) else shell_emit(shell, kernel, "removed " + args[1])
+    return
+  end
+  if action == "info" then
+    runtime is language_catalog_get(kernel.languages, args[1])
+    if runtime == nil then shell_error(shell, kernel, "language not found") else shell_emit(shell, kernel, json.stringify(runtime))
+    return
+  end
+  if action == "run" then
+    forced is ""
+    if args.len() > 2 then forced is args[2]
+    shell_command_runfile(shell, kernel, [args[1], forced])
+    return
+  end
+  shell_error(shell, kernel, "unknown lang action: " + action)
+end
+
+func shell_command_runfile(shell, kernel, args) do
+  if args.len() == 0 then
+    shell_error(shell, kernel, "runfile requires a virtual source path")
+    return
+  end
+  forced is ""
+  if args.len() > 1 then forced is args[1]
+  result is language_run_file(kernel.languages, kernel, args[0], shell.username, shell.cwd, forced)
+  if not result.ok then
+    shell_error(shell, kernel, result.message)
+    return
+  end
+  report is result.value
+  for line in report.output do
+    if line.len() > 0 then shell_emit(shell, kernel, line)
+  end
+  shell_emit(shell, kernel, report.language + " finished: exit=" + report.exit_code + " steps=" + report.steps)
+  if report.exit_code != 0 then shell_error(shell, kernel, "program returned non-zero exit code")
 end
 
 func shell_command_devices(shell, kernel) do
@@ -634,6 +789,8 @@ func shell_execute(shell, kernel, line) do
     shell_command_write(shell, kernel, args, false)
   elif command == "append" then
     shell_command_write(shell, kernel, args, true)
+  elif command == "edit" then
+    shell_command_edit(shell, kernel, args)
   elif command == "touch" then
     shell_command_touch(shell, kernel, args)
   elif command == "mkdir" then
@@ -660,6 +817,10 @@ func shell_execute(shell, kernel, line) do
     shell_command_programs(shell, kernel)
   elif command == "run" then
     shell_command_run(shell, kernel, args)
+  elif command == "runfile" then
+    shell_command_runfile(shell, kernel, args)
+  elif command == "lang" then
+    shell_command_language(shell, kernel, args)
   elif command == "assemble" then
     shell_command_assemble(shell, kernel, args)
   elif command == "disasm" then
@@ -667,7 +828,7 @@ func shell_execute(shell, kernel, line) do
   elif command == "mem" then
     shell_command_mem(shell, kernel)
   elif command == "disk" then
-    shell_command_disk(shell, kernel)
+    shell_command_disk(shell, kernel, args)
   elif command == "devices" then
     shell_command_devices(shell, kernel)
   elif command == "users" then

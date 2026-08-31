@@ -1,0 +1,285 @@
+# Executed QEMU gate for the real Sura OS calculator in persistent mode.
+#
+# The copied calculator program starts once, blocks on process syscall 5, and
+# consumes kernel events through syscall 2. Four separate requests build and
+# evaluate "2 + 3 = 5" without recreating the process, stack, or CR3.
+
+import "../../stdlib/freestanding/process_syscall.sura"
+import "../../stdlib/freestanding/serial.sura"
+import "../../os/user_calculator.sura"
+
+pcalc_processes is static.struct(UserProcess, 2)
+pcalc_scheduler is static.struct(UserProcessScheduler)
+pcalc_scheduler_config is static.struct(UserProcessSchedulerConfig)
+pcalc_create_config is static.struct(UserProcessCreate)
+
+pcalc_syscall_state is static.struct(ProcessSyscallState)
+pcalc_syscall_scratch is static.struct(IpcMessage)
+pcalc_syscall_table is static.struct(SoftwareSyscallTable)
+pcalc_syscall_handlers is static.u64([0, 0, 0, 0, 0, 0, 0, 0], 8)
+
+pcalc_allocator is static.struct(PhysicalAllocator)
+pcalc_arena is static.zero(262144, 4096)
+pcalc_bitmap is static.zero(16, 16)
+pcalc_space is static.struct(ProcessAddressSpace)
+pcalc_buffers is static.struct(ProcessSpaceBuffers)
+pcalc_owned is static.zero(256, 16)
+pcalc_mappings is static.struct(ProcessMapping, 16)
+pcalc_stack is static.struct(ProcessStack)
+
+pcalc_kernel_stack is static.zero(16384, 16)
+pcalc_idle_stack is static.zero(16384, 16)
+pcalc_tss is static.zero(104, 16)
+pcalc_idt is static.zero(4096, 16)
+
+pcalc_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+pcalc_queue is static.struct(IpcQueue)
+pcalc_messages is static.struct(IpcMessage, 8)
+pcalc_post is static.struct(IpcMessage)
+pcalc_event_output is static.struct(IpcMessage)
+pcalc_mailbox is static.struct(UserCalculatorMailbox)
+
+pcalc_memory_map is static.zero(65536, 4096)
+pcalc_map_size: usize is 65536
+pcalc_map_key: u64 is 0
+pcalc_descriptor_size: usize is 0
+pcalc_descriptor_version: u32 is 0
+
+pcalc_kernel_root: ptr is 0
+pcalc_process_id: u64 is 0
+
+pcalc_ready_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_READY")
+pcalc_events_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_EVENTS_OK")
+pcalc_result_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_RESULT_OK")
+pcalc_process_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_SAME_PROCESS_OK")
+pcalc_cr3_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_CR3_OK")
+pcalc_failure_marker is static.utf8("SURA_PERSISTENT_CALCULATOR_FAILED")
+
+func pcalc_write(text: ptr) do
+  return serial_write_cstr(1016, text, 96, 1000000)
+end
+
+func pcalc_newline() do
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  return true
+end
+
+func pcalc_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func pcalc_fail(code: u64) do
+  pcalc_write(pcalc_failure_marker)
+  serial_write_byte(1016, 32, 1000000)
+  if code >= 10 then serial_write_byte(1016, 48 + ((code / 10) % 10), 1000000)
+  serial_write_byte(1016, 48 + (code % 10), 1000000)
+  pcalc_newline()
+  pcalc_exit(code)
+end
+
+func pcalc_prepare_space() do
+  buffers: ptr[ProcessSpaceBuffers] is pcalc_buffers
+  buffers.owned_pages is pcalc_owned
+  buffers.owned_capacity is 32
+  buffers.mappings is pcalc_mappings
+  buffers.mapping_capacity is 16
+  if not process_space_init(pcalc_space, pcalc_allocator, pcalc_kernel_root, buffers) then return false
+
+  kernel_entry: u64 is paging.read(pcalc_kernel_root, 0)
+  if not paging.present(kernel_entry) then return false
+  paging.write(pcalc_space.root, 0, kernel_entry & ~4)
+
+  source: ptr is addr_of(user_calculator_program)
+  source_end: ptr is addr_of(user_calculator_program_end)
+  if source_end <= source or source_end - source > 8192 then return false
+  code_size: u64 is source_end - source
+  code_base: u64 is u64("0x0000010000400000")
+  code_span: u64 is ptr.align_up(code_size, 4096)
+  page: u64 is code_base
+  while page < code_base + code_span do
+    if not process_space_map_page(pcalc_space, page, true, false) then return false
+    page += 4096
+  end
+  if not process_copy_to_user(pcalc_space, code_base, source, code_size) then return false
+  page is code_base
+  while page < code_base + code_span do
+    if not process_space_protect_page(pcalc_space, page, false, true) then return false
+    page += 4096
+  end
+
+  mailbox_address: u64 is u64("0x0000010000600000")
+  if not process_space_map_page(pcalc_space, mailbox_address, true, false) then return false
+  if not process_space_map_page(pcalc_space, mailbox_address + 4096, true, false) then return false
+  if not process_space_map_stack(pcalc_space, u64("0x0000010000800000"), 2, 1, pcalc_stack) then return false
+  return true
+end
+
+func pcalc_invalid_opcode(frame: ptr[UserInterruptFrame]) interrupt do
+  pcalc_fail(6)
+  return
+end
+
+func pcalc_general_protection(frame: ptr[UserInterruptFrame]) interrupt_error do
+  pcalc_fail(7)
+  return
+end
+
+func pcalc_submit(sequence: u64, value: u64) do
+  mailbox_address: u64 is u64("0x0000010000600000")
+  mailbox: ptr[UserCalculatorMailbox] is pcalc_mailbox
+  if not process_copy_from_user(pcalc_space, mailbox, mailbox_address, sizeof(UserCalculatorMailbox)) then return false
+  mailbox.request_sequence is sequence
+  mailbox.response_sequence is 0
+  mailbox.input is value
+  mailbox.status is 0
+  if not process_copy_to_user(pcalc_space, mailbox_address, mailbox, sizeof(UserCalculatorMailbox)) then return false
+
+  message: ptr[IpcMessage] is pcalc_post
+  ipc_message_clear(message)
+  message.kind is 201
+  message.value0 is sequence
+  if not user_process_post_event(pcalc_scheduler, 0, pcalc_process_id, message) then return false
+  if user_process_state(pcalc_scheduler, pcalc_process_id) != 1 then return false
+
+  scheduled: bool is interrupt.invoke(130)
+  if user_process_state(pcalc_scheduler, pcalc_process_id) != 4 then return false
+  if pcalc_scheduler.current != pcalc_scheduler.capacity then return false
+  if paging.root() != pcalc_kernel_root or pcalc_queue.count != 0 then return false
+
+  if not process_copy_from_user(pcalc_space, mailbox, mailbox_address, sizeof(UserCalculatorMailbox)) then return false
+  if mailbox.status != 1 or mailbox.response_sequence != sequence then return false
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global pcalc_map_size, pcalc_map_key, pcalc_descriptor_size, pcalc_descriptor_version
+  global pcalc_kernel_root, pcalc_process_id
+
+  uefi.write("Sura executed persistent calculator QEMU gate")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    pcalc_exit(1)
+    return 1
+  end
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 3 and exit_status != 0 do
+    pcalc_map_size is 65536
+    map_status is uefi.get_memory_map(addr_of(pcalc_map_size), pcalc_memory_map, addr_of(pcalc_map_key), addr_of(pcalc_descriptor_size), addr_of(pcalc_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(pcalc_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then
+    pcalc_fail(2)
+    return 2
+  end
+
+  cpu.disable_interrupts()
+  io.out8(33, 255)
+  io.out8(161, 255)
+  pcalc_kernel_root is paging.root()
+  if pcalc_kernel_root == 0 then pcalc_fail(3)
+
+  cpu.tss_set_rsp(pcalc_tss, 0, ptr.add(pcalc_idle_stack, 16384))
+  cpu.tss_set_iomap(pcalc_tss, 104)
+  cpu.gdt_set_tss(pcalc_gdt, 5, pcalc_tss, 103)
+  cpu.load_gdt(pcalc_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  cpu.idt_set_gate(pcalc_idt, 6, addr_of(pcalc_invalid_opcode), 8, 0, 142)
+  cpu.idt_set_gate(pcalc_idt, 13, addr_of(pcalc_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(pcalc_idt, 14, addr_of(user_process_page_fault_interrupt), 8, 0, 142)
+  cpu.idt_set_gate(pcalc_idt, 128, addr_of(process_software_syscall_dispatch), 8, 0, 238)
+  cpu.idt_set_gate(pcalc_idt, 130, addr_of(user_process_yield_interrupt), 8, 0, 238)
+  cpu.load_idt(pcalc_idt, 4096)
+
+  if not process_enable_nx() then pcalc_fail(4)
+  if not pmem_reset(pcalc_allocator, pcalc_bitmap, 16, pcalc_arena, 64) then pcalc_fail(20)
+  if not pmem_release_range(pcalc_allocator, pcalc_arena, 64) then pcalc_fail(21)
+  if not pcalc_prepare_space() then pcalc_fail(22)
+  if not ipc_queue_init(pcalc_queue, pcalc_messages, 8) then pcalc_fail(23)
+
+  mailbox: ptr[UserCalculatorMailbox] is pcalc_mailbox
+  mailbox.left is 0
+  mailbox.right is 0
+  mailbox.operation is 0
+  mailbox.entering_right is 0
+  mailbox.result is 0
+  mailbox.has_result is 0
+  mailbox.error is 0
+  mailbox.request_sequence is 0
+  mailbox.response_sequence is 0
+  mailbox.input is 0
+  mailbox.status is 0
+  if not process_copy_to_user(pcalc_space, u64("0x0000010000600000"), mailbox, sizeof(UserCalculatorMailbox)) then pcalc_fail(24)
+
+  config: ptr[UserProcessSchedulerConfig] is pcalc_scheduler_config
+  config.processes is pcalc_processes
+  config.capacity is 2
+  config.tss is pcalc_tss
+  config.kernel_root is pcalc_kernel_root
+  config.kernel_gs_base is 0
+  config.idle_stack_base is pcalc_idle_stack
+  config.idle_stack_size is 16384
+  if not user_process_scheduler_init(pcalc_scheduler, config) then pcalc_fail(25)
+
+  create: ptr[UserProcessCreate] is pcalc_create_config
+  create.address_space is pcalc_space
+  create.kernel_stack_base is pcalc_kernel_stack
+  create.kernel_stack_size is 16384
+  create.entry is u64("0x0000010000400000")
+  create.user_stack_pointer is pcalc_stack.initial_rsp
+  create.argument is u64("0x0000010000600001")
+  create.user_gs_base is 0
+  create.event_queue is pcalc_queue
+  pcalc_process_id is user_process_create(pcalc_scheduler, create)
+  if pcalc_process_id != 1 then pcalc_fail(26)
+
+  if not syscall_table_init(pcalc_syscall_table, pcalc_syscall_handlers, 8, u64("0xffffffffffffffff")) then pcalc_fail(27)
+  if not process_syscall_init(pcalc_syscall_state, pcalc_scheduler, pcalc_syscall_table, pcalc_syscall_scratch) then pcalc_fail(28)
+
+  # Initial entry reaches wait with an empty queue and returns to Ring 0.
+  primed: bool is interrupt.invoke(130)
+  if user_process_state(pcalc_scheduler, pcalc_process_id) != 4 then pcalc_fail(29)
+  process_index: u64 is user_process_find_index(pcalc_scheduler, pcalc_process_id)
+  process: ptr[UserProcess] is user_process_at(pcalc_scheduler, process_index)
+  if process.blocks != 1 or process.wakes != 0 then pcalc_fail(30)
+  pcalc_write(pcalc_ready_marker)
+  pcalc_newline()
+
+  if not pcalc_submit(1, 50) then pcalc_fail(31)
+  if pcalc_mailbox.left != 2 then pcalc_fail(32)
+  if not pcalc_submit(2, 43) then pcalc_fail(33)
+  if pcalc_mailbox.operation != 43 or pcalc_mailbox.entering_right != 1 then pcalc_fail(34)
+  if not pcalc_submit(3, 51) then pcalc_fail(35)
+  if pcalc_mailbox.right != 3 then pcalc_fail(36)
+  if not pcalc_submit(4, 61) then pcalc_fail(37)
+  if pcalc_mailbox.result != 5 or pcalc_mailbox.has_result != 1 or pcalc_mailbox.error != 0 then pcalc_fail(38)
+
+  if process.state != 4 or process.blocks != 5 or process.wakes != 4 then pcalc_fail(39)
+  if process.switches != 5 or pcalc_scheduler.switches < 10 then pcalc_fail(40)
+  if process.address_space != pcalc_space or pcalc_space.root == pcalc_kernel_root then pcalc_fail(41)
+  if not process_copy_from_user(pcalc_space, pcalc_event_output, u64("0x0000010000601000"), sizeof(IpcMessage)) then pcalc_fail(42)
+  if pcalc_event_output.sequence != 4 or pcalc_event_output.kind != 201 then pcalc_fail(43)
+  if pcalc_event_output.source != 0 or pcalc_event_output.target != pcalc_process_id or pcalc_event_output.value0 != 4 then pcalc_fail(44)
+
+  pcalc_write(pcalc_events_marker)
+  pcalc_newline()
+  pcalc_write(pcalc_result_marker)
+  pcalc_newline()
+  pcalc_write(pcalc_process_marker)
+  pcalc_newline()
+  pcalc_write(pcalc_cr3_marker)
+  pcalc_newline()
+  pcalc_exit(16)
+  return 0
+end

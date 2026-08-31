@@ -1,0 +1,227 @@
+# Guest language catalog and safe virtual-file runners.
+#
+# Sura Mini is a deliberately small interpreted language for scripts stored on
+# the virtual disk. SVM32 is the existing assembly language and CPU. Neither
+# runner can invoke the Windows shell or read arbitrary host files.
+
+func language_manager_create() do
+  catalog is {}
+  catalog["sura-mini"] is {name: "sura-mini", version: "1.0.0", extension: ".sura", engine: "interpreter", description: "safe line-oriented SuraOS scripting language"}
+  catalog["svm32"] is {name: "svm32", version: "1.0.0", extension: ".sasm", engine: "virtual-cpu", description: "SuraOS 32-bit assembly language"}
+  return {catalog: catalog, executions: 0, failures: 0, installed_count: 0, max_steps: 10000}
+end
+
+func language_home(user) do
+  if user == "root" then return "/var/lib/suraos/languages"
+  return "/home/" + user + "/.local/languages"
+end
+
+func language_install_path(user, name) do
+  return language_home(user) + "/" + name
+end
+
+func language_marker_path(user, name) do
+  return language_install_path(user, name) + "/runtime.info"
+end
+
+func language_catalog_get(manager, name) do
+  key is name.trim().lower()
+  if key in manager.catalog then return manager.catalog[key]
+  return nil
+end
+
+func language_is_installed(manager, fs, user, name) do
+  runtime is language_catalog_get(manager, name)
+  if runtime == nil then return false
+  return fs_is_file(fs, language_marker_path(user, runtime.name), "/")
+end
+
+func language_installed(manager, fs, user) do
+  result is []
+  for name in osutil_sort_strings(manager.catalog.keys()) do
+    if language_is_installed(manager, fs, user, name) then result.push(manager.catalog[name])
+  end
+  return result
+end
+
+func language_install_files(runtime) do
+  marker is "name=" + runtime.name + "\nversion=" + runtime.version + "\nengine=" + runtime.engine + "\nextension=" + runtime.extension + "\n"
+  readme is runtime.description + "\nPrograms are isolated inside the SuraOS virtual filesystem.\n"
+  example is ""
+  if runtime.name == "sura-mini" then
+    example is "# Sura Mini example\nset name SuraOS\nprint Hello $name\nset value 6\nmul value 7\nprint answer=$value\n"
+  else
+    example is asm_hello_source()
+  end
+  return {marker: marker, readme: readme, example: example}
+end
+
+func language_install(manager, kernel, name, user) do
+  runtime is language_catalog_get(manager, name)
+  if runtime == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "language not found: " + name)
+  if language_is_installed(manager, kernel.fs, user, runtime.name) then return osutil_ok({runtime: runtime, already_installed: true, bytes: 0})
+  root is language_install_path(user, runtime.name)
+  files is language_install_files(runtime)
+  example_path is root + "/examples/hello" + runtime.extension
+  required is fs_write_delta(kernel.fs, root + "/runtime.info", files.marker, "/")
+  required += fs_write_delta(kernel.fs, root + "/README.txt", files.readme, "/")
+  required += fs_write_delta(kernel.fs, example_path, files.example, "/")
+  if not fs_can_store(kernel.fs, required) then
+    manager.failures += 1
+    return osutil_fail(SURAOS_ERR_NO_SPACE, "not enough virtual disk space to install " + runtime.name + ": need " + required + " byte(s), free " + fs_free_bytes(kernel.fs))
+  end
+  directory is fs_mkdir(kernel.fs, root + "/examples", user, true, kernel.clock.tick)
+  if not directory.ok then return directory
+  marker_write is fs_write_file(kernel.fs, root + "/runtime.info", files.marker, user, "/", kernel.clock.tick)
+  if not marker_write.ok then return marker_write
+  readme_write is fs_write_file(kernel.fs, root + "/README.txt", files.readme, user, "/", kernel.clock.tick)
+  if not readme_write.ok then return readme_write
+  example_write is fs_write_file(kernel.fs, example_path, files.example, user, "/", kernel.clock.tick)
+  if not example_write.ok then return example_write
+  manager.installed_count += 1
+  return osutil_ok({runtime: runtime, already_installed: false, bytes: required, example: example_path})
+end
+
+func language_remove(manager, kernel, name, user) do
+  runtime is language_catalog_get(manager, name)
+  if runtime == nil then return osutil_fail(SURAOS_ERR_NOT_FOUND, "language not found: " + name)
+  if not language_is_installed(manager, kernel.fs, user, runtime.name) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "language is not installed: " + runtime.name)
+  return fs_remove(kernel.fs, language_install_path(user, runtime.name), user, "/", true, kernel.clock.tick)
+end
+
+func language_expand(text, variables) do
+  result is "" + text
+  for name in variables.keys() do
+    result is result.replace("$" + name, "" + variables[name])
+  end
+  return result
+end
+
+func language_variable_number(variables, token) do
+  if token in variables then return osutil_to_integer("" + variables[token], 0)
+  return osutil_to_integer(token, 0)
+end
+
+func language_mini_execute(manager, kernel, source, user, cwd) do
+  variables is {}
+  output is []
+  statements is osutil_split_lines(source.replace(";", "\n"))
+  steps is 0
+  exit_code is 0
+  line_number is 0
+  for raw_line in statements do
+    line_number += 1
+    line is osutil_strip_comment(raw_line).trim()
+    if line.len() > 0 then
+      steps += 1
+      if steps > manager.max_steps then return osutil_fail(SURAOS_ERR_LIMIT, "Sura Mini step limit exceeded")
+      tokens is osutil_tokenize(line)
+      command is tokens[0].lower()
+      if command == "print" then
+        output.push(language_expand(osutil_join_from(tokens, 1, " "), variables))
+      elif command == "set" or command == "let" then
+        if tokens.len() < 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": set requires NAME VALUE")
+        variables[tokens[1]] is language_expand(osutil_join_from(tokens, 2, " "), variables)
+      elif command == "add" or command == "sub" or command == "mul" or command == "div" then
+        if tokens.len() != 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": arithmetic requires NAME VALUE")
+        name is tokens[1]
+        if not (name in variables) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "line " + line_number + ": variable not found: " + name)
+        left is language_variable_number(variables, name)
+        right is language_variable_number(variables, tokens[2])
+        if command == "add" then variables[name] is left + right
+        if command == "sub" then variables[name] is left - right
+        if command == "mul" then variables[name] is left * right
+        if command == "div" then
+          if right == 0 then return osutil_fail(SURAOS_ERR_FAULT, "line " + line_number + ": division by zero")
+          variables[name] is floor(left / right)
+        end
+      elif command == "repeat" then
+        if tokens.len() < 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": repeat requires COUNT TEXT")
+        count is osutil_clamp(language_variable_number(variables, tokens[1]), 0, 1000)
+        text is language_expand(osutil_join_from(tokens, 2, " "), variables)
+        repeat count do
+          output.push(text)
+        end
+      elif command == "read" then
+        if tokens.len() != 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": read requires NAME PATH")
+        read_result is fs_read_file(kernel.fs, tokens[2], user, cwd)
+        if not read_result.ok then return osutil_fail(read_result.code, "line " + line_number + ": " + read_result.message)
+        variables[tokens[1]] is read_result.value
+      elif command == "write" or command == "append" then
+        if tokens.len() < 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": write requires PATH TEXT")
+        path is tokens[1]
+        text is language_expand(osutil_join_from(tokens, 2, " "), variables)
+        write_result is nil
+        if command == "append" then
+          write_result is fs_append_file(kernel.fs, path, text, user, cwd, kernel.clock.tick)
+        else
+          write_result is fs_write_file(kernel.fs, path, text, user, cwd, kernel.clock.tick)
+        end
+        if not write_result.ok then return osutil_fail(write_result.code, "line " + line_number + ": " + write_result.message)
+      elif command == "assert" then
+        if tokens.len() < 3 then return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": assert requires NAME VALUE")
+        name is tokens[1]
+        expected is language_expand(osutil_join_from(tokens, 2, " "), variables)
+        if not (name in variables) or ("" + variables[name]) != expected then return osutil_fail(SURAOS_ERR_FAULT, "line " + line_number + ": assertion failed")
+      elif command == "disk" then
+        usage is fs_usage(kernel.fs)
+        output.push("disk " + usage.used + "/" + usage.capacity + " bytes " + usage.pressure)
+      elif command == "exit" then
+        if tokens.len() > 1 then
+          exit_code is osutil_to_integer(tokens[1], 0)
+        end
+      else
+        return osutil_fail(SURAOS_ERR_INVALID, "line " + line_number + ": unknown Sura Mini command: " + command)
+      end
+    end
+  end
+  return osutil_ok({language: "sura-mini", exit_code: exit_code, steps: steps, output: output, variables: variables})
+end
+
+func language_svm32_execute(manager, kernel, source, user, virtual_path) do
+  name is "guest-" + manager.executions + "-" + osutil_basename(virtual_path).replace(".sasm", "")
+  program is asm_assemble(source, name)
+  if not program.assembled then return osutil_fail(SURAOS_ERR_INVALID, asm_diagnostic_text(program))
+  registered is kernel_register_program(kernel, name, program)
+  if not registered.ok then return registered
+  before is kernel.devices.console.output.len()
+  spawned is kernel_spawn_registered(kernel, name, user, 0, 5)
+  if not spawned.ok then return spawned
+  run_result is kernel_run(kernel, manager.max_steps)
+  if not run_result.ok then return run_result
+  captured is []
+  index is before
+  while index < kernel.devices.console.output.len() do
+    captured.push(kernel.devices.console.output[index].trim())
+    index += 1
+  end
+  process is spawned.value
+  return osutil_ok({language: "svm32", exit_code: process.exit_code, steps: process.cpu_ticks, output: captured, pid: process.pid, state: process.state})
+end
+
+func language_for_path(manager, path) do
+  lower is path.lower()
+  for runtime in manager.catalog.values() do
+    if lower.ends_with(runtime.extension) then return runtime
+  end
+  return nil
+end
+
+func language_run_file(manager, kernel, path, user, cwd, forced_name) do
+  runtime is nil
+  if forced_name.trim().len() > 0 then runtime is language_catalog_get(manager, forced_name)
+  if runtime == nil then runtime is language_for_path(manager, path)
+  if runtime == nil then return osutil_fail(SURAOS_ERR_INVALID, "cannot determine language from file extension")
+  if not language_is_installed(manager, kernel.fs, user, runtime.name) then return osutil_fail(SURAOS_ERR_NOT_FOUND, "language is not installed: " + runtime.name)
+  read_result is fs_read_file(kernel.fs, path, user, cwd)
+  if not read_result.ok then return read_result
+  manager.executions += 1
+  result is nil
+  if runtime.name == "sura-mini" then
+    result is language_mini_execute(manager, kernel, read_result.value, user, cwd)
+  else
+    result is language_svm32_execute(manager, kernel, read_result.value, user, path)
+  end
+  if not result.ok then manager.failures += 1
+  return result
+end
