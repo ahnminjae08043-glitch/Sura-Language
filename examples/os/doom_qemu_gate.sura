@@ -1,0 +1,568 @@
+# Bootable Doomgeneric process for Sura OS.
+#
+# The PowerShell launcher builds the freestanding Doom ELF, compiles this Sura
+# kernel, and replaces the 8 MiB marker-backed storage below in both the EFI
+# file and its FAT disk image.  The kernel then loads the static ELF into a
+# separate ProcessAddressSpace, enters it at CPL 3, and provides the five
+# syscalls declared by os/doom/libc/sura_syscall.h.
+#
+# The game renders at Doomgeneric's 640x400 output size.  The kernel centers
+# that surface in the GOP framebuffer.  F12 is reserved as a clean VM exit so
+# the same image can be used for automated proof and interactive play.
+
+import "../../stdlib/freestanding/elf64.sura"
+import "../../stdlib/freestanding/user_process.sura"
+import "../../stdlib/freestanding/serial.sura"
+import "../../stdlib/freestanding/ps2.sura"
+
+# tools/sura_doom_qemu_gate.ps1 replaces this marker and the immediately
+# following zero bytes with os/doom/build/doom.elf.  Keep both declarations
+# adjacent and keep the total capacity synchronized with doom_elf_capacity().
+doom_elf_image is static.bytes([83, 85, 82, 65, 95, 68, 79, 79, 77, 95, 69, 76, 70, 95, 66, 76, 79, 66, 95, 86, 49, 95, 50, 48, 50, 54, 48, 55, 50, 55, 33, 33], 4096)
+doom_elf_payload is static.zero(8388576, 1)
+
+doom_allocator is static.struct(PhysicalAllocator)
+doom_allocator_bitmap is static.zero(65536, 4096)
+doom_memory_map is static.zero(131072, 4096)
+
+doom_processes is static.struct(UserProcess, 2)
+doom_scheduler is static.struct(UserProcessScheduler)
+doom_scheduler_config is static.struct(UserProcessSchedulerConfig)
+doom_create_config is static.struct(UserProcessCreate)
+doom_process_space is static.struct(ProcessAddressSpace)
+doom_process_buffers is static.struct(ProcessSpaceBuffers)
+doom_process_owned_pages is static.zero(67584, 16)
+doom_process_mappings is static.struct(ProcessMapping, 8192)
+doom_process_stack is static.struct(ProcessStack)
+doom_kernel_stack is static.zero(32768, 16)
+doom_idle_stack is static.zero(16384, 16)
+
+doom_elf_info is static.struct(Elf64Info)
+doom_elf_buffers is static.struct(Elf64Buffers)
+doom_elf_segment is static.struct(Elf64Segment)
+doom_elf_previous is static.struct(Elf64Segment)
+
+doom_idt is static.zero(4096, 16)
+doom_tss is static.zero(104, 16)
+# null, kernel code, kernel data, user data, user code, two TSS slots.
+doom_gdt is static.bytes([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 0, 0, 0, 154, 175, 0, 255, 255, 0, 0, 0, 146, 207, 0, 255, 255, 0, 0, 0, 242, 207, 0, 255, 255, 0, 0, 0, 250, 175, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], 16)
+
+doom_frame_scratch is static.zero(1048576, 64)
+doom_frame_pages is static.zero(2048, 16)
+doom_serial_buffer is static.zero(1024, 16)
+
+doom_boot_marker is static.utf8("SURA_DOOM_KERNEL_READY")
+doom_elf_marker is static.utf8("SURA_DOOM_ELF_LOADED")
+doom_input_marker is static.utf8("SURA_DOOM_INPUT_READY")
+doom_ring3_marker is static.utf8("SURA_DOOM_RING3_READY")
+doom_frame_marker is static.utf8("SURA_DOOM_FRAME_OK")
+doom_key_marker is static.utf8("SURA_DOOM_INPUT_OK")
+doom_exit_marker is static.utf8("SURA_DOOM_EXIT_OK")
+doom_playable_marker is static.utf8("SURA_DOOM_PLAYABLE")
+doom_failure_marker is static.utf8("SURA_DOOM_GATE_FAILED")
+doom_page_fault_marker is static.utf8("SURA_DOOM_PAGE_FAULT")
+doom_general_protection_marker is static.utf8("SURA_DOOM_GENERAL_PROTECTION")
+doom_invalid_opcode_marker is static.utf8("SURA_DOOM_INVALID_OPCODE")
+
+doom_map_size: usize is 131072
+doom_map_key: u64 is 0
+doom_descriptor_size: usize is 0
+doom_descriptor_version: u32 is 0
+
+doom_kernel_root: ptr is 0
+doom_process_id: u64 is 0
+doom_framebuffer: ptr is 0
+doom_framebuffer_size: u64 is 0
+doom_framebuffer_width: u64 is 0
+doom_framebuffer_height: u64 is 0
+doom_framebuffer_stride: u64 is 0
+doom_framebuffer_format: u64 is 0
+doom_tsc_per_ms: u64 is 0
+doom_start_tsc: u64 is 0
+doom_frame_count: u64 is 0
+
+doom_cached_frame_address: u64 is 0
+doom_cached_frame_bytes: u64 is 0
+doom_cached_first_offset: u64 is 0
+doom_cached_page_count: u64 is 0
+
+func doom_elf_capacity() do
+  return 8388608
+end
+
+func doom_expected_width() do
+  return 640
+end
+
+func doom_expected_height() do
+  return 400
+end
+
+func doom_write(text: ptr) do
+  return serial_write_cstr(1016, text, 128, 1000000)
+end
+
+func doom_newline() do
+  serial_write_byte(1016, 13, 1000000)
+  serial_write_byte(1016, 10, 1000000)
+  return true
+end
+
+func doom_write_line(text: ptr) do
+  if not doom_write(text) then return false
+  return doom_newline()
+end
+
+func doom_write_hex(value: u64) do
+  shift: u64 is 60
+  while true do
+    digit: u64 is (value >> shift) & 15
+    output: u64 is 48 + digit
+    if digit >= 10 then output is 55 + digit
+    serial_write_byte(1016, output, 1000000)
+    if shift == 0 then return true
+    shift -= 4
+  end
+end
+
+func doom_gate_exit(code: u64) do
+  io.out32(244, code)
+  cpu.disable_interrupts()
+  while true do
+    cpu.halt()
+  end
+end
+
+func doom_fail(code: u64) do
+  doom_write(doom_failure_marker)
+  serial_write_byte(1016, 32, 1000000)
+  doom_write_hex(code)
+  doom_newline()
+  doom_gate_exit(code)
+end
+
+func doom_clear_framebuffer() do
+  if doom_framebuffer == 0 then return false
+  byte_count: u64 is doom_framebuffer_stride * doom_framebuffer_height * 4
+  if byte_count == 0 or byte_count > doom_framebuffer_size then return false
+  offset: u64 is 0
+  while offset + 7 < byte_count do
+    mem.write64(ptr.add(doom_framebuffer, offset), 0)
+    offset += 8
+  end
+  while offset < byte_count do
+    mem.write8(ptr.add(doom_framebuffer, offset), 0)
+    offset += 1
+  end
+  return true
+end
+
+func doom_cache_frame_pages(user_address: u64, byte_count: u64) do
+  global doom_cached_frame_address, doom_cached_frame_bytes
+  global doom_cached_first_offset, doom_cached_page_count
+
+  if user_address == doom_cached_frame_address and byte_count == doom_cached_frame_bytes and doom_cached_page_count != 0 then
+    return true
+  end
+  if not process_user_range_valid(user_address, byte_count) then return false
+  if byte_count == 0 or byte_count > 1048576 then return false
+
+  first_offset: u64 is user_address & 4095
+  page_count: u64 is (first_offset + byte_count + 4095) / 4096
+  if page_count == 0 or page_count > 256 then return false
+  first_page: u64 is user_address & ~4095
+  index: u64 is 0
+  while index < page_count do
+    virtual_page: u64 is first_page + index * 4096
+    mapping: ptr[ProcessMapping] is process_find_mapping(doom_process_space, virtual_page)
+    if mapping == 0 or not process_mapping_access_valid(doom_process_space, mapping, false) then
+      doom_cached_page_count is 0
+      return false
+    end
+    mem.write64(ptr.index(doom_frame_pages, index, 8), mapping.physical_address)
+    index += 1
+  end
+
+  doom_cached_frame_address is user_address
+  doom_cached_frame_bytes is byte_count
+  doom_cached_first_offset is first_offset
+  doom_cached_page_count is page_count
+  return true
+end
+
+func doom_copy_cached_frame() do
+  if doom_cached_page_count == 0 or doom_cached_frame_bytes == 0 then return false
+  copied: u64 is 0
+  page_index: u64 is 0
+  source_offset: u64 is doom_cached_first_offset
+  while copied < doom_cached_frame_bytes do
+    if page_index >= doom_cached_page_count then return false
+    physical_page: u64 is mem.read64(ptr.index(doom_frame_pages, page_index, 8))
+    if physical_page == 0 then return false
+    chunk: u64 is 4096 - source_offset
+    remaining: u64 is doom_cached_frame_bytes - copied
+    if chunk > remaining then chunk is remaining
+    source: ptr is ptr.add(physical_page, source_offset)
+    destination: ptr is ptr.add(doom_frame_scratch, copied)
+    offset: u64 is 0
+    while offset + 7 < chunk do
+      mem.write64(ptr.add(destination, offset), mem.read64(ptr.add(source, offset)))
+      offset += 8
+    end
+    while offset < chunk do
+      mem.write8(ptr.add(destination, offset), mem.read8(ptr.add(source, offset)))
+      offset += 1
+    end
+    copied += chunk
+    page_index += 1
+    source_offset is 0
+  end
+  return true
+end
+
+func doom_render_cached_frame(source_width: u64, source_height: u64) do
+  if source_width == 0 or source_height == 0 then return false
+  copy_width: u64 is source_width
+  copy_height: u64 is source_height
+  source_x: u64 is 0
+  source_y: u64 is 0
+  if copy_width > doom_framebuffer_width then
+    source_x is (copy_width - doom_framebuffer_width) / 2
+    copy_width is doom_framebuffer_width
+  end
+  if copy_height > doom_framebuffer_height then
+    source_y is (copy_height - doom_framebuffer_height) / 2
+    copy_height is doom_framebuffer_height
+  end
+  destination_x: u64 is (doom_framebuffer_width - copy_width) / 2
+  destination_y: u64 is (doom_framebuffer_height - copy_height) / 2
+
+  row: u64 is 0
+  while row < copy_height do
+    source: ptr is ptr.add(doom_frame_scratch, ((source_y + row) * source_width + source_x) * 4)
+    destination: ptr is ptr.add(doom_framebuffer, ((destination_y + row) * doom_framebuffer_stride + destination_x) * 4)
+    column: u64 is 0
+    if doom_framebuffer_format == 1 then
+      while column + 1 < copy_width do
+        mem.write64(ptr.add(destination, column * 4), mem.read64(ptr.add(source, column * 4)))
+        column += 2
+      end
+      if column < copy_width then
+        mem.write32(ptr.add(destination, column * 4), mem.read32(ptr.add(source, column * 4)))
+      end
+    else
+      while column < copy_width do
+        pixel: u64 is mem.read32(ptr.add(source, column * 4))
+        red: u64 is (pixel >> 16) & 255
+        green: u64 is (pixel >> 8) & 255
+        blue: u64 is pixel & 255
+        converted: u64 is red | (green << 8) | (blue << 16)
+        mem.write32(ptr.add(destination, column * 4), converted)
+        column += 1
+      end
+    end
+    row += 1
+  end
+  return true
+end
+
+func doom_blit(user_address: u64, width: u64, height: u64) do
+  global doom_frame_count
+  if width != doom_expected_width() or height != doom_expected_height() then return false
+  byte_count: u64 is width * height * 4
+  if byte_count != 1024000 then return false
+  if not doom_cache_frame_pages(user_address, byte_count) then return false
+  if not doom_copy_cached_frame() then return false
+  if not doom_render_cached_frame(width, height) then return false
+  doom_frame_count += 1
+  if doom_frame_count == 1 then doom_write_line(doom_frame_marker)
+  return true
+end
+
+func doom_serial_from_user(user_address: u64, byte_count: u64) do
+  if byte_count == 0 then return true
+  if byte_count > 1024 then byte_count is 1024
+  if not process_copy_from_user(doom_process_space, doom_serial_buffer, user_address, byte_count) then return false
+  return serial_write_buffer(1016, doom_serial_buffer, byte_count, 1000000)
+end
+
+func doom_poll_scancode() do
+  attempts: u64 is 0
+  while attempts < 32 do
+    status: u64 is io.in8(100)
+    if (status & 1) == 0 then return u64("0xffffffffffffffff")
+    value: u64 is io.in8(96)
+    if (status & 32) == 0 then
+      # F12 is a SuraDoom host escape and the automated input proof.
+      if value == 88 and doom_frame_count != 0 then
+        doom_write_line(doom_key_marker)
+        doom_write_line(doom_playable_marker)
+        doom_gate_exit(16)
+      end
+      return value
+    end
+    attempts += 1
+  end
+  return u64("0xffffffffffffffff")
+end
+
+func doom_detect_tsc_per_ms() do
+  maximum_leaf: u64 is cpu.cpuid_eax(0, 0)
+  if maximum_leaf >= 21 then
+    denominator: u64 is cpu.cpuid_eax(21, 0)
+    numerator: u64 is cpu.cpuid_ebx(21, 0)
+    crystal_hz: u64 is cpu.cpuid_ecx(21, 0)
+    if denominator != 0 and numerator != 0 and crystal_hz != 0 and numerator <= u64("0xffffffffffffffff") / crystal_hz then
+      frequency: u64 is (crystal_hz * numerator) / denominator
+      if frequency >= 1000000 then return frequency / 1000
+    end
+  end
+  if maximum_leaf >= 22 then
+    base_mhz: u64 is cpu.cpuid_eax(22, 0) & 65535
+    if base_mhz != 0 then return base_mhz * 1000
+  end
+
+  # PIT channel 2 gives a bounded fallback measurement of roughly 10 ms.
+  pit_count: u64 is 11932
+  original_port61: u64 is io.in8(97)
+  io.out8(97, original_port61 & 252)
+  io.out8(67, 176)
+  io.out8(66, pit_count & 255)
+  io.out8(66, (pit_count >> 8) & 255)
+  start: u64 is cpu.rdtsc()
+  io.out8(97, (original_port61 & 252) | 1)
+  attempt: u64 is 0
+  completed: bool is false
+  while attempt < 20000000 do
+    if (io.in8(97) & 32) != 0 then
+      completed is true
+      attempt is 20000000
+    else
+      cpu.pause()
+      attempt += 1
+    end
+  end
+  finish: u64 is cpu.rdtsc()
+  io.out8(97, original_port61)
+  if completed and finish > start then
+    delta: u64 is finish - start
+    if delta <= u64("0xffffffffffffffff") / 1193182 then
+      ticks: u64 is (delta * 1193182) / pit_count
+      if ticks >= 1000000 then return ticks / 1000
+    end
+  end
+  return 1000000
+end
+
+func doom_ticks_ms() do
+  now: u64 is cpu.rdtsc()
+  if doom_tsc_per_ms == 0 or now < doom_start_tsc then return 0
+  return (now - doom_start_tsc) / doom_tsc_per_ms
+end
+
+func doom_syscall(frame: ptr[UserInterruptFrame]) interrupt do
+  if frame == 0 or frame.cs != 35 or (frame.cs & 3) != 3 then
+    doom_fail(40)
+    return
+  end
+  if user_process_current_id(doom_scheduler) != doom_process_id then
+    doom_fail(41)
+    return
+  end
+
+  number: u64 is frame.rax
+  if number == 100 then
+    frame.rax is doom_ticks_ms()
+    return
+  end
+  if number == 101 then
+    frame.rax is doom_poll_scancode()
+    return
+  end
+  if number == 102 then
+    if not doom_blit(frame.rdi, frame.rsi, frame.rdx) then
+      frame.rax is u64("0xffffffffffffffff")
+    else
+      frame.rax is 0
+    end
+    return
+  end
+  if number == 103 then
+    if not doom_serial_from_user(frame.rdi, frame.rsi) then
+      frame.rax is u64("0xffffffffffffffff")
+    else
+      frame.rax is frame.rsi
+    end
+    return
+  end
+  if number == 104 then
+    if doom_frame_count == 0 then doom_fail(42)
+    doom_write_line(doom_exit_marker)
+    doom_write_line(doom_playable_marker)
+    doom_gate_exit(16)
+    return
+  end
+  frame.rax is u64("0xffffffffffffffff")
+  return
+end
+
+func doom_invalid_opcode(frame: ptr[UserInterruptFrame]) interrupt do
+  doom_write_line(doom_invalid_opcode_marker)
+  doom_fail(50)
+  return
+end
+
+func doom_general_protection(frame: ptr[UserInterruptFrame]) interrupt_error do
+  doom_write_line(doom_general_protection_marker)
+  if frame != 0 then
+    doom_write_hex(frame.rip)
+    doom_newline()
+  end
+  doom_fail(51)
+  return
+end
+
+func doom_page_fault(frame: ptr[UserInterruptFrame]) interrupt_error do
+  doom_write(doom_page_fault_marker)
+  serial_write_byte(1016, 32, 1000000)
+  doom_write_hex(cpu.read_cr2())
+  if frame != 0 then
+    serial_write_byte(1016, 32, 1000000)
+    doom_write_hex(frame.error)
+    serial_write_byte(1016, 32, 1000000)
+    doom_write_hex(frame.rip)
+  end
+  doom_newline()
+  doom_fail(52)
+  return
+end
+
+func doom_prepare_process() do
+  buffers: ptr[ProcessSpaceBuffers] is doom_process_buffers
+  buffers.owned_pages is doom_process_owned_pages
+  buffers.owned_capacity is 8448
+  buffers.mappings is doom_process_mappings
+  buffers.mapping_capacity is 8192
+  if not process_space_init(doom_process_space, doom_allocator, doom_kernel_root, buffers) then return false
+
+  # The Sura EFI kernel occupies the low identity-map slot.  Doom was linked
+  # with -mcmodel=large into PML4 slot 2, so the kernel slot stays supervisor.
+  kernel_entry: u64 is paging.read(doom_kernel_root, 0)
+  if not paging.present(kernel_entry) then return false
+  paging.write(doom_process_space.root, 0, kernel_entry & ~4)
+
+  elf_buffers: ptr[Elf64Buffers] is doom_elf_buffers
+  elf_buffers.segment is doom_elf_segment
+  elf_buffers.previous is doom_elf_previous
+  if not elf64_open(doom_elf_image, doom_elf_capacity(), doom_elf_info, elf_buffers) then return false
+  if paging.pml4_index(doom_elf_info.lowest_address) != 2 then return false
+  if paging.pml4_index(doom_elf_info.highest_address - 1) != 2 then return false
+  if doom_elf_info.load_pages + 32 > 8192 then return false
+  if not elf64_load_process(doom_elf_image, doom_elf_capacity(), doom_process_space, doom_elf_info, elf_buffers) then return false
+
+  stack_top: u64 is u64("0x0000010010000000")
+  if not process_space_map_stack(doom_process_space, stack_top, 16, 1, doom_process_stack) then return false
+  return true
+end
+
+func efi_main(image_handle: u64, system_table: ptr) -> u64 do
+  global doom_map_size, doom_map_key, doom_descriptor_size, doom_descriptor_version
+  global doom_kernel_root, doom_process_id, doom_framebuffer, doom_framebuffer_size
+  global doom_framebuffer_width, doom_framebuffer_height, doom_framebuffer_stride
+  global doom_framebuffer_format, doom_tsc_per_ms, doom_start_tsc
+
+  uefi.clear()
+  uefi.write("Sura OS Doom")
+  uefi.newline()
+  uefi.write("Loading Doomgeneric as a Ring-3 process...")
+  uefi.newline()
+  if not serial_init(1016, 1) then
+    doom_gate_exit(1)
+    return 1
+  end
+
+  doom_framebuffer is uefi.gop_framebuffer()
+  doom_framebuffer_size is uefi.gop_framebuffer_size()
+  doom_framebuffer_width is uefi.gop_width()
+  doom_framebuffer_height is uefi.gop_height()
+  doom_framebuffer_stride is uefi.gop_stride()
+  doom_framebuffer_format is uefi.gop_pixel_format()
+  if doom_framebuffer == 0 or doom_framebuffer_size == 0 then doom_fail(2)
+  if doom_framebuffer_width == 0 or doom_framebuffer_height == 0 then doom_fail(3)
+  if doom_framebuffer_stride < doom_framebuffer_width or doom_framebuffer_format > 1 then doom_fail(4)
+  required_framebuffer: u64 is doom_framebuffer_stride * doom_framebuffer_height * 4
+  if required_framebuffer == 0 or required_framebuffer > doom_framebuffer_size then doom_fail(5)
+
+  map_status: u64 is 1
+  exit_status: u64 is 1
+  attempt: u64 is 0
+  while attempt < 4 and exit_status != 0 do
+    doom_map_size is 131072
+    map_status is uefi.get_memory_map(addr_of(doom_map_size), doom_memory_map, addr_of(doom_map_key), addr_of(doom_descriptor_size), addr_of(doom_descriptor_version))
+    if map_status == 0 then exit_status is uefi.exit_boot_services(doom_map_key)
+    attempt += 1
+  end
+  if map_status != 0 or exit_status != 0 then doom_fail(6)
+
+  cpu.disable_interrupts()
+  io.out8(33, 255)
+  io.out8(161, 255)
+  doom_write_line(doom_boot_marker)
+  doom_kernel_root is paging.root()
+  if doom_kernel_root == 0 then doom_fail(7)
+
+  cpu.tss_set_rsp(doom_tss, 0, ptr.add(doom_idle_stack, 16384))
+  cpu.tss_set_iomap(doom_tss, 104)
+  cpu.gdt_set_tss(doom_gdt, 5, doom_tss, 103)
+  cpu.load_gdt(doom_gdt, 56)
+  cpu.reload_segments(8, 16)
+  cpu.load_task_register(40)
+
+  cpu.idt_set_gate(doom_idt, 6, addr_of(doom_invalid_opcode), 8, 0, 142)
+  cpu.idt_set_gate(doom_idt, 13, addr_of(doom_general_protection), 8, 0, 142)
+  cpu.idt_set_gate(doom_idt, 14, addr_of(doom_page_fault), 8, 0, 142)
+  cpu.idt_set_gate(doom_idt, 128, addr_of(doom_syscall), 8, 0, 238)
+  cpu.idt_set_gate(doom_idt, 130, addr_of(user_process_yield_interrupt), 8, 0, 238)
+  cpu.load_idt(doom_idt, 4096)
+
+  if not process_enable_nx() then doom_fail(8)
+  if not pmem_init_from_uefi(doom_allocator, doom_allocator_bitmap, 65536, doom_memory_map, doom_map_size, doom_descriptor_size) then doom_fail(9)
+  if pmem_available_pages(doom_allocator) < 8192 then doom_fail(10)
+  if not doom_prepare_process() then doom_fail(11)
+  doom_write_line(doom_elf_marker)
+
+  input_ports: u64 is ps2_controller_init()
+  if (input_ports & 1) == 0 then doom_fail(12)
+  doom_write_line(doom_input_marker)
+  doom_tsc_per_ms is doom_detect_tsc_per_ms()
+  doom_start_tsc is cpu.rdtsc()
+  if doom_tsc_per_ms == 0 then doom_fail(13)
+  if not doom_clear_framebuffer() then doom_fail(14)
+
+  scheduler_config: ptr[UserProcessSchedulerConfig] is doom_scheduler_config
+  scheduler_config.processes is doom_processes
+  scheduler_config.capacity is 2
+  scheduler_config.tss is doom_tss
+  scheduler_config.kernel_root is doom_kernel_root
+  scheduler_config.kernel_gs_base is 0
+  scheduler_config.idle_stack_base is doom_idle_stack
+  scheduler_config.idle_stack_size is 16384
+  if not user_process_scheduler_init(doom_scheduler, scheduler_config) then doom_fail(15)
+
+  create: ptr[UserProcessCreate] is doom_create_config
+  create.address_space is doom_process_space
+  create.kernel_stack_base is doom_kernel_stack
+  create.kernel_stack_size is 32768
+  create.entry is doom_elf_info.entry
+  create.user_stack_pointer is doom_process_stack.initial_rsp
+  create.argument is 0
+  create.user_gs_base is 0
+  create.event_queue is 0
+  doom_process_id is user_process_create(doom_scheduler, create)
+  if doom_process_id == 0 then doom_fail(16)
+
+  doom_write_line(doom_ring3_marker)
+  started: bool is interrupt.invoke(130)
+  doom_fail(17)
+  return 17
+end
