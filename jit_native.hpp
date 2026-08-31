@@ -354,7 +354,13 @@ public:
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
             if (returned) {
-                if (inst.op != JitOp::NOP) return {};
+                // The bytecode compiler terminates every function body with an
+                // unreachable RETURN_NONE sentinel after an explicit return,
+                // and the baseline rejects JUMP outright, so nothing can branch
+                // past the emitted ret into this tail.
+                if (inst.op != JitOp::NOP &&
+                    inst.op != JitOp::RETURN_NONE &&
+                    inst.op != JitOp::HALT) return {};
                 continue;
             }
 
@@ -621,7 +627,12 @@ public:
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
             if (returned) {
-                if (inst.op != JitOp::NOP) return {};
+                // Same unreachable-sentinel tolerance as the System V
+                // baseline: the compiler's trailing RETURN_NONE/HALT after an
+                // explicit return can never execute because JUMP is rejected.
+                if (inst.op != JitOp::NOP &&
+                    inst.op != JitOp::RETURN_NONE &&
+                    inst.op != JitOp::HALT) return {};
                 continue;
             }
 

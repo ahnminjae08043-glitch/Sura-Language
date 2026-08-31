@@ -1,0 +1,6 @@
+{
+  "name": "compat_api_fixture",
+  "version": "1.11.1",
+  "main": "src/compat_api_fixture.sura",
+  "dependencies": {}
+}

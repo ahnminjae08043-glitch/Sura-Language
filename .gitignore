@@ -31,6 +31,9 @@ dist/
 build/
 artifacts/
 sura.pkg.json
+# The stable-API compatibility fixture is a required CI input, not a local
+# package artifact; keep it tracked despite the global ignore above.
+!tests/compat/api_fixture/sura.pkg.json
 sura_walk_*/
 __pycache__/
 .pytest_cache/

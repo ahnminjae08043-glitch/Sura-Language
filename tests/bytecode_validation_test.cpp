@@ -261,9 +261,14 @@ int main() {
 
         std::error_code ignored;
         std::filesystem::remove_all(temp_dir, ignored);
+        // Successful parses GC-allocate constant strings; establish the
+        // leak-checkable lifetime boundary GC::shutdown() exists for, so the
+        // ASan/LSan lane verifies the parser itself rather than test teardown.
+        GC::shutdown();
         std::cout << "bytecode validation: " << passed << " checks passed\n";
         return 0;
     } catch (const std::exception& error) {
+        GC::shutdown();
         std::cerr << "bytecode validation FAILED: " << error.what() << "\n";
         return 1;
     }
