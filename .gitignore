@@ -13,6 +13,8 @@ surapkg_build_output.txt
 *.log
 *.tmp
 *.bak
+*.efi
+*.elf
 
 # Local executables and scratch files
 *.exe
