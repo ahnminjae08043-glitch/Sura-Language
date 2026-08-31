@@ -301,6 +301,7 @@ class Lexer {
                 if (at_end()) throw LexError("문자열이 닫히지 않았습니다.", line);
                 switch (src[pos]) {
                     case 'n':  s += '\n'; break;
+                    case 'r':  s += '\r'; break;
                     case 't':  s += '\t'; break;
                     case '"':  s += '"';  break;
                     case '\\': s += '\\'; break;
