@@ -125,3 +125,9 @@ with a patch-compatibility guarantee through at least 2027-07-16. The native
 JIT is platform-limited; JS/WASM targets and the AI training stack
 (autograd, CUDA, transformers) are experimental. The roadmap is
 [ROADMAP.md](ROADMAP.md).
+
+## License
+
+[MIT](LICENSE). Vendored components under `third_party/` keep their own
+licenses (doomgeneric is GPL-2.0 and is used only by the Sura OS showcase,
+never linked into the language runtime).

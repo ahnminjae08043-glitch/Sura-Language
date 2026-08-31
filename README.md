@@ -34,3 +34,9 @@ surapkg test
 - 네이티브 JIT: Win64 x86-64 부분 컴파일, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline. 두 baseline은 상수·이동·숫자로 증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종과 0이 아닌 제수로 증명된 `/`를 처리하며, 그 밖의 bytecode는 register VM으로 fallback
 - JavaScript·WebAssembly: 별도 변환 타깃이며 네이티브 런타임 전체와 동일하지 않음
 - FFmpeg, CUDA, Python, Node.js: 해당 기능을 사용할 때만 필요한 선택 의존성
+
+## 라이선스
+
+[MIT](LICENSE)입니다. `third_party/` 아래 벤더링된 구성 요소는 각자의
+라이선스를 따릅니다 (doomgeneric은 GPL-2.0이며 Sura OS 쇼케이스 전용으로,
+언어 런타임에는 링크되지 않습니다).
