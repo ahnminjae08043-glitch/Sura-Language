@@ -85,6 +85,27 @@ Still open for a clean release: 153 untracked source files (`stdlib/freestanding
 does not contain the sources these binaries were built from. That, not the
 compiler, is the remaining blocker to criterion 2.
 
+### Update 2026-08-31: working tree fully committed, clean clone verified
+
+All 251 outstanding entries (98 modified, 153 untracked) were committed in ten
+grouped, reviewable commits on `agent/sura-os-freestanding`: gitignore for
+freestanding artifacts, lexer `\r` escape, mechanical exit-code gates, skip
+accounting runners, reference/JS-target updates, release tooling, docs,
+freestanding stdlib/OS work, QEMU gates, and third-party vendoring
+(doomgeneric flattened from an accidental gitlink to real tracked files, with
+provenance recorded in `third_party/doomgeneric/SURA_VENDOR.md`).
+
+Verified from a fresh `git clone` of that commit:
+
+- `build.bat portable` succeeded and produced `SuraLanguage.exe` with SHA-256
+  `3cb621f1...`, byte-identical to the hash recorded in `bench_summary.md`
+  on 2026-08-15 — the recorded provenance is now reproducible by a third party.
+- `run_stable_tests.ps1` (JIT lane): 151 passed, 0 skipped, 0 failed.
+
+Criterion 2 is met on this branch. Remaining for release: run the same
+verification in CI (criterion 3) and publish the provenance manifest
+(criteria 4–6).
+
 Release exit criteria:
 
 1. Separate the OS/browser work into reviewable commits or a dedicated branch.

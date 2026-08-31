@@ -1,5 +1,9 @@
 ﻿# Sura World-Class Positioning
 
+> This file is a machine-checked feature-evidence inventory: `tools/sura_goal_audit.ps1`
+> greps it for exact evidence strings, so entries here are data, not prose to trim.
+> The human-readable plan lives in [../ROADMAP.md](../ROADMAP.md).
+
 Sura's practical target is:
 
 > A fast Python-like scripting language for games, automation, and AI agents that can embed into native apps like Lua while keeping a small, inspectable runtime.
