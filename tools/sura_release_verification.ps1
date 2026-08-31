@@ -47,14 +47,14 @@ function Require-Step {
 $engineVersion = Invoke-Captured $engine @("--version") $root
 Require-Step "engine version" $engineVersion ('^Sura Language ' + [regex]::Escape($Version) + '$')
 
-$vm = Invoke-Captured $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "run_stable_tests.ps1"), "-NoJit") $root
-Require-Step "stable VM suite" $vm 'Stable tests \(VM\): \d+ passed, 0 failed'
-$vmMatch = [regex]::Match($vm.text, 'Stable tests \(VM\): (\d+) passed, 0 failed')
+$vm = Invoke-Captured $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "run_stable_tests.ps1"), "-NoJit", "-FailOnSkip") $root
+Require-Step "stable VM suite" $vm 'Stable tests \(VM\): \d+ passed, 0 skipped, 0 failed'
+$vmMatch = [regex]::Match($vm.text, 'Stable tests \(VM\): (\d+) passed, 0 skipped, 0 failed')
 $vmCount = [int]$vmMatch.Groups[1].Value
 
-$jit = Invoke-Captured $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "run_stable_tests.ps1")) $root
-Require-Step "stable JIT suite" $jit 'Stable tests \(JIT\): \d+ passed, 0 failed'
-$jitMatch = [regex]::Match($jit.text, 'Stable tests \(JIT\): (\d+) passed, 0 failed')
+$jit = Invoke-Captured $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "run_stable_tests.ps1"), "-FailOnSkip") $root
+Require-Step "stable JIT suite" $jit 'Stable tests \(JIT\): \d+ passed, 0 skipped, 0 failed'
+$jitMatch = [regex]::Match($jit.text, 'Stable tests \(JIT\): (\d+) passed, 0 skipped, 0 failed')
 $jitCount = [int]$jitMatch.Groups[1].Value
 
 $installer = Invoke-Captured $powershell @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $root "tools/sura_installer_smoke.ps1")) $root
