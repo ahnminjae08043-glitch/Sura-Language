@@ -5,6 +5,7 @@ param(
     [string]$JUnit = "",
     [switch]$NoJit,
     [switch]$Recurse,
+    [switch]$FailOnSkip,
     [ValidateRange(1, 86400)][int]$TimeoutSeconds = 120
 )
 
@@ -49,6 +50,7 @@ function Write-JUnitReport {
         [string]$Path,
         [object[]]$Results,
         [int]$Passed,
+        [int]$Skipped,
         [int]$Failed,
         [string]$EnginePath,
         [string]$EngineSha256,
@@ -73,7 +75,7 @@ function Write-JUnitReport {
         $writer.WriteAttributeString("tests", [string]$Results.Count)
         $writer.WriteAttributeString("failures", [string]$Failed)
         $writer.WriteAttributeString("errors", "0")
-        $writer.WriteAttributeString("skipped", "0")
+        $writer.WriteAttributeString("skipped", [string]$Skipped)
         $writer.WriteAttributeString("time", ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:0.000}", $totalMs / 1000.0)))
 
         $writer.WriteStartElement("properties")
@@ -93,6 +95,10 @@ function Write-JUnitReport {
         $writer.WriteAttributeString("name", "passed")
         $writer.WriteAttributeString("value", [string]$Passed)
         $writer.WriteEndElement()
+        $writer.WriteStartElement("property")
+        $writer.WriteAttributeString("name", "skipped")
+        $writer.WriteAttributeString("value", [string]$Skipped)
+        $writer.WriteEndElement()
         $writer.WriteEndElement()
 
         foreach ($result in $Results) {
@@ -102,7 +108,11 @@ function Write-JUnitReport {
             $writer.WriteAttributeString("name", [string]$result["path"])
             $writer.WriteAttributeString("file", [string]$result["path"])
             $writer.WriteAttributeString("time", ([string]::Format([System.Globalization.CultureInfo]::InvariantCulture, "{0:0.000}", $duration / 1000.0)))
-            if ($result["status"] -ne "pass") {
+            if ($result["status"] -eq "skip") {
+                $writer.WriteStartElement("skipped")
+                $writer.WriteAttributeString("message", [string]$result["skipReason"])
+                $writer.WriteEndElement()
+            } elseif ($result["status"] -ne "pass") {
                 $writer.WriteStartElement("failure")
                 $failureMessage = if ([bool]$result["timedOut"]) {
                     "timed out after $($result["timeoutSeconds"])s"
@@ -150,6 +160,7 @@ Write-Host ("Engine snapshot: {0} ({1} bytes)" -f $engineSnapshot.Sha256, $engin
 
 $results = @()
 $passed = 0
+$skipped = 0
 $failed = 0
 
 try {
@@ -177,10 +188,25 @@ try {
         } else {
             $code -eq 0
         }
-        $status = if ($passedTest) { "pass" } else { "fail" }
-        if ($passedTest) {
+        $skipMatch = if ($passedTest -and -not $expectedError) {
+            [regex]::Match($outputText, '(?mi)^\s*[^:\r\n]+:\s*SKIP(?:\s*\((?<reason>[^\r\n]*)\))?\s*$')
+        } else {
+            [System.Text.RegularExpressions.Match]::Empty
+        }
+        $skipReason = if ($skipMatch.Success -and $skipMatch.Groups["reason"].Success) {
+            $skipMatch.Groups["reason"].Value.Trim()
+        } elseif ($skipMatch.Success) {
+            "test reported an unmet runtime capability"
+        } else {
+            ""
+        }
+        $status = if (-not $passedTest) { "fail" } elseif ($skipMatch.Success) { "skip" } else { "pass" }
+        if ($status -eq "pass") {
             $passed++
             Write-Host ("[PASS] {0} ({1} ms)" -f $relative, $run.DurationMs)
+        } elseif ($status -eq "skip") {
+            $skipped++
+            Write-Host ("[SKIP] {0} ({1}; {2} ms)" -f $relative, $skipReason, $run.DurationMs)
         } else {
             $failed++
             if ($run.TimedOut) {
@@ -198,6 +224,7 @@ try {
             timedOut = $run.TimedOut
             timeoutSeconds = $TimeoutSeconds
             expectedError = $expectedError
+            skipReason = $skipReason
             durationMs = $run.DurationMs
             output = $outputText
         }
@@ -213,6 +240,7 @@ finally {
             timedOut = $false
             timeoutSeconds = $TimeoutSeconds
             expectedError = ""
+            skipReason = ""
             durationMs = 0
             output = "immutable test engine snapshot changed during the suite"
         }
@@ -231,6 +259,7 @@ finally {
             timedOut = $false
             timeoutSeconds = $TimeoutSeconds
             expectedError = ""
+            skipReason = ""
             durationMs = 0
             output = "could not remove immutable test engine snapshot: $($_.Exception.Message)"
         }
@@ -244,18 +273,20 @@ $reportObj = [ordered]@{
     engineSnapshot = $true
     jit = (-not $NoJit.IsPresent)
     timeoutSeconds = $TimeoutSeconds
+    failOnSkip = $FailOnSkip.IsPresent
     passed = $passed
+    skipped = $skipped
     failed = $failed
     tests = $results
 }
 
 $reportObj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Report -Encoding UTF8
-Write-Host "Sura tests: $passed passed, $failed failed"
+Write-Host "Sura tests: $passed passed, $skipped skipped, $failed failed"
 Write-Host "[OK] wrote $Report"
 if ($JUnit) {
-    Write-JUnitReport -Path $JUnit -Results $results -Passed $passed -Failed $failed -EnginePath $engineSourcePath -EngineSha256 $engineSnapshot.Sha256 -Jit:(-not $NoJit.IsPresent)
+    Write-JUnitReport -Path $JUnit -Results $results -Passed $passed -Skipped $skipped -Failed $failed -EnginePath $engineSourcePath -EngineSha256 $engineSnapshot.Sha256 -Jit:(-not $NoJit.IsPresent)
     Write-Host "[OK] wrote $JUnit"
 }
 
-if ($failed -gt 0) { exit 1 }
+if ($failed -gt 0 -or ($FailOnSkip -and $skipped -gt 0)) { exit 1 }
 $global:LASTEXITCODE = 0

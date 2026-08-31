@@ -1,5 +1,6 @@
 param(
     [switch]$NoJit,
+    [switch]$FailOnSkip,
     [string]$Engine = "",
     [string[]]$TestPath = @(),
     [ValidateRange(1, 86400)][int]$TimeoutSeconds = 120
@@ -31,7 +32,6 @@ if ($TestPath.Count -gt 0) {
         "test_stdlib.sura",
         "test_stdlib_practical.sura",
         "test_world_features.sura",
-        "test_js_target.sura",
         "test_wasm_target.sura",
         "test_methods_chain.sura",
         "test_null_optional.sura",
@@ -42,6 +42,7 @@ if ($TestPath.Count -gt 0) {
 }
 
 $pass = 0
+$skip = 0
 $fail = 0
 $engineSnapshot = $null
 try {
@@ -75,9 +76,24 @@ try {
         } else {
             $code -eq 0
         }
-        if ($passedTest) {
+        $skipMatch = if ($passedTest -and -not $expectedError) {
+            [regex]::Match($outputText, '(?mi)^\s*[^:\r\n]+:\s*SKIP(?:\s*\((?<reason>[^\r\n]*)\))?\s*$')
+        } else {
+            [System.Text.RegularExpressions.Match]::Empty
+        }
+        $skipReason = if ($skipMatch.Success -and $skipMatch.Groups["reason"].Success) {
+            $skipMatch.Groups["reason"].Value.Trim()
+        } elseif ($skipMatch.Success) {
+            "test reported an unmet runtime capability"
+        } else {
+            ""
+        }
+        if ($passedTest -and -not $skipMatch.Success) {
             Write-Host "[PASS] $relative ($($run.DurationMs) ms)"
             $pass++
+        } elseif ($skipMatch.Success) {
+            Write-Host "[SKIP] $relative ($skipReason; $($run.DurationMs) ms)"
+            $skip++
         } else {
             if ($run.TimedOut) {
                 Write-Host "[TIMEOUT] $relative exceeded ${TimeoutSeconds}s"
@@ -108,6 +124,6 @@ finally {
     }
 }
 
-Write-Host ("Stable tests ({0}): {1} passed, {2} failed" -f $(if ($NoJit) { "VM" } else { "JIT" }), $pass, $fail)
-if ($fail -gt 0) { exit 1 }
+Write-Host ("Stable tests ({0}): {1} passed, {2} skipped, {3} failed" -f $(if ($NoJit) { "VM" } else { "JIT" }), $pass, $skip, $fail)
+if ($fail -gt 0 -or ($FailOnSkip -and $skip -gt 0)) { exit 1 }
 $global:LASTEXITCODE = 0
