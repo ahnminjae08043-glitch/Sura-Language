@@ -333,17 +333,25 @@ public:
     // branch to, so skipping them keeps the generated code identical to the
     // straight-line tier for bodies without branches.
     std::vector<uint8_t> reached;
+    // Per body instruction: 1 when a DIV needs a runtime zero-divisor guard
+    // because the divisor is numeric but not a proven-nonzero constant. Only
+    // set when the caller allows deopt, since the guard's escape route is the
+    // deopt sentinel and the interpreter's exact [E202] error.
+    std::vector<uint8_t> div_zero_guard;
 
     BaselineBodyAnalysis(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
                          uint32_t frame_regs, uint32_t guarded_params,
-                         uint32_t reg_index_limit, int const_index_limit) {
+                         uint32_t reg_index_limit, int const_index_limit,
+                         bool allow_runtime_deopt) {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
-            frame_regs == 0 || guarded_params > frame_regs) {
+            frame_regs == 0 || guarded_params > frame_regs ||
+            (guarded_params > 0 && !allow_runtime_deopt)) {
             return;
         }
         const size_t body_len = end_ip - entry_ip;
         const size_t nregs = frame_regs;
         reached.assign(body_len, 0);
+        div_zero_guard.assign(body_len, 0);
         auto valid_reg = [&](uint16_t reg) {
             return static_cast<uint32_t>(reg) < frame_regs &&
                    static_cast<uint32_t>(reg) <= reg_index_limit;
@@ -362,6 +370,7 @@ public:
         // only registers whose every write is a nonzero numeric constant
         // qualify. Guarded parameters prove "number", never "nonzero".
         std::vector<uint8_t> wrote_nonzero_const(nregs, 1);
+        std::vector<uint8_t> wrote_only_const(nregs, 1);
         std::vector<uint8_t> wrote_anything(nregs, 0);
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
@@ -380,12 +389,14 @@ public:
                     if (!valid_reg(inst.a)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
+                    wrote_only_const[inst.a] = 0;
                     break;
                 case JitOp::MOVE:
                 case JitOp::NEG:
                     if (!valid_reg(inst.a) || !valid_reg(inst.b)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
+                    wrote_only_const[inst.a] = 0;
                     break;
                 case JitOp::ADD:
                 case JitOp::SUB:
@@ -400,6 +411,7 @@ public:
                     if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
+                    wrote_only_const[inst.a] = 0;
                     break;
                 case JitOp::JUMP:
                     if (!valid_target(inst.operand)) return;
@@ -513,7 +525,19 @@ public:
                     break;
                 case JitOp::DIV:
                     if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
-                    if (!(wrote_anything[inst.c] && wrote_nonzero_const[inst.c])) return;
+                    // A divisor proven to be a nonzero constant needs no check.
+                    // Otherwise the emitter tests it at run time: division by
+                    // zero must raise [E202], not yield an infinity, and only
+                    // the interpreter can raise it, so the guard deopts.
+                    if (!(wrote_anything[inst.c] && wrote_nonzero_const[inst.c])) {
+                        // A divisor written only by constants is fully known
+                        // here: if it is not provably nonzero it is zero, so a
+                        // runtime guard would deopt on every execution. Reject
+                        // instead of emitting code that never survives.
+                        if (wrote_anything[inst.c] && wrote_only_const[inst.c]) return;
+                        if (!allow_runtime_deopt) return;
+                        div_zero_guard[ip - entry_ip] = 1;
+                    }
                     break;
                 case JitOp::NEG:
                     if (in[inst.b] != RegKind::Num) return;
@@ -562,6 +586,7 @@ class SysVBaselineCompiler {
     size_t end_ip;
     uint32_t frame_regs;
     uint32_t guarded_params;
+    bool deopt_allowed;
 
     static int32_t off_r(uint16_t reg) {
         return static_cast<int32_t>(static_cast<uint32_t>(reg) * 8U);
@@ -574,12 +599,16 @@ public:
     static constexpr uint64_t kDeoptSentinel = SURA_JIT_DEOPT_SENTINEL;
 
     // guarded_param_regs: registers 0..n-1 hold caller arguments that the
-    // prologue verifies are NaN-boxed numbers, deopting otherwise. Methods
-    // and hand-built test chunks pass 0 and get the unguarded behavior.
+    // prologue verifies are NaN-boxed numbers, deopting otherwise.
+    // allow_deopt: the caller re-runs a sentinel-returning call in the VM with
+    // freshly bound arguments. Only the closure call sites do that, so the
+    // top-level chunk (which cannot be replayed) and methods pass false and
+    // get a body that never deopts. Passing guards without deopt is refused.
     SysVBaselineCompiler(const JitChunk& source, size_t begin, size_t end,
-                         uint32_t registers, uint32_t guarded_param_regs = 0)
+                         uint32_t registers, uint32_t guarded_param_regs = 0,
+                         bool allow_deopt = true)
         : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
-          guarded_params(guarded_param_regs) {}
+          guarded_params(guarded_param_regs), deopt_allowed(allow_deopt) {}
 
     std::vector<uint8_t> compile_bytes() const {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
@@ -590,7 +619,7 @@ public:
         BaselineBodyAnalysis analysis(
             chunk, entry_ip, end_ip, frame_regs, guarded_params,
             std::numeric_limits<uint16_t>::max(),
-            std::numeric_limits<int32_t>::max() / 8);
+            std::numeric_limits<int32_t>::max() / 8, deopt_allowed);
         if (!analysis.ok) return {};
 
         // ── Emit. ──
@@ -649,6 +678,18 @@ public:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                    if (analysis.div_zero_guard[ip - entry_ip]) {
+                        // Division by zero must raise [E202]; the interpreter
+                        // owns that error, so deopt instead of dividing.
+                        // Clearing the sign bit makes -0.0 test equal to 0.0,
+                        // matching the interpreter's `rhs == 0.0`; NaN keeps a
+                        // nonzero payload and divides to NaN as it does there.
+                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.c));
+                        em.mov_ri64(XR::RCX, 0x7FFFFFFFFFFFFFFFULL);
+                        em.and_rr(XR::RAX, XR::RCX);
+                        em.cmp_r_imm32(XR::RAX, 0);
+                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                    }
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
                     if (inst.op == JitOp::ADD) {
                         em.addsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
@@ -740,7 +781,7 @@ public:
             emit_return();
         }
 
-        // Deopt tail shared by every entry guard.
+        // Deopt tail shared by the entry guards and the zero-divisor checks.
         if (!deopt_fixups.empty()) {
             const size_t deopt_off = em.pos();
             em.mov_ri64(XR::RAX, kDeoptSentinel);
@@ -766,6 +807,7 @@ class Arm64BaselineCompiler {
     size_t end_ip;
     uint32_t frame_regs;
     uint32_t guarded_params;
+    bool deopt_allowed;
 
     class Emitter {
         std::vector<uint8_t>& code;
@@ -874,13 +916,14 @@ class Arm64BaselineCompiler {
     };
 
 public:
-    // guarded_param_regs: registers 0..n-1 hold caller arguments that the
-    // prologue verifies are NaN-boxed numbers, deopting otherwise. Methods
-    // and hand-built test chunks pass 0 and get the unguarded behavior.
+    // guarded_param_regs / allow_deopt carry the same contract as the System V
+    // tier: guards and zero-divisor checks escape through the deopt sentinel,
+    // which only the closure call sites know how to re-run.
     Arm64BaselineCompiler(const JitChunk& source, size_t begin, size_t end,
-                          uint32_t registers, uint32_t guarded_param_regs = 0)
+                          uint32_t registers, uint32_t guarded_param_regs = 0,
+                          bool allow_deopt = true)
         : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
-          guarded_params(guarded_param_regs) {}
+          guarded_params(guarded_param_regs), deopt_allowed(allow_deopt) {}
 
     std::vector<uint8_t> compile_bytes() const {
         // AArch64 unsigned load/store immediates are 12-bit values scaled by
@@ -891,7 +934,8 @@ public:
         }
         const size_t body_len = end_ip - entry_ip;
         BaselineBodyAnalysis analysis(chunk, entry_ip, end_ip, frame_regs,
-                                      guarded_params, 4095U, 4095);
+                                      guarded_params, 4095U, 4095,
+                                      deopt_allowed);
         if (!analysis.ok) return {};
 
         std::vector<uint8_t> code;
@@ -942,6 +986,16 @@ public:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                    if (analysis.div_zero_guard[ip - entry_ip]) {
+                        // Same contract as the System V tier: clear the sign
+                        // bit so -0.0 counts as zero, then deopt so the
+                        // interpreter raises [E202].
+                        em.ldr_x(9, 1, inst.c);
+                        em.mov_imm64(10, 0x7FFFFFFFFFFFFFFFULL);
+                        em.and_xx(9, 9, 10);
+                        em.cmp_xx(9, 31);  // xzr
+                        deopt_branches.push_back(em.b_cond_placeholder(0));
+                    }
                     em.ldr_d(0, 1, inst.b);
                     em.ldr_d(1, 1, inst.c);
                     if (inst.op == JitOp::ADD) {
@@ -1021,7 +1075,7 @@ public:
             em.ret();
         }
 
-        // Deopt tail shared by every entry guard.
+        // Deopt tail shared by the entry guards and the zero-divisor checks.
         if (!deopt_branches.empty()) {
             const size_t deopt_at = em.pos();
             em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
@@ -1658,12 +1712,15 @@ public:
 
 #if SURA_JIT_X64_SYSV_BASELINE
         try {
-            // Methods keep 0 guards: their register 0 is the receiver, not a
-            // numeric argument, so guarding would deopt every invocation.
-            const uint32_t guarded = callable_is_method
-                ? 0U : static_cast<uint32_t>(callable_param_count);
+            // Only closure calls re-run a deopted call, and only they rebind
+            // arguments first. The top-level chunk cannot be replayed at all,
+            // and method call sites do not check the sentinel, so both compile
+            // without guards. A method's register 0 is the receiver anyway.
+            const bool deoptable = !is_top_level && !callable_is_method;
+            const uint32_t guarded = deoptable
+                ? static_cast<uint32_t>(callable_param_count) : 0U;
             SysVBaselineCompiler baseline(chunk, entry_ip, end_ip,
-                                          native_frame_regs, guarded);
+                                          native_frame_regs, guarded, deoptable);
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
             auto nf = std::make_unique<NativeFunc>();
@@ -1680,12 +1737,11 @@ public:
 
 #if SURA_JIT_ARM64_BASELINE
         try {
-            // Methods keep 0 guards: their register 0 is the receiver, not a
-            // numeric argument, so guarding would deopt every invocation.
-            const uint32_t guarded = callable_is_method
-                ? 0U : static_cast<uint32_t>(callable_param_count);
+            const bool deoptable = !is_top_level && !callable_is_method;
+            const uint32_t guarded = deoptable
+                ? static_cast<uint32_t>(callable_param_count) : 0U;
             Arm64BaselineCompiler baseline(chunk, entry_ip, end_ip,
-                                           native_frame_regs, guarded);
+                                           native_frame_regs, guarded, deoptable);
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
             auto nf = std::make_unique<NativeFunc>();

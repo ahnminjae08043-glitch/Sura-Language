@@ -14,6 +14,19 @@ if (-not (Test-Path -LiteralPath $versionPath)) {
     throw "version contract was not found: $versionPath"
 }
 
+# The marketing website lives in its own repository; the language-core tree
+# does not ship it. Its version checks apply only when this repository still
+# tracks the site, so an untracked local working copy left on disk does not
+# resurrect contracts the repository no longer owns.
+$hasWebsite = $false
+if (Test-Path -LiteralPath (Join-Path $root "sura_presentation") -PathType Container) {
+    $hasWebsite = $true
+    if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
+        $tracked = & git -C $root ls-files "sura_presentation/package.json"
+        if ($LASTEXITCODE -eq 0) { $hasWebsite = -not [string]::IsNullOrWhiteSpace(($tracked | Out-String)) }
+    }
+}
+
 $contract = [System.IO.File]::ReadAllText($versionPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
 $version = [string]$contract.version
 $series = [string]$contract.series
@@ -72,13 +85,15 @@ function Set-ExampleVersion {
 
 if ($Apply) {
     Write-RepoText "sura_version.hpp" ("#pragma once`r`n`r`n// Generated from version.json by tools/sura_version_sync.ps1.`r`nstatic constexpr const char* SURA_LANGUAGE_VERSION = `"$version`";`r`n")
-    Write-RepoText "sura_presentation/src/version.js" ("// Generated from repository version.json by tools/sura_version_sync.ps1.`r`nexport const VERSION = `"$version`";`r`n")
     Set-FirstJsonVersions "sura-vscode/package.json" 1
     Set-FirstJsonVersions "sura-vscode/package-lock.json" 2
-    Set-FirstJsonVersions "sura_presentation/package.json" 1
-    Set-FirstJsonVersions "sura_presentation/package-lock.json" 2
     Set-ExampleVersion "examples/starter/05_collections.sura"
-    Set-ExampleVersion "sura_presentation/public/examples/starter/05_collections.sura"
+    if ($hasWebsite) {
+        Write-RepoText "sura_presentation/src/version.js" ("// Generated from repository version.json by tools/sura_version_sync.ps1.`r`nexport const VERSION = `"$version`";`r`n")
+        Set-FirstJsonVersions "sura_presentation/package.json" 1
+        Set-FirstJsonVersions "sura_presentation/package-lock.json" 2
+        Set-ExampleVersion "sura_presentation/public/examples/starter/05_collections.sura"
+    }
 }
 
 $checks = New-Object System.Collections.Generic.List[object]
@@ -96,12 +111,15 @@ Add-Check "runtime source" ($mainText.Contains('#include "sura_version.hpp"') -a
 $onnxText = Read-RepoText "onnx_weights.hpp"
 Add-Check "ONNX producer" ($onnxText.Contains('model.string(3, SURA_LANGUAGE_VERSION)')) "ONNX producer metadata must use the runtime version constant"
 
-foreach ($item in @(
+$packageChecks = @(
     @("VS Code package", "sura-vscode/package.json", 1),
-    @("VS Code lockfile", "sura-vscode/package-lock.json", 2),
-    @("website package", "sura_presentation/package.json", 1),
-    @("website lockfile", "sura_presentation/package-lock.json", 2)
-)) {
+    @("VS Code lockfile", "sura-vscode/package-lock.json", 2)
+)
+if ($hasWebsite) {
+    $packageChecks += , @("website package", "sura_presentation/package.json", 1)
+    $packageChecks += , @("website lockfile", "sura_presentation/package-lock.json", 2)
+}
+foreach ($item in $packageChecks) {
     $label = [string]$item[0]
     $relative = [string]$item[1]
     $count = [int]$item[2]
@@ -125,12 +143,14 @@ Add-Check "VSIX packaging script" ($vsixScript.Contains('SuraLanguage-VSCode-${p
 $extensionSmoke = Read-RepoText "sura-vscode/scripts/smoke.js"
 Add-Check "VS Code version test" ($extensionSmoke.Contains("path.join(repo, 'version.json')")) "extension smoke must read version.json"
 
-$siteVersion = Read-RepoText "sura_presentation/src/version.js"
-Add-Check "website version module" ($siteVersion -match ('export const VERSION\s*=\s*"' + [regex]::Escape($version) + '"')) "website version module must match version.json"
-$siteMain = Read-RepoText "sura_presentation/src/main.jsx"
-Add-Check "website version consumer" ($siteMain.Contains('import { VERSION } from "./version.js";') -and $siteMain.Contains('import release from "./release.json";') -and $siteMain -notmatch 'const VERSION\s*=') "website must consume generated version and release metadata"
-$siteMetadata = (Read-RepoText "sura_presentation/index.html") + (Read-RepoText "sura_presentation/app/layout.jsx")
-Add-Check "website evergreen metadata" ($siteMetadata -notmatch 'Sura Language \d+\.\d+\.\d+ 공식') "static SEO text must not embed a release version"
+if ($hasWebsite) {
+    $siteVersion = Read-RepoText "sura_presentation/src/version.js"
+    Add-Check "website version module" ($siteVersion -match ('export const VERSION\s*=\s*"' + [regex]::Escape($version) + '"')) "website version module must match version.json"
+    $siteMain = Read-RepoText "sura_presentation/src/main.jsx"
+    Add-Check "website version consumer" ($siteMain.Contains('import { VERSION } from "./version.js";') -and $siteMain.Contains('import release from "./release.json";') -and $siteMain -notmatch 'const VERSION\s*=') "website must consume generated version and release metadata"
+    $siteMetadata = (Read-RepoText "sura_presentation/index.html") + (Read-RepoText "sura_presentation/app/layout.jsx")
+    Add-Check "website evergreen metadata" ($siteMetadata -notmatch 'Sura Language \d+\.\d+\.\d+ 공식') "static SEO text must not embed a release version"
+}
 
 $referenceGenerator = Read-RepoText "tools/sura_reference_generate.mjs"
 Add-Check "reference version source" ($referenceGenerator.Contains('path.join(root, "version.json")') -and $referenceGenerator -notmatch 'const expectedVersion\s*=\s*"\d') "reference generator must read version.json"
@@ -141,13 +161,15 @@ Add-Check "installer test version source" ($installerSmoke.Contains('Join-Path $
 $storeMaker = Read-RepoText "tools/sura_store_msix.ps1"
 Add-Check "Store MSIX version source" ($storeMaker.Contains('Join-Path $root "version.json"') -and $storeMaker.Contains('([string]$versionContract.version) + ".0"') -and $storeMaker -match '\[string\]\$Version\s*=\s*""') "Store MSIX builder must default to version.json plus a zero revision"
 
-foreach ($relative in @("examples/starter/05_collections.sura", "sura_presentation/public/examples/starter/05_collections.sura")) {
+$starterExamples = @("examples/starter/05_collections.sura")
+if ($hasWebsite) { $starterExamples += "sura_presentation/public/examples/starter/05_collections.sura" }
+foreach ($relative in $starterExamples) {
     Add-Check "starter example: $relative" ((Read-RepoText $relative) -match ('version:\s*"' + [regex]::Escape($version) + '"')) "$relative must match version.json"
 }
 
 $releasePath = "sura_presentation/public/downloads/release-$version.json"
 $verificationPath = "sura_presentation/public/downloads/verification-$version.json"
-if (-not $SkipPublicRelease) {
+if ($hasWebsite -and -not $SkipPublicRelease) {
 foreach ($item in @(
     @("public release manifest", $releasePath, "sura.public.release.v1"),
     @("public verification manifest", $verificationPath, "sura.public.verification.v1")

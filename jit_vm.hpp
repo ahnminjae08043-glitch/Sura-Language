@@ -3790,9 +3790,14 @@ _reenter:
                     if (native) {
                         uint64_t bits = native->fn(this, NR, chunk.constants.data());
                         if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                            // Entry guard rejected an argument. The frame regs
-                            // are still bound, so re-run the call in the VM.
+                            // A guard rejected this call. Guards can fire after
+                            // the body has already written frame registers (a
+                            // zero divisor is only known mid-body), so rebind
+                            // the arguments from the still-intact caller
+                            // registers before the VM re-runs the call.
                             note_native_deopt(closure->func_idx);
+                            bind_function_args(chunk, fi, NR, &R[inst.c],
+                                               static_cast<size_t>(std::max(0, inst.operand)));
                             native = nullptr;
                         } else {
                             R[a] = Value::from_bits(bits);
@@ -4361,10 +4366,13 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
                 SuraNativeFn fast_fn = reinterpret_cast<SuraNativeFn>(ins->ic_native_fn);
                 uint64_t bits = fast_fn(this, NR, chunk.constants.data());
                 if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                    // Entry guard rejected an argument. Drop this site's IC and
-                    // finish the call in the VM with the already-bound frame.
+                    // A guard rejected this call. Drop this site's IC, rebind
+                    // the arguments (a mid-body guard may have overwritten
+                    // frame registers), and finish the call in the VM.
                     note_native_deopt(cl->func_idx);
                     ins->ic_native_fn = nullptr;
+                    bind_function_args(chunk, fi, NR, &R[ins->c],
+                                       static_cast<size_t>(std::max(0, ins->operand)));
                     CallFrame cf;
                     cf.reg_base = base; cf.reg_count = cnt; cf.closure = cl;
                     cf.chunk = &chunk; cf.method = nullptr;
@@ -4520,10 +4528,13 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
             ins->ic_method    = nullptr;
             uint64_t bits = callee_native->fn(this, NR, chunk.constants.data());
             if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                // Entry guard rejected an argument: undo the IC we just set
-                // and fall through to the interpreter with the bound frame.
+                // A guard rejected this call: undo the IC we just set, rebind
+                // the arguments (a mid-body guard may have overwritten frame
+                // registers), and fall through to the interpreter.
                 note_native_deopt(cl->func_idx);
                 ins->ic_native_fn = nullptr;
+                bind_function_args(chunk, fi, NR, &R[ins->c],
+                                   static_cast<size_t>(std::max(0, ins->operand)));
             } else {
                 stack_top = base;
                 return bits;

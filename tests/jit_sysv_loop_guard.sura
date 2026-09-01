@@ -41,4 +41,28 @@ end
 assert_eq(loop_sum(1000), 500500)
 assert_eq(loop_sum(0), 0)
 
+# 파라미터 나눗셈: 0이 아님을 증명할 수 없으므로 네이티브는 런타임 가드를
+# 넣고, 0이면 디옵트해서 VM이 [E202]를 그대로 던진다. 결과와 오류 모두
+# VM 모드와 완전히 같아야 한다.
+func mix(a, b) do
+    return (a / b) + (a * b) - (a / (b + 1))
+end
+
+checksum is 0
+for k in 1 to 600 do
+    checksum is checksum + mix(k, 7)
+end
+assert_eq(checksum, 1265319.642857143)
+
+div_error is ""
+try
+    bad is mix(10, 0)
+catch e
+    div_error is e
+end
+assert_eq(div_error, "[E202] division by zero")
+
+# 0 나눗셈 디옵트를 겪은 뒤에도 정상 인자는 정확히 계산된다.
+assert_eq(mix(84, 4), 340.2)
+
 print("jit_sysv_loop_guard: PASS")

@@ -359,6 +359,45 @@ int main() {
         }
 #endif
 
+        // ── v2: runtime zero-divisor guard on a parameter divisor ──
+        JitChunk guarded_div;
+        guarded_div.max_regs = 3;
+        guarded_div.code.emplace_back(JitOp::DIV, 2, 0, 1);
+        guarded_div.code.emplace_back(JitOp::RETURN_VAL, 2);
+        std::vector<uint8_t> guarded_div_bytes = Arm64BaselineCompiler(
+            guarded_div, 0, guarded_div.code.size(), guarded_div.max_regs,
+            2).compile_bytes();
+        require(!guarded_div_bytes.empty(),
+                "a numeric-guarded parameter divisor should compile with a zero check");
+        require(read_word(guarded_div_bytes, 92) == 0xEB1F013FU,
+                "ARM64 zero-divisor check did not emit cmp x9, xzr");
+#if SURA_JIT_ARM64_BASELINE
+        {
+            ExecCode div_code = ExecCode::from_bytes(guarded_div_bytes);
+            auto div_function = reinterpret_cast<SuraNativeFn>(div_code.ptr);
+            std::vector<Value> regs(guarded_div.max_regs, Value::nil());
+            regs[0] = Value(84.0);
+            regs[1] = Value(4.0);
+            Value quotient = Value::from_bits(
+                div_function(nullptr, regs.data(), nullptr));
+            require(quotient.is_num() && std::fabs(quotient.as_num() - 21.0) < 1e-12,
+                    "ARM64 guarded division returned the wrong quotient");
+            regs[1] = Value(0.0);
+            require(div_function(nullptr, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "ARM64 division by zero must deopt so the VM raises [E202]");
+            regs[1] = Value(-0.0);
+            require(div_function(nullptr, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "ARM64 negative zero must deopt as well");
+        }
+#endif
+        require(Arm64BaselineCompiler(
+                    guarded_div, 0, guarded_div.code.size(),
+                    guarded_div.max_regs, 0, /*allow_deopt=*/false)
+                    .compile_bytes().empty(),
+                "an unprovable divisor must fall back when deopt is not allowed");
+
         // A jump that escapes the body must be rejected outright.
         JitChunk bad_jump;
         bad_jump.max_regs = 2;

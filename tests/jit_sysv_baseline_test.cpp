@@ -204,6 +204,51 @@ int main() {
                     "loop entry guard must deopt on a non-numeric argument");
         }
 
+        // ── v2: runtime zero-divisor guard on a parameter divisor ──
+        // A parameter can never be proven nonzero, so the emitter checks it and
+        // deopts, letting the interpreter raise [E202] exactly as it would.
+        JitChunk guarded_div;
+        guarded_div.max_regs = 3;
+        guarded_div.code.emplace_back(JitOp::DIV, 2, 0, 1);
+        guarded_div.code.emplace_back(JitOp::RETURN_VAL, 2);
+        std::vector<uint8_t> guarded_div_bytes = SysVBaselineCompiler(
+            guarded_div, 0, guarded_div.code.size(), guarded_div.max_regs,
+            2).compile_bytes();
+        require(!guarded_div_bytes.empty(),
+                "a numeric-guarded parameter divisor should compile with a zero check");
+        {
+            ExecCode div_code = ExecCode::from_bytes(guarded_div_bytes);
+            auto div_function = reinterpret_cast<SysVNativeTestFn>(div_code.ptr);
+            std::vector<Value> regs(guarded_div.max_regs, Value::nil());
+            regs[0] = Value(84.0);
+            regs[1] = Value(4.0);
+            Value quotient = Value::from_bits(
+                div_function(nullptr, regs.data(), nullptr));
+            require(quotient.is_num() && std::fabs(quotient.as_num() - 21.0) < 1e-12,
+                    "guarded division returned the wrong quotient");
+            regs[1] = Value(0.0);
+            require(div_function(nullptr, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "division by zero must deopt so the VM raises [E202]");
+            regs[1] = Value(-0.0);
+            require(div_function(nullptr, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "negative zero is zero for the interpreter, so it must deopt too");
+            regs[1] = Value(std::numeric_limits<double>::quiet_NaN());
+            Value nan_quotient = Value::from_bits(
+                div_function(nullptr, regs.data(), nullptr));
+            require(nan_quotient.is_num() && std::isnan(nan_quotient.as_num()),
+                    "a NaN divisor divides to NaN rather than deopting");
+        }
+
+        // Without a deopt-capable caller the same body must fall back, because
+        // the guard would have nowhere to escape to.
+        require(SysVBaselineCompiler(
+                    guarded_div, 0, guarded_div.code.size(),
+                    guarded_div.max_regs, 0, /*allow_deopt=*/false)
+                    .compile_bytes().empty(),
+                "an unprovable divisor must fall back when deopt is not allowed");
+
         // A jump that escapes the body must be rejected outright.
         JitChunk bad_jump;
         bad_jump.max_regs = 2;
