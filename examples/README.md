@@ -1,8 +1,10 @@
 # Sura Example Gallery
 
 This directory is a runnable gallery for learning Sura through complete programs.
-The original examples are kept as-is; the folders below add focused examples for
-games, AI/ML, simulations, and algorithms.
+Every example here runs against the current engine: `SuraLanguage --check examples`
+parses all of them, and the window examples render under `-- --smoke`. Examples
+that needed a file you had to supply yourself, or that were written for older
+syntax, were removed rather than left to fail on first run.
 
 ## Run an example
 
@@ -18,9 +20,10 @@ surapkg check
 surapkg run
 ```
 
-`surapkg examples` reports optional requirements such as `windows-graphics`,
-`ffmpeg`, or `cuda`. Generated projects preserve the selected source byte for
-byte and write `sura.example.json` with its gallery id and SHA-256 provenance.
+`surapkg examples` reports optional requirements such as `windows-graphics` or
+`cuda`, so you can tell before running which examples need more than the engine.
+Generated projects preserve the selected source byte for byte and write
+`sura.example.json` with its gallery id and SHA-256 provenance.
 
 From the repository root:
 
@@ -48,11 +51,20 @@ Check every example without running it:
 
 | Folder | Examples | Topics |
 | --- | ---: | --- |
+| `starter` | 12 | Values, control flow, functions, collections, classes, files, JSON, async, errors, testing |
+| `showcase` | 5 | Self-verifying tours of the language, including a JIT-heavy particle loop |
 | `games_2d` | 6 | Pong, Breakout, platforming, racing, defense, asteroid dodging |
 | `games_3d` | 5 | Perspective projection, ray casting, star flight, terrain, solar system |
+| `games` | 6 | Text RPG, raycasting dungeon, 3D shooter variants, mouse input |
 | `ai_ml` | 10 | Native neural nets, pretraining, clustering, RAG, recommenders, tensors |
 | `simulations` | 6 | Boids, gravity, epidemics, traffic, ecosystems, cellular automata |
 | `algorithms` | 5 | A*, maze generation, Sudoku, scheduling, word frequency |
+
+Eight more sit at the top level because they each stand alone: `bad_apple_ascii`
+and `frame_to_ascii` (character-frame rendering with no video file or FFmpeg),
+`starblaster_3d`, `native_autograd`, `native_xor_ai`, `tiny_transformer`,
+`tokenizer_dataset_training`, and `cuda_language_model_training` (which reports
+and exits cleanly when no CUDA device is present).
 
 AI examples are intentionally small enough to run on a normal CPU. The
 `pretraining_pipeline.sura` example demonstrates the same tokenizer, dataset,
