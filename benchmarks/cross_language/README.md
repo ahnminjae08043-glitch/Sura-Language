@@ -11,6 +11,12 @@ The runner builds whatever compilers are installed, skips the languages that are
 not, and prints one table. Nothing here is required by CI; it exists to be
 audited.
 
+**Read the platform section before quoting any number.** Sura's JIT is complete
+on Windows x64 only; on Linux and ARM64 the native tier is a baseline that
+refuses function calls, array indexing and field access, so most of this suite
+runs interpreted there. The two tables differ a lot, and the Linux one is the
+less flattering of the two.
+
 ## Why the checksums matter
 
 Two programs that finish in different times are only comparable if they did the
@@ -77,10 +83,50 @@ Go's `object` column is zero because its compiler removes the loop entirely;
 varying the input per repetition did not stop it. Read that cell as "not
 measured" rather than as a time.
 
+## The same benchmark on Linux
+
+The numbers above are from Windows x64, where the JIT is complete. On Linux and
+on ARM64 the native tier is a **baseline** that only compiles straight-line and
+looping numeric code: it refuses function calls, array indexing and field
+access. In this suite that means one of the ten functions gets native code
+instead of all ten, and the rest run interpreted.
+
+Same machine, Ubuntu under WSL2, ms:
+
+| language | fib | numeric | array | string | dict | sort | object | matmul |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.7 | 15.6 | 0.3 | 5.0 |
+| **Sura JIT** | 82.8 | 10.5 | 63.0 | 10.5 | 79.0 | 33.5 | 109.1 | 648.0 |
+| Sura VM | 86.6 | 85.3 | 64.7 | 10.9 | 84.5 | 34.1 | 120.7 | 802.4 |
+| Python 3.14 | 68.0 | 112.5 | 59.4 | 4.2 | 23.2 | 76.6 | 46.6 | 507.5 |
+
+So the honest summary is platform-dependent, and it is worth stating plainly
+rather than quoting the better platform:
+
+- **On Windows x64** the JIT compiles everything in this suite and Sura runs
+  about twice as fast as CPython by geometric mean.
+- **On Linux and ARM64** only the numeric loop reaches native code. Overall Sura
+  lands within about 10% of CPython — sometimes ahead, sometimes behind.
+
+What holds on both platforms is where the native tier or a native library
+actually applies:
+
+| | Windows | Linux |
+| --- | ---: | ---: |
+| numeric loop vs CPython | 12x faster | 11x faster |
+| sort vs CPython | 3.2x faster | 2.3x faster |
+| startup vs CPython | 2.3x faster | 3.2x faster |
+| `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
+
+Closing the Linux gap means teaching the baseline tier the opcodes it currently
+refuses, which is the largest open item in the project.
+
 ### How to read this
 
-By geometric mean Sura's JIT is about twice as fast as CPython, roughly eight
-times slower than Node, and fifteen times slower than C++.
+On Windows, by geometric mean Sura's JIT is about twice as fast as CPython,
+roughly six and a half times slower than Node, and fourteen times slower than
+C++. On Linux, see the platform section above — the summary there is different
+and less flattering.
 
 Sura is competitive at sorting, because `array.sort` calls a native C++ sort
 rather than interpreting a comparison per element.
