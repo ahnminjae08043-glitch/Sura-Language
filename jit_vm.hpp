@@ -3677,25 +3677,31 @@ _reenter:
                     if (inst.ic_cache != -1 && iobj->fields.size() > (size_t)inst.ic_cache) {
                         iobj->fields[inst.ic_cache] = R[b];
                     } else {
-                        int offset = -1;
-                        if (rt_classes.count(cname)) {
-                            auto& cl = rt_classes[cname];
-                            if (cl.field_indices.count(prop)) offset = cl.field_indices[prop];
-                        }
-                        if (offset != -1) {
-                            iobj->fields[offset] = R[b];
-                            inst.ic_cache = offset;
-                            inst.ic_class = &rt_classes.at(cname); // JIT IC guard
-                        } else if (rt_classes.count(cname)) {
-                            auto& cl = rt_classes[cname];
-                            offset = (int)cl.field_indices.size();
-                            cl.field_indices[prop] = offset;
-                            cl.field_defaults.push_back(Value::nil());
+                        auto class_it = rt_classes.find(cname);
+                        if (class_it != rt_classes.end()) {
+                            JitClassInfo& cl = class_it->second;
+                            auto field_it = cl.field_indices.find(prop);
+                            int offset;
+                            if (field_it != cl.field_indices.end()) {
+                                offset = field_it->second;
+                            } else {
+                                offset = (int)cl.field_indices.size();
+                                cl.field_indices[prop] = offset;
+                                cl.field_defaults.push_back(Value::nil());
+                            }
+                            // A field added to any instance widens the class
+                            // layout, but instances built before that are still
+                            // the old width. Writing at the new offset without
+                            // growing this one wrote past the end of its field
+                            // storage - the value was lost on read, and the
+                            // store itself was out of bounds.
                             if (iobj->fields.size() < cl.field_defaults.size())
                                 iobj->fields.resize(cl.field_defaults.size(), Value::nil());
-                            iobj->fields[offset] = R[b];
-                            inst.ic_cache = offset;
-                            inst.ic_class = &rt_classes.at(cname); // JIT IC guard
+                            if (offset >= 0 && (size_t)offset < iobj->fields.size()) {
+                                iobj->fields[offset] = R[b];
+                                inst.ic_cache = offset;
+                                inst.ic_class = &cl; // JIT IC guard
+                            }
                         }
                     }  // closes else { from ic_cache miss
                 } else if (R[a].is_dict()) R[a].dict_set(prop, R[b]);
@@ -4847,16 +4853,26 @@ inline void JitVM::dispatch_dot_set_from_jit(Value* R, const JitInst* ins) {
     if (recv.is_inst()) {
         GCInstance* obj = recv.as_inst();
         const std::string& cname = obj->type_name();
-        if (rt_classes.count(cname)) {
-            auto& cl = rt_classes[cname];
+        auto class_it = rt_classes.find(cname);
+        if (class_it != rt_classes.end()) {
+            JitClassInfo& cl = class_it->second;
             auto it = cl.field_indices.find(prop);
+            int offset;
             if (it != cl.field_indices.end()) {
-                int offset = it->second;
-                if (obj->fields.size() < cl.field_defaults.size())
-                    obj->fields.resize(cl.field_defaults.size(), Value::nil());
-                if (offset >= 0 && (size_t)offset < obj->fields.size())
-                    obj->fields[offset] = R[ins->b];
+                offset = it->second;
+            } else {
+                // Previously this branch did not exist, so assigning a field the
+                // class had never seen silently did nothing whenever the code
+                // ran as native rather than interpreted. Widen the layout here
+                // exactly as the interpreter does.
+                offset = (int)cl.field_indices.size();
+                cl.field_indices[prop] = offset;
+                cl.field_defaults.push_back(Value::nil());
             }
+            if (obj->fields.size() < cl.field_defaults.size())
+                obj->fields.resize(cl.field_defaults.size(), Value::nil());
+            if (offset >= 0 && (size_t)offset < obj->fields.size())
+                obj->fields[offset] = R[ins->b];
         }
     } else if (recv.is_dict()) {
         recv.dict_set(prop, R[ins->b]);
