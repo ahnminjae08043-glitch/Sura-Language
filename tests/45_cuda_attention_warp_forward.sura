@@ -1,0 +1,365 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank4(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank3(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func assert_attention_dispatch(stats, legacy_total, legacy_parallel, fused_total, fused_launches) do
+  assert_eq(stats.reference_attention_launches, 0)
+  assert_eq(stats.warp_attention_launches, 1)
+  if stats.fused_attention_launches > 0 then
+    assert_eq(stats.attention_launches, fused_total)
+    assert_eq(stats.parallel_attention_launches, 0)
+    assert_eq(stats.fused_attention_launches, fused_launches)
+  else
+    assert_eq(stats.attention_launches, legacy_total)
+    assert_eq(stats.parallel_attention_launches, legacy_parallel)
+  end
+  assert_eq(stats.attention_launches, stats.reference_attention_launches + stats.warp_attention_launches + stats.parallel_attention_launches + stats.fused_attention_launches)
+end
+
+func make_tail_q_values() do
+  batch is []
+  heads is []
+  head is 0
+  while head < 2 do
+    rows is []
+    token is 0
+    while token < 16 do
+      row is []
+      d is 0
+      while d < 5 do
+        row.push((((token + 1) * (d + 2) + head) % 11 - 5) * 0.07)
+        d is d + 1
+      end
+      rows.push(row)
+      token is token + 1
+    end
+    heads.push(rows)
+    head is head + 1
+  end
+  batch.push(heads)
+  return batch
+end
+
+func make_tail_k_values() do
+  batch is []
+  heads is []
+  head is 0
+  while head < 2 do
+    rows is []
+    token is 0
+    while token < 16 do
+      row is []
+      d is 0
+      while d < 5 do
+        row.push(((token * 3 + d * 2 + head * 5) % 13 - 6) * 0.055)
+        d is d + 1
+      end
+      rows.push(row)
+      token is token + 1
+    end
+    heads.push(rows)
+    head is head + 1
+  end
+  batch.push(heads)
+  return batch
+end
+
+func make_tail_v_values() do
+  batch is []
+  heads is []
+  head is 0
+  while head < 2 do
+    rows is []
+    token is 0
+    while token < 16 do
+      row is []
+      d is 0
+      while d < 7 do
+        row.push(((token + d * 3 + head * 7) % 17 - 8) * 0.09)
+        d is d + 1
+      end
+      rows.push(row)
+      token is token + 1
+    end
+    heads.push(rows)
+    head is head + 1
+  end
+  batch.push(heads)
+  return batch
+end
+
+func make_tail_seed_values() do
+  batch is []
+  heads is []
+  head is 0
+  while head < 2 do
+    rows is []
+    token is 0
+    while token < 16 do
+      row is []
+      d is 0
+      while d < 7 do
+        row.push(((token * 2 + d + head) % 9 - 4) * 0.125)
+        d is d + 1
+      end
+      rows.push(row)
+      token is token + 1
+    end
+    heads.push(rows)
+    head is head + 1
+  end
+  batch.push(heads)
+  return batch
+end
+
+func make_extreme_q_values() do
+  rows is []
+  token is 0
+  while token < 16 do
+    rows.push([10000, 0, 0])
+    token is token + 1
+  end
+  return [[rows]]
+end
+
+func make_extreme_k_values() do
+  rows is []
+  token is 0
+  while token < 16 do
+    if token == 0 then
+      rows.push([10000, 0, 0])
+    else
+      rows.push([-10000, 0, 0])
+    end
+    token is token + 1
+  end
+  return [[rows]]
+end
+
+func make_extreme_v_values() do
+  rows is []
+  token is 0
+  while token < 16 do
+    rows.push([1 + token, 2 - token * 0.1, 3 + token * 0.2, 4 - token * 0.05, 5 + token * 0.3])
+    token is token + 1
+  end
+  return [[rows]]
+end
+
+func make_extreme_seed_values() do
+  rows is []
+  token is 0
+  while token < 16 do
+    rows.push([1, 1, 1, 1, 1])
+    token is token + 1
+  end
+  return [[rows]]
+end
+
+info is autograd.cuda_info()
+if info.available then
+  q_values is make_tail_q_values()
+  k_values is make_tail_k_values()
+  v_values is make_tail_v_values()
+  seed_values is make_tail_seed_values()
+
+  # D=5 and Dv=7 deliberately force tail handling in a T=16 rank-4 warp
+  # forward. CPU float32 remains the public numerical reference.
+  cpu_q is autograd.parameter(q_values, {dtype: "float32"})
+  cpu_k is autograd.parameter(k_values, {dtype: "float32"})
+  cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v)
+  assert_eq(autograd.shape(cpu_output).join(","), "1,2,16,7")
+  cpu_output_data is autograd.data(cpu_output)
+  autograd.backward(cpu_output, seed_values)
+  cpu_q_grad is autograd.grad(cpu_q)
+  cpu_k_grad is autograd.grad(cpu_k)
+  cpu_v_grad is autograd.grad(cpu_v)
+
+  gpu_q is autograd.parameter(q_values, {device: "cuda"})
+  gpu_k is autograd.parameter(k_values, {device: "cuda"})
+  gpu_v is autograd.parameter(v_values, {device: "cuda"})
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  gpu_output is autograd.causal_attention(gpu_q, gpu_k, gpu_v)
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  assert_eq(autograd.shape(gpu_output).join(","), "1,2,16,7")
+  assert_eq(autograd.storage_bytes(gpu_output), 896)
+  autograd.backward(gpu_output, gpu_seed)
+
+  # Default auto precision uses one fast warp forward plus two fused
+  # recomputation-backward launches. With SURA_CUDA_ATTENTION_FUSED=0, the
+  # legacy fallback uses one warp forward plus five packed-backward launches.
+  # The measured graph has no host transfer before observation.
+  graph_stats is autograd.cuda_stats()
+  assert_attention_dispatch(graph_stats, 6, 5, 3, 2)
+  assert_eq(graph_stats.h2d_bytes, 0)
+  assert_eq(graph_stats.d2h_bytes, 0)
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_q_grad is autograd.grad(gpu_q)
+  gpu_k_grad is autograd.grad(gpu_k)
+  gpu_v_grad is autograd.grad(gpu_v)
+  approx_rank4(gpu_output_data, cpu_output_data, 0.002)
+  approx_rank4(gpu_q_grad, cpu_q_grad, 0.006)
+  approx_rank4(gpu_k_grad, cpu_k_grad, 0.006)
+  approx_rank4(gpu_v_grad, cpu_v_grad, 0.006)
+  observed_bytes is autograd.storage_bytes(gpu_output) + autograd.storage_bytes(gpu_q) + autograd.storage_bytes(gpu_k) + autograd.storage_bytes(gpu_v)
+  observed_stats is autograd.cuda_stats()
+  assert_eq(observed_stats.h2d_bytes, 0)
+  assert_eq(observed_stats.d2h_bytes, observed_bytes)
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 896)
+
+  # Parallel scheduling must remain bit-for-bit deterministic across fresh
+  # runs with identical f32 inputs and upstream values.
+  repeat_q is autograd.parameter(q_values, {device: "cuda"})
+  repeat_k is autograd.parameter(k_values, {device: "cuda"})
+  repeat_v is autograd.parameter(v_values, {device: "cuda"})
+  repeat_seed is autograd.tensor(seed_values, {device: "cuda"})
+  repeat_output is autograd.causal_attention(repeat_q, repeat_k, repeat_v)
+  autograd.backward(repeat_output, repeat_seed)
+  repeat_output_data is autograd.data(repeat_output)
+  repeat_q_grad is autograd.grad(repeat_q)
+  repeat_k_grad is autograd.grad(repeat_k)
+  repeat_v_grad is autograd.grad(repeat_v)
+  assert_eq(json_stringify(repeat_output_data), json_stringify(gpu_output_data))
+  assert_eq(json_stringify(repeat_q_grad), json_stringify(gpu_q_grad))
+  assert_eq(json_stringify(repeat_k_grad), json_stringify(gpu_k_grad))
+  assert_eq(json_stringify(repeat_v_grad), json_stringify(gpu_v_grad))
+
+  # A frozen T=16 graph still uses warp forward, but allocates only its output
+  # and launches no backward or saved-statistics workspace.
+  frozen_q is autograd.tensor(q_values, {device: "cuda"})
+  frozen_k is autograd.tensor(k_values, {device: "cuda"})
+  frozen_v is autograd.tensor(v_values, {device: "cuda"})
+  frozen_host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  frozen_allocated_before is autograd.cuda_stats().allocated_bytes
+  frozen_output is autograd.causal_attention(frozen_q, frozen_k, frozen_v)
+  frozen_stats is autograd.cuda_stats()
+  assert_eq(autograd.requires_grad(frozen_output), false)
+  assert_eq(frozen_stats.allocated_bytes - frozen_allocated_before, autograd.storage_bytes(frozen_output))
+  assert_eq(frozen_stats.attention_launches, 1)
+  assert_eq(frozen_stats.warp_attention_launches, 1)
+  assert_eq(frozen_stats.reference_attention_launches, 0)
+  assert_eq(frozen_stats.parallel_attention_launches, 0)
+  assert_eq(frozen_stats.attention_launches, frozen_stats.reference_attention_launches + frozen_stats.warp_attention_launches + frozen_stats.parallel_attention_launches)
+  assert_eq(frozen_stats.h2d_bytes, 0)
+  assert_eq(frozen_stats.d2h_bytes, 0)
+  frozen_output_data is autograd.data(frozen_output)
+  approx_rank4(frozen_output_data, cpu_output_data, 0.002)
+  assert_eq(autograd.limits().memory_used_bytes, frozen_host_baseline + autograd.storage_bytes(frozen_output))
+  assert_eq(autograd.grad(frozen_q), nil)
+  assert_eq(autograd.grad(frozen_k), nil)
+  assert_eq(autograd.grad(frozen_v), nil)
+
+  # Scores of +/-1e8 overflow a naive exponential. Warp online-softmax must
+  # remain stable and select value row zero for all causal output rows.
+  extreme_q_values is make_extreme_q_values()
+  extreme_k_values is make_extreme_k_values()
+  extreme_v_values is make_extreme_v_values()
+  extreme_seed_values is make_extreme_seed_values()
+  extreme_cpu_q is autograd.parameter(extreme_q_values, {dtype: "float32"})
+  extreme_cpu_k is autograd.parameter(extreme_k_values, {dtype: "float32"})
+  extreme_cpu_v is autograd.parameter(extreme_v_values, {dtype: "float32"})
+  extreme_cpu_output is autograd.causal_attention(extreme_cpu_q, extreme_cpu_k, extreme_cpu_v, {scale: 1})
+  extreme_cpu_data is autograd.data(extreme_cpu_output)
+  approx_rank1(extreme_cpu_data[0][0][0], [1, 2, 3, 4, 5], 0.000001)
+  approx_rank1(extreme_cpu_data[0][0][15], [1, 2, 3, 4, 5], 0.000001)
+  autograd.backward(extreme_cpu_output, extreme_seed_values)
+  extreme_cpu_q_grad is autograd.grad(extreme_cpu_q)
+  extreme_cpu_k_grad is autograd.grad(extreme_cpu_k)
+  extreme_cpu_v_grad is autograd.grad(extreme_cpu_v)
+
+  extreme_gpu_q is autograd.parameter(extreme_q_values, {device: "cuda"})
+  extreme_gpu_k is autograd.parameter(extreme_k_values, {device: "cuda"})
+  extreme_gpu_v is autograd.parameter(extreme_v_values, {device: "cuda"})
+  extreme_gpu_seed is autograd.tensor(extreme_seed_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  extreme_gpu_output is autograd.causal_attention(extreme_gpu_q, extreme_gpu_k, extreme_gpu_v, {scale: 1})
+  autograd.backward(extreme_gpu_output, extreme_gpu_seed)
+  extreme_stats is autograd.cuda_stats()
+  assert_attention_dispatch(extreme_stats, 6, 5, 3, 2)
+  assert_eq(extreme_stats.h2d_bytes, 0)
+  assert_eq(extreme_stats.d2h_bytes, 0)
+  approx_rank4(autograd.data(extreme_gpu_output), extreme_cpu_data, 0.001)
+  approx_rank4(autograd.grad(extreme_gpu_q), extreme_cpu_q_grad, 0.001)
+  approx_rank4(autograd.grad(extreme_gpu_k), extreme_cpu_k_grad, 0.001)
+  approx_rank4(autograd.grad(extreme_gpu_v), extreme_cpu_v_grad, 0.001)
+
+  # T<8 remains on the serial reference forward/backward path and must never
+  # increment the warp or parallel dispatch counters.
+  small_q_values is [[[[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]]]]
+  small_k_values is [[[[1, 0, 0], [0, 1, 0], [1, -1, 0], [0, 1, 1]]]]
+  small_v_values is [[[[1, 2, 3, 4, 5], [2, 3, 4, 5, 6], [3, 4, 5, 6, 7], [4, 5, 6, 7, 8]]]]
+  small_seed_values is [[[[1, 0, -1, 0.5, 2], [0, 1, 0.5, -1, 2], [1, 1, 1, 1, 1], [-1, 2, -2, 3, 0.25]]]]
+  small_cpu_q is autograd.parameter(small_q_values, {dtype: "float32"})
+  small_cpu_k is autograd.parameter(small_k_values, {dtype: "float32"})
+  small_cpu_v is autograd.parameter(small_v_values, {dtype: "float32"})
+  small_cpu_output is autograd.causal_attention(small_cpu_q, small_cpu_k, small_cpu_v)
+  small_cpu_data is autograd.data(small_cpu_output)
+  autograd.backward(small_cpu_output, small_seed_values)
+  small_cpu_q_grad is autograd.grad(small_cpu_q)
+  small_cpu_k_grad is autograd.grad(small_cpu_k)
+  small_cpu_v_grad is autograd.grad(small_cpu_v)
+
+  small_gpu_q is autograd.parameter(small_q_values, {device: "cuda"})
+  small_gpu_k is autograd.parameter(small_k_values, {device: "cuda"})
+  small_gpu_v is autograd.parameter(small_v_values, {device: "cuda"})
+  small_gpu_seed is autograd.tensor(small_seed_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  small_gpu_output is autograd.causal_attention(small_gpu_q, small_gpu_k, small_gpu_v)
+  autograd.backward(small_gpu_output, small_gpu_seed)
+  small_stats is autograd.cuda_stats()
+  assert_eq(small_stats.attention_launches, 2)
+  assert_eq(small_stats.reference_attention_launches, 2)
+  assert_eq(small_stats.warp_attention_launches, 0)
+  assert_eq(small_stats.parallel_attention_launches, 0)
+  assert_eq(small_stats.attention_launches, small_stats.reference_attention_launches + small_stats.warp_attention_launches + small_stats.parallel_attention_launches)
+  assert_eq(small_stats.h2d_bytes, 0)
+  assert_eq(small_stats.d2h_bytes, 0)
+  approx_rank4(autograd.data(small_gpu_output), small_cpu_data, 0.0005)
+  approx_rank4(autograd.grad(small_gpu_q), small_cpu_q_grad, 0.001)
+  approx_rank4(autograd.grad(small_gpu_k), small_cpu_k_grad, 0.001)
+  approx_rank4(autograd.grad(small_gpu_v), small_cpu_v_grad, 0.001)
+else
+  print "45_cuda_attention_warp_forward: SKIP ({info.error})"
+end
+
+print "45_cuda_attention_warp_forward: PASS"

@@ -1,0 +1,108 @@
+use autograd
+
+# Learn y = 3x + 2 with native backprop and SGD.
+x is autograd.tensor([[-2], [-1], [0], [1], [2]])
+y is autograd.tensor([[-4], [-1], [2], [5], [8]])
+w is autograd.parameter([[0]])
+b is autograd.parameter([0])
+
+epoch is 0
+while epoch < 80 do
+  autograd.zero_grad([w, b])
+  prediction is autograd.linear(x, w, b)
+  loss is autograd.mse(prediction, y)
+  autograd.backward(loss)
+  autograd.sgd([w, b], 0.1, {momentum: 0})
+  epoch is epoch + 1
+end
+
+assert_approx(autograd.data(w)[0][0], 3, 0.0001)
+assert_approx(autograd.data(b)[0], 2, 0.0001)
+final_prediction is autograd.linear(x, w, b)
+final_loss is autograd.mse(final_prediction, y)
+assert(autograd.item(final_loss) < 0.00000001)
+
+# Adam maintains moment estimates across calls and gradient clipping reports
+# the original norm.
+p is autograd.parameter(1)
+step is 0
+while step < 2 do
+  autograd.zero_grad(p)
+  objective is autograd.mul(autograd.sub(p, 3), autograd.sub(p, 3))
+  autograd.backward(objective)
+  autograd.adam(p, 0.1)
+  step is step + 1
+end
+assert_approx(autograd.item(p), 1.1998335138843, 0.00002)
+
+clip is autograd.parameter([3, 4])
+clip_loss is autograd.sum(autograd.mul(clip, clip))
+autograd.backward(clip_loss)
+old_norm is autograd.clip_grad_norm(clip, 5)
+assert_approx(old_norm, 10, 0.000000001)
+assert_approx(autograd.grad_norm(clip), 5, 0.000000001)
+autograd.reset_optimizer([p, clip])
+
+# Bias correction remains correct when callers intentionally schedule beta
+# values between Adam steps.
+scheduled_adam is autograd.parameter(1)
+autograd.backward(scheduled_adam, 1)
+autograd.adam(scheduled_adam, 0.1, {beta1: 0.9, beta2: 0.999})
+autograd.zero_grad(scheduled_adam)
+autograd.backward(scheduled_adam, 1)
+autograd.adam(scheduled_adam, 0.1, {beta1: 0.5, beta2: 0.9})
+assert_approx(autograd.item(scheduled_adam), 0.8, 0.000001)
+
+# momentum=0 explicitly resets dormant SGD velocity before a later schedule.
+scheduled_sgd is autograd.parameter(1)
+autograd.backward(scheduled_sgd, 1)
+autograd.sgd(scheduled_sgd, 0.1, {momentum: 0.9})
+autograd.zero_grad(scheduled_sgd)
+autograd.backward(scheduled_sgd, 1)
+autograd.sgd(scheduled_sgd, 0.1, {momentum: 0})
+autograd.zero_grad(scheduled_sgd)
+autograd.backward(scheduled_sgd, 1)
+autograd.sgd(scheduled_sgd, 0.1, {momentum: 0.9})
+assert_approx(autograd.item(scheduled_sgd), 0.7, 0.000001)
+
+# Build and train a two-layer XOR network from primitive tensor operations.
+xor_x is autograd.tensor([[0, 0], [0, 1], [1, 0], [1, 1]])
+xor_y is autograd.tensor([[0], [1], [1], [0]])
+w1 is autograd.parameter([[0.5, -0.5, 0.3, 0.8], [-0.7, 0.6, -0.2, 0.4]])
+b1 is autograd.parameter([0, 0, 0, 0])
+w2 is autograd.parameter([[0.4], [-0.3], [0.2], [-0.5]])
+b2 is autograd.parameter([0])
+xor_parameters is [w1, b1, w2, b2]
+
+xor_epoch is 0
+while xor_epoch < 300 do
+  autograd.zero_grad(xor_parameters)
+  hidden is autograd.tanh(autograd.linear(xor_x, w1, b1))
+  xor_logits is autograd.linear(hidden, w2, b2)
+  xor_loss is autograd.bce_logits(xor_logits, xor_y)
+  autograd.backward(xor_loss)
+  autograd.adam(xor_parameters, 0.05)
+  xor_epoch is xor_epoch + 1
+end
+
+xor_hidden is autograd.tanh(autograd.linear(xor_x, w1, b1))
+xor_probabilities is autograd.data(autograd.sigmoid(autograd.linear(xor_hidden, w2, b2)))
+assert(xor_probabilities[0][0] < 0.05)
+assert(xor_probabilities[1][0] > 0.95)
+assert(xor_probabilities[2][0] > 0.95)
+assert(xor_probabilities[3][0] < 0.05)
+
+# Cross the VM's GC tick threshold with one live differentiable chain. The
+# final Tensor must keep every parent alive until backward traverses the DAG.
+gc_i is 0
+gc_leaf is autograd.parameter([0])
+gc_value is gc_leaf
+while gc_i < 12000 do
+  gc_value is autograd.add(gc_value, 1)
+  gc_i is gc_i + 1
+end
+assert_eq(autograd.data(gc_value)[0], 12000)
+autograd.backward(gc_value)
+assert_eq(autograd.grad(gc_leaf)[0], 1)
+
+print "15_autograd_training: PASS"

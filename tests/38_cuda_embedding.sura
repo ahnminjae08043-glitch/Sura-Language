@@ -1,0 +1,100 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # ID 2 appears three times across the batch. Backward must sum all three
+  # nonuniform contributions into the same vocabulary row.
+  ids is [[2, 0, 2], [1, 3, 2]]
+  weight_values is [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+  seed_values is [[[1, 2, 3], [4, 5, 6], [7, 8, 9]], [[-1, -2, -3], [0.5, 1.5, 2.5], [10, 20, 30]]]
+  expected_output is [[[7, 8, 9], [1, 2, 3], [7, 8, 9]], [[4, 5, 6], [10, 11, 12], [7, 8, 9]]]
+  expected_weight_grad is [[4, 5, 6], [-1, -2, -3], [18, 30, 42], [0.5, 1.5, 2.5]]
+
+  cpu_weight is autograd.parameter(weight_values, {dtype: "float32"})
+  cpu_output is autograd.embedding(ids, cpu_weight)
+  assert_eq(autograd.shape(cpu_output).join(","), "2,3,3")
+  assert_eq(autograd.numel(cpu_output), 18)
+  cpu_output_data is autograd.data(cpu_output)
+  approx_rank3(cpu_output_data, expected_output, 0.000001)
+  autograd.backward(cpu_output, seed_values)
+  cpu_weight_grad is autograd.grad(cpu_weight)
+  approx_rank2(cpu_weight_grad, expected_weight_grad, 0.000001)
+
+  gpu_weight is autograd.parameter(weight_values, {device: "cuda"})
+  # Upload the explicit output gradient before measuring the embedding graph.
+  # The nested host ID batch itself is the one intentional measured H2D edge.
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  gpu_output is autograd.embedding(ids, gpu_weight)
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(gpu_output), "float32")
+  assert_eq(autograd.shape(gpu_output).join(","), "2,3,3")
+  assert_eq(autograd.numel(gpu_output), 18)
+  assert_eq(autograd.storage_bytes(gpu_output), 72)
+  assert_eq(autograd.requires_grad(gpu_output), true)
+  autograd.backward(gpu_output, gpu_seed)
+
+  # Six uint32 IDs cross H2D exactly once during forward. Backward must reuse
+  # the saved device IDs, and neither output nor gradient is observed yet.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 24)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert(before_observation.kernel_launches >= 2)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_weight_grad is autograd.grad(gpu_weight)
+  approx_rank3(gpu_output_data, cpu_output_data, 0.000001)
+  approx_rank2(gpu_weight_grad, cpu_weight_grad, 0.000001)
+  approx_rank2(gpu_weight_grad, expected_weight_grad, 0.000001)
+
+  # data() retains the 18-element f32 output mirror; grad() stages the 12
+  # weight-gradient elements temporarily. No additional ID upload is allowed.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 72)
+  after_observation is autograd.cuda_stats()
+  assert_eq(after_observation.h2d_bytes, 24)
+  assert_eq(after_observation.d2h_bytes, 120)
+
+  # A frozen table still gathers on CUDA but produces a no-grad output and no
+  # persistent weight gradient.
+  frozen_weight is autograd.tensor(weight_values, {device: "cuda"})
+  frozen_output is autograd.embedding([[3, 1]], frozen_weight)
+  assert_eq(autograd.device(frozen_output), "cuda:{info.device_index}")
+  assert_eq(autograd.requires_grad(frozen_output), false)
+  assert_eq(autograd.shape(frozen_output).join(","), "1,2,3")
+  approx_rank3(autograd.data(frozen_output), [[[10, 11, 12], [4, 5, 6]]], 0.000001)
+  assert_eq(autograd.grad(frozen_weight), nil)
+else
+  print "38_cuda_embedding: SKIP ({info.error})"
+end
+
+print "38_cuda_embedding: PASS"

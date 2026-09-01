@@ -1,0 +1,80 @@
+# Asteroid Dodger: WASD/arrows move. Survive as long as possible.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 760
+H is 520
+if not win_init(W, H, "Sura Asteroid Dodger") then
+  print("win_init failed")
+  exit(1)
+end
+
+player_x is W / 2
+player_y is H - 65
+asteroid_x is []
+asteroid_y is []
+asteroid_speed is []
+asteroid_size is []
+i is 0
+while i < 14 do
+  asteroid_x.push(random(20, W - 20))
+  asteroid_y.push(random(-600, -20))
+  asteroid_speed.push(random(2, 7))
+  asteroid_size.push(random(8, 22))
+  i += 1
+end
+
+frame is 0
+score is 0
+running is true
+
+func clamp(v, low, high) do
+  if v < low then return low
+  if v > high then return high
+  return v
+end
+
+while running do
+  frame += 1
+  if key_down("a") or key_down("left") then player_x -= 7
+  if key_down("d") or key_down("right") then player_x += 7
+  if key_down("w") or key_down("up") then player_y -= 7
+  if key_down("s") or key_down("down") then player_y += 7
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then player_x is W / 2 + sin(frame / 5) * 50
+  player_x is clamp(player_x, 18, W - 18)
+  player_y is clamp(player_y, 50, H - 25)
+
+  i is 0
+  while i < asteroid_x.len() do
+    asteroid_y[i] += asteroid_speed[i]
+    if asteroid_y[i] > H + 30 then
+      asteroid_y[i] is random(-240, -20)
+      asteroid_x[i] is random(20, W - 20)
+      score += 1
+    end
+    dx is asteroid_x[i] - player_x
+    dy is asteroid_y[i] - player_y
+    hit_distance is asteroid_size[i] + 12
+    if not SMOKE and dx * dx + dy * dy < hit_distance * hit_distance then running is false
+    i += 1
+  end
+
+  win_clear(3, 6, 18)
+  i is 0
+  while i < asteroid_x.len() do
+    shade is 120 + i % 4 * 25
+    win_circle(asteroid_x[i], asteroid_y[i], asteroid_size[i], shade, shade, shade + 15)
+    i += 1
+  end
+  win_line(player_x, player_y - 16, player_x - 12, player_y + 13, 80, 220, 255)
+  win_line(player_x, player_y - 16, player_x + 12, player_y + 13, 80, 220, 255)
+  win_line(player_x - 12, player_y + 13, player_x + 12, player_y + 13, 80, 220, 255)
+  win_text("ASTEROID DODGER  score {score}", 18, 16, 220, 235, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("asteroid_dodger: frames={frame}, score={score}")
+assert(frame > 0)

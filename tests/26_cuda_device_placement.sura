@@ -1,0 +1,83 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  tensor is autograd.tensor([[1, 2], [3, 4]], {device: "cuda"})
+  assert_eq(autograd.dtype(tensor), "float32")
+  assert_eq(autograd.device(tensor), "cuda:{info.device_index}")
+
+  parameter is autograd.parameter([1, 2, 3], {device: "cuda"})
+  zeros is autograd.zeros([3], {device: "cuda"})
+  ones is autograd.ones([3], {device: "cuda"})
+  random is autograd.randn([3], {device: "cuda", seed: 7})
+  assert_eq(autograd.device(parameter), autograd.device(tensor))
+  assert_eq(autograd.device(zeros), autograd.device(tensor))
+  assert_eq(autograd.device(ones), autograd.device(tensor))
+  assert_eq(autograd.device(random), autograd.device(tensor))
+
+  detached is autograd.detach(tensor)
+  copied is clone(tensor)
+  assert_eq(autograd.device(detached), autograd.device(tensor))
+  assert_eq(autograd.device(copied), autograd.device(tensor))
+
+  cpu is autograd.to(tensor, "cpu")
+  assert_eq(autograd.device(cpu), "cpu")
+  assert_eq(json_stringify(autograd.data(cpu)), "[[1,2],[3,4]]")
+  roundtrip is autograd.to(cpu, "cuda")
+  assert_eq(autograd.device(roundtrip), autograd.device(tensor))
+
+  # A CUDA leaf copied to CPU creates a mixed-device graph. CPU-root backward
+  # must reject it before staging a legacy host gradient on the CUDA leaf.
+  mixed_backward_parameter is autograd.parameter([2], {device: "cuda"})
+  mixed_backward_cpu is autograd.to(mixed_backward_parameter, "cpu")
+  mixed_backward_loss is autograd.sum(autograd.mul(mixed_backward_cpu, mixed_backward_cpu))
+  mixed_backward_rejected is false
+  try
+    autograd.backward(mixed_backward_loss)
+  catch error
+    mixed_backward_rejected is true
+  end
+  assert(mixed_backward_rejected)
+  assert_eq(autograd.grad(mixed_backward_parameter), nil)
+  mixed_backward_grad_info is autograd.grad_info(mixed_backward_parameter)
+  assert_eq(mixed_backward_grad_info.present, false)
+  assert(mixed_backward_grad_info.optimizer_ready)
+
+  mixed_rejected is false
+  try
+    autograd.add(tensor, cpu)
+  catch error
+    mixed_rejected is true
+  end
+  assert(mixed_rejected)
+
+  dtype_rejected is false
+  try
+    autograd.tensor([1], {dtype: "float64", device: "cuda"})
+  catch error
+    dtype_rejected is true
+  end
+  assert(dtype_rejected)
+
+  # A prior host observation must never turn an unsupported CUDA op into a
+  # silent CPU fallback.
+  autograd.data(tensor)
+  unsupported_rejected is false
+  try
+    autograd.tanh(tensor)
+  catch error
+    unsupported_rejected is true
+  end
+  assert(unsupported_rejected)
+else
+  no_fallback is false
+  try
+    autograd.tensor([1], {device: "cuda"})
+  catch error
+    no_fallback is true
+  end
+  assert(no_fallback)
+  print "26_cuda_device_placement: SKIP ({info.error})"
+end
+
+print "26_cuda_device_placement: PASS"

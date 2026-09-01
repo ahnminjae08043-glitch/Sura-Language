@@ -1,0 +1,41 @@
+func add_one(value) do
+  return value + 1
+end
+
+func double_value(value) do
+  return value * 2
+end
+
+func choose_handler(use_first, enabled) do
+  if not enabled then
+    return nil
+  end
+  if use_first then
+    return add_one
+  end
+  return double_value
+end
+
+first_handler is choose_handler(true, true)
+second_handler is choose_handler(false, true)
+missing_handler is choose_handler(true, false)
+
+assert_eq(type(first_handler), "function")
+assert_eq(type(second_handler), "function")
+assert_eq(type(missing_handler), "nil")
+assert_eq(first_handler(41), 42)
+assert_eq(second_handler(21), 42)
+assert_eq(first_handler(1.5), 2.5)
+assert_eq(second_handler(1.5), 3)
+assert_eq(first_handler(2147483648), 2147483649)
+
+bad_call_caught is false
+try
+  ignored_result is missing_handler(1)
+catch error
+  bad_call_caught is true
+  assert_eq(type(error), "string")
+end
+assert(bad_call_caught)
+
+print_no_nl("mixed function value call ok")

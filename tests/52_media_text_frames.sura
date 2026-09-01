@@ -1,0 +1,35 @@
+use media
+
+# Dependency-free grayscale conversion maps black to the first glyph and
+# white to the last glyph. Rows are joined with a single newline.
+pixels is [[0, 85, 170, 255], [255, 170, 85, 0]]
+frame is media.frame_to_text(pixels, {charset: " .#@"})
+assert_eq(frame, " .#@\n@#. ")
+
+# The direct builtin and the namespaced API are the same operation.
+assert_eq(media_frame_to_text(pixels, {charset: " .#@"}), frame)
+
+# Inversion reverses glyph selection without changing geometry.
+inverted is media.frame_to_text(pixels, {charset: " .#@", invert: true})
+assert_eq(inverted, "@#. \n .#@")
+
+# RGB and RGBA pixels use perceptual luminance; alpha composites over black.
+color_frame is media.frame_to_text([[[0, 0, 0], [255, 255, 255], [0, 255, 0], [255, 255, 255, 128]]], {charset: " .#@"})
+assert_eq(color_frame, " @##")
+
+# Gamma is deterministic and can intentionally darken midtones.
+assert_eq(media.frame_to_text([[128]], {charset: " .#@"}), "#")
+assert_eq(media.frame_to_text([[128]], {charset: " .#@", gamma: 2}), ".")
+
+# UTF-8 ramps are split by code point instead of byte.
+assert_eq(media.frame_to_text([[0, 255]], {charset: "·█"}), "·█")
+
+# Floyd-Steinberg dithering remains reproducible.
+dither_a is media.frame_to_text([[0, 32, 64, 96, 128, 160, 192, 224, 255]], {charset: " @", dither: true})
+dither_b is media.frame_to_text([[0, 32, 64, 96, 128, 160, 192, 224, 255]], {charset: " @", dither: true})
+assert_eq(dither_a, dither_b)
+
+# Missing explicit decoder paths are reported as unavailable without spawning.
+assert_eq(media.available("definitely-missing-sura-ffmpeg-7f1ec3.exe"), false)
+
+print "52_media_text_frames: PASS"

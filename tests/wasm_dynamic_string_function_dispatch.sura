@@ -1,0 +1,15 @@
+func prefix_a(value) do
+  return "A" + value
+end
+
+func prefix_b(value) do
+  return "B" + value
+end
+
+func choose_prefix(flag, value) do
+  handler is flag ? prefix_a : prefix_b
+  return handler(value)
+end
+
+result is choose_prefix(true, "x") + "|" + choose_prefix(false, "x")
+print_no_nl(result)

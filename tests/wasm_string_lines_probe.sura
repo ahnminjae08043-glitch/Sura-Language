@@ -1,0 +1,8 @@
+plain_lines is string_lines("top")
+escaped_lines is string_lines("top\nmid\nend")
+
+assert_eq(length(plain_lines), 1)
+assert_eq(length(escaped_lines), 3)
+assert_eq(escaped_lines[1], "mid")
+
+print 3

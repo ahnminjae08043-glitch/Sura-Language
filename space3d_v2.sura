@@ -1,0 +1,534 @@
+# ============================================================
+#  수라 스타블라스터 3D v2.0  — 그리드 콘솔 API 버전
+#  3D 원근 투영 우주 슈팅 게임
+#
+#  조작 (Enter 없이 바로 반응):
+#    W / S       조준 위 / 아래
+#    A / D       조준 왼쪽 / 오른쪽
+#    F           발사!
+#    Q           종료
+# ============================================================
+
+# ANSI 이스케이프 코드 (HUD 색상용)
+file_write_bytes("_esc_tmp.dat", [27])
+ESC is file_read("_esc_tmp.dat")
+file_delete("_esc_tmp.dat")
+
+RST  is ESC + "[0m"
+BOLD is ESC + "[1m"
+RED  is ESC + "[91m"
+GRN  is ESC + "[92m"
+YLW  is ESC + "[93m"
+CYN  is ESC + "[96m"
+WHT  is ESC + "[97m"
+DIM  is ESC + "[2m"
+
+# ── 그리드 / 카메라 설정 ──────────────────────────────────
+GW is 80          # 그리드 너비
+GH is 20          # 그리드 높이 (3D 뷰)
+
+CAM_POS    is [0, 1, -5]
+CAM_TARGET is [0, 0, 20]
+CAM_FOV    is 75
+
+# ── 별 배경 ───────────────────────────────────────────────
+NUM_STARS is 80
+sx is []
+sy is []
+sz is []
+si is 0
+while si < NUM_STARS do
+    push(sx, random(-90, 90))
+    push(sy, random(-55, 55))
+    push(sz, random(3, 90))
+    si is si + 1
+end
+
+# ── 적 함선 ───────────────────────────────────────────────
+MAX_EI is 8
+ex is []
+ey is []
+ez is []
+ehp is []
+ealive is []
+j is 0
+while j < MAX_EI do
+    push(ex, 0)
+    push(ey, 0)
+    push(ez, 60)
+    push(ehp, 1)
+    push(ealive, 0)
+    j is j + 1
+end
+
+# ── 플레이어 상태 ─────────────────────────────────────────
+player is {}
+player["hp"]     is 100
+player["max_hp"] is 100
+player["score"]  is 0
+player["wave"]   is 1
+player["cx"]     is 40
+player["cy"]     is 10
+player["e_spd"]  is 2
+player["msg"]    is "게임 시작! F=발사  Q=종료"
+player["atk"]    is ""
+
+# ── 그리드 초기화 ─────────────────────────────────────────
+grid_init GW GH
+
+# ── 함수 ─────────────────────────────────────────────────
+
+func alive_count() do
+    cnt is 0
+    j is 0
+    while j < MAX_EI do
+        if ealive[j] == 1 then cnt is cnt + 1
+        j is j + 1
+    end
+    return cnt
+end
+
+func reset_enemies() do
+    w is player["wave"]
+    j is 0
+    while j < MAX_EI do
+        ex[j] is random(-40, 40)
+        ey[j] is random(-24, 14)
+        ez[j] is random(38, 58) + w * 8
+        ehp[j] is floor(w / 2) + 1
+        ealive[j] is 1
+        j is j + 1
+    end
+end
+
+func hp_bar(cur, mx, bw) do
+    filled is floor(cur * bw / mx)
+    if filled < 0 then filled is 0
+    if filled > bw then filled is bw
+    bar is ""
+    i is 0
+    while i < bw do
+        if i < filled then bar is bar + "="
+        else bar is bar + "."
+        i is i + 1
+    end
+    return bar
+end
+
+func fire() do
+    cam is {position: CAM_POS, target: CAM_TARGET, fov_deg: CAM_FOV}
+    cx is player["cx"]
+    cy is player["cy"]
+    best_ei is -1
+    best_d  is 99999
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            eproj is camera_project([ex[ei], ey[ei], ez[ei]], cam, GW, GH)
+            if eproj.visible then
+                dx is eproj.x - cx
+                dy is eproj.y - cy
+                d  is sqrt(dx * dx + dy * dy)
+                if d < best_d then
+                    best_d  is d
+                    best_ei is ei
+                end
+            end
+        end
+        ei is ei + 1
+    end
+    if best_ei == -1 then
+        return "빗나감! 범위 내 적 없음"
+    end
+    if best_d > 10 then
+        return "빗나감! 거리 " + floor(best_d) + " (10 이내로 조준)"
+    end
+    ehp[best_ei] is ehp[best_ei] - 1
+    if ehp[best_ei] <= 0 then
+        ealive[best_ei] is 0
+        bonus is 100 + player["wave"] * 25
+        player["score"] is player["score"] + bonus
+        return "격추! +" + bonus + "점 (잔적: " + alive_count() + "대)"
+    else
+        return "명중! 잔여HP: " + ehp[best_ei]
+    end
+end
+
+reset_enemies()
+
+# ── 타이틀 ───────────────────────────────────────────────
+
+cls
+grid_clear
+grid_draw
+print WHT + BOLD
+print "  ╔══════════════════════════════════════════════╗"
+print "  ║     수라 스타블라스터 3D  v2.0  (그리드)    ║"
+print "  ╚══════════════════════════════════════════════╝"
+print RST
+print ""
+print CYN + "  조작 (Enter 없이 즉시 반응):"
+print "   W / S     조준 위 / 아래"
+print "   A / D     조준 왼쪽 / 오른쪽"
+print "   F         발사!"
+print "   Q         종료" + RST
+print ""
+print YLW + "  [아무 키나 눌러 시작]" + RST
+readkey _start
+
+# ── 메인 게임 루프 ────────────────────────────────────────
+
+running is 1
+while running == 1 do
+
+    cam is {position: CAM_POS, target: CAM_TARGET, fov_deg: CAM_FOV}
+
+    # ── 그리드 렌더링 ────────────────────────────────────
+
+    cls
+    grid_clear
+
+    # 1) 별
+    si is 0
+    while si < NUM_STARS do
+        proj is camera_project([sx[si], sy[si], sz[si]], cam, GW, GH)
+        if proj.visible then
+            px is floor(proj.x)
+            py is floor(proj.y)
+            if px >= 0 and px < GW and py >= 0 and py < GH then
+                d is proj.depth
+                if d > 58 then
+                    grid_set px py "."
+                elif d > 38 then
+                    grid_set px py "+"
+                else
+                    grid_set px py "*"
+                end
+            end
+        end
+        si is si + 1
+    end
+
+    # 2) 적 함선 (거리별 5단계 스프라이트)
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            proj is camera_project([ex[ei], ey[ei], ez[ei]], cam, GW, GH)
+            if proj.visible then
+                px is floor(proj.x)
+                py is floor(proj.y)
+                d  is proj.depth
+
+                if px >= 0 and px < GW and py >= 0 and py < GH then
+
+                    if d > 50 then
+                        grid_set px py "x"
+
+                    elif d > 32 then
+                        grid_set px py "o"
+                        if px + 1 < GW then
+                            r1 is px + 1
+                            grid_set r1 py "o"
+                        end
+
+                    elif d > 18 then
+                        if px - 1 >= 0 then
+                            l1 is px - 1
+                            grid_set l1 py "("
+                        end
+                        grid_set px py "O"
+                        if px + 1 < GW then
+                            r1 is px + 1
+                            grid_set r1 py ")"
+                        end
+
+                    elif d > 9 then
+                        if py - 1 >= 0 then
+                            ya is py - 1
+                            if px - 1 >= 0 then
+                                la is px - 1
+                                grid_set la ya "/"
+                            end
+                            grid_set px ya "^"
+                            if px + 1 < GW then
+                                ra is px + 1
+                                grid_set ra ya "\\"
+                            end
+                        end
+                        if px - 2 >= 0 then
+                            l2 is px - 2
+                            grid_set l2 py "<"
+                        end
+                        if px - 1 >= 0 then
+                            l1 is px - 1
+                            grid_set l1 py "["
+                        end
+                        grid_set px py "@"
+                        if px + 1 < GW then
+                            r1 is px + 1
+                            grid_set r1 py "]"
+                        end
+                        if px + 2 < GW then
+                            r2 is px + 2
+                            grid_set r2 py ">"
+                        end
+                        if py + 1 < GH then
+                            yb is py + 1
+                            if px - 1 >= 0 then
+                                l1 is px - 1
+                                grid_set l1 yb "\\"
+                            end
+                            grid_set px yb "V"
+                            if px + 1 < GW then
+                                r1 is px + 1
+                                grid_set r1 yb "/"
+                            end
+                        end
+
+                    else
+                        # 극도로 가까운 적 — 위험!
+                        if py - 1 >= 0 then
+                            ya is py - 1
+                            if px - 2 >= 0 then
+                                l2 is px - 2
+                                grid_set l2 ya "\\"
+                            end
+                            if px - 1 >= 0 then
+                                l1 is px - 1
+                                grid_set l1 ya "#"
+                            end
+                            grid_set px ya "!"
+                            if px + 1 < GW then
+                                r1 is px + 1
+                                grid_set r1 ya "#"
+                            end
+                            if px + 2 < GW then
+                                r2 is px + 2
+                                grid_set r2 ya "/"
+                            end
+                        end
+                        if px - 3 >= 0 then
+                            l3 is px - 3
+                            grid_set l3 py "|"
+                        end
+                        if px - 2 >= 0 then
+                            l2 is px - 2
+                            grid_set l2 py "X"
+                        end
+                        if px - 1 >= 0 then
+                            l1 is px - 1
+                            grid_set l1 py "X"
+                        end
+                        grid_set px py "!"
+                        if px + 1 < GW then
+                            r1 is px + 1
+                            grid_set r1 py "X"
+                        end
+                        if px + 2 < GW then
+                            r2 is px + 2
+                            grid_set r2 py "X"
+                        end
+                        if px + 3 < GW then
+                            r3 is px + 3
+                            grid_set r3 py "|"
+                        end
+                        if py + 1 < GH then
+                            yb is py + 1
+                            if px - 2 >= 0 then
+                                l2 is px - 2
+                                grid_set l2 yb "/"
+                            end
+                            if px - 1 >= 0 then
+                                l1 is px - 1
+                                grid_set l1 yb "#"
+                            end
+                            grid_set px yb "!"
+                            if px + 1 < GW then
+                                r1 is px + 1
+                                grid_set r1 yb "#"
+                            end
+                            if px + 2 < GW then
+                                r2 is px + 2
+                                grid_set r2 yb "\\"
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        ei is ei + 1
+    end
+
+    # 3) 조준 십자선
+    cx is player["cx"]
+    cy is player["cy"]
+    grid_set cx cy "+"
+    if cx - 1 >= 0 then
+        lx is cx - 1
+        grid_set lx cy "-"
+    end
+    if cx + 1 < GW then
+        rx is cx + 1
+        grid_set rx cy "-"
+    end
+    if cy - 1 >= 0 then
+        uy is cy - 1
+        grid_set cx uy "|"
+    end
+    if cy + 1 < GH then
+        dy is cy + 1
+        grid_set cx dy "|"
+    end
+
+    # 4) 플레이어 함선 (하단 고정)
+    bot is GH - 1
+    bx is 39
+    grid_set bx - 1 bot "/"
+    grid_set bx     bot "|"
+    grid_set bx + 1 bot "A"
+    grid_set bx + 2 bot "|"
+    grid_set bx + 3 bot "\\"
+
+    grid_draw
+
+    # ── HUD ─────────────────────────────────────────────
+
+    hp  is player["hp"]
+    mhp is player["max_hp"]
+    sc  is player["score"]
+    wv  is player["wave"]
+    ac  is alive_count()
+    hb  is hp_bar(hp, mhp, 20)
+
+    print CYN + string_repeat("━", GW) + RST
+
+    if hp > mhp / 2 then
+        print " " + GRN + "HP[" + hb + "] " + hp + "/" + mhp + RST + YLW + "  점수:" + sc + "  웨이브:" + wv + "  적:" + ac + "/" + MAX_EI + RST
+    else
+        print " " + RED + BOLD + "HP[" + hb + "] " + hp + "/" + mhp + RST + YLW + "  점수:" + sc + "  웨이브:" + wv + "  적:" + ac + "/" + MAX_EI + RST
+    end
+
+    am is player["atk"]
+    ms is player["msg"]
+    if am != "" then
+        print RED + BOLD + " [피격!] " + am + RST
+    elif ms != "" then
+        print WHT + " >> " + ms + RST
+    else
+        print ""
+    end
+
+    print DIM + " 조준(" + cx + "," + cy + ")  W/S/A/D=이동  F=발사  Q=종료" + RST
+
+    # ── 키 입력 (Enter 불필요) ───────────────────────────
+
+    readkey cmd
+
+    player["atk"] is ""
+
+    if cmd == "q" then
+        running is 0
+        break
+
+    elif cmd == "w" then
+        player["cy"] is player["cy"] - 1
+        if player["cy"] < 1 then player["cy"] is 1
+        player["msg"] is "조준 위로"
+
+    elif cmd == "s" then
+        player["cy"] is player["cy"] + 1
+        if player["cy"] > GH - 2 then player["cy"] is GH - 2
+        player["msg"] is "조준 아래로"
+
+    elif cmd == "a" then
+        player["cx"] is player["cx"] - 2
+        if player["cx"] < 2 then player["cx"] is 2
+        player["msg"] is "조준 왼쪽"
+
+    elif cmd == "d" then
+        player["cx"] is player["cx"] + 2
+        if player["cx"] > GW - 3 then player["cx"] is GW - 3
+        player["msg"] is "조준 오른쪽"
+
+    elif cmd == "f" then
+        player["msg"] is fire()
+
+    else
+        player["msg"] is ""
+    end
+
+    # 적 이동
+    spd is player["e_spd"]
+    dmg_total is 0
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            ez[ei] is ez[ei] - spd
+            if ez[ei] < 2 then
+                dmg is 8 + player["wave"] * 3 + random(0, 8)
+                player["hp"] is player["hp"] - dmg
+                ealive[ei] is 0
+                dmg_total is dmg_total + dmg
+            end
+        end
+        ei is ei + 1
+    end
+    if dmg_total > 0 then
+        player["atk"] is "적 함선 충돌! -" + dmg_total + "HP"
+    end
+
+    # 별 이동 (속도감)
+    si is 0
+    while si < NUM_STARS do
+        sz[si] is sz[si] - 0.4
+        if sz[si] < 1 then
+            sz[si] is 90
+            sx[si] is random(-90, 90)
+            sy[si] is random(-55, 55)
+        end
+        si is si + 1
+    end
+
+    # HP 체크
+    if player["hp"] <= 0 then
+        player["hp"] is 0
+        running is 0
+        break
+    end
+
+    # 웨이브 클리어
+    if alive_count() == 0 then
+        player["wave"] is player["wave"] + 1
+        player["score"] is player["score"] + 500
+        player["e_spd"] is player["e_spd"] + 0.4
+        player["msg"] is "웨이브 " + player["wave"] + " 시작! +500점"
+        player["atk"] is ""
+        reset_enemies()
+    end
+
+end
+
+# 마지막 렌더
+cls
+grid_clear
+grid_draw
+
+# ── 게임 오버 ─────────────────────────────────────────────
+
+print ""
+print BOLD
+if player["hp"] <= 0 then
+    print RED + "  ╔═════════════════════════════════════════╗"
+    print       "  ║           *** GAME  OVER ***            ║"
+    print       "  ╚═════════════════════════════════════════╝" + RST
+else
+    print GRN + "  ╔═════════════════════════════════════════╗"
+    print       "  ║           *** 게임  종료 ***             ║"
+    print       "  ╚═════════════════════════════════════════╝" + RST
+end
+print RST
+print ""
+print YLW + "  최종 점수    : " + player["score"] + RST
+print CYN  + "  클리어 웨이브: " + player["wave"] + RST
+print GRN  + "  잔여 HP     : " + player["hp"] + " / " + player["max_hp"] + RST
+print ""

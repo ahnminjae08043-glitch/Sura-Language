@@ -1,0 +1,17 @@
+use nn
+
+# No Python, NumPy, or framework install is needed.
+inputs is [[0, 0], [0, 1], [1, 0], [1, 1]]
+targets is [0, 1, 1, 0]
+
+model is nn.mlp([2, 8, 1], {activation: "tanh", task: "binary", seed: 2026})
+
+run is nn.train(model, inputs, targets, {optimizer: "adam", epochs: 3000, learning_rate: 0.05, batch_size: 4, target_loss: 0.01, seed: 2026})
+
+print "loss: {run.loss}"
+print "classes: {nn.classify(run.model, inputs)}"
+print "probabilities: {nn.predict(run.model, inputs)}"
+print "summary: {nn.summary(run.model)}"
+
+nn.save(run.model, "xor-model.json")
+print "saved xor-model.json"

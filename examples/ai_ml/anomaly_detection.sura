@@ -1,0 +1,24 @@
+use tensor
+
+# Z-score anomaly detection for a stream of sensor readings.
+readings is [20.1, 20.4, 19.9, 20.2, 20.0, 20.3, 31.8, 19.8, 20.2]
+scores is tensor.zscore(readings)
+threshold is 2.5
+anomalies is []
+
+i is 0
+while i < readings.len() do
+  if abs(scores[i]) >= threshold then
+    anomalies.push({index: i, value: readings[i], z: scores[i]})
+  end
+  i += 1
+end
+
+print("Sensor mean={tensor.mean(readings)}")
+print("Sensor std={tensor.std(readings)}")
+for item in anomalies do
+  print("anomaly index={item.index}, value={item.value}, z={item.z}")
+end
+
+assert_eq(anomalies.len(), 1)
+assert_eq(anomalies[0].value, 31.8)

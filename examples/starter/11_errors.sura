@@ -1,0 +1,7 @@
+try
+  throw "연습용 오류"
+catch error
+  print("오류를 처리했습니다: {error}")
+finally do
+  print("정리 작업 완료")
+end

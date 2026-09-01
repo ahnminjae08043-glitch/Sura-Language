@@ -1,0 +1,117 @@
+# Native emitter coverage for the object-shaped opcodes: DOT_GET,
+# NEW_INSTANCE, METHOD_CALL and MAKE_LAMBDA.
+#
+# The arithmetic emitters are covered by 72_jit_arithmetic_differential.sura.
+# This file exercises the paths that touch instances and callables, which is
+# where a bad emitter can corrupt a field or call the wrong body while still
+# producing a program that runs to completion.
+#
+# Run under tools/sura_jit_differential.ps1 so the native results are compared
+# against the register VM's.
+
+struct JitPoint do
+  x is 0
+  y is 0
+
+  func sum() do
+    return self.x + self.y
+  end
+
+  func scaled_x(k) do
+    return self.x * k
+  end
+end
+
+class JitCounter do
+  func init(start) do
+    self.value is start
+  end
+
+  func bump(by) do
+    self.value is self.value + by
+    return self.value
+  end
+end
+
+# DOT_GET on a struct field, called well past the JIT threshold.
+func point_x(p) do
+  return p.x
+end
+
+func point_y(p) do
+  return p.y
+end
+
+# DOT_GET feeding arithmetic.
+func point_manhattan(p) do
+  return p.x + p.y
+end
+
+# NEW_INSTANCE inside a hot callee.
+func make_point(a, b) do
+  return JitPoint(a, b)
+end
+
+# METHOD_CALL on a monomorphic receiver.
+func call_sum(p) do
+  return p.sum()
+end
+
+func call_scaled(p, k) do
+  return p.scaled_x(k)
+end
+
+# MAKE_LAMBDA plus an immediate call, so the closure path is emitted.
+func apply_twice(n) do
+  double is func(v) do
+    return v * 2
+  end
+  return double(double(n))
+end
+
+p is JitPoint(3, 4)
+c is new JitCounter(0)
+
+i is 0
+while i < 40 do
+  assert_eq(point_x(p), 3)
+  assert_eq(point_y(p), 4)
+  assert_eq(point_manhattan(p), 7)
+
+  made is make_point(5, 6)
+  assert_eq(made.x, 5)
+  assert_eq(made.y, 6)
+  assert_eq(point_manhattan(made), 11)
+
+  assert_eq(call_sum(p), 7)
+  assert_eq(call_scaled(p, 10), 30)
+
+  assert_eq(apply_twice(3), 12)
+  i is i + 1
+end
+
+# Mutating method: the accumulated value proves the native body ran exactly
+# once per call rather than being inlined twice or skipped.
+j is 0
+while j < 25 do
+  c.bump(2)
+  j is j + 1
+end
+assert_eq(c.value, 50)
+
+# Negative and fractional fields, once the bodies are already native.
+neg is make_point(-3, -4)
+assert_eq(point_x(neg), -3)
+assert_eq(point_manhattan(neg), -7)
+assert_eq(call_sum(neg), -7)
+assert_eq(call_scaled(neg, 3), -9)
+
+frac is make_point(0.5, 0.25)
+assert_eq(point_manhattan(frac), 0.75)
+assert_eq(call_scaled(frac, 4), 2)
+
+zero is make_point(0, 0)
+assert_eq(call_sum(zero), 0)
+assert_eq(apply_twice(0), 0)
+
+print "73_jit_object_differential: PASS"

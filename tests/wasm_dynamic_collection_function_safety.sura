@@ -1,0 +1,58 @@
+func pair_a(value) do
+  return [value, "a"]
+end
+
+func pair_b(value) do
+  return [value + 1, "b"]
+end
+
+func profile_a(value) do
+  return {score: value, name: "a"}
+end
+
+func profile_b(value) do
+  return {score: value + 1, name: "b"}
+end
+
+func dispatch_pair(flag, value) do
+  handler is flag ? pair_a : pair_b
+  return handler(value)
+end
+
+func dispatch_profile(flag, value) do
+  handler is flag ? profile_a : profile_b
+  return handler(value)
+end
+
+func dispatch_pair_lookup(flag, value) do
+  handlers is [pair_a, pair_b]
+  index is flag ? 0 : 1
+  handler is handlers[index]
+  return handler(value)
+end
+
+func dispatch_profile_lookup(flag, value) do
+  handlers is {first: profile_a, second: profile_b}
+  key is flag ? "first" : "second"
+  handler is handlers[key]
+  return handler(value)
+end
+
+pair is dispatch_pair(true, 7)
+profile is dispatch_profile(false, 7)
+pair_label is "Pair {dispatch_pair(false, 7)}"
+lookup_pair is dispatch_pair_lookup(false, 7)
+lookup_profile is dispatch_profile_lookup(false, 7)
+sort_values is [3, 1, 2]
+sort_result is sort_values.sort()
+assert_eq(pair[0], 7)
+assert_eq(pair[1], "a")
+assert_eq(profile.score, 8)
+assert_eq(profile.name, "b")
+assert_eq(pair_label, "Pair [8, \"b\"]")
+assert_eq(lookup_pair[0], 8)
+assert_eq(lookup_pair[1], "b")
+assert_eq(lookup_profile.score, 8)
+assert_eq(lookup_profile.name, "b")
+assert_eq(sort_result.join(","), "1,2,3")
+print "{pair[1]} {profile.name}"

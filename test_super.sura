@@ -1,0 +1,25 @@
+# super 키워드 테스트
+
+class 동물 do
+    이름 is "알 수 없음"
+    func 말하기() do
+        print "동물 소리: 음음"
+    end
+    func 소개() do
+        print "나는 {self.이름}입니다"
+    end
+end
+
+class 개 extends 동물 do
+    func 생성자(이름) do
+        self.이름 is 이름
+    end
+    func 말하기() do
+        super.말하기()
+        print "개 소리: 왈왈!"
+    end
+end
+
+멍이 is new 개("멍이")
+멍이.소개()
+멍이.말하기()

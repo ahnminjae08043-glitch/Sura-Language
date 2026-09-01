@@ -1,0 +1,24 @@
+name: Private security contact request
+description: Ask for a private reporting channel without publishing vulnerability details.
+title: "[Security contact] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include exploit details, secrets, crash inputs, or proof-of-concept code here. This issue is public. Use the Security page's **Report a vulnerability** button when it is available.
+  - type: input
+    id: affected_version
+    attributes:
+      label: Affected Sura version
+      description: Give only the version, such as 1.11.1. Do not describe the vulnerability.
+      placeholder: 1.11.1
+    validations:
+      required: true
+  - type: checkboxes
+    id: no_details
+    attributes:
+      label: Public-information check
+      options:
+        - label: I have not included vulnerability details, secrets, crash inputs, or proof-of-concept code in this public issue.
+          required: true
+

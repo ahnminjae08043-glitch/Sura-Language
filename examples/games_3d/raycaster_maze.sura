@@ -1,0 +1,78 @@
+# Wolfenstein-style 2.5D raycaster. W/S move, A/D turn, Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 720
+H is 480
+MAP_W is 12
+MAP_H is 12
+world is [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+if not win_init(W, H, "Sura Raycaster 3D") then
+  print("win_init failed")
+  exit(1)
+end
+
+player_x is 1.7
+player_y is 1.7
+angle is 0.2
+FOV is 1.05
+frame is 0
+running is true
+
+func wall_at(x, y) do
+  mx is floor(x)
+  my is floor(y)
+  if mx < 0 or mx >= MAP_W or my < 0 or my >= MAP_H then return true
+  return world[my * MAP_W + mx] == 1
+end
+
+while running do
+  frame += 1
+  turn is 0
+  move is 0
+  if key_down("a") or key_down("left") then turn -= 0.045
+  if key_down("d") or key_down("right") then turn += 0.045
+  if key_down("w") or key_down("up") then move += 0.075
+  if key_down("s") or key_down("down") then move -= 0.075
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then
+    turn is 0.025
+    move is 0.025
+  end
+  angle += turn
+  nx is player_x + cos(angle) * move
+  ny is player_y + sin(angle) * move
+  if not wall_at(nx, player_y) then player_x is nx
+  if not wall_at(player_x, ny) then player_y is ny
+
+  win_clear(20, 28, 48)
+  win_rect(0, H / 2, W, H / 2, 32, 30, 34)
+  column is 0
+  strip is 6
+  while column < W do
+    ray_angle is angle - FOV / 2 + (column / W) * FOV
+    distance is 0.02
+    hit is false
+    while distance < 20 and not hit do
+      test_x is player_x + cos(ray_angle) * distance
+      test_y is player_y + sin(ray_angle) * distance
+      if wall_at(test_x, test_y) then hit is true else distance += 0.035
+    end
+    corrected is distance * cos(ray_angle - angle)
+    wall_h is floor(H / corrected)
+    if wall_h > H then wall_h is H
+    shade is floor(255 - corrected * 24)
+    if shade < 45 then shade is 45
+    top is H / 2 - wall_h / 2
+    win_rect(column, top, strip + 1, wall_h, shade, floor(shade * 0.72), floor(shade * 0.48))
+    column += strip
+  end
+  win_text("RAYCASTER  x={player_x} y={player_y}", 18, 16, 230, 240, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 10 then running is false
+  wait(16)
+end
+
+win_close()
+print("raycaster_maze: frames={frame}")
+assert(frame > 0)
+

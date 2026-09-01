@@ -1,0 +1,106 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank4(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank3(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  values is [[[[1, 2], [3, 4], [5, 6]], [[7, 8], [9, 10], [11, 12]]]]
+  expected is [[[[1, 2], [7, 8]], [[3, 4], [9, 10]], [[5, 6], [11, 12]]]]
+  seed_values is [[[[1, -1], [2, -2]], [[3, -3], [4, -4]], [[5, -5], [6, -6]]]]
+
+  cpu_input is autograd.parameter(values, {dtype: "float32"})
+  cpu_output is autograd.transpose(cpu_input, 1, 2)
+  assert_eq(autograd.shape(cpu_output).join(","), "1,3,2,2")
+  cpu_data is autograd.data(cpu_output)
+  approx_rank4(cpu_data, expected, 0.000001)
+  autograd.backward(cpu_output, seed_values)
+  cpu_grad is autograd.grad(cpu_input)
+
+  gpu_input is autograd.parameter(values, {device: "cuda"})
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  gpu_output is autograd.transpose(gpu_input, 1, 2)
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  assert_eq(autograd.shape(gpu_output).join(","), "1,3,2,2")
+  assert_eq(autograd.storage_bytes(gpu_output), 48)
+  autograd.backward(gpu_output, gpu_seed)
+
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 0)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert_eq(before_observation.transpose_launches, 2)
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+
+  gpu_data is autograd.data(gpu_output)
+  gpu_grad is autograd.grad(gpu_input)
+  approx_rank4(gpu_data, cpu_data, 0.000001)
+  approx_rank4(gpu_grad, cpu_grad, 0.000001)
+  assert_eq(autograd.cuda_stats().d2h_bytes, 96)
+
+  # Default axes swap the trailing matrix dimensions. Negative explicit axes
+  # and a second identical transpose must restore the original layout.
+  small_values is [[[1, 2, 3], [4, 5, 6]]]
+  small_gpu is autograd.tensor(small_values, {device: "cuda"})
+  default_output is autograd.transpose(small_gpu)
+  assert_eq(autograd.shape(default_output).join(","), "1,3,2")
+  approx_rank3(autograd.data(default_output), [[[1, 4], [2, 5], [3, 6]]], 0.000001)
+  negative_output is autograd.transpose(default_output, -1, -2)
+  assert_eq(autograd.shape(negative_output).join(","), "1,2,3")
+  approx_rank3(autograd.data(negative_output), small_values, 0.000001)
+  assert_eq(autograd.requires_grad(default_output), false)
+
+  rank_rejected is false
+  try
+    autograd.transpose(autograd.tensor([1, 2], {device: "cuda"}))
+  catch error
+    rank_rejected is true
+  end
+  assert(rank_rejected)
+
+  same_axis_rejected is false
+  try
+    autograd.transpose(small_gpu, 1, 1)
+  catch error
+    same_axis_rejected is true
+  end
+  assert(same_axis_rejected)
+else
+  print "42_cuda_transpose: SKIP ({info.error})"
+end
+
+print "42_cuda_transpose: PASS"

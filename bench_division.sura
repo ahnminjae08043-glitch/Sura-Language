@@ -1,0 +1,44 @@
+# Division-heavy hot callee.
+#
+# DIV cannot use the inline SSE path that ADD/SUB/MUL take, because dividing by
+# zero has to raise [E202] rather than produce an infinity. Before it had a
+# guarded native emitter, a single division anywhere in a function made the
+# whole function bail out of the JIT - so every other operation in it ran on the
+# register VM too. That is what this benchmark measures: not division speed in
+# isolation, but the cost of one unsupported opcode disqualifying its callee.
+#
+# Measured with tools/sura_ab_bench.ps1 -Jit, 10 interleaved rounds:
+#   without a DIV emitter : 21.01 ms   (mix() compiled 0 opcodes)
+#   with a DIV emitter    :  3.50 ms   (mix() compiled 8 opcodes)
+#   10/10 rounds, 6.0x
+#
+# Run with --jit and check the [JIT-OPS] line: DIV must appear. If it does not,
+# the emitter has regressed and this benchmark will show it as a ~6x slowdown.
+
+func mix(a, b) do
+  return (a / b) + (a * b) - (a / (b + 1))
+end
+
+runs is 5
+total is 0
+
+repeat runs do
+  t0 is clock()
+  acc is 0
+  i is 1
+  while i < 300000 do
+    acc is acc + mix(i, 7)
+    i is i + 1
+  end
+  t1 is clock()
+  total is total + (t1 - t0) * 1000
+end
+
+avg is total / runs
+
+# Pinned so a miscompiled DIV shows up as a wrong answer rather than only as a
+# timing change.
+assert_eq(acc, 315802518750)
+
+print "checksum: {acc}"
+print "avg ({runs} runs): {avg} ms"

@@ -1,0 +1,28 @@
+# 기본 함수
+func add(a, b) do
+  return a + b
+end
+assert_eq(add(3, 4), 7)
+
+# 재귀
+func fib(n) do
+  if n <= 1 then return n
+  return fib(n-1) + fib(n-2)
+end
+assert_eq(fib(10), 55)
+
+# 클로저
+func make_counter() do
+  count is 0
+  func increment() do
+    count += 1
+    return count
+  end
+  return increment
+end
+counter is make_counter()
+assert_eq(counter(), 1)
+assert_eq(counter(), 2)
+assert_eq(counter(), 3)
+
+print "04_functions: PASS"

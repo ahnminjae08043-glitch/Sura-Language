@@ -1,0 +1,10 @@
+func first_label() do
+  labels is ["red", "blue"]
+  for label in labels do
+    return label
+  end
+end
+
+result is first_label()
+assert_eq(result, "red")
+print_no_nl(result)

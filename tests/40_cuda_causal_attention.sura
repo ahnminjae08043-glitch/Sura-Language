@@ -1,0 +1,244 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank4(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank3(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # Preserve API validation and explicit no-fallback boundaries independently
+  # of the future CUDA kernel implementation.
+  rank_rejected is false
+  try
+    autograd.causal_attention(autograd.tensor([1, 2]), autograd.tensor([1, 2]), autograd.tensor([1, 2]))
+  catch error
+    rank_rejected is true
+  end
+  assert(rank_rejected)
+
+  shape_rejected is false
+  try
+    autograd.causal_attention(autograd.tensor([[[1, 2]]]), autograd.tensor([[[1]]]), autograd.tensor([[[1]]]))
+  catch error
+    shape_rejected is true
+  end
+  assert(shape_rejected)
+
+  scale_rejected is false
+  try
+    autograd.causal_attention(autograd.tensor([[[1]]]), autograd.tensor([[[1]]]), autograd.tensor([[[1]]]), {scale: 0})
+  catch error
+    scale_rejected is true
+  end
+  assert(scale_rejected)
+
+  option_rejected is false
+  try
+    autograd.causal_attention(autograd.tensor([[[1]]]), autograd.tensor([[[1]]]), autograd.tensor([[[1]]]), {unknown: 1})
+  catch error
+    option_rejected is true
+  end
+  assert(option_rejected)
+
+  mixed_gpu_q is autograd.tensor([[[1], [2]]], {device: "cuda"})
+  mixed_cpu_k is autograd.tensor([[[1], [2]]], {dtype: "float32"})
+  mixed_cpu_v is autograd.tensor([[[3], [4]]], {dtype: "float32"})
+  mixed_rejected is false
+  try
+    autograd.causal_attention(mixed_gpu_q, mixed_cpu_k, mixed_cpu_v)
+  catch error
+    mixed_rejected is true
+  end
+  assert(mixed_rejected)
+
+  # Rank-3 custom-scale reference with a nonuniform output gradient. Row zero
+  # can only attend value zero, and row one must not observe future value two.
+  q_values is [[[1, 0], [0, 1], [1, 1]]]
+  k_values is [[[1, 0], [0, 1], [1, 1]]]
+  v_values is [[[2, 1], [4, 3], [8, 5]]]
+  seed_values is [[[1, -1], [2, 0.5], [-3, 4]]]
+
+  cpu_q is autograd.parameter(q_values, {dtype: "float32"})
+  cpu_k is autograd.parameter(k_values, {dtype: "float32"})
+  cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {scale: 1})
+  assert_eq(autograd.shape(cpu_output).join(","), "1,3,2")
+  cpu_output_data is autograd.data(cpu_output)
+  approx_rank1(cpu_output_data[0][0], [2, 1], 0.000001)
+  approx_rank1(cpu_output_data[0][1], [3.46211715726001, 2.46211715726001], 0.000001)
+  autograd.backward(cpu_output, seed_values)
+  cpu_q_grad is autograd.grad(cpu_q)
+  cpu_k_grad is autograd.grad(cpu_k)
+  cpu_v_grad is autograd.grad(cpu_v)
+
+  gpu_q is autograd.parameter(q_values, {device: "cuda"})
+  gpu_k is autograd.parameter(k_values, {device: "cuda"})
+  gpu_v is autograd.parameter(v_values, {device: "cuda"})
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  gpu_output is autograd.causal_attention(gpu_q, gpu_k, gpu_v, {scale: 1})
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(gpu_output), "float32")
+  assert_eq(autograd.shape(gpu_output).join(","), "1,3,2")
+  assert_eq(autograd.numel(gpu_output), 6)
+  assert_eq(autograd.storage_bytes(gpu_output), 24)
+  assert_eq(autograd.requires_grad(gpu_output), true)
+  autograd.backward(gpu_output, gpu_seed)
+
+  # Inputs and seed were uploaded before the counter reset. Forward, backward,
+  # output, and persistent q/k/v gradients remain fully device resident.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 0)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert(before_observation.kernel_launches >= 2)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_q_grad is autograd.grad(gpu_q)
+  gpu_k_grad is autograd.grad(gpu_k)
+  gpu_v_grad is autograd.grad(gpu_v)
+  approx_rank3(gpu_output_data, cpu_output_data, 0.0002)
+  approx_rank3(gpu_q_grad, cpu_q_grad, 0.0003)
+  approx_rank3(gpu_k_grad, cpu_k_grad, 0.0003)
+  approx_rank3(gpu_v_grad, cpu_v_grad, 0.0003)
+  approx_rank1(gpu_output_data[0][0], [2, 1], 0.000001)
+  approx_rank1(gpu_output_data[0][1], [3.46211715726001, 2.46211715726001], 0.0002)
+
+  # data() retains only the six-element output mirror. Three grad() calls use
+  # temporary staging, for four observed f32 tensors and 96 total D2H bytes.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 24)
+  after_observation is autograd.cuda_stats()
+  assert_eq(after_observation.h2d_bytes, 0)
+  assert_eq(after_observation.d2h_bytes, 96)
+
+  # Omitting scale applies 1/sqrt(head_dimension). A scalar sum loss supplies
+  # the implicit scalar upstream used to drive attention backward.
+  default_q_values is [[[0, 0], [1, 1]]]
+  default_k_values is [[[1, 0], [0, 2]]]
+  default_v_values is [[[2], [4]]]
+  default_cpu_q is autograd.parameter(default_q_values, {dtype: "float32"})
+  default_cpu_k is autograd.parameter(default_k_values, {dtype: "float32"})
+  default_cpu_v is autograd.parameter(default_v_values, {dtype: "float32"})
+  default_cpu_output is autograd.causal_attention(default_cpu_q, default_cpu_k, default_cpu_v)
+  default_cpu_data is autograd.data(default_cpu_output)
+  assert_approx(default_cpu_data[0][0][0], 2, 0.000001)
+  assert_approx(default_cpu_data[0][1][0], 3.3395230986533138, 0.000001)
+  autograd.backward(autograd.sum(default_cpu_output))
+  default_cpu_q_grad is autograd.grad(default_cpu_q)
+  default_cpu_k_grad is autograd.grad(default_cpu_k)
+  default_cpu_v_grad is autograd.grad(default_cpu_v)
+
+  default_gpu_q is autograd.parameter(default_q_values, {device: "cuda"})
+  default_gpu_k is autograd.parameter(default_k_values, {device: "cuda"})
+  default_gpu_v is autograd.parameter(default_v_values, {device: "cuda"})
+  default_gpu_output is autograd.causal_attention(default_gpu_q, default_gpu_k, default_gpu_v)
+  autograd.backward(autograd.sum(default_gpu_output))
+  approx_rank3(autograd.data(default_gpu_output), default_cpu_data, 0.0002)
+  approx_rank3(autograd.grad(default_gpu_q), default_cpu_q_grad, 0.0003)
+  approx_rank3(autograd.grad(default_gpu_k), default_cpu_k_grad, 0.0003)
+  approx_rank3(autograd.grad(default_gpu_v), default_cpu_v_grad, 0.0003)
+
+  # Rank-4 prefixes represent independent [batch, heads] attention problems.
+  # Zero scores make the causal averages and value gradients exact anchors.
+  heads_q_values is [[[[0], [0]], [[0], [0]]]]
+  heads_k_values is [[[[0], [0]], [[0], [0]]]]
+  heads_v_values is [[[[1], [3]], [[10], [20]]]]
+  heads_cpu_q is autograd.tensor(heads_q_values, {dtype: "float32"})
+  heads_cpu_k is autograd.tensor(heads_k_values, {dtype: "float32"})
+  heads_cpu_v is autograd.parameter(heads_v_values, {dtype: "float32"})
+  heads_cpu_output is autograd.causal_attention(heads_cpu_q, heads_cpu_k, heads_cpu_v)
+  heads_cpu_data is autograd.data(heads_cpu_output)
+  expected_heads_output is [[[[1], [2]], [[10], [15]]]]
+  approx_rank4(heads_cpu_data, expected_heads_output, 0.000001)
+  autograd.backward(autograd.sum(heads_cpu_output))
+  heads_cpu_v_grad is autograd.grad(heads_cpu_v)
+  expected_heads_v_grad is [[[[1.5], [0.5]], [[1.5], [0.5]]]]
+  approx_rank4(heads_cpu_v_grad, expected_heads_v_grad, 0.000001)
+
+  heads_gpu_q is autograd.tensor(heads_q_values, {device: "cuda"})
+  heads_gpu_k is autograd.tensor(heads_k_values, {device: "cuda"})
+  heads_gpu_v is autograd.parameter(heads_v_values, {device: "cuda"})
+  heads_gpu_output is autograd.causal_attention(heads_gpu_q, heads_gpu_k, heads_gpu_v)
+  assert_eq(autograd.shape(heads_gpu_output).join(","), "1,2,2,1")
+  autograd.backward(autograd.sum(heads_gpu_output))
+  approx_rank4(autograd.data(heads_gpu_output), heads_cpu_data, 0.0002)
+  approx_rank4(autograd.grad(heads_gpu_v), heads_cpu_v_grad, 0.0003)
+
+  # Scores of +/-1e8 would overflow a naive exponential. Stable online
+  # softmax must select the first value without producing NaN or infinity.
+  extreme_q_values is [[[10000], [10000]]]
+  extreme_k_values is [[[10000], [-10000]]]
+  extreme_v_values is [[[2], [4]]]
+  extreme_cpu_q is autograd.parameter(extreme_q_values, {dtype: "float32"})
+  extreme_cpu_k is autograd.parameter(extreme_k_values, {dtype: "float32"})
+  extreme_cpu_v is autograd.parameter(extreme_v_values, {dtype: "float32"})
+  extreme_cpu_output is autograd.causal_attention(extreme_cpu_q, extreme_cpu_k, extreme_cpu_v, {scale: 1})
+  extreme_cpu_data is autograd.data(extreme_cpu_output)
+  approx_rank3(extreme_cpu_data, [[[2], [2]]], 0.000001)
+  autograd.backward(autograd.sum(extreme_cpu_output))
+  extreme_cpu_q_grad is autograd.grad(extreme_cpu_q)
+  extreme_cpu_k_grad is autograd.grad(extreme_cpu_k)
+  extreme_cpu_v_grad is autograd.grad(extreme_cpu_v)
+  approx_rank3(extreme_cpu_v_grad, [[[2], [0]]], 0.000001)
+
+  extreme_gpu_q is autograd.parameter(extreme_q_values, {device: "cuda"})
+  extreme_gpu_k is autograd.parameter(extreme_k_values, {device: "cuda"})
+  extreme_gpu_v is autograd.parameter(extreme_v_values, {device: "cuda"})
+  extreme_gpu_output is autograd.causal_attention(extreme_gpu_q, extreme_gpu_k, extreme_gpu_v, {scale: 1})
+  autograd.backward(autograd.sum(extreme_gpu_output))
+  approx_rank3(autograd.data(extreme_gpu_output), extreme_cpu_data, 0.0001)
+  approx_rank3(autograd.grad(extreme_gpu_q), extreme_cpu_q_grad, 0.0001)
+  approx_rank3(autograd.grad(extreme_gpu_k), extreme_cpu_k_grad, 0.0001)
+  approx_rank3(autograd.grad(extreme_gpu_v), extreme_cpu_v_grad, 0.0001)
+
+  # All-frozen inputs still execute forward on CUDA but must not create an
+  # autograd graph or persistent gradients.
+  frozen_q is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  frozen_k is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  frozen_v is autograd.tensor([[[3], [7]]], {device: "cuda"})
+  frozen_output is autograd.causal_attention(frozen_q, frozen_k, frozen_v)
+  assert_eq(autograd.device(frozen_output), "cuda:{info.device_index}")
+  assert_eq(autograd.requires_grad(frozen_output), false)
+  approx_rank3(autograd.data(frozen_output), [[[3], [5]]], 0.0001)
+  assert_eq(autograd.grad(frozen_q), nil)
+  assert_eq(autograd.grad(frozen_k), nil)
+  assert_eq(autograd.grad(frozen_v), nil)
+else
+  print "40_cuda_causal_attention: SKIP ({info.error})"
+end
+
+print "40_cuda_causal_attention: PASS"

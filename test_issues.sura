@@ -1,0 +1,26 @@
+# 문제 1: 메서드 반환값 저장
+class 계산기 do
+    값 is 0
+    func 생성자(초기값) do
+        self.값 is 초기값
+    end
+    func 가져오기() do
+        return self.값
+    end
+    func 두배() do
+        return self.값 * 2
+    end
+end
+
+계산기 is new 계산기(10)
+결과 is 계산기.두배()
+print "두배 결과: {결과}"
+
+# 문제 3: 인플레이스 연산자
+x is 5
+x + 3
+print "x + 3 후: {x}"
+
+y is 10
+y is y + 3
+print "y is y + 3 후: {y}"

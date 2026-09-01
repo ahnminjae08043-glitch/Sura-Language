@@ -1,0 +1,10 @@
+func multiply(left: number, right: number) -> number do
+  return left * right
+end
+
+assert(true)
+assert_eq(multiply(6, 7), 42)
+assert_ne(multiply(2, 3), 5)
+assert_contains("Sura Language", "Sura")
+
+print("모든 assertion을 통과했습니다.")

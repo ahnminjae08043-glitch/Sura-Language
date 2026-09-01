@@ -1,0 +1,39 @@
+class DynamicBase do
+  func init(amount) do
+    self.amount is amount
+  end
+
+  func score(delta) do
+    return self.amount + delta
+  end
+end
+
+class DynamicScale extends DynamicBase do
+  func init(amount) do
+    self.amount is amount
+  end
+
+  func score(delta) do
+    return self.amount * delta
+  end
+end
+
+class DynamicInherited extends DynamicBase do
+  func init(amount) do
+    self.amount is amount
+  end
+end
+
+func dynamic_score(flag) do
+  return (flag ? new DynamicBase(11) : new DynamicScale(7)).score(3)
+end
+
+func inherited_score(flag) do
+  return (flag ? new DynamicBase(9) : new DynamicInherited(12)).score(2)
+end
+
+assert_eq(dynamic_score(true), 14)
+assert_eq(dynamic_score(false), 21)
+assert_eq(inherited_score(true), 11)
+assert_eq(inherited_score(false), 14)
+print 1

@@ -1,0 +1,45 @@
+// ================================
+// 수라 엔진: 마우스 테스트 (오류 수정판)
+// ================================
+
+win_init 800 600 "수라 마우스 테스트"
+
+// 변수 초기화 (에러 방지)
+size is 50
+mx is 0
+my is 0
+
+print "마우스를 움직여보세요! 클릭하면 네모가 커집니다."
+print "[Q] 키를 누르면 안전하게 종료됩니다."
+
+while 1 do
+    win_clear 30 30 40
+
+    // 1. 종료 체크
+    key_down "q" k_q
+    if k_q then break
+
+    // 2. 마우스 상태 읽기
+    mouse_pos mx my
+    mouse_down "left" m_click
+
+    // 3. 클릭 시 크기 변경
+    if m_click then
+        size is 120
+    else
+        size is 60
+    end
+
+    // 4. 마우스 위치에 네모 그리기
+    // 마우스 커서가 네모 중앙에 오도록 좌표 계산
+    rect_x is mx - (size / 2)
+    rect_y is my - (size / 2)
+    
+    win_rect rect_x rect_y size size 255 255 100
+
+    // 5. 화면 업데이트
+    win_update
+    sleep 16
+end
+
+print "게임이 정상 종료되었습니다."

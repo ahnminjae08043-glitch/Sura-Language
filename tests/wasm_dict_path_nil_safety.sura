@@ -1,0 +1,12 @@
+use dict
+
+source is {player: {stats: {hp: 42, name: "Ari"}}}
+hp is dict_get_path(source, "player.stats.hp")
+name is dict.get_path(source, "player.stats.name")
+missing is source.get_path("player.stats.mp")
+
+assert_eq(hp, 42)
+assert_eq(name, "Ari")
+assert_eq(missing, nil)
+assert_eq(type(missing), "nil")
+print "{hp} {name} {missing}"

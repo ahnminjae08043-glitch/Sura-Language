@@ -1,0 +1,58 @@
+# 수정사항 테스트
+
+# 1. 기본 출력 + print_n
+print "=== 기본 기능 ==="
+print_n "줄바꿈 없이 출력: "
+print "OK"
+
+# 2. repeat 반복
+print "=== repeat ==="
+repeat 3
+    print "반복!"
+end
+
+# 3. for i in 배열 (foreach)
+print "=== foreach ==="
+과일들 is ["사과", "바나나", "포도"]
+for 과일 in 과일들
+    print "과일: {과일}"
+end
+
+# 4. arr[i] is expr
+print "=== 인덱스 대입 ==="
+arr is [10, 20, 30]
+arr[1] is 99
+print arr
+
+# 5. try/catch
+print "=== try/catch ==="
+try
+    throw "테스트 오류!"
+catch 오류
+    print "잡힘: {오류}"
+end
+
+# 6. class with fields and methods
+print "=== 클래스 ==="
+class 동물 do
+    이름 is "알 수 없음"
+    func 소개() do
+        print "나는 {self.이름}입니다"
+    end
+end
+
+class 개 extends 동물 do
+    품종 is "믹스"
+    func 생성자(이름입력, 품종입력) do
+        self.이름 is 이름입력
+        self.품종 is 품종입력
+    end
+    func 짖기() do
+        print "{self.이름}: 왈왈!"
+    end
+end
+
+멍이 is new 개("멍이", "진돗개")
+멍이.소개()
+멍이.짖기()
+print "품종: {멍이.품종}"

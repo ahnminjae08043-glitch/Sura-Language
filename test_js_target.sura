@@ -1,0 +1,1243 @@
+print "js target"
+print_n "js target print_n"
+type "js target type command"
+clock
+print " ok"
+
+use array
+use set
+use math
+use string
+use json
+use dict
+use os
+use random
+use fs
+use path
+use cli
+use crypto
+use regex
+use datetime
+use log
+use test
+use db
+use http
+use async
+use vector
+use graphics3d
+use rag
+use tensor
+use tool
+use llm
+use stream
+
+import "tests/js_import_fixture.sura"
+assert_eq(imported_double(js_import_value), 42)
+
+func fib(n: int) -> int do
+  if n <= 1 then return n
+  return fib(n - 1) + fib(n - 2)
+end
+
+assert_eq(fib(10), 55)
+bit_not_js is ~7
+assert_eq(bit_not_js, -8)
+lambda_factor_js is 4
+lambda_scale_js is |value| value * lambda_factor_js
+assert_eq(lambda_scale_js(3), 12)
+lambda_ready_js is || "ready"
+assert_eq(lambda_ready_js(), "ready")
+
+func typed_scale(value: int, factor: int) -> int do
+  return value * factor
+end
+
+assert_eq(typed_scale(5, 3), 15)
+
+func make_js_adder(base) do
+  func add_js_value(value) do
+    return base + value
+  end
+  return add_js_value
+end
+
+add_five_js is make_js_adder(5)
+assert_eq(add_five_js(7), 12)
+
+block_double_js is func(value) do
+  return value * 2
+end
+assert_eq(block_double_js(6), 12)
+
+enum JsMode do
+  READY
+  SCORE is 7
+  LABEL is "mode"
+end
+
+assert_eq(JsMode.READY, "READY")
+assert_eq(JsMode.SCORE, 7)
+assert_eq(JsMode.LABEL, "mode")
+
+struct JsVec2 do
+  x is 0
+  y is 0
+
+  func add(other) do
+    return JsVec2(self.x + other.x, self.y + other.y)
+  end
+end
+
+vec_js is JsVec2(2, 3)
+vec_sum_js is vec_js.add(JsVec2(4, 5))
+assert_eq(vec_sum_js.x, 6)
+assert_eq(vec_sum_js.y, 8)
+
+class JsPoint do
+  func init(x, y) do
+    self.x is x
+    self.y is y
+  end
+
+  func sum() do
+    return self.x + self.y
+  end
+end
+
+class JsNamedPoint extends JsPoint do
+  func label() do
+    return "point:{self.x},{self.y}"
+  end
+end
+
+class JsScoredPoint extends JsPoint do
+  func init(x, y, score) do
+    super.init(x, y)
+    self.x is x
+    self.y is y
+    self.score is score
+  end
+
+  func score_label() do
+    return "score:{self.score}"
+  end
+end
+
+point_js is new JsPoint(7, 8)
+assert_eq(point_js.sum(), 15)
+point_js.x is point_js.x + 1
+assert_eq(point_js.x, 8)
+named_point_js is new JsNamedPoint(2, 3)
+assert_eq(named_point_js.sum(), 5)
+assert_eq(named_point_js.label(), "point:2,3")
+scored_point_js is new JsScoredPoint(4, 6, 10)
+assert_eq(scored_point_js.sum(), 10)
+assert_eq(scored_point_js.score, 10)
+assert_eq(scored_point_js.score_label(), "score:10")
+
+caught_js is false
+cleanup_js is false
+try
+  throw "js target error"
+catch err
+  caught_js is err.contains("js target")
+finally do
+  cleanup_js is true
+end
+assert(caught_js)
+assert(cleanup_js)
+
+score_js is 3
+ternary_js is score_js == 3 ? "three" : "other"
+assert_eq(ternary_js, "three")
+optional_user_js is nil
+assert_eq(optional_user_js?.profile?.name ?? "anon", "anon")
+optional_profile_js is {profile: {name: "sura"}}
+assert_eq(optional_profile_js?.profile?.name ?? "anon", "sura")
+assert_eq(optional_profile_js?.missing?.name ?? "anon", "anon")
+branch_js is "none"
+when score_js do
+is 1 then
+  branch_js is "one"
+in 2 to 4 then
+  branch_js is "range"
+else then
+  branch_js is "other"
+end
+assert_eq(branch_js, "range")
+
+tilde_when_js is "none"
+when score_js do
+in 1 ~ 3 then
+  tilde_when_js is "tilde"
+else then
+  tilde_when_js is "other"
+end
+assert_eq(tilde_when_js, "tilde")
+
+inline_elif_js is "none"
+if score_js < 0 then
+  inline_elif_js is "low"
+elif score_js == 2 then inline_elif_js is "two"
+elif score_js == 3 then inline_elif_js is "three"
+else
+  inline_elif_js is "other"
+end
+assert_eq(inline_elif_js, "three")
+
+inline_else_js is "none"
+if score_js < 0 then
+  inline_else_js is "low"
+else then inline_else_js is "other"
+end
+assert_eq(inline_else_js, "other")
+
+inline_when_js is "none"
+when 9 do
+is 1 then inline_when_js is "one"
+else then inline_when_js is "other"
+end
+assert_eq(inline_when_js, "other")
+
+when_first_else_js is "none"
+when score_js do
+else then when_first_else_js is "fallback"
+end
+assert_eq(when_first_else_js, "fallback")
+
+when_middle_else_js is "none"
+when score_js do
+else then when_middle_else_js is "fallback"
+is 3 then when_middle_else_js is "exact"
+end
+assert_eq(when_middle_else_js, "exact")
+
+when_matched_before_else_js is "none"
+when score_js do
+is 3 then when_matched_before_else_js is "first"
+else then when_matched_before_else_js is "fallback"
+is 3 then when_matched_before_else_js is "late"
+end
+assert_eq(when_matched_before_else_js, "first")
+
+match_js is "none"
+match score_js
+when 1 then match_js is "one"
+when 3 then match_js is "three"
+when _ then match_js is "other"
+end
+assert_eq(match_js, "three")
+
+match_wildcard_js is "none"
+match 99
+when 1 then match_wildcard_js is "one"
+when _ then match_wildcard_js is "fallback"
+end
+assert_eq(match_wildcard_js, "fallback")
+
+match_block_js is "none"
+match score_js
+when 2
+  match_block_js is "two"
+when 3
+  match_block_js is "three"
+when _
+  match_block_js is "other"
+end
+assert_eq(match_block_js, "three")
+
+match_first_wildcard_js is "none"
+match score_js
+when _ then match_first_wildcard_js is "any"
+end
+assert_eq(match_first_wildcard_js, "any")
+
+match_middle_wildcard_js is "none"
+match score_js
+when _ then match_middle_wildcard_js is "any"
+when 3 then match_middle_wildcard_js is "exact"
+end
+assert_eq(match_middle_wildcard_js, "exact")
+
+match_matched_before_wildcard_js is "none"
+match score_js
+when 3 then match_matched_before_wildcard_js is "first"
+when _ then match_matched_before_wildcard_js is "any"
+when 3 then match_matched_before_wildcard_js is "late"
+end
+assert_eq(match_matched_before_wildcard_js, "first")
+
+total: int is 0
+for n in 1 to 5 do
+  total += n
+end
+assert_eq(total, 15)
+
+range_limit_js is 3
+range_count_js is 0
+for n_limit_js in 1 to range_limit_js do
+  range_count_js += 1
+  range_limit_js is 0
+end
+assert_eq(range_count_js, 3)
+
+tilde_total_js is 0
+for n in 1 ~ 3 do
+  tilde_total_js += n
+end
+assert_eq(tilde_total_js, 6)
+
+step_total_js is 0
+for n in 5 to 1 step -2 do
+  step_total_js += n
+end
+assert_eq(step_total_js, 9)
+
+control_sum_js is 0
+i_js_loop is 0
+while i_js_loop < 6 do
+  i_js_loop += 1
+  if i_js_loop == 2 then continue
+  if i_js_loop == 5 then break
+  control_sum_js += i_js_loop
+end
+
+for m_js_loop in 1 to 5 do
+  if m_js_loop == 2 then continue
+  if m_js_loop == 5 then break
+  control_sum_js += m_js_loop
+end
+
+r_js_loop is 0
+repeat 5 do
+  r_js_loop += 1
+  if r_js_loop == 2 then continue
+  if r_js_loop == 5 then break
+  control_sum_js += r_js_loop
+end
+
+assert_eq(control_sum_js, 24)
+
+items is [1, 2, 3]
+items.push(4)
+assert_eq(items.len(), 4)
+assert(items.contains(3))
+
+sum: int is 0
+for item in items do
+  sum += item
+end
+assert_eq(sum, 10)
+
+dynamic_items_js is [1, 2, 3]
+dynamic_count_js is 0
+for dynamic_item_js in dynamic_items_js do
+  dynamic_count_js += 1
+  if dynamic_count_js == 1 then dynamic_items_js.push(4)
+end
+assert_eq(dynamic_count_js, 4)
+
+nil_iter_count_js is 0
+for maybe_item_js in nil do
+  nil_iter_count_js += 1
+end
+assert_eq(nil_iter_count_js, 0)
+
+dict_single_iter_count_js is 0
+for dict_single_key_js in {a: 1, b: 2} do
+  dict_single_iter_count_js += 1
+end
+assert_eq(dict_single_iter_count_js, 0)
+
+indexed_total_js is 0
+for idx_js, item_js in items do
+  indexed_total_js += idx_js + item_js
+end
+assert indexed_total_js == 16
+assert_eq indexed_total_js, 16
+
+nil_indexed_iter_count_js is 0
+for maybe_idx_js, maybe_value_js in nil do
+  nil_indexed_iter_count_js += 1
+end
+assert_eq(nil_indexed_iter_count_js, 0)
+
+dict_for_js is {"x": 7, "y": 8}
+dict_indexed_keys_js is ""
+dict_indexed_total_js is 0
+for key_js, value_js in dict_for_js do
+  dict_indexed_keys_js += key_js
+  dict_indexed_total_js += value_js
+end
+assert_eq(dict_indexed_total_js, 15)
+assert(dict_indexed_keys_js.contains("x"))
+assert(dict_indexed_keys_js.contains("y"))
+
+ticks is 0
+repeat 3 do
+  ticks += 1
+end
+assert_eq(ticks, 3)
+
+repeat_limit_js is 3
+repeat_fixed_count_js is 0
+repeat repeat_limit_js do
+  repeat_fixed_count_js += 1
+  repeat_limit_js is 0
+end
+assert_eq(repeat_fixed_count_js, 3)
+
+while ticks > 0 do
+  ticks -= 1
+end
+assert_eq(ticks, 0)
+
+data is {"name": "sura", "kind": "language"}
+assert_eq(data.name, "sura")
+js_size_values is [1, 2, 3, 4]
+assert_eq(js_size_values.length(), 4)
+assert_eq(js_size_values.size(), 4)
+assert_eq(array_len(js_size_values), 4)
+assert_eq(array_length(js_size_values), 4)
+assert_eq(array_size(js_size_values), 4)
+assert_eq(array.length([1, 2, 3]), 3)
+assert_eq(array.size([1, 2, 3, 4]), 4)
+assert_eq("Hello".lower(), "hello")
+assert_eq("hi".upper(), "HI")
+assert_eq(math.floor(math.pi), 3)
+assert_eq(math.clamp(12, 0, 10), 10)
+assert_eq(math.sign(-4), -1)
+assert_eq(string.upper("sura"), "SURA")
+assert_eq(string.length("sura"), 4)
+assert_eq(string.size("sura"), 4)
+assert_eq("sura".length(), 4)
+assert_eq("sura".size(), 4)
+assert_eq(string_len("sura"), 4)
+assert_eq(string_length("sura-language"), 13)
+assert_eq(string_size("sura"), 4)
+assert_eq(string_upper("sura"), "SURA")
+assert_eq(string_lower("SURA"), "sura")
+assert_eq(string_trim("  sura  "), "sura")
+assert_eq(string_contains("sura-language", "lang"), true)
+assert_eq(string_indexOf("sura-language", "lang"), 5)
+assert_eq(string_index_of("sura-language", "missing"), -1)
+assert_eq(string_startsWith("sura-language", "sura"), true)
+assert_eq(string_starts_with("sura-language", "lang"), false)
+assert_eq(string_endsWith("sura-language", "language"), true)
+assert_eq(string_ends_with("sura-language", "sura"), false)
+assert_eq(string_replace("sura sura", "sura", "SURA"), "SURA SURA")
+assert_eq(string_substring("sura-language", 5, 9), "lang")
+assert_eq(string_slice("sura-language", -8, -4), "lang")
+assert_eq(string_sub("sura-language", 0, 4), "sura")
+assert_eq(string.join(["ai", "game"], "/"), "ai/game")
+assert_eq(string.lines("a\nb\n").join("|"), "a|b")
+assert_eq(string_words("  ai   agent  tools ").join(","), "ai,agent,tools")
+assert_eq(string.repeat("ha", 3), "hahaha")
+assert_eq(string.pad_left("7", 3, "0"), "007")
+assert_eq(string.pad_right("go", 4, "."), "go..")
+assert_eq(text_chunks("abcdef", 3, 1).join("|"), "abc|cde|ef")
+assert_eq(text_chunk("abcdef", 3, 1).join("|"), "abc|cde|ef")
+assert_eq(string.chunks("abcdef", 3, 1).join("|"), "abc|cde|ef")
+assert_eq(array.slice([3, 1, 2], 1).len(), 2)
+assert_eq(array.concat([1], [2, 3]).len(), 3)
+assert_eq(array.sum([1, 2, 3]), 6)
+assert_eq(array.avg([2, 4, 6]), 4)
+assert_eq(type(array.avg([])), "nil")
+assert_eq(array.min([4, -2, 7]), -2)
+assert_eq(array.max([4, -2, 7]), 7)
+assert_eq(type(array.min([])), "nil")
+assert_eq(type(array.max([])), "nil")
+assert_eq(array.unique([1, 1, 2, 2, "x", "x"]).join(","), "1,2,x")
+assert_eq(array.flatten([1, [2, [3]], 4], 2).join(","), "1,2,3,4")
+flat_once_js is array_flatten([1, [2, [3]]], 1)
+assert_eq(flat_once_js[2].len(), 1)
+assert_eq(array.range(5).join(","), "0,1,2,3,4")
+assert_eq(array.range(2, 7, 2).join(","), "2,4,6")
+assert_eq(array.range(5, 1, -2).join(","), "5,3")
+chunks_js is array.chunk(["a", "b", "c", "d", "e"], 2)
+assert_eq(chunks_js.len(), 3)
+assert_eq(chunks_js[2][0], "e")
+zipped_js is array.zip(["a", "b"], [1, 2, 3])
+assert_eq(zipped_js.len(), 2)
+assert_eq(zipped_js[1][0], "b")
+assert_eq(zipped_js[1][1], 2)
+assert_eq(array_repeat("x", 3).join(""), "xxx")
+left_set_js is ["ai", "game", "ai"]
+right_set_js is ["game", "tool"]
+assert_eq(set.union(left_set_js, right_set_js).join(","), "ai,game,tool")
+assert_eq(set.intersection(left_set_js, right_set_js).join(","), "game")
+assert_eq(set.difference(left_set_js, right_set_js).join(","), "ai")
+assert_eq(set.symmetric_difference(left_set_js, right_set_js).join(","), "ai,tool")
+assert(set.is_subset(["ai"], left_set_js))
+assert(set.is_superset(left_set_js, ["game"]))
+assert_eq(set_union([1, 2, 2], [2, 3]).join(","), "1,2,3")
+json_obj is json.parse(json.stringify({ok: true, name: "sura"}))
+assert_eq(json.path(json_obj, "name"), "sura")
+assert_eq(json.get_path(json_obj, "name"), "sura")
+assert(json.has_path(json_obj, "name"))
+assert(not json.has_path(json_obj, "missing"))
+assert(json_has_path({ok: nil}, "ok"))
+json_patch_base is {name: "sura", meta: {score: 1, old: true}, keep: [1]}
+json_patch_merged is json.merge_patch(json_patch_base, {meta: {score: 2, old: nil}, added: true})
+assert_eq(json_patch_merged.meta.score, 2)
+assert(not json.has_path(json_patch_merged, "meta.old"))
+assert(json_patch_base.meta.old)
+assert_eq(json_merge_patch({arr: [1]}, {arr: [2, 3]}).arr.len(), 2)
+json_deleted_path is json.delete_path(json_patch_merged, "meta.score")
+assert(not json.has_path(json_deleted_path, "meta.score"))
+assert(json.has_path(json_patch_merged, "meta.score"))
+json_deleted_arr is json_delete_path({items: [{id: 1}, {id: 2}]}, "items[0]")
+assert_eq(json_deleted_arr.items[0].id, 2)
+json_set_existing is json.set_path(json_patch_base, "meta.score", 9)
+assert_eq(json_set_existing.meta.score, 9)
+assert_eq(json_patch_base.meta.score, 1)
+json_set_created is json_set_path({}, "tool.args[0].url", "file://knowledge")
+assert_eq(json_set_created.tool.args[0].url, "file://knowledge")
+json_set_root is json_set_path({old: true}, "$", {fresh: true})
+assert(json_set_root.fresh)
+assert_eq(json.try_parse("not json", {ok: false}).ok, false)
+assert_eq(json_try_parse("not json", 42), 42)
+pretty_json_text is json_pretty({ok: true, rows: [1, 2]}, 2)
+assert_contains(pretty_json_text, "\n")
+assert_eq(json.parse(json.pretty({ok: true}, 2)).ok, true)
+serialized_js is serialize({ok: true, name: "sura"})
+assert_eq(deserialize(serialized_js).name, "sura")
+dict_meta_js is {name: "sura", kind: "lang", score: 9}
+assert_eq(dict.keys(dict_meta_js).join(","), "kind,name,score")
+assert_eq(dict.values(dict_meta_js).join(","), "lang,sura,9")
+dict_items_js is dict.items(dict_meta_js)
+assert_eq(dict_items_js[0].key, "kind")
+assert_eq(dict_items_js[0].value, "lang")
+dict_merged_js is dict.merge({name: "old", keep: true}, {name: "sura", score: 9})
+assert_eq(dict_merged_js.name, "sura")
+assert_eq(dict_merged_js.keep, true)
+dict_picked_js is dict.pick(dict_merged_js, ["name", "score"])
+assert_eq(dict_picked_js.score, 9)
+dict_missing_js is dict.pick(dict_merged_js, ["missing"])
+assert_eq(type(dict_missing_js.missing), "nil")
+dict_omitted_js is dict.omit(dict_merged_js, ["keep"])
+assert_eq(dict_omitted_js.keep, nil)
+assert_eq(dict_get_path({a: {b: 3}}, "a.b"), 3)
+assert_eq(dict.get_path({a: {b: 4}}, "a.b"), 4)
+assert_eq(type(wait(1)), "nil")
+assert_eq(type(sleep_ms(1)), "nil")
+assert_eq(type(os.wait(1)), "nil")
+assert(os.argc() >= 0)
+assert(os.cwd().len() > 0)
+assert(os.script_name().len() > 0)
+assert(os.home_dir().len() > 0)
+assert(os.temp_dir().len() > 0)
+assert(os.path_separator().len() == 1)
+assert(os.name().len() > 0)
+assert_eq(type(os.is_windows()), "bool")
+assert_eq(home_dir(), os.home_dir())
+assert_eq(temp_dir(), os.temp_dir())
+assert_eq(path_separator(), os.path_separator())
+assert_eq(os_name(), os.name())
+assert_eq(is_windows(), os.is_windows())
+if os.is_windows() then
+  assert(os.cmd_exists("cmd"))
+  assert(os.which("cmd").len() > 0)
+  assert(cmd_exists("cmd"))
+  assert(which("cmd").len() > 0)
+else
+  assert(os.cmd_exists("sh"))
+  assert(os.which("sh").len() > 0)
+  assert(cmd_exists("sh"))
+  assert(which("sh").len() > 0)
+end
+assert(not os.cmd_exists("__sura_missing_command_for_js_smoke__"))
+assert(not command_exists("__sura_missing_command_for_js_smoke__"))
+assert_eq(env_get("SURA_JS_TARGET_ENV_MISSING", "fallback"), "fallback")
+assert_eq(os.env_set("SURA_JS_TARGET_ENV_VALUE", "ok"), true)
+assert_eq(os.env_get("SURA_JS_TARGET_ENV_VALUE"), "ok")
+assert_eq(os.env_require("SURA_JS_TARGET_ENV_VALUE"), "ok")
+env_path is "js_target.env"
+file_write(env_path, "SURA_JS_TARGET_ENV_LOADED=loaded\nSURA_JS_TARGET_ENV_QUOTED=\"hello world\"\n")
+loaded_env is os.env_load(env_path, true)
+assert_eq(loaded_env.SURA_JS_TARGET_ENV_LOADED, "loaded")
+assert_eq(os.env_get("SURA_JS_TARGET_ENV_QUOTED"), "hello world")
+assert_eq(file_delete(env_path), true)
+random.seed(2026)
+first_roll is random.int(1, 6)
+first_float is random.float()
+first_bool is random.bool(0.75)
+first_choice is random.choice(["sura", "game", "agent"])
+first_shuffle is random.shuffle([1, 2, 3, 4])
+first_bytes is random.bytes(4)
+first_uuid is random.uuid()
+random.seed(2026)
+assert_eq(random.int(1, 6), first_roll)
+assert_eq(random.float(), first_float)
+assert_eq(random.bool(0.75), first_bool)
+assert_eq(random.choice(["sura", "game", "agent"]), first_choice)
+assert_eq(random.shuffle([1, 2, 3, 4]).join(","), first_shuffle.join(","))
+assert_eq(first_bytes.len(), 4)
+assert(first_uuid.contains("-"))
+random_seed(77)
+legacy_roll is random_int(10)
+random_seed(77)
+assert_eq(random_int(10), legacy_roll)
+assert_eq(random_bytes(2).len(), 2)
+assert_eq(random(3) >= 0, true)
+assert_eq(random(1, 3) <= 3, true)
+fs_path is "js_target_fs.tmp"
+assert_eq(fs.write(fs_path, "alpha"), 5)
+assert(fs.exists(fs_path))
+assert_eq(fs.read(fs_path), "alpha")
+assert_eq(file_append(fs_path, " beta"), 5)
+assert_eq(file_read(fs_path), "alpha beta")
+assert_eq(file_size(fs_path), 10)
+assert(fs.info(fs_path).is_file)
+assert_eq(file_sha256(fs_path), sha256("alpha beta"))
+assert_eq(sha256_file(fs_path), sha256("alpha beta"))
+assert_eq(fs.sha256(fs_path), sha256("alpha beta"))
+assert_eq(crypto.file_sha256(fs_path), sha256("alpha beta"))
+assert_eq(file_hmac_sha256("secret", fs_path), hmac_sha256("secret", "alpha beta"))
+assert_eq(hmac_sha256_file("secret", fs_path), hmac_sha256("secret", "alpha beta"))
+assert_eq(crypto.file_hmac_sha256("secret", fs_path), hmac_sha256("secret", "alpha beta"))
+fs_bin_path is "js_target_blob.bin"
+assert_eq(file_write_bytes(fs_bin_path, [0, 1, 255]), 3)
+assert_eq(fs.read_bytes(fs_bin_path).join(","), "0,1,255")
+assert_eq(fs.write_bytes(fs_bin_path, [5, 6]), 2)
+assert_eq(file_read_bytes(fs_bin_path)[1], 6)
+assert_eq(file_delete(fs_bin_path), true)
+fs_json_path is "js_target_config.json"
+assert(fs.write_json(fs_json_path, {name: "sura", enabled: true}) > 0)
+assert_eq(fs.read_json(fs_json_path).name, "sura")
+assert_eq(file_read_json(fs_json_path).enabled, true)
+assert_eq(file_delete(fs_json_path), true)
+fs_lines_path is "js_target_lines.txt"
+assert_eq(write_file(fs_lines_path, "alpha\n"), 6)
+assert_eq(append_file(fs_lines_path, "beta\n"), 5)
+assert(read_file(fs_lines_path).contains("beta"))
+assert(exists(fs_lines_path))
+assert_eq(file_lines(fs_lines_path)[1], "beta")
+assert_eq(fs.lines(fs_lines_path).len(), 2)
+assert_eq(delete_file(fs_lines_path), true)
+assert_eq(fs.basename("nested/file.sura"), "file.sura")
+assert_contains(fs.list("."), "test_js_target.sura")
+assert(file_walk(".", ".sura").len() >= 1)
+assert(fs.walk(".", ".sura").len() >= 1)
+assert_contains(file_glob("test_*.sura"), "test_js_target.sura")
+assert_contains(fs.glob("test_*.sura"), "test_js_target.sura")
+fs_tree_path is "js_target_tree"
+mkdir(path.join(fs_tree_path, "nested"))
+fs.write(path.join(fs_tree_path, "nested", "item.txt"), "x")
+assert(fs.remove_tree(fs_tree_path) >= 3)
+assert(not fs.exists(fs_tree_path))
+assert_eq(file_remove_tree(fs_tree_path), 0)
+fs_copy_path is "js_target_fs_copy.tmp"
+fs_move_path is "js_target_fs_move.tmp"
+assert(fs.copy(fs_path, fs_copy_path))
+assert_eq(fs.read(fs_copy_path), "alpha beta")
+assert(fs.move(fs_copy_path, fs_move_path))
+assert(fs.exists(fs_move_path))
+assert(file_delete(fs_move_path))
+assert_eq(file_delete(fs_path), true)
+assert_eq(fs.exists(fs_path), false)
+joined_path is path.join("nested", "file.sura")
+assert(joined_path.contains("file.sura"))
+assert_eq(path.basename(joined_path), "file.sura")
+assert_eq(path.ext(joined_path), ".sura")
+assert_eq(path.stem(joined_path), "file")
+assert(path.dirname(joined_path).contains("nested"))
+assert_eq(path.basename(path.normalize(path_join("tmp", "..", "out.txt"))), "out.txt")
+assert(path.relative(path.abs("js_target_fs.tmp"), os.cwd()).contains("js_target_fs.tmp"))
+parsed_cli is cli.parse("--fast --target wasm --tag ai --tag tools --no-cache app.sura", ["target", "tag"])
+assert(parsed_cli.fast)
+assert_eq(parsed_cli.target, "wasm")
+assert_eq(parsed_cli.tag.len(), 2)
+assert_eq(parsed_cli.cache, false)
+assert_eq(parsed_cli.args[0], "app.sura")
+quoted_cli is cli_parse("--name \"Sura Agent\" -abc -- -literal", ["name"])
+assert_eq(quoted_cli.name, "Sura Agent")
+assert(quoted_cli.a)
+assert(quoted_cli.b)
+assert(quoted_cli.c)
+assert_eq(quoted_cli.args[0], "-literal")
+assert_eq(sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+assert_eq(crypto.sha256("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+secure_bytes_js is crypto.random_bytes(8)
+assert_eq(secure_bytes_js.len(), 8)
+assert_between(secure_bytes_js[0], 0, 255)
+secure_hex_js is crypto.random_hex(16)
+assert_eq(secure_hex_js.len(), 32)
+assert_match(secure_hex_js, "^[0-9a-f]+$")
+assert_eq(secure_random_bytes(4).len(), 4)
+short_secure_hex_js is secure_random_hex(4)
+assert_eq(short_secure_hex_js.len(), 8)
+assert_match(short_secure_hex_js, "^[0-9a-f]+$")
+assert(crypto.constant_time_eq("token-123", "token-123"))
+assert(not crypto.constant_time_eq("token-123", "token-124"))
+assert(not constant_time_eq("token", "tokenx"))
+assert(crypto_constant_time_eq(hmac_sha256("secret", "body"), hmac_sha256("secret", "body")))
+assert(secure_compare("abc", "abc"))
+assert(not secure_compare("abc", "abcd"))
+assert_eq(hmac_sha256("secret", "request body"), "284ecbd7ee5e3868010384e98f2f397a4d733937d14b0a19dcff5ae95739962b")
+assert_eq(crypto.hex_decode(crypto.hex_encode("sura")), "sura")
+assert_eq(base64_decode(base64_encode("sura")), "sura")
+assert_eq(base64_url_encode("sura"), "c3VyYQ")
+assert_eq(crypto.base64_url_decode("c3VyYQ"), "sura")
+assert_eq(url_decode(url_encode("q=sura agent")), "q=sura agent")
+assert(regex.match("sura-2026", "^sura-\\d+$"))
+assert_eq(regex_replace("sura-2026", "\\d+", "lang"), "sura-lang")
+regex_matches is regex.find_all("a1 b22 c333", "\\d+")
+assert_eq(regex_matches.len(), 3)
+regex_parts is regex.split("red, blue;green", "\\s*[,;]\\s*")
+assert_eq(regex_parts[2], "green")
+assert_eq(regex_split("a  b", "\\s+")[1], "b")
+regex_literal_js is regex.escape("a+b? [x]")
+assert(regex_match("a+b? [x]", "^" + regex_literal_js + "$"))
+assert_eq(regex.find_all("a+b? [x] axb?", regex_literal_js).len(), 1)
+regex_capture_js is regex.capture("user=kim score=42", "user=([A-Za-z]+) score=([0-9]+)")
+assert_eq(regex_capture_js[1], "kim")
+assert_eq(regex_capture_js[2], "42")
+regex_captures_js is regex_captures("a=1 b=22", "([a-z])=([0-9]+)")
+assert_eq(regex_captures_js.len(), 2)
+assert_eq(regex_captures_js[1][2], "22")
+assert_eq(type(regex.capture("none", "id=([0-9]+)")), "nil")
+parsed_time is datetime.parse("2026-05-16T12:34:56")
+time_parts is datetime.parts(parsed_time)
+assert_eq(time_parts.year, 2026)
+next_day is datetime.add(parsed_time, 86400)
+assert_eq(datetime.diff(next_day, parsed_time), 86400)
+assert_eq(datetime_utc_format(datetime_add(0, 60), "%H:%M:%S"), "00:01:00")
+assert_eq(datetime.utc_format(0, "%Y-%m-%d"), "1970-01-01")
+assert(datetime.now().contains("T"))
+assert(datetime.timestamp() > 0)
+log_path is "js_target_log.jsonl"
+assert_eq(log.set_file(log_path, false), true)
+assert_eq(log.set_json(true), true)
+assert_eq(type(log.event("info", "js target", {ok: true})), "nil")
+assert_eq(log.level("WARN"), "WARN")
+log.info("hidden js info")
+log.error("visible js error")
+assert_eq(log.get_level(), "WARN")
+assert_eq(log.level("DEBUG"), "DEBUG")
+assert_eq(log.set_file("", true), true)
+assert(file_exists(log_path))
+assert(file_read(log_path).contains("\"level\":\"INFO\""))
+assert(not file_read(log_path).contains("hidden js info"))
+assert(file_read(log_path).contains("visible js error"))
+assert_eq(file_delete(log_path), true)
+console.log("js console", "ok", 1)
+console.info("js console info")
+console.debug("js console debug")
+console.warn("js console warn")
+console.error("js console error")
+console.exception("js console exception")
+console.raw("js", "-", "raw")
+console.line()
+console.flush()
+console.json({target: "js", score: 30})
+js_console_inspect is console.inspect({target: "js", score: 30})
+assert_eq(type(js_console_inspect), "string")
+assert_contains(js_console_inspect, "\"target\"")
+js_console_status is console.status()
+assert_eq(type(js_console_status), "dict")
+assert_eq(type(js_console_status.group_depth), "number")
+js_console_hrtime is console.hrtime()
+assert_eq(type(js_console_hrtime), "number")
+assert(js_console_hrtime >= 0)
+console.beep()
+console.print("js console print")
+console.write("js console write")
+console.write_line(" line")
+console.println("js console println")
+console.line("js console line")
+console.assert(true, "hidden js console assert")
+console.assert(false, "js console assert", 9)
+console.time("js timer")
+wait(1)
+js_console_mid_elapsed is console.time_log("js timer", "checkpoint")
+js_console_elapsed is console.time_end("js timer")
+js_console_stamp is console.time_stamp("js mark")
+assert_eq(type(js_console_elapsed), "number")
+assert_eq(type(js_console_mid_elapsed), "number")
+assert_eq(type(js_console_stamp), "number")
+js_count_one is console.count("js-count")
+js_count_two is console.count("js-count")
+console.count_reset("js-count")
+js_count_reset is console.count("js-count")
+assert_eq(js_count_one, 1)
+assert_eq(js_count_two, 2)
+assert_eq(js_count_reset, 1)
+console.table([{name: "sura", score: 10}, {name: "js", score: 20}])
+console.dir({target: "js", ok: true})
+console.dirxml({target: "js", xml: true})
+console.group("js group")
+console.log("inside group")
+console.groupEnd()
+console.trace("js trace")
+console.profile("js profile")
+wait(1)
+js_profile_elapsed is console.profile_end("js profile")
+assert_eq(type(js_profile_elapsed), "number")
+js_console_green is console.color("ok", "green")
+js_console_bold is console.style("ok", ["bold", "bright_blue"])
+assert_eq(console.strip_ansi(js_console_green), "ok")
+assert_eq(console.stripAnsi(js_console_bold), "ok")
+assert_eq(console_strip_ansi(console_color("direct", "cyan")), "direct")
+console.set_color("default")
+console.resetColor()
+js_console_size is console.size()
+assert_eq(type(console.is_tty()), "bool")
+assert_eq(type(console.width()), "number")
+assert_eq(type(console.height()), "number")
+assert_eq(type(js_console_size), "dict")
+assert_eq(type(js_console_size.width), "number")
+console_json({direct_console: true})
+direct_console_inspect is console_inspect({direct_console: true})
+assert_eq(type(direct_console_inspect), "string")
+console_raw("js", "-", "direct", "-", "raw")
+console_line()
+console_flush()
+direct_console_status is console_status()
+assert_eq(type(direct_console_status.counters), "number")
+direct_console_hrtime is console_hrtime()
+assert_eq(type(direct_console_hrtime), "number")
+console_beep()
+test_checks is [check("js check", true), check_eq("js eq", "sura", "sura"), test.check_match("js match", "agent-7", "\\d+")]
+test_summary_obj is test.summary(test_checks)
+test.eq(test_summary_obj.failed, 0)
+assert(test.report(test_checks, "JS checks").contains("passed: 3"))
+assert_not_contains("sura", "python")
+assert_type({ok: true}, "dict")
+assert_len(["plan", "run", "ship"], 3)
+assert_between(42, 0, 100)
+assert_approx(0.1 + 0.2, 0.3, 0.000001)
+test.not_contains("sura", "python")
+test.type({ok: true}, "dict")
+test.len(["plan", "run", "ship"], 3)
+test.between(42, 0, 100)
+test.approx(0.1 + 0.2, 0.3, 0.000001)
+kv_path is "js_target_kv.json"
+assert(db.set(kv_path, "name", "sura") > 0)
+assert_eq(db.get(kv_path, "name"), "sura")
+assert(db.has(kv_path, "name"))
+assert_eq(db.keys(kv_path)[0], "name")
+assert_eq(db.delete(kv_path, "name"), true)
+assert_eq(file_delete(kv_path), true)
+rows_path is "js_target_rows.json"
+assert_eq(db.insert(rows_path, {id: 1, kind: "agent", score: 10}), 1)
+assert_eq(db.insert(rows_path, {id: 2, kind: "skip", score: 3}), 2)
+assert_eq(db.insert(rows_path, {id: 3, kind: "agent", score: 20}), 3)
+assert_eq(db.count(rows_path, {kind: "agent"}), 2)
+assert_eq(db.update(rows_path, {id: 1}, {score: 10}), 1)
+assert_eq(db.find(rows_path, {score: 10})[0].id, 1)
+assert_eq(db.query(rows_path, {kind: "agent"}, {sort: "score", desc: true, limit: 1})[0].id, 3)
+assert_eq(db_query(rows_path, {}, {sort_by: "id", offset: 1, limit: 1})[0].id, 2)
+assert_eq(db.remove(rows_path, {kind: "skip"}), 1)
+assert_eq(file_delete(rows_path), true)
+query_text is http.query_build({q: "sura agent", tag: ["ai", "tools"]})
+assert(query_text.contains("q=sura%20agent"))
+parsed_query is http.query_parse("?q=sura+agent&tag=ai&tag=tools")
+assert_eq(parsed_query.q, "sura agent")
+assert_eq(parsed_query.tag.len(), 2)
+korean_bytes is url_decode("%ED%95%9C%EA%B8%80")
+form_text is http.form_build({q: "sura agent", tag: ["ai", "tools"], korean: korean_bytes})
+assert_eq(form_text, "korean=%ED%95%9C%EA%B8%80&q=sura+agent&tag=ai&tag=tools")
+parsed_form_js is form_parse(form_text + "&tag=extra")
+assert_eq(parsed_form_js.q, "sura agent")
+assert_eq(parsed_form_js.korean, korean_bytes)
+assert_eq(parsed_form_js.tag[2], "extra")
+cookie_text is http.cookie_build({session: "abc 123", korean: korean_bytes})
+assert_eq(cookie_text, "korean=%ED%95%9C%EA%B8%80; session=abc%20123")
+cookies is http.cookie_parse("Cookie: " + cookie_text + "; repeated=one; repeated=two")
+assert_eq(cookies.session, "abc 123")
+assert_eq(cookies.korean, korean_bytes)
+assert_eq(cookies.repeated[1], "two")
+assert_eq(cookie_get({"Cookie": cookie_text}, "session"), "abc 123")
+parsed_url_js is url_parse("https://api.example.com:8443/v1/search?q=sura+agent&tag=ai&tag=tools#top")
+assert_eq(parsed_url_js.scheme, "https")
+assert_eq(parsed_url_js.host, "api.example.com")
+assert_eq(parsed_url_js.port, 8443)
+assert_eq(parsed_url_js.path, "/v1/search")
+assert_eq(parsed_url_js.params.q, "sura agent")
+assert_eq(parsed_url_js.params.tag[1], "tools")
+assert_eq(http.url_build(parsed_url_js), "https://api.example.com:8443/v1/search?q=sura+agent&tag=ai&tag=tools#top")
+assert_eq(http.url_build({scheme: "https", host: "api.example.com", path: "v1/search", params: {q: "sura agent"}, fragment: "top"}), "https://api.example.com/v1/search?q=sura%20agent#top")
+assert(http.status_ok(204))
+assert(not http.status_ok(404))
+assert_eq(http.status_text(429), "Too Many Requests")
+assert(http.status_retryable(503))
+assert(not http_status_retryable(404))
+assert_eq(http.retry_after({"Retry-After": "2"}, 100), 2000)
+assert_eq(http.retry_after({}, 150), 150)
+assert_eq(http.backoff_delays(4, 100, 2, 500).join(","), "100,200,400,500")
+assert_eq(http_backoff_delays(3, 50, 3, 500).join(","), "50,150,450")
+headers is http.headers_merge(http.auth_bearer("token123"), {"X-Agent": "sura"})
+assert_eq(headers.Authorization, "Bearer token123")
+assert_eq(headers["X-Agent"], "sura")
+assert_eq(http.headers_get(headers, "authorization"), "Bearer token123")
+assert(http.headers_has(headers, "x-agent"))
+assert_eq(headers_get(headers, "missing", "fallback"), "fallback")
+safe_headers_js is http.headers_redact(http.headers_merge(headers, {"X-Api-Key": "secret"}), ["X-Agent"], "***")
+assert_eq(safe_headers_js.Authorization, "***")
+assert_eq(safe_headers_js["X-Api-Key"], "***")
+assert_eq(safe_headers_js["X-Agent"], "***")
+content_headers is {"Content-Type": "Application/Problem+JSON; charset=UTF-8"}
+assert_eq(http.content_type(content_headers), "application/problem+json")
+assert_eq(http.charset(content_headers), "utf-8")
+assert(http.is_json(content_headers))
+assert(not http_is_json("text/plain; charset=utf-8"))
+assert_eq(http.auth_basic("user", "pass").Authorization, "Basic dXNlcjpwYXNz")
+assert_eq(vector.dot([1, 2, 3], [4, 5, 6]), 32)
+assert_eq(vector.normalize([3, 4])[0], 0.6)
+vec3_js is vector.vec3(1, 2, 3)
+assert_eq(vector.dot3(vec3_js, [4, 6, 8]), 40)
+assert_eq(vector.cross([1, 0, 0], [0, 1, 0])[2], 1)
+assert_eq(vec3_distance([1, 2, 3], [4, 6, 3]), 5)
+assert_eq(vector.neg3(vec3_js).join(","), "-1,-2,-3")
+js_lerp3 is vector.lerp3([0, 0, 0], [10, 20, 30], 0.25)
+assert_approx(js_lerp3[0], 2.5, 0.000001)
+assert_approx(js_lerp3[2], 7.5, 0.000001)
+assert_eq(vector.project3([3, 4, 0], [1, 0, 0]).join(","), "3,0,0")
+assert_eq(vector.reject3([3, 4, 0], [1, 0, 0]).join(","), "0,4,0")
+assert_eq(vec3_reflect([1, -2, 0], [0, 1, 0]).join(","), "1,2,0")
+assert_approx(vector.angle3([1, 0, 0], [0, 1, 0]), 1.5707963267948966, 0.000001)
+assert_eq(vector.transform4([1, 2, 3], [1, 0, 0, 10, 0, 1, 0, 20, 0, 0, 1, 30, 0, 0, 0, 1]).join(","), "11,22,33")
+js_identity3 is graphics3d.identity()
+assert_eq(vec3_transform4([1, 2, 3], js_identity3).join(","), "1,2,3")
+js_cube3 is graphics3d.cube(2)
+assert_eq(js_cube3.vertices.len(), 8)
+assert_eq(js_cube3.faces.len(), 12)
+assert_eq(js_cube3.edges.len(), 12)
+js_bounds3 is graphics3d.bounds(js_cube3)
+assert_eq(js_bounds3.min.join(","), "-1,-1,-1")
+assert_eq(js_bounds3.max.join(","), "1,1,1")
+assert_eq(js_bounds3.size.join(","), "2,2,2")
+assert_eq(js_bounds3.center.join(","), "0,0,0")
+js_moved_cube3 is graphics3d.transform(js_cube3, mat4_translate(10, 0, 0))
+assert_eq(mesh_bounds(js_moved_cube3).min.join(","), "9,-1,-1")
+js_combo3 is graphics3d.mul(graphics3d.translate(1, 2, 3), graphics3d.scale(2, 2, 2))
+assert_eq(vec3_transform4([1, 1, 1], js_combo3).join(","), "3,4,5")
+js_normals3 is graphics3d.face_normals(js_cube3)
+assert_eq(js_normals3.len(), 12)
+assert_approx(vec3_norm(js_normals3[0]), 1, 0.000001)
+js_projected3 is graphics3d.project([0, 0, 0], {position: [0, 0, -5], target: [0, 0, 0], fov_deg: 90}, 800, 600)
+assert(js_projected3.visible)
+assert_approx(js_projected3.x, 400, 0.000001)
+assert_approx(js_projected3.y, 300, 0.000001)
+assert_approx(js_projected3.depth, 5, 0.000001)
+docs is [{id: "game", title: "Games", text: "Sura is fast for games.", embedding: [1, 0]}, {id: "agent", title: "Agents", text: "Sura helps AI agents.", embedding: [0.8, 0.2]}]
+hits is vector.search([1, 0], docs, 1)
+assert_eq(hits[0].item.id, "game")
+prepared is rag.prepare("What is Sura good for?", [1, 0], docs, 2)
+assert(prepared.context.contains("Sura is fast"))
+assert_eq(rag.messages("Question?", "Context")[0].role, "system")
+matrix is tensor.matmul([[1, 2], [3, 4]], [[5, 6], [7, 8]])
+assert_eq(matrix[0][0], 19)
+assert_eq(tensor.shape(matrix)[0], 2)
+assert_eq(tensor.flatten(matrix).len(), 4)
+assert_eq(tensor.flatten(tensor.clip([[-2, 0], [3, 7]], -1, 4)).join(","), "-1,0,3,4")
+assert_eq(tensor.shape(tensor.clip([[1, 2], [3, 4]], 2, 3)).join(","), "2,2")
+assert_eq(tensor.sum([[1, 2], [3, 4]]), 10)
+assert_eq(tensor.mean([[1, 2], [3, 4]]), 2.5)
+assert_approx(tensor.variance([[1, 2], [3, 4]]), 1.25, 0.000001)
+assert_approx(tensor.std([[1, 2], [3, 4]]), 1.11803398875, 0.000001)
+assert_eq(tensor.min([[1, -2], [3, 4]]), -2)
+assert_eq(tensor.max([[1, -2], [3, 4]]), 4)
+assert_eq(tensor.argmin([[4, -3], [-3, 9]]), 1)
+assert_eq(tensor.argmax([[4, 9], [9, 1]]), 1)
+module_z_js is tensor.zscore([1, 2, 3])
+assert_approx(tensor.mean(module_z_js), 0, 0.000001)
+assert_approx(tensor.std(module_z_js), 1, 0.000001)
+assert_approx(module_z_js[1], 0, 0.000001)
+module_probs_js is tensor.softmax([1, 2, 3])
+assert_approx(tensor.sum(module_probs_js), 1, 0.000001)
+assert_eq(tensor.argmax(module_probs_js), 2)
+assert_between(module_probs_js[2], 0.66, 0.67)
+assert_eq(tensor_sum([[2, 4], [6, 8]]), 20)
+assert_eq(tensor_mean([[2, 4], [6, 8]]), 5)
+assert_approx(tensor_variance([[2, 4], [6, 8]]), 5, 0.000001)
+assert_approx(tensor_std([[2, 4], [6, 8]]), 2.2360679775, 0.000001)
+assert_eq(tensor_min([[2, -4], [6, 8]]), -4)
+assert_eq(tensor_max([[2, -4], [6, 8]]), 8)
+assert_eq(tensor_argmin([[2, -4], [6, -4]]), 1)
+assert_eq(tensor_argmax([[2, 8], [8, 1]]), 1)
+assert_eq(tensor_flatten(tensor_clip([[-5, 0], [5, 10]], -2, 6)).join(","), "-2,0,5,6")
+assert_eq(tensor_clip([], -1, 1).len(), 0)
+direct_z_js is tensor_zscore([[2, 4], [6, 8]])
+assert_approx(tensor_mean(direct_z_js), 0, 0.000001)
+assert_approx(tensor_std(direct_z_js), 1, 0.000001)
+assert_eq(tensor_shape(direct_z_js).join(","), "2,2")
+assert_eq(tensor_flatten(tensor_zscore([[5, 5], [5, 5]])).join(","), "0,0,0,0")
+direct_probs_js is tensor_softmax([[1, 2], [3, 4]])
+assert_approx(tensor_sum(direct_probs_js), 1, 0.000001)
+assert_eq(tensor_shape(direct_probs_js).join(","), "2,2")
+assert_eq(type(tensor.mean([])), "nil")
+assert_eq(type(tensor.variance([])), "nil")
+assert_eq(type(tensor.std([])), "nil")
+assert_eq(type(tensor.min([])), "nil")
+assert_eq(type(tensor.max([])), "nil")
+assert_eq(type(tensor.argmin([])), "nil")
+assert_eq(type(tensor.argmax([])), "nil")
+assert_eq(tensor.zscore([]).len(), 0)
+assert_eq(tensor.softmax([]).len(), 0)
+agent_schema_js is {type: "dict", properties: {goal: {type: "string", min_len: 1}, max_steps: {type: "integer", min: 1, max: 5}}, additional: false}
+agent_value_js is {goal: "ship", max_steps: 3}
+assert(json.schema_validate(agent_value_js, agent_schema_js))
+assert_eq(schema_errors(agent_value_js, agent_schema_js).len(), 0)
+open_schema_js is json.schema_to_json_schema(agent_schema_js)
+assert_eq(open_schema_js.type, "object")
+assert_eq(open_schema_js.properties.goal.minLength, 1)
+assert_eq(open_schema_js.properties.max_steps.maximum, 5)
+assert_eq(json.to_json_schema(agent_schema_js).properties.goal.type, "string")
+json_rows_js is [{name: "sura", kind: "lang", meta: {score: 2}}, {name: "agent", kind: "bot", meta: {score: 5}}, {name: "lua", kind: "lang", meta: {score: 3}}]
+assert_eq(pluck(json_rows_js, "name").join(","), "sura,agent,lua")
+assert_eq(json.pluck(json_rows_js, "meta.score")[1], 5)
+assert_eq(count_by(json_rows_js, "kind").lang, 2)
+assert_eq(json.count_by(json_rows_js, "kind").lang, 2)
+assert_eq(json.group_by(json_rows_js, "kind").bot[0].name, "agent")
+sorted_json_rows_js is json.sort_by(json_rows_js, "meta.score", true)
+assert_eq(sorted_json_rows_js[0].name, "agent")
+jsonl_text_js is json.jsonl_stringify([{id: 1}, {id: 2}], true)
+assert_eq(jsonl_parse(jsonl_text_js).len(), 2)
+csv_text_js is json.csv_stringify([{name: "sura", score: "9,9"}], ["name", "score"])
+assert_eq(csv_parse(csv_text_js, true)[0].score, "9,9")
+ini_text_js is "name = Sura\nmode: fast\n[agent]\nmodel = llama\nnote = \"hello world\"\n"
+ini_cfg_js is json.ini_parse(ini_text_js)
+assert_eq(ini_cfg_js.name, "Sura")
+assert_eq(ini_cfg_js.agent.note, "hello world")
+ini_roundtrip_js is ini_parse(json.ini_stringify({name: "Sura", agent: {model: "llama", note: "hello world"}}))
+assert_eq(ini_roundtrip_js.agent.model, "llama")
+template_data_js is {user: {name: "Sura"}, scores: [9], meta: {ok: true}}
+assert_eq(template_render("Hi [[ user.name ]] score [[ scores[0] ]] missing [[missing]]", template_data_js, "n/a"), "Hi Sura score 9 missing n/a")
+assert(template_render("Meta [[meta]]", template_data_js).contains("\"ok\":true"))
+assert_eq(json.template_render("Hi [[user.name]]", template_data_js), "Hi Sura")
+note_path_js is "note.txt"
+note_url_js is "file://" + path.abs(note_path_js)
+assert(file_write(note_path_js, json.stringify({ok: true, message: "tool context"})) > 0)
+request_spec_js is {url: note_url_js}
+assert(http_get(note_url_js).contains("tool context"))
+assert_eq(http_request(request_spec_js), file_read(note_path_js))
+full_response_js is http.request_full(request_spec_js)
+assert(full_response_js.ok)
+assert_eq(full_response_js.status, 200)
+assert_eq(http.request_json(request_spec_js).message, "tool context")
+assert_eq(http_request_json_checked(request_spec_js).ok, true)
+assert_eq(http.request_retry(request_spec_js, 2, 1).attempts, 1)
+assert_eq(http_request_retry_json_checked(request_spec_js, 2, 1).message, "tool context")
+live_http_url_js is env_get("SURA_JS_HTTP_URL", "")
+if length(live_http_url_js) > 0 then
+  live_full_js is http.request_full({url: live_http_url_js + "/json", query: {q: "sura agent"}, headers: {"X-Sura": "js"}, timeout: 5})
+  assert(live_full_js.ok)
+  assert_eq(live_full_js.status, 200)
+  assert(live_full_js.body.contains("\"ok\":true"))
+  live_json_js is http.request_json_checked({url: live_http_url_js + "/json", query: {q: "sura agent"}, headers: {"X-Sura": "js"}, timeout: 5})
+  assert_eq(live_json_js.query, "sura agent")
+  assert_eq(live_json_js.header, "js")
+  live_post_js is http.request_json_checked({url: live_http_url_js + "/echo", method: "POST", json: {name: "sura"}, timeout: 5})
+  assert_eq(live_post_js.method, "POST")
+  assert(live_post_js.body.contains("\"name\":\"sura\""))
+  live_form_js is http.request_json_checked({url: live_http_url_js + "/echo", form: {q: "sura agent", tag: ["ai", "tools"]}, timeout: 5})
+  assert_eq(live_form_js.method, "POST")
+  assert(live_form_js.content_type.contains("application/x-www-form-urlencoded"))
+  assert(live_form_js.body.contains("q=sura+agent"))
+  assert(live_form_js.body.contains("tag=tools"))
+  live_tool_spec_js is tool.spec("http_get", {url: live_http_url_js + "/json"})
+  assert(tool.allowed(live_tool_spec_js, {tools: ["http_get"], url_prefixes: ["http://127.0.0.1"]}))
+  assert(tool.call(live_tool_spec_js).contains("\"ok\":true"))
+  live_async_js is async.http_get(live_http_url_js + "/json")
+  assert(async.await_timeout(live_async_js, 1000, "timeout").contains("\"ok\":true"))
+end
+static_port_js is to_int(env_get("SURA_JS_STATIC_PORT", "0"))
+if static_port_js > 0 then
+  static_root_js is path.join(env_get("TEMP", "."), "sura_js_static_target")
+  mkdir(static_root_js)
+  static_file_js is path.join(static_root_js, "index.txt")
+  assert(file_write(static_file_js, "sura static ok") > 0)
+  static_server_js is http.serve_static(static_root_js, static_port_js)
+  assert_eq(static_server_js.type, "http_server")
+  assert_eq(static_server_js.port, static_port_js)
+  assert(http.server_url(static_server_js).contains("http://127.0.0.1:"))
+  assert_eq(http_get(http.server_url(static_server_js) + "index.txt").trim(), "sura static ok")
+  assert(http.server_stop(static_server_js))
+  assert_eq(file_delete(static_file_js), true)
+end
+route_port_js is to_int(env_get("SURA_JS_ROUTE_PORT", "0"))
+if route_port_js > 0 then
+  routes_js is {"GET /health": {json: {ok: true, name: "sura"}}, "POST /echo": {status: 201, echo: true, headers: {"X-Sura": "routes"}}, "/plain": "plain route"}
+  route_server_js is http_serve_routes(routes_js, route_port_js)
+  assert_eq(route_server_js.type, "http_routes_server")
+  assert_eq(route_server_js.port, route_port_js)
+  health_js is http_request_json({url: http_server_url(route_server_js) + "health", timeout: 5})
+  assert(health_js.ok)
+  assert_eq(health_js.name, "sura")
+  assert_eq(http.get(http_server_url(route_server_js) + "plain").trim(), "plain route")
+  route_echo_full_js is http.request_full({method: "POST", url: http_server_url(route_server_js) + "echo?q=sura&q=agent", json: {message: "한글"}, timeout: 5})
+  assert_eq(route_echo_full_js.status, 201)
+  assert_eq(route_echo_full_js.headers["x-sura"], "routes")
+  route_echo_js is json.parse(route_echo_full_js.body)
+  assert_eq(route_echo_js.method, "POST")
+  assert_eq(route_echo_js.query.q[0], "sura")
+  assert_eq(route_echo_js.query.q[1], "agent")
+  assert_eq(json.parse(route_echo_js.body).message, "한글")
+  route_form_js is json.parse(http.request_full({method: "POST", url: http_server_url(route_server_js) + "echo", form: {q: "sura agent", tag: ["ai", "tools"]}, timeout: 5}).body)
+  assert(route_form_js.headers["content-type"].contains("application/x-www-form-urlencoded"))
+  assert_eq(http.form_parse(route_form_js.body).q, "sura agent")
+  assert_eq(http.form_parse(route_form_js.body).tag[1], "tools")
+  assert(http_server_stop(route_server_js))
+end
+async_get_js is async.http_get(note_url_js)
+assert(async.status(async_get_js).known)
+assert_eq(async.await_timeout(async_get_js, 1000, "timeout"), file_read(note_path_js))
+assert(not async.status(async_get_js).known)
+async_request_js is async.http_request(request_spec_js)
+async_timer_js is async.sleep(250)
+assert(async.status(async_timer_js).running)
+assert_eq(async.await_timeout(async_timer_js, 0, "pending"), "pending")
+assert(async.status(async_timer_js).known)
+assert_eq(async.await(async_timer_js), "")
+async_all_ids_js is [async_request_js, async.http_get(note_url_js)]
+assert_eq(async.all_timeout(async_all_ids_js, 1000, ["timeout"])[0], file_read(note_path_js))
+assert_eq(async.all_timeout([async.http_get(note_url_js)], 100, ["timeout"])[0], file_read(note_path_js))
+async_any_id_a_js is async.http_get(note_url_js)
+async_any_id_b_js is async.sleep(20)
+async_first_js is async.any([async_any_id_a_js, async_any_id_b_js], 100, nil)
+assert_eq(async_first_js.output, file_read(note_path_js))
+assert_eq(async.await(async_any_id_b_js), "")
+async_forget_js is async.sleep(1)
+wait(50)
+assert(async.forget(async_forget_js))
+assert(not async.status(async_forget_js).known)
+async_cleanup_js is async.sleep(1)
+wait(50)
+assert(async.cleanup() >= 1)
+assert(not async.status(async_cleanup_js).known)
+async_direct_sleep_js is async_sleep(1)
+assert_eq(async_await(async_direct_sleep_js), "")
+tool_spec_js is tool.spec("http_get", {url: note_url_js})
+assert(tool.validate(tool_spec_js))
+assert(tool.allowed(tool_spec_js, {tools: ["http_get"], url_prefixes: ["file://"]}))
+assert_contains(tool.schema("http_get").required, "url")
+llm_messages_js is llm.messages("You are concise", "Summarize Sura")
+assert_eq(llm_messages_js[0].role, "system")
+assert(llm.request_json("model", llm_messages_js, 0.2).contains("\"model\":\"model\""))
+structured_js is llm.request_schema("model", llm_messages_js, agent_schema_js, 0.2, "agent_plan")
+assert_eq(structured_js.response_format.type, "json_schema")
+assert_eq(structured_js.response_format.json_schema.schema.properties.goal.type, "string")
+assert(llm.request_schema_json("model", llm_messages_js, agent_schema_js, 0.2, "agent_plan").contains("\"response_format\""))
+llm_tool_defs_js is llm.tools(["http_get"])
+assert_eq(llm_tool_defs_js[0].type, "function")
+assert_eq(llm_tool_defs_js[0].function.name, "http_get")
+assert_contains(llm_tool_defs_js[0].function.parameters.required, "url")
+llm_tool_request_js is llm.request_tools("model", llm_messages_js, ["http_get"], 0)
+assert_eq(llm_tool_request_js.tools[0].function.name, "http_get")
+assert(llm.request_tools_json("model", llm_messages_js, ["http_get"], 0).contains("\"tools\""))
+llm_tool_schema_request_js is llm.request_tools_schema("model", llm_messages_js, ["http_get"], agent_schema_js, 0, "agent_plan")
+assert_eq(llm_tool_schema_request_js.tools[0].function.name, "http_get")
+assert_eq(llm_tool_schema_request_js.response_format.json_schema.name, "agent_plan")
+assert(llm.request_tools_schema_json("model", llm_messages_js, ["http_get"], agent_schema_js, 0, "agent_plan").contains("\"response_format\""))
+assert_eq(llm.extract_text({choices: [{message: {content: "ok"}}]}), "ok")
+llm_usage_js is llm.usage({usage: {prompt_tokens: 3, completion_tokens: 4, total_tokens: 7}})
+assert_eq(llm_usage_js.input_tokens, 3)
+assert_eq(llm_usage_js.output_tokens, 4)
+llm_responses_usage_js is llm_usage({usage: {input_tokens: 5, output_tokens: 6}})
+assert_eq(llm_responses_usage_js.total_tokens, 11)
+llm_cost_js is llm.cost({usage: {input_tokens: 1000000, output_tokens: 500000}}, {input_per_million: 2, output_per_million: 8, currency: "USD"})
+assert_eq(llm_cost_js.input_cost, 2)
+assert_eq(llm_cost_js.output_cost, 4)
+assert_eq(llm_cost_js.total_cost, 6)
+assert_eq(llm_cost_js.currency, "USD")
+llm_alias_cost_js is llm_cost({usage: {prompt_tokens: 1000000, completion_tokens: 1000000}}, {prompt_per_million: 1, completion_per_million: 2})
+assert_eq(llm_alias_cost_js.total_cost, 3)
+llm_budget_js is llm.budget({usage: {input_tokens: 1000000, output_tokens: 500000}}, {input_per_million: 2, output_per_million: 8}, 7)
+assert_eq(llm_budget_js.within_budget, true)
+assert_eq(llm_budget_js.over_budget, false)
+assert_eq(llm_budget_js.remaining, 1)
+llm_over_budget_js is llm_budget({usage: {input_tokens: 1000000, output_tokens: 500000}}, {input_per_million: 2, output_per_million: 8}, 5)
+assert_eq(llm_over_budget_js.within_budget, false)
+assert_eq(llm_over_budget_js.over_budget, true)
+assert_eq(llm_over_budget_js.remaining, -1)
+llm_mock_path_js is path.join(env_get("TEMP", "."), "sura_llm_mock_response_js_target.json")
+llm_mock_url_js is "file://" + regex_replace(path.abs(llm_mock_path_js), "\\\\", "/")
+assert(file_write(llm_mock_path_js, json.stringify({choices: [{message: {content: "mock ok"}}]})) > 0)
+llm_chat_raw_js is llm.chat(llm_mock_url_js, "test-key", "model", llm_messages_js, 0.2)
+assert_eq(llm.extract_text(llm_chat_raw_js), "mock ok")
+llm_chat_request_raw_js is llm.chat_request(llm_mock_url_js, "test-key", llm_tool_schema_request_js)
+assert_eq(llm.extract_text(llm_chat_request_raw_js), "mock ok")
+llm_chat_request_json_raw_js is llm.chat_request(llm_mock_url_js, "test-key", llm.request_tools_schema_json("model", llm_messages_js, ["http_get"], agent_schema_js, 0, "agent_plan"))
+assert_eq(llm.extract_text(llm_chat_request_json_raw_js), "mock ok")
+assert_eq(file_delete(llm_mock_path_js), true)
+llm_json_response_js is {choices: [{message: {content: json.stringify({goal: "ship", max_steps: 3})}}]}
+llm_json_output_js is llm.extract_json(llm_json_response_js, agent_schema_js)
+assert_eq(llm_json_output_js.goal, "ship")
+assert_eq(llm_json_output_js.max_steps, 3)
+model_response_js is {choices: [{message: {tool_calls: [{id: "call_1", function: {name: "http_get", arguments: json.stringify({url: note_url_js})}}]}}]}
+tool_call_js is llm.tool_calls(model_response_js)[0]
+assert_eq(tool_call_js.name, "http_get")
+assert_eq(llm.tool_result(tool_call_js, {ok: true}).role, "tool")
+tool_messages_js is llm.run_tools(model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]})
+assert(tool_messages_js[0].content.contains("tool context"))
+next_messages_js is llm.next_messages(llm_messages_js, model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]})
+assert_eq(next_messages_js[length(llm_messages_js)].role, "assistant")
+assert_eq(next_messages_js[length(llm_messages_js) + 1].role, "tool")
+assert(next_messages_js[length(llm_messages_js) + 1].content.contains("tool context"))
+next_request_js is llm.next_request("model", llm_messages_js, model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]}, ["http_get"], 0)
+assert_eq(next_request_js.messages[length(llm_messages_js) + 1].role, "tool")
+assert_eq(next_request_js.tools[0].function.name, "http_get")
+assert(llm.next_request_json("model", llm_messages_js, model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]}, ["http_get"], 0).contains("\"tools\""))
+next_schema_request_js is llm.next_schema_request("model", llm_messages_js, model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]}, ["http_get"], agent_schema_js, 0, "agent_plan")
+assert_eq(next_schema_request_js.messages[length(llm_messages_js) + 1].role, "tool")
+assert_eq(next_schema_request_js.response_format.json_schema.name, "agent_plan")
+assert(llm.next_schema_request_json("model", llm_messages_js, model_response_js, {tools: ["http_get"], url_prefixes: ["file://"]}, ["http_get"], agent_schema_js, 0, "agent_plan").contains("\"response_format\""))
+assert_eq(file_delete(note_path_js), true)
+sse_chunk_hel_js is json.stringify({choices: [{delta: {content: "Hel"}}]})
+sse_chunk_lo_js is json.stringify({choices: [{delta: {content: "lo"}}]})
+sse_text_js is "event: message\n" + "data: " + sse_chunk_hel_js + "\n\n" + "data: " + sse_chunk_lo_js + "\n\n" + "data: [DONE]\n\n"
+sse_events_js is sse_parse(sse_text_js)
+assert_eq(sse_events_js[0].event, "message")
+assert(sse_events_js[0].data.contains("Hel"))
+sse_chunks_js is sse_data(sse_text_js, true)
+assert_eq(sse_chunks_js.len(), 2)
+json_sse_events_js is json.sse_parse(sse_text_js)
+assert_eq(json_sse_events_js[0].event, "message")
+assert_eq(json.sse_data(sse_text_js, true).len(), 2)
+assert_eq(llm.stream_text(sse_text_js), "Hello")
+assert_eq(llm_stream_text([{choices: [{text: "fallback"}]}]), "fallback")
+
+plan_stream is stream_from(["plan", "act", "observe", "done"])
+assert_eq(stream_count(plan_stream), 4)
+assert_eq(stream_take(plan_stream, 2).join(","), "plan,act")
+assert_eq(stream_skip(plan_stream, 1), 1)
+assert_eq(stream_next(plan_stream), "done")
+assert_eq(type(stream_next(plan_stream)), "nil")
+batch_stream is stream_from(["a", "b", "c"])
+batch_rows is stream_batch(batch_stream, 2)
+assert_eq(batch_rows[0].join(","), "a,b")
+assert_eq(batch_rows[1].join(","), "c")
+assert_eq(stream_count(batch_stream), 0)
+event_stream is stream_from([{kind: "log", msg: "start"}, {kind: "metric", msg: "cpu"}, {kind: "log", msg: "stop"}])
+log_stream is stream_filter(event_stream, {kind: "log"})
+assert_eq(stream_join(stream_map(log_stream, "msg"), "|"), "start|stop")
+window_rows is stream_window(stream_from(["a", "b", "c", "d"]), 2, 2)
+assert_eq(window_rows[0].join(","), "a,b")
+assert_eq(window_rows[1].join(","), "c,d")
+line_stream is stream_from("alpha\nbeta")
+assert_eq(stream_join(line_stream, "|"), "alpha|beta")
+metric_stream_js is stream_from([{ms: 10}, {ms: 20}, {ms: 30}])
+assert_eq(stream_sum(metric_stream_js, "ms"), 60)
+assert_eq(stream_count(metric_stream_js), 0)
+assert_eq(stream_avg(stream_from([2, 4, 6])), 4)
+assert_eq(type(stream_avg(stream_from([]))), "nil")
+module_events is stream.from([{kind: "log", msg: "start"}, {kind: "metric", msg: "cpu"}, {kind: "log", msg: "stop"}])
+assert_eq(stream.join(stream.map(stream.filter(module_events, {kind: "log"}), "msg"), " | "), "start | stop")
+assert_eq(stream.batch(stream.from(["a", "b", "c"]), 2)[0].len(), 2)
+module_metric_stream_js is stream.from([{ms: 3}, {ms: 7}])
+assert_eq(stream.sum(module_metric_stream_js, "ms"), 10)
+assert_eq(stream.avg(stream.from([4, 6])), 5)
+
+who is "Sura"
+agent is {name: "agent", score: 7}
+assert_eq("hello {who}", "hello Sura")
+assert_eq("agent {agent[\"name\"]}", "agent agent")
+assert_eq("score {agent.score + 3}", "score 10")
+assert_eq("score index {agent[\"score\"] + 3}", "score index 10")
+assert_eq("fib {fib(5)}", "fib 5")
+assert_eq("json {} done", "json {} done")
+assert_eq("literal and only", "literal and only")
+
+print "js target: PASS"

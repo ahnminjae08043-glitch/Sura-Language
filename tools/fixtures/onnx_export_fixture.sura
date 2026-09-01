@@ -1,0 +1,14 @@
+use autograd
+
+path is env_get("SURA_ONNX_FIXTURE", "")
+assert(path != "")
+safe_path is env_get("SURA_SAFE_FIXTURE", "")
+f32 is autograd.tensor([[1, 2], [3, 4]], "float32")
+f16 is autograd.tensor([0.5, -1.5], "float16")
+bf16 is autograd.tensor([2.25], "bfloat16")
+f64 is autograd.tensor(7.5)
+autograd.save_onnx_weights({f32: f32, f16: f16, bf16: bf16, f64: f64}, path)
+if safe_path != "" then
+  autograd.save_safetensors({f32: f32, f16: f16, bf16: bf16, f64: f64}, safe_path)
+end
+print "onnx_export_fixture: PASS"

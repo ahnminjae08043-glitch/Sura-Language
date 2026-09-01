@@ -1,0 +1,268 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3_scaled(actual, expected, scale, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  batch is 0
+  while batch < actual.len() do
+    assert_eq(actual[batch].len(), expected[batch].len())
+    row is 0
+    while row < actual[batch].len() do
+      assert_eq(actual[batch][row].len(), expected[batch][row].len())
+      col is 0
+      while col < actual[batch][row].len() do
+        assert_approx(actual[batch][row][col], scale * expected[batch][row][col], epsilon)
+        col is col + 1
+      end
+      row is row + 1
+    end
+    batch is batch + 1
+  end
+end
+
+func assert_rank3_rows_sum_zero(values, epsilon) do
+  batch is 0
+  while batch < values.len() do
+    row is 0
+    while row < values[batch].len() do
+      total is 0
+      col is 0
+      while col < values[batch][row].len() do
+        total is total + values[batch][row][col]
+        col is col + 1
+      end
+      assert_approx(total, 0, epsilon)
+      row is row + 1
+    end
+    batch is batch + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  logits_values is [[[2, 1, 0, -1], [0, 1, 2, 3], [-1, 0, 1, 2]]]
+  target_values is [[0, 2, 1]]
+  cpu_targets is autograd.tensor(target_values)
+
+  # Validate sparse-target errors independently of the future CUDA kernel.
+  validation_logits is autograd.tensor(logits_values, {dtype: "float32"})
+  out_of_range_rejected is false
+  try
+    autograd.cross_entropy_ids(validation_logits, [[0, 4, 1]])
+  catch error
+    out_of_range_rejected is true
+  end
+  assert(out_of_range_rejected)
+
+  fractional_rejected is false
+  try
+    autograd.cross_entropy_ids(validation_logits, [[0, 1.5, 1]])
+  catch error
+    fractional_rejected is true
+  end
+  assert(fractional_rejected)
+
+  wrong_shape_rejected is false
+  try
+    autograd.cross_entropy_ids(validation_logits, [[0, 1]])
+  catch error
+    wrong_shape_rejected is true
+  end
+  assert(wrong_shape_rejected)
+
+  differentiable_targets is autograd.parameter(target_values)
+  differentiable_target_rejected is false
+  try
+    autograd.cross_entropy_ids(validation_logits, differentiable_targets)
+  catch error
+    differentiable_target_rejected is true
+  end
+  assert(differentiable_target_rejected)
+
+  # IDs are deliberately a CPU-side contract. A CUDA target Tensor must be
+  # rejected rather than silently copied back to the host for validation.
+  cuda_targets is autograd.tensor(target_values, {device: "cuda"})
+  cuda_target_rejected is false
+  try
+    autograd.cross_entropy_ids(validation_logits, cuda_targets)
+  catch error
+    cuda_target_rejected is true
+  end
+  assert(cuda_target_rejected)
+
+  # CPU float32 is the semantic oracle for a rank-3 [batch, rows, classes]
+  # logits Tensor and a CPU Tensor containing sparse target IDs.
+  cpu_logits is autograd.parameter(logits_values, {dtype: "float32"})
+  cpu_loss is autograd.cross_entropy_ids(cpu_logits, cpu_targets)
+  cpu_loss_value is autograd.item(cpu_loss)
+  autograd.backward(cpu_loss)
+  cpu_grad is autograd.grad(cpu_logits)
+  assert_rank3_rows_sum_zero(cpu_grad, 0.000001)
+
+  # An explicit scalar seed of one must be identical to implicit backward.
+  cpu_explicit_logits is autograd.parameter(logits_values, {dtype: "float32"})
+  cpu_explicit_loss is autograd.cross_entropy_ids(cpu_explicit_logits, cpu_targets)
+  autograd.backward(cpu_explicit_loss, 1)
+  assert_approx(autograd.item(cpu_explicit_loss), cpu_loss_value, 0.000001)
+  approx_rank3(autograd.grad(cpu_explicit_logits), cpu_grad, 0.000001)
+
+  # The two-stage CUDA forward needs transient IDs/max/inv-sum workspaces,
+  # but a no-grad scalar must release all three before returning. Only the
+  # scalar's four device bytes may remain resident.
+  gpu_no_grad_logits is autograd.tensor(logits_values, {device: "cuda"})
+  no_grad_allocated_before is autograd.cuda_stats().allocated_bytes
+  autograd.cuda_reset_stats()
+  gpu_no_grad_loss is autograd.cross_entropy_ids(gpu_no_grad_logits, cpu_targets)
+  assert_eq(autograd.requires_grad(gpu_no_grad_loss), false)
+  no_grad_stats is autograd.cuda_stats()
+  assert_eq(no_grad_stats.allocated_bytes - no_grad_allocated_before, 4)
+  assert_eq(no_grad_stats.h2d_bytes, 12)
+  assert_eq(no_grad_stats.d2h_bytes, 0)
+  assert_eq(no_grad_stats.cross_entropy_launches, 2)
+  assert_eq(no_grad_stats.kernel_launches, 2)
+  assert_approx(autograd.item(gpu_no_grad_loss), cpu_loss_value, 0.000002)
+
+  gpu_logits is autograd.parameter(logits_values, {device: "cuda"})
+  grad_allocated_before is autograd.cuda_stats().allocated_bytes
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  gpu_loss is autograd.cross_entropy_ids(gpu_logits, cpu_targets)
+  assert_eq(autograd.device(gpu_loss), "cuda:{info.device_index}")
+  assert_eq(autograd.dtype(gpu_loss), "float32")
+  assert_eq(autograd.numel(gpu_loss), 1)
+  assert_eq(autograd.storage_bytes(gpu_loss), 4)
+  assert_eq(autograd.requires_grad(gpu_loss), true)
+  autograd.backward(gpu_loss)
+
+  # Three uint32 target IDs are the only H2D traffic in the measured graph.
+  # Loss and persistent logits gradient stay device-only until observation.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 12)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert(before_observation.kernel_launches >= 2)
+  assert_eq(before_observation.cross_entropy_launches, 3)
+  # Default backward synchronizes, installs the 12-logit leaf gradient, and
+  # releases the three 3-row saved buffers. Scalar + gradient = 4 + 48 bytes.
+  assert_eq(before_observation.allocated_bytes - grad_allocated_before, 52)
+
+  gpu_loss_value is autograd.item(gpu_loss)
+  gpu_grad is autograd.grad(gpu_logits)
+  assert_approx(gpu_loss_value, cpu_loss_value, 0.000002)
+  approx_rank3(gpu_grad, cpu_grad, 0.000002)
+  assert_rank3_rows_sum_zero(gpu_grad, 0.000002)
+
+  # item() retains the scalar f32 host mirror; grad() stages 12 f32 values.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 4)
+  after_observation is autograd.cuda_stats()
+  assert_eq(after_observation.h2d_bytes, 12)
+  assert_eq(after_observation.d2h_bytes, 52)
+
+  # Repeat with a pre-uploaded explicit CUDA scalar seed. Resetting counters
+  # after seed creation isolates the same 4*rows target upload boundary.
+  gpu_explicit_logits is autograd.parameter(logits_values, {device: "cuda"})
+  gpu_scalar_seed is autograd.tensor(1, {device: "cuda"})
+  explicit_host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  gpu_explicit_loss is autograd.cross_entropy_ids(gpu_explicit_logits, cpu_targets)
+  autograd.backward(gpu_explicit_loss, gpu_scalar_seed)
+  explicit_before_observation is autograd.cuda_stats()
+  assert_eq(explicit_before_observation.h2d_bytes, 12)
+  assert_eq(explicit_before_observation.d2h_bytes, 0)
+  assert_eq(explicit_before_observation.cross_entropy_launches, 3)
+  assert_eq(autograd.limits().memory_used_bytes, explicit_host_baseline)
+  gpu_explicit_loss_value is autograd.item(gpu_explicit_loss)
+  gpu_explicit_grad is autograd.grad(gpu_explicit_logits)
+  assert_approx(gpu_explicit_loss_value, gpu_loss_value, 0.000002)
+  approx_rank3(gpu_explicit_grad, gpu_grad, 0.000002)
+  assert_rank3_rows_sum_zero(gpu_explicit_grad, 0.000002)
+  explicit_after_observation is autograd.cuda_stats()
+  assert_eq(explicit_after_observation.h2d_bytes, 12)
+  assert_eq(explicit_after_observation.d2h_bytes, 52)
+  assert_eq(autograd.limits().memory_used_bytes, explicit_host_baseline + 4)
+
+  # retain_graph keeps IDs/max/inv-sum alive for a second backward. The first
+  # pass leaves scalar + three saved row buffers + persistent logits gradient:
+  # 4 + 36 + 48 = 88 device bytes. The non-retained second pass releases the
+  # saved 36 bytes while accumulating the leaf gradient to exactly twice its
+  # first-pass value.
+  retained_logits is autograd.parameter(logits_values, {device: "cuda"})
+  retained_allocated_before is autograd.cuda_stats().allocated_bytes
+  autograd.cuda_reset_stats()
+  retained_loss is autograd.cross_entropy_ids(retained_logits, cpu_targets)
+  autograd.backward(retained_loss, nil, true)
+  retained_once is autograd.grad(retained_logits)
+  retained_first_stats is autograd.cuda_stats()
+  assert_eq(retained_first_stats.h2d_bytes, 12)
+  assert_eq(retained_first_stats.d2h_bytes, 48)
+  assert_eq(retained_first_stats.cross_entropy_launches, 3)
+  assert_eq(retained_first_stats.allocated_bytes - retained_allocated_before, 88)
+
+  autograd.backward(retained_loss)
+  retained_twice is autograd.grad(retained_logits)
+  approx_rank3_scaled(retained_twice, retained_once, 2, 0.000004)
+  retained_second_stats is autograd.cuda_stats()
+  assert_eq(retained_second_stats.h2d_bytes, 12)
+  assert_eq(retained_second_stats.d2h_bytes, 96)
+  assert_eq(retained_second_stats.cross_entropy_launches, 4)
+  assert_eq(retained_second_stats.allocated_bytes - retained_allocated_before, 52)
+
+  # Max-subtracted log-sum-exp must remain finite when raw exponentials would
+  # overflow or underflow. The two row losses are 0 and 10000, averaged to 5000.
+  extreme_logits_values is [[[10000, 0, -10000], [-10000, 10000, 0]]]
+  extreme_target_values is [[0, 2]]
+  extreme_cpu_targets is autograd.tensor(extreme_target_values)
+  extreme_cpu_logits is autograd.parameter(extreme_logits_values, {dtype: "float32"})
+  extreme_cpu_loss is autograd.cross_entropy_ids(extreme_cpu_logits, extreme_cpu_targets)
+  assert_approx(autograd.item(extreme_cpu_loss), 5000, 0.001)
+  autograd.backward(extreme_cpu_loss)
+  extreme_cpu_grad is autograd.grad(extreme_cpu_logits)
+  assert_rank3_rows_sum_zero(extreme_cpu_grad, 0.000001)
+
+  extreme_gpu_logits is autograd.parameter(extreme_logits_values, {device: "cuda"})
+  autograd.cuda_reset_stats()
+  extreme_gpu_loss is autograd.cross_entropy_ids(extreme_gpu_logits, extreme_cpu_targets)
+  autograd.backward(extreme_gpu_loss)
+  extreme_before_observation is autograd.cuda_stats()
+  assert_eq(extreme_before_observation.h2d_bytes, 8)
+  assert_eq(extreme_before_observation.d2h_bytes, 0)
+  extreme_gpu_loss_value is autograd.item(extreme_gpu_loss)
+  extreme_gpu_grad is autograd.grad(extreme_gpu_logits)
+  assert_approx(extreme_gpu_loss_value, 5000, 0.01)
+  approx_rank3(extreme_gpu_grad, extreme_cpu_grad, 0.0001)
+  assert_rank3_rows_sum_zero(extreme_gpu_grad, 0.0001)
+  extreme_after_observation is autograd.cuda_stats()
+  assert_eq(extreme_after_observation.h2d_bytes, 8)
+  assert_eq(extreme_after_observation.d2h_bytes, 28)
+else
+  print "39_cuda_cross_entropy_ids: SKIP ({info.error})"
+end
+
+print "39_cuda_cross_entropy_ids: PASS"

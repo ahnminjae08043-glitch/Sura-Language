@@ -1,0 +1,34 @@
+// Physics loop benchmark — heavy method call usage
+
+struct Vec2 do
+    x is 0
+    y is 0
+
+    func add(other) do
+        return Vec2(self.x + other.x, self.y + other.y)
+    end
+
+    func scale(k) do
+        return Vec2(self.x * k, self.y * k)
+    end
+end
+
+func step(pos, vel, dt) do
+    scaled is vel.scale(dt)
+    return pos.add(scaled)
+end
+
+p is Vec2(0, 0)
+v is Vec2(1, 2)
+dt is 0.016
+
+t is clock()
+i is 0
+while i < 100000 do
+    p is step(p, v, dt)
+    i is i + 1
+end
+ms is (clock() - t) * 1000
+print "physics step 100k x  {ms} ms"
+print "final pos.x:"
+print p.x

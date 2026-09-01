@@ -1,0 +1,58 @@
+# Build and diagnostic outputs
+build_output.txt
+jit_compile_err.txt
+jit_err.txt
+jit_errors.txt
+link_errors.txt
+main_obj_errors.txt
+surapkg_build_output.txt
+*.obj
+*.o
+*.ilk
+*.pdb
+*.log
+*.tmp
+*.bak
+*.efi
+*.elf
+
+# Local executables and scratch files
+*.exe
+*.dll
+*.lib
+*.a
+*.vsix
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+*.zip
+# The archived 1.10.0 release ZIP is the historical compatibility probe input
+# that sura_compatibility_gate.ps1 requires on every platform; its SHA-256 is
+# pinned by release-1.10.0.json, so the file is immutable evidence, not output.
+!tests/compat/SuraLanguage-1.10.0-windows-x64.zip
+dist/
+build/
+artifacts/
+sura.pkg.json
+# The stable-API compatibility fixture is a required CI input, not a local
+# package artifact; keep it tracked despite the global ignore above.
+!tests/compat/api_fixture/sura.pkg.json
+sura_walk_*/
+__pycache__/
+.pytest_cache/
+node_modules/
+
+# Generated web and editor-extension output
+**/.next/
+**/.vercel/
+**/.wrangler/
+**/out/
+**/coverage/
+sura_presentation/.git/
+
+# Local credentials and machine-specific settings
+.env
+.env.*
+!.env.example
+.claude/settings.local.json

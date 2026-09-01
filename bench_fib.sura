@@ -1,0 +1,29 @@
+# 피보나치 재귀 - 함수 호출 오버헤드 측정
+func fib(n) do
+  if n <= 1 then
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+target is 30
+print "========================================"
+print "Sura 언어 성능 테스트: 피보나치 수열"
+print "목표: fib({target})"
+print "========================================"
+
+runs is 5
+total is 0
+
+repeat runs do
+  t0 is clock()
+  result is fib(target)
+  t1 is clock()
+  total is total + (t1 - t0) * 1000
+end
+
+avg is total / runs
+
+print "결과: {result}"
+print "avg ({runs} runs): {avg} ms"
+print "========================================"

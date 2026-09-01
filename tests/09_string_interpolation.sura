@@ -1,0 +1,9 @@
+player is {name: "Ari", score: 42}
+items is ["sword", "shield"]
+
+assert_eq("player={player[\"name\"]}", "player=Ari")
+assert_eq("score={player[\"score\"]}", "score=42")
+assert_eq("first={items[0]}", "first=sword")
+assert_eq("combo={player[\"name\"]}:{items[1]}:{player[\"score\"] + 8}", "combo=Ari:shield:50")
+
+print "09_string_interpolation: PASS"

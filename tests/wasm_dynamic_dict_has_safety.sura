@@ -1,0 +1,13 @@
+func runtime_flag() do
+  return length([1]) > 0
+end
+
+profile is runtime_flag() ? {name: "Ada", missing: nil} : [1]
+has_missing is profile.has("missing")
+contains_name is profile.contains("name")
+
+assert_eq(has_missing, true)
+assert_eq(contains_name, true)
+assert_eq(type(has_missing), "bool")
+assert_eq(type(contains_name), "bool")
+print "{has_missing} {contains_name}"

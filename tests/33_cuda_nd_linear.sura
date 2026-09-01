@@ -1,0 +1,97 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # [batch, tokens, input_features] @ [input_features, output_features].
+  # The weight gradient must reduce over both batch and token dimensions.
+  input_values is [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+  weight_values is [[1, 0], [0, 2]]
+  bias_values is [10, 20]
+  seed_values is [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]
+
+  cpu_input is autograd.parameter(input_values, {dtype: "float32"})
+  cpu_weight is autograd.parameter(weight_values, {dtype: "float32"})
+  cpu_bias is autograd.parameter(bias_values, {dtype: "float32"})
+  cpu_output is autograd.linear(cpu_input, cpu_weight, cpu_bias)
+  assert_eq(autograd.shape(cpu_output).join(","), "2,2,2")
+  cpu_output_data is autograd.data(cpu_output)
+  approx_rank3(cpu_output_data, [[[11, 24], [13, 28]], [[15, 32], [17, 36]]], 0.000001)
+
+  autograd.backward(cpu_output, seed_values)
+  cpu_input_grad is autograd.grad(cpu_input)
+  cpu_weight_grad is autograd.grad(cpu_weight)
+  cpu_bias_grad is autograd.grad(cpu_bias)
+  approx_rank3(cpu_input_grad, [[[1, 4], [3, 8]], [[5, 12], [7, 16]]], 0.000001)
+  approx_rank2(cpu_weight_grad, [[84, 100], [100, 120]], 0.000001)
+  approx_rank1(cpu_bias_grad, [16, 20], 0.000001)
+
+  gpu_input is autograd.parameter(input_values, {device: "cuda"})
+  gpu_weight is autograd.parameter(weight_values, {device: "cuda"})
+  gpu_bias is autograd.parameter(bias_values, {device: "cuda"})
+  # Upload the explicit seed before resetting counters. Backward should then
+  # keep the complete forward/backward graph resident on the device.
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+
+  gpu_output is autograd.linear(gpu_input, gpu_weight, gpu_bias)
+  assert_eq(autograd.shape(gpu_output).join(","), "2,2,2")
+  assert_eq(autograd.storage_bytes(gpu_output), 32)
+  assert_eq(autograd.device(gpu_output), "cuda:{info.device_index}")
+  autograd.backward(gpu_output, gpu_seed)
+
+  # Shape and logical storage queries are metadata-only. CUDA outputs and
+  # persistent gradients remain host-lazy until data()/grad() observes them.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+  before_observation is autograd.cuda_stats()
+  assert_eq(before_observation.h2d_bytes, 0)
+  assert_eq(before_observation.d2h_bytes, 0)
+  assert(before_observation.matmul_launches >= 3)
+  assert(before_observation.reduction_launches >= 1)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_input_grad is autograd.grad(gpu_input)
+  gpu_weight_grad is autograd.grad(gpu_weight)
+  gpu_bias_grad is autograd.grad(gpu_bias)
+  approx_rank3(gpu_output_data, cpu_output_data, 0.0001)
+  approx_rank3(gpu_input_grad, cpu_input_grad, 0.0001)
+  approx_rank2(gpu_weight_grad, cpu_weight_grad, 0.0001)
+  approx_rank1(gpu_bias_grad, cpu_bias_grad, 0.0001)
+  # Only the output gains a persistent host mirror. grad() uses temporary
+  # staging buffers, so reading all three gradients does not consume budget.
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline + 32)
+  after_observation is autograd.cuda_stats()
+  assert_eq(after_observation.h2d_bytes, 0)
+  assert_eq(after_observation.d2h_bytes, 88)
+else
+  print "33_cuda_nd_linear: SKIP ({info.error})"
+end
+
+print "33_cuda_nd_linear: PASS"

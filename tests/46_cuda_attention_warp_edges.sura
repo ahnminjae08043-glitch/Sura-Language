@@ -1,0 +1,236 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank4(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank3(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func make_rank2_values(sequence, dimensions, salt, factor) do
+  rows is []
+  token is 0
+  while token < sequence do
+    row is []
+    d is 0
+    while d < dimensions do
+      row.push((((token + 1) * (d + salt + 1) + salt * 3) % 23 - 11) * factor)
+      d is d + 1
+    end
+    rows.push(row)
+    token is token + 1
+  end
+  return rows
+end
+
+func make_rank4_values(heads_count, sequence, dimensions, salt, factor) do
+  heads is []
+  head is 0
+  while head < heads_count do
+    rows is []
+    token is 0
+    while token < sequence do
+      row is []
+      d is 0
+      while d < dimensions do
+        row.push((((token + 1) * (d + salt + 1) + head * 7 + salt * 3) % 29 - 14) * factor)
+        d is d + 1
+      end
+      rows.push(row)
+      token is token + 1
+    end
+    heads.push(rows)
+    head is head + 1
+  end
+  return [heads]
+end
+
+func assert_full_warp_partition(stats) do
+  assert_eq(stats.attention_launches, 3)
+  assert_eq(stats.reference_attention_launches, 0)
+  assert_eq(stats.warp_attention_launches, 1)
+  assert_eq(stats.fast_attention_forward_launches, 1)
+  assert_eq(stats.parallel_attention_launches, 0)
+  assert_eq(stats.fused_attention_launches, 2)
+  assert_eq(stats.attention_launches, stats.reference_attention_launches + stats.warp_attention_launches + stats.parallel_attention_launches + stats.fused_attention_launches)
+end
+
+func run_rank2_case(sequence, dimensions, value_dimensions, scale) do
+  q_values is make_rank2_values(sequence, dimensions, 1, 0.035)
+  k_values is make_rank2_values(sequence, dimensions, 4, 0.029)
+  v_values is make_rank2_values(sequence, value_dimensions, 7, 0.041)
+  seed_values is make_rank2_values(sequence, value_dimensions, 10, 0.027)
+
+  cpu_q is autograd.parameter(q_values, {dtype: "float32"})
+  cpu_k is autograd.parameter(k_values, {dtype: "float32"})
+  cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {scale: scale})
+  cpu_shape is autograd.shape(cpu_output)
+  assert_eq(cpu_shape.len(), 2)
+  assert_eq(cpu_shape[0], sequence)
+  assert_eq(cpu_shape[1], value_dimensions)
+  cpu_output_data is autograd.data(cpu_output)
+  autograd.backward(cpu_output, seed_values)
+  cpu_q_grad is autograd.grad(cpu_q)
+  cpu_k_grad is autograd.grad(cpu_k)
+  cpu_v_grad is autograd.grad(cpu_v)
+
+  gpu_q is autograd.parameter(q_values, {device: "cuda"})
+  gpu_k is autograd.parameter(k_values, {device: "cuda"})
+  gpu_v is autograd.parameter(v_values, {device: "cuda"})
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  gpu_output is autograd.causal_attention(gpu_q, gpu_k, gpu_v, {scale: scale})
+  gpu_shape is autograd.shape(gpu_output)
+  assert_eq(gpu_shape.len(), 2)
+  assert_eq(gpu_shape[0], sequence)
+  assert_eq(gpu_shape[1], value_dimensions)
+  autograd.backward(gpu_output, gpu_seed)
+
+  graph_stats is autograd.cuda_stats()
+  assert_full_warp_partition(graph_stats)
+  assert_eq(graph_stats.h2d_bytes, 0)
+  assert_eq(graph_stats.d2h_bytes, 0)
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_q_grad is autograd.grad(gpu_q)
+  gpu_k_grad is autograd.grad(gpu_k)
+  gpu_v_grad is autograd.grad(gpu_v)
+  approx_rank2(gpu_output_data, cpu_output_data, 0.003)
+  approx_rank2(gpu_q_grad, cpu_q_grad, 0.008)
+  approx_rank2(gpu_k_grad, cpu_k_grad, 0.008)
+  approx_rank2(gpu_v_grad, cpu_v_grad, 0.008)
+  observed_bytes is autograd.storage_bytes(gpu_output) + autograd.storage_bytes(gpu_q) + autograd.storage_bytes(gpu_k) + autograd.storage_bytes(gpu_v)
+  observed_stats is autograd.cuda_stats()
+  assert_eq(observed_stats.h2d_bytes, 0)
+  assert_eq(observed_stats.d2h_bytes, observed_bytes)
+  observed_host_bytes is autograd.limits().memory_used_bytes
+  output_host_bytes is autograd.storage_bytes(gpu_output)
+  # The output host mirror must stay accounted, while a GC between the two
+  # observations may reclaim CPU tensors that are no longer live.
+  assert_eq(observed_host_bytes >= output_host_bytes, true)
+  assert_eq(observed_host_bytes <= host_baseline + output_host_bytes, true)
+
+  repeat_q is autograd.parameter(q_values, {device: "cuda"})
+  repeat_k is autograd.parameter(k_values, {device: "cuda"})
+  repeat_v is autograd.parameter(v_values, {device: "cuda"})
+  repeat_seed is autograd.tensor(seed_values, {device: "cuda"})
+  repeat_output is autograd.causal_attention(repeat_q, repeat_k, repeat_v, {scale: scale})
+  autograd.backward(repeat_output, repeat_seed)
+  assert_eq(json_stringify(autograd.data(repeat_output)), json_stringify(gpu_output_data))
+  assert_eq(json_stringify(autograd.grad(repeat_q)), json_stringify(gpu_q_grad))
+  assert_eq(json_stringify(autograd.grad(repeat_k)), json_stringify(gpu_k_grad))
+  assert_eq(json_stringify(autograd.grad(repeat_v)), json_stringify(gpu_v_grad))
+end
+
+func run_rank4_case(heads_count, sequence, dimensions, value_dimensions, scale) do
+  q_values is make_rank4_values(heads_count, sequence, dimensions, 2, 0.031)
+  k_values is make_rank4_values(heads_count, sequence, dimensions, 5, 0.026)
+  v_values is make_rank4_values(heads_count, sequence, value_dimensions, 8, 0.037)
+  seed_values is make_rank4_values(heads_count, sequence, value_dimensions, 11, 0.023)
+
+  cpu_q is autograd.parameter(q_values, {dtype: "float32"})
+  cpu_k is autograd.parameter(k_values, {dtype: "float32"})
+  cpu_v is autograd.parameter(v_values, {dtype: "float32"})
+  cpu_output is autograd.causal_attention(cpu_q, cpu_k, cpu_v, {scale: scale})
+  cpu_shape is autograd.shape(cpu_output)
+  assert_eq(cpu_shape.join(","), "1,{heads_count},{sequence},{value_dimensions}")
+  cpu_output_data is autograd.data(cpu_output)
+  autograd.backward(cpu_output, seed_values)
+  cpu_q_grad is autograd.grad(cpu_q)
+  cpu_k_grad is autograd.grad(cpu_k)
+  cpu_v_grad is autograd.grad(cpu_v)
+
+  gpu_q is autograd.parameter(q_values, {device: "cuda"})
+  gpu_k is autograd.parameter(k_values, {device: "cuda"})
+  gpu_v is autograd.parameter(v_values, {device: "cuda"})
+  gpu_seed is autograd.tensor(seed_values, {device: "cuda"})
+  host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  gpu_output is autograd.causal_attention(gpu_q, gpu_k, gpu_v, {scale: scale})
+  assert_eq(autograd.shape(gpu_output).join(","), "1,{heads_count},{sequence},{value_dimensions}")
+  autograd.backward(gpu_output, gpu_seed)
+
+  graph_stats is autograd.cuda_stats()
+  assert_full_warp_partition(graph_stats)
+  assert_eq(graph_stats.h2d_bytes, 0)
+  assert_eq(graph_stats.d2h_bytes, 0)
+  assert_eq(autograd.limits().memory_used_bytes, host_baseline)
+
+  gpu_output_data is autograd.data(gpu_output)
+  gpu_q_grad is autograd.grad(gpu_q)
+  gpu_k_grad is autograd.grad(gpu_k)
+  gpu_v_grad is autograd.grad(gpu_v)
+  approx_rank4(gpu_output_data, cpu_output_data, 0.004)
+  approx_rank4(gpu_q_grad, cpu_q_grad, 0.01)
+  approx_rank4(gpu_k_grad, cpu_k_grad, 0.01)
+  approx_rank4(gpu_v_grad, cpu_v_grad, 0.01)
+  observed_bytes is autograd.storage_bytes(gpu_output) + autograd.storage_bytes(gpu_q) + autograd.storage_bytes(gpu_k) + autograd.storage_bytes(gpu_v)
+  observed_stats is autograd.cuda_stats()
+  assert_eq(observed_stats.h2d_bytes, 0)
+  assert_eq(observed_stats.d2h_bytes, observed_bytes)
+  observed_host_bytes is autograd.limits().memory_used_bytes
+  output_host_bytes is autograd.storage_bytes(gpu_output)
+  # Native collection construction can move a normal GC safepoint earlier;
+  # allow dead CPU buffers to be reclaimed without allowing host-mirror leaks.
+  assert_eq(observed_host_bytes >= output_host_bytes, true)
+  assert_eq(observed_host_bytes <= host_baseline + output_host_bytes, true)
+
+  repeat_q is autograd.parameter(q_values, {device: "cuda"})
+  repeat_k is autograd.parameter(k_values, {device: "cuda"})
+  repeat_v is autograd.parameter(v_values, {device: "cuda"})
+  repeat_seed is autograd.tensor(seed_values, {device: "cuda"})
+  repeat_output is autograd.causal_attention(repeat_q, repeat_k, repeat_v, {scale: scale})
+  autograd.backward(repeat_output, repeat_seed)
+  assert_eq(json_stringify(autograd.data(repeat_output)), json_stringify(gpu_output_data))
+  assert_eq(json_stringify(autograd.grad(repeat_q)), json_stringify(gpu_q_grad))
+  assert_eq(json_stringify(autograd.grad(repeat_k)), json_stringify(gpu_k_grad))
+  assert_eq(json_stringify(autograd.grad(repeat_v)), json_stringify(gpu_v_grad))
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # Rank-2 gives flattened output-row counts 8, 9, and 17 directly. Together
+  # these cases cover D/Dv warp lanes at 1, 31, 32, and 33.
+  run_rank2_case(8, 1, 31, 0.75)
+  run_rank2_case(9, 32, 33, 0.5)
+  run_rank2_case(17, 33, 1, 1.25)
+
+  # Rank-4 adds a two-head flattened prefix and the 65-element multi-warp tail.
+  run_rank4_case(2, 9, 31, 65, 0.625)
+else
+  print "46_cuda_attention_warp_edges: SKIP ({info.error})"
+end
+
+print "46_cuda_attention_warp_edges: PASS"

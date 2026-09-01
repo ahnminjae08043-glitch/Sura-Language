@@ -1,0 +1,53 @@
+// ================================
+// 수라 표준 라이브러리: game
+// 사용법: use game
+// ================================
+
+// collide: 두 점이 같은 위치면 _r=1
+// 입력: _x1 _y1 _x2 _y2
+func collide do
+    _r is 0
+    if _x1 == _x2 then
+        if _y1 == _y2 then _r is 1
+    end
+end
+
+// in_bounds: (x,y)가 그리드 안이면 _r=1
+// 입력: _x _y _w _h
+func in_bounds do
+    _r is 1
+    if _x < 0  then _r is 0
+    if _y < 0  then _r is 0
+    if _x >= _w then _r is 0
+    if _y >= _h then _r is 0
+end
+
+// manhattan: 두 점 사이 맨해튼 거리 → _r
+// 입력: _x1 _y1 _x2 _y2
+func manhattan do
+    _dx is _x2
+    _dx - _x1
+    _dy is _y2
+    _dy - _y1
+    abs _dx _dx
+    abs _dy _dy
+    _r is _dx
+    _r + _dy
+end
+
+// lerp: _a에서 _b 방향으로 _t 비율(0~100) 이동 → _r
+// 입력: _a _b _t
+func lerp do
+    _diff is _b
+    _diff - _a
+    _diff * _t
+    _diff / 100
+    _r is _a
+    _r + _diff
+end
+
+// dice: 주사위 1~_sides → _r
+// 입력: _sides
+func dice do
+    random 1 ~ _sides _r
+end

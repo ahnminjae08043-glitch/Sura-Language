@@ -1,0 +1,31 @@
+# Lotka-Volterra style plants, rabbits, and foxes.
+
+plants is 1200.0
+rabbits is 85.0
+foxes is 12.0
+step is 0
+
+print("step  plants  rabbits  foxes")
+while step <= 60 do
+  if step % 5 == 0 then print("{step}  {floor(plants)}  {floor(rabbits)}  {floor(foxes)}")
+
+  plant_growth is 0.05 * plants * (1 - plants / 2000)
+  grazing is 0.00045 * plants * rabbits
+  rabbit_births is 0.00016 * plants * rabbits
+  predation is 0.0022 * rabbits * foxes
+  fox_births is 0.00055 * rabbits * foxes
+
+  plants += plant_growth - grazing
+  rabbits += rabbit_births - predation - 0.025 * rabbits
+  foxes += fox_births - 0.08 * foxes
+
+  if plants < 0 then plants is 0
+  if rabbits < 0 then rabbits is 0
+  if foxes < 0 then foxes is 0
+  step += 1
+end
+
+assert(plants >= 0)
+assert(rabbits >= 0)
+assert(foxes >= 0)
+

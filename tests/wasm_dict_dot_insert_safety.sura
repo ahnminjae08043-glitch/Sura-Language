@@ -1,0 +1,8 @@
+profile is {}
+profile.score is 7
+profile.name is "Ada"
+
+assert_eq(profile.score, 7)
+assert_eq(profile.name, "Ada")
+assert_eq(length(profile), 2)
+print "{profile.score} {profile.name}"

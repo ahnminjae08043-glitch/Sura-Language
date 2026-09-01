@@ -1,0 +1,106 @@
+{
+  "schema": "sura.compatibility.v1",
+  "language_version": "1.11.1",
+  "stable_series": "1.11",
+  "baseline_created": "2026-07-16",
+  "source": {
+    "guarantee_starts_at": "1.11.1",
+    "patch_release_breaking_changes": "forbidden",
+    "minor_release_deprecation_period": 1,
+    "fixtures": [
+      {
+        "path": "tests/compat/1.11/core.sura",
+        "marker": "compat-1.11-core: PASS"
+      },
+      {
+        "path": "tests/compat/1.11/objects.sura",
+        "marker": "compat-1.11-objects: PASS"
+      },
+      {
+        "path": "tests/compat/1.11/stdlib.sura",
+        "marker": "compat-1.11-stdlib: PASS"
+      }
+    ],
+    "historical_probes": [
+      {
+        "series": "1.10",
+        "runtime_version": "1.10.0",
+        "status": "verification_only",
+        "platform": "windows-x64",
+        "archive": "tests/compat/SuraLanguage-1.10.0-windows-x64.zip",
+        "archive_entry": "payload/SuraLanguage.exe",
+        "release_manifest": "tests/compat/release-1.10.0.json",
+        "verification_manifest": "tests/compat/verification-1.10.0.json",
+        "bytecode_fixture": "tests/compat/1.10/core.sura",
+        "fixtures": [
+          {
+            "path": "tests/compat/1.10/core.sura",
+            "marker": "compat-1.10-core: PASS"
+          },
+          {
+            "path": "tests/compat/1.10/objects.sura",
+            "marker": "compat-1.10-objects: PASS"
+          },
+          {
+            "path": "tests/compat/1.10/stdlib.sura",
+            "marker": "compat-1.10-stdlib: PASS"
+          }
+        ]
+      }
+    ]
+  },
+  "support": {
+    "policy_effective": "2026-07-16",
+    "minimum_maintenance_months": 12,
+    "minimum_maintenance_until": "2027-07-16",
+    "next_minor_overlap_months": 6,
+    "source_compatibility_major": 1,
+    "stable_series": [
+      {
+        "series": "1.11",
+        "status": "active",
+        "first_supported_patch": "1.11.1",
+        "maintenance_not_before": "2027-07-16"
+      }
+    ]
+  },
+  "deprecations": [],
+  "stable_api": {
+    "snapshot": "tests/compat/1.11/stable-api.json",
+    "modules": ["array", "dict", "fs", "json", "string", "test"],
+    "removal_without_deprecation": "forbidden",
+    "signature_change_without_deprecation": "forbidden"
+  },
+  "bytecode": {
+    "current": 3,
+    "accepted": [2, 3]
+  },
+  "release_package": {
+    "current": 5,
+    "accepted": [1, 2, 3, 4, 5]
+  },
+  "plugin_abi": "1.1.0",
+  "ffi_abi": "1.2.0",
+  "support_tiers": {
+    "stable": [
+      "native Sura syntax and register VM",
+      "core values, control flow, functions, classes, and exceptions",
+      "file, string, array, dictionary, JSON, and test APIs",
+      "surapkg project creation, run, test, and lock file",
+      "C FFI and versioned plugin ABI"
+    ],
+    "platform_limited": [
+      "native JIT on Win64 x86-64 for supported opcodes and functions, plus exception-free straight-line baselines on Linux x86-64 and little-endian Windows/Linux/macOS ARM64 for constants, moves, proven-numeric addition, subtraction, multiplication, unary negation, six comparisons, and division by a proven nonzero divisor",
+      "CUDA resident operations on compatible NVIDIA systems",
+      "media operations when FFmpeg is installed or explicitly configured",
+      "Windows installer and Microsoft Store package for Windows x64"
+    ],
+    "experimental": [
+      "JavaScript and WebAssembly translation targets",
+      "Transformer extensions and distributed training",
+      "bounded byte-level BPE tokenizer and its version 2 tokenizer file",
+      "bounded CPU ONNX opset 7 through 18 graph execution subset",
+      "advanced protected-release policies and external registry operations"
+    ]
+  }
+}

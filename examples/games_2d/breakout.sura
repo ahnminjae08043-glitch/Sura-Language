@@ -1,0 +1,101 @@
+# Breakout: A/D or arrow keys move the paddle. Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 720
+H is 520
+if not win_init(W, H, "Sura Breakout") then
+  print("win_init failed")
+  exit(1)
+end
+
+paddle_x is W / 2 - 55
+ball_x is W / 2
+ball_y is H - 90
+ball_vx is 4
+ball_vy is -5
+brick_x is []
+brick_y is []
+brick_alive is []
+
+row is 0
+while row < 5 do
+  col is 0
+  while col < 9 do
+    brick_x.push(24 + col * 75)
+    brick_y.push(55 + row * 32)
+    brick_alive.push(1)
+    col += 1
+  end
+  row += 1
+end
+
+score is 0
+lives is 3
+frame is 0
+running is true
+
+func clamp(v, low, high) do
+  if v < low then return low
+  if v > high then return high
+  return v
+end
+
+while running do
+  frame += 1
+  if key_down("a") or key_down("left") then paddle_x -= 8
+  if key_down("d") or key_down("right") then paddle_x += 8
+  if key_down("q") or key_down("escape") then running is false
+  if SMOKE then paddle_x is ball_x - 55
+  paddle_x is clamp(paddle_x, 8, W - 118)
+
+  ball_x += ball_vx
+  ball_y += ball_vy
+  if ball_x < 9 or ball_x > W - 9 then ball_vx *= -1
+  if ball_y < 35 then ball_vy *= -1
+
+  if ball_vy > 0 and ball_y >= H - 48 and ball_y <= H - 31 and ball_x >= paddle_x and ball_x <= paddle_x + 110 then
+    ball_y is H - 49
+    ball_vy *= -1
+    ball_vx += (ball_x - paddle_x - 55) / 24
+  end
+
+  i is 0
+  while i < brick_alive.len() do
+    if brick_alive[i] == 1 and ball_x >= brick_x[i] and ball_x <= brick_x[i] + 66 and ball_y >= brick_y[i] and ball_y <= brick_y[i] + 23 then
+      brick_alive[i] is 0
+      ball_vy *= -1
+      score += 10
+    end
+    i += 1
+  end
+
+  if ball_y > H + 10 then
+    lives -= 1
+    ball_x is W / 2
+    ball_y is H - 90
+    ball_vy is -5
+    if lives <= 0 then running is false
+  end
+
+  win_clear(12, 10, 28)
+  i is 0
+  while i < brick_alive.len() do
+    if brick_alive[i] == 1 then
+      r is 80 + (i % 5) * 32
+      g is 210 - (i % 4) * 25
+      win_rect(brick_x[i], brick_y[i], 66, 23, r, g, 230)
+    end
+    i += 1
+  end
+  win_rect(paddle_x, H - 38, 110, 14, 80, 230, 180)
+  win_circle(ball_x, ball_y, 8, 255, 245, 190)
+  win_text("BREAKOUT  score {score}  lives {lives}", 18, 15, 220, 235, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 12 then running is false
+  wait(16)
+end
+
+win_close()
+print("breakout: frames={frame}, score={score}")
+assert(frame > 0)
+

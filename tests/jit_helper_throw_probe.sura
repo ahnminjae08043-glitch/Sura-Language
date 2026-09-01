@@ -1,0 +1,21 @@
+struct Probe do
+  value is 0
+end
+
+func read_value(item) do
+  return item.value
+end
+
+p is Probe(7)
+repeat 10 do
+  assert_eq(read_value(p), 7)
+end
+
+caught is false
+try
+  ignored is read_value(nil)
+catch error
+  caught is true
+end
+assert(caught, "native helper throw must unwind safely")
+print("jit_helper_throw_probe: PASS")

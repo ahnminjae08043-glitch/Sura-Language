@@ -1,0 +1,174 @@
+use autograd
+
+func approx_array(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+# Native tensors use contiguous float64 storage and preserve rectangular shape.
+t is autograd.tensor([[1, 2], [3, 4]])
+assert_eq(type(t), "tensor")
+assert_eq(autograd.shape(t).join(","), "2,2")
+assert_eq(autograd.numel(t), 4)
+assert_eq(autograd.requires_grad(t), false)
+assert_eq(autograd.data(t)[1][0], 3)
+assert_eq(autograd.item(autograd.tensor(7)), 7)
+tc is clone(t)
+assert_eq(type(tc), "tensor")
+assert_eq(autograd.data(tc)[0][1], 2)
+assert_eq(json_stringify(t), "[[1,2],[3,4]]")
+
+# Scalar chain rule.
+x is autograd.parameter(3)
+assert_eq(autograd.requires_grad(x), true)
+y is autograd.add(autograd.mul(x, x), autograd.add(autograd.mul(2, x), 1))
+assert_eq(autograd.item(y), 16)
+autograd.backward(y)
+assert_approx(autograd.grad(x), 8, 0.000000000001)
+
+# Division backward remains stable when squaring the denominator would
+# underflow even though the mathematically expected gradients are finite.
+tiny is pow(10, -200)
+huge is pow(10, 200)
+div_x is autograd.parameter(tiny)
+div_y is autograd.parameter(tiny)
+div_loss is autograd.div(div_x, div_y)
+autograd.backward(div_loss)
+assert_approx(autograd.grad(div_x) / huge, 1, 0.000000001)
+assert_approx(autograd.grad(div_y) / huge, -1, 0.000000001)
+
+# NumPy-style trailing-dimension broadcasting and gradient reduction.
+bx is autograd.parameter([[1, 2, 3], [4, 5, 6]])
+bb is autograd.parameter([0.5, -1, 2])
+bz is autograd.add(bx, bb)
+bloss is autograd.sum(autograd.mul(bz, bz))
+assert_approx(autograd.item(bloss), 128.5, 0.000000000001)
+autograd.backward(bloss)
+bgx is autograd.grad(bx)
+bgb is autograd.grad(bb)
+approx_array(bgx[0], [3, 2, 10], 0.000000000001)
+approx_array(bgx[1], [9, 8, 16], 0.000000000001)
+approx_array(bgb, [12, 10, 26], 0.000000000001)
+
+# Matrix multiplication gradients.
+ma is autograd.parameter([[1, 2, 3], [4, 5, 6]])
+mb is autograd.parameter([[7, 8], [9, 10], [11, 12]])
+mloss is autograd.sum(autograd.matmul(ma, mb))
+assert_eq(autograd.item(mloss), 415)
+autograd.backward(mloss)
+mag is autograd.grad(ma)
+mbg is autograd.grad(mb)
+approx_array(mag[0], [15, 19, 23], 0.000000000001)
+approx_array(mag[1], [15, 19, 23], 0.000000000001)
+approx_array(mbg[0], [5, 5], 0.000000000001)
+approx_array(mbg[1], [7, 7], 0.000000000001)
+approx_array(mbg[2], [9, 9], 0.000000000001)
+
+# Transpose, negation, and mean compose with the expected gradient.
+tm_x is autograd.parameter([[1, 2, 3], [4, 5, 6]])
+tm_loss is autograd.mean(autograd.neg(autograd.transpose(tm_x)))
+assert_approx(autograd.item(tm_loss), -3.5, 0.000000000001)
+autograd.backward(tm_loss)
+tm_grad is autograd.grad(tm_x)
+approx_array(tm_grad[0], [-0.166666666666667, -0.166666666666667, -0.166666666666667], 0.000000001)
+approx_array(tm_grad[1], [-0.166666666666667, -0.166666666666667, -0.166666666666667], 0.000000001)
+
+# Broadcasting reduces gradients over multiple inserted/singleton axes.
+multi_bx is autograd.zeros([2, 1, 3], true)
+multi_bb is autograd.zeros([1, 4, 1], true)
+multi_bloss is autograd.sum(autograd.add(multi_bx, multi_bb))
+autograd.backward(multi_bloss)
+multi_bgx is autograd.grad(multi_bx)
+multi_bgb is autograd.grad(multi_bb)
+approx_array(multi_bgx[0][0], [4, 4, 4], 0.000000000001)
+approx_array(multi_bgx[1][0], [4, 4, 4], 0.000000000001)
+assert_eq(multi_bgb[0][0][0], 6)
+assert_eq(multi_bgb[0][1][0], 6)
+assert_eq(multi_bgb[0][2][0], 6)
+assert_eq(multi_bgb[0][3][0], 6)
+
+# Activations and differentiable losses.
+relu_x is autograd.parameter([-2, -0.5, 0.5, 2])
+relu_y is autograd.relu(relu_x)
+approx_array(autograd.data(relu_y), [0, 0, 0.5, 2], 0.000000000001)
+autograd.backward(autograd.sum(relu_y))
+approx_array(autograd.grad(relu_x), [0, 0, 1, 1], 0.000000000001)
+
+sig_x is autograd.parameter([-2, 0, 2])
+sig_y is autograd.sigmoid(sig_x)
+approx_array(autograd.data(sig_y), [0.119202922022118, 0.5, 0.880797077977882], 0.000000001)
+autograd.backward(autograd.sum(sig_y))
+approx_array(autograd.grad(sig_x), [0.104993585403507, 0.25, 0.104993585403507], 0.000000001)
+
+sm_x is autograd.parameter([1, 2, 3])
+sm_w is autograd.tensor([1, -2, 0.5])
+sm is autograd.softmax(sm_x)
+approx_array(autograd.data(sm), [0.0900305731703805, 0.244728471054798, 0.665240955774822], 0.000000001)
+autograd.backward(autograd.sum(autograd.mul(sm, sm_w)))
+approx_array(autograd.grad(sm_x), [0.0960451458329324, -0.473107638535034, 0.377062492702102], 0.000000001)
+
+mse_x is autograd.parameter([1, -2, 3])
+mse is autograd.mse(mse_x, [0, 2, 1])
+assert_approx(autograd.item(mse), 7, 0.000000000001)
+autograd.backward(mse)
+approx_array(autograd.grad(mse_x), [0.666666666666667, -2.666666666666667, 1.333333333333333], 0.000000001)
+
+bce_x is autograd.parameter([0.2, 0.7, 0.9])
+bce is autograd.bce(bce_x, [0, 1, 1])
+assert_approx(autograd.item(bce), 0.228393003636923, 0.000000001)
+autograd.backward(bce)
+approx_array(autograd.grad(bce_x), [0.416666666666667, -0.476190476190476, -0.370370370370370], 0.000000001)
+
+bcel_x is autograd.parameter([-2, 0, 2])
+bcel is autograd.bce_logits(bcel_x, [0, 1, 1])
+assert_approx(autograd.item(bcel), 0.315667734215297, 0.000000001)
+autograd.backward(bcel)
+approx_array(autograd.grad(bcel_x), [0.0397343073407059, -0.166666666666667, -0.0397343073407059], 0.000000001)
+
+logits is autograd.parameter([[1, 2, 3], [1, -1, 0]])
+ce is autograd.cross_entropy(logits, [[0, 0, 1], [1, 0, 0]])
+assert_approx(autograd.item(ce), 0.407605964444380, 0.000000001)
+autograd.backward(ce)
+ceg is autograd.grad(logits)
+approx_array(ceg[0], [0.0450152865851902, 0.122364235527399, -0.167379522112589], 0.000000001)
+approx_array(ceg[1], [-0.167379522112589, 0.0450152865851902, 0.122364235527399], 0.000000001)
+
+# Accepted near-normalized soft labels retain an exact forward/backward pair.
+soft_logits is autograd.parameter([[0.2, -0.1]])
+soft_ce is autograd.cross_entropy(soft_logits, [[0.5000005, 0.5]])
+autograd.backward(soft_ce)
+soft_grad is autograd.grad(soft_logits)
+assert_approx(soft_grad[0][0] + soft_grad[0][1], 0, 0.000000000001)
+
+# Custom upstream gradients and detach.
+up_x is autograd.parameter([2, 3, 4])
+up_y is autograd.mul(up_x, up_x)
+autograd.backward(up_y, [1, 10, -1])
+approx_array(autograd.grad(up_x), [4, 60, -8], 0.000000000001)
+
+det_x is autograd.parameter([2, 3])
+det_y is autograd.sum(autograd.mul(autograd.detach(det_x), det_x))
+autograd.backward(det_y)
+approx_array(autograd.grad(det_x), [2, 3], 0.000000000001)
+autograd.zero_grad(det_x)
+approx_array(autograd.grad(det_x), [0, 0], 0.000000000001)
+
+# Retained graphs may be traversed again and leaf gradients accumulate.
+retain_x is autograd.parameter(2)
+retain_loss is autograd.mul(retain_x, retain_x)
+autograd.backward(retain_loss, nil, true)
+autograd.backward(retain_loss)
+assert_approx(autograd.grad(retain_x), 8, 0.000000000001)
+
+r1 is autograd.randn([2, 3], {seed: 77})
+r2 is autograd.randn([2, 3], {seed: 77})
+r1d is autograd.data(r1)
+r2d is autograd.data(r2)
+approx_array(r1d[0], r2d[0], 0.000000000001)
+approx_array(r1d[1], r2d[1], 0.000000000001)
+
+print "13_autograd_core: PASS"

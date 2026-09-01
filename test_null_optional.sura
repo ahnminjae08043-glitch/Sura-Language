@@ -1,0 +1,6 @@
+x is nil
+print x ?? "default"
+print user?.profile?.name ?? "anon"
+
+obj is {"profile": {"name": "sura"}}
+print obj?.profile?.name ?? "anon"

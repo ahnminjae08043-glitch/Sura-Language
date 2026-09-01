@@ -1,0 +1,34 @@
+# 배열 기본
+arr is [1, 2, 3]
+assert_eq(arr.len(), 3)
+assert_eq(arr[0], 1)
+assert_eq(arr[2], 3)
+
+# push/pop
+arr.push(4)
+assert_eq(arr.len(), 4)
+arr.pop()
+assert_eq(arr.len(), 3)
+
+# contains
+assert(arr.contains(2))
+assert(not arr.contains(99))
+
+# join
+s is arr.join(", ")
+assert_eq(s, "1, 2, 3")
+
+# split
+parts is "a,b,c".split(",")
+assert_eq(parts.len(), 3)
+assert_eq(parts[0], "a")
+assert_eq(parts[2], "c")
+
+# for in
+sum is 0
+for x in arr do
+  sum += x
+end
+assert_eq(sum, 6)
+
+print "05_arrays: PASS"

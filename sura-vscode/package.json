@@ -1,0 +1,393 @@
+{
+  "name": "sura-language",
+  "displayName": "Sura Language Support",
+  "description": "Official Sura language support with starter projects, IntelliSense, syntax highlighting, testing, and run/debug tooling.",
+  "version": "1.11.1",
+  "publisher": "sura-team",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ahnminjae0804-source/Sura-Language.git"
+  },
+  "icon": "assets/icon.png",
+  "preview": false,
+  "keywords": [
+    "sura",
+    "language",
+    "autograd",
+    "machine-learning",
+    "neural-network"
+  ],
+  "galleryBanner": {
+    "color": "#101827",
+    "theme": "dark"
+  },
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Running or debugging a Sura file executes a local program. Trust the workspace before using execution commands."
+    },
+    "virtualWorkspaces": false
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Debuggers"
+  ],
+  "activationEvents": [
+    "onLanguage:sura",
+    "onCommand:sura.createProject",
+    "onCommand:sura.runPackage",
+    "onCommand:sura.testPackage",
+    "onCommand:sura.runFile",
+    "onCommand:sura.debugFile",
+    "onCommand:sura.runJIT",
+    "onCommand:sura.runProfile",
+    "onCommand:sura.traceFile",
+    "onCommand:sura.runREPL",
+    "onCommand:sura.restartLanguageServer",
+    "onDebug:sura"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "walkthroughs": [
+      {
+        "id": "sura.getStarted",
+        "title": "Get Started with Sura",
+        "description": "Create, run, test, and debug a complete starter project.",
+        "steps": [
+          {
+            "id": "createProject",
+            "title": "Create a starter project",
+            "description": "Run [Sura: Create Starter Project](command:sura.createProject). It creates source files, tests, and VS Code settings."
+          },
+          {
+            "id": "runPackage",
+            "title": "Run the package",
+            "description": "Open the generated folder, then run [Sura: Run Package](command:sura.runPackage)."
+          },
+          {
+            "id": "testPackage",
+            "title": "Run its tests",
+            "description": "Verify the starter with [Sura: Test Package](command:sura.testPackage)."
+          },
+          {
+            "id": "debugFile",
+            "title": "Debug a Sura file",
+            "description": "Open the generated main file and run [Sura: Debug File](command:sura.debugFile)."
+          }
+        ]
+      }
+    ],
+    "languages": [
+      {
+        "id": "sura",
+        "aliases": [
+          "Sura",
+          "sura"
+        ],
+        "extensions": [
+          ".sura"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sura",
+        "scopeName": "source.sura",
+        "path": "./syntaxes/sura.tmLanguage.json"
+      }
+    ],
+    "debuggers": [
+      {
+        "type": "sura",
+        "label": "Sura",
+        "languages": [
+          "sura"
+        ],
+        "runtime": "node",
+        "program": "./out/debugAdapter.js",
+        "configurationAttributes": {
+          "launch": {
+            "required": [
+              "program"
+            ],
+            "properties": {
+              "program": {
+                "type": "string",
+                "default": "${file}",
+                "description": "Sura source file to run."
+              },
+              "enginePath": {
+                "type": "string",
+                "default": "${config:sura.enginePath}",
+                "description": "Path to the Sura executable."
+              },
+              "cwd": {
+                "type": "string",
+                "default": "${workspaceFolder}",
+                "description": "Working directory for the debug session."
+              },
+              "args": {
+                "type": "array",
+                "default": [],
+                "items": {
+                  "type": "string"
+                },
+                "description": "Additional Sura command-line arguments."
+              },
+              "jit": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run with --jit in noDebug launches."
+              },
+              "trace": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run with --trace in noDebug launches."
+              },
+              "profile": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run with --profile."
+              },
+              "debug": {
+                "type": "boolean",
+                "default": false,
+                "description": "Run with --debug in noDebug launches, including dump, trace, and profile output."
+              },
+              "env": {
+                "type": "object",
+                "default": {},
+                "description": "Environment variables for the Sura process."
+              }
+            }
+          }
+        },
+        "initialConfigurations": [
+          {
+            "type": "sura",
+            "request": "launch",
+            "name": "Debug Sura File",
+            "program": "${file}",
+            "enginePath": "${config:sura.enginePath}",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": false
+          },
+          {
+            "type": "sura",
+            "request": "launch",
+            "name": "Debug Sura File (Full)",
+            "program": "${file}",
+            "enginePath": "${config:sura.enginePath}",
+            "cwd": "${workspaceFolder}",
+            "stopOnEntry": true
+          }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "sura.createProject",
+        "title": "Sura: Create Starter Project",
+        "category": "Sura",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "sura.runPackage",
+        "title": "Sura: Run Package",
+        "category": "Sura",
+        "icon": "$(play)"
+      },
+      {
+        "command": "sura.testPackage",
+        "title": "Sura: Test Package",
+        "category": "Sura",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "sura.runFile",
+        "title": "Sura: Run File",
+        "category": "Sura",
+        "icon": "$(play)"
+      },
+      {
+        "command": "sura.debugFile",
+        "title": "Sura: Debug File",
+        "category": "Sura",
+        "icon": "$(debug-alt)"
+      },
+      {
+        "command": "sura.runJIT",
+        "title": "Sura: Run File (JIT)",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.runProfile",
+        "title": "Sura: Profile File",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.traceFile",
+        "title": "Sura: Trace File",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.runREPL",
+        "title": "Sura: Open REPL",
+        "category": "Sura"
+      },
+      {
+        "command": "sura.restartLanguageServer",
+        "title": "Sura: Restart Language Server",
+        "category": "Sura"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "sura.runFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sura.debugFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "sura.runFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sura.debugFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "sura.runFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@1"
+        },
+        {
+          "command": "sura.runJIT",
+          "when": "resourceLangId == sura",
+          "group": "navigation@2"
+        },
+        {
+          "command": "sura.debugFile",
+          "when": "resourceLangId == sura",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "sura.runFile",
+        "key": "ctrl+shift+r",
+        "when": "editorLangId == sura"
+      },
+      {
+        "command": "sura.runJIT",
+        "key": "ctrl+shift+j",
+        "when": "editorLangId == sura"
+      }
+    ],
+    "configurationDefaults": {
+      "[sura]": {
+        "editor.quickSuggestions": {
+          "other": true,
+          "comments": false,
+          "strings": false
+        },
+        "editor.suggestOnTriggerCharacters": true,
+        "editor.inlineSuggest.enabled": false,
+        "editor.wordBasedSuggestions": "off",
+        "editor.suggest.showWords": false,
+        "editor.suggest.showText": false,
+        "github.copilot.completions.enabled": false,
+        "github.copilot.nextEditSuggestions.enabled": false
+      },
+      "github.copilot.enable": {
+        "sura": false
+      }
+    },
+    "configuration": {
+      "title": "Sura",
+      "properties": {
+        "sura.enginePath": {
+          "type": "string",
+          "default": "sura",
+          "description": "Path to the Sura Language executable. The Windows installer adds the sura command to PATH; source checkouts can set this to SuraLanguage.exe."
+        },
+        "sura.language": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "en",
+            "ko"
+          ],
+          "default": "auto",
+          "description": "Diagnostic language for Sura run commands. auto uses the engine default; en and ko pass --lang to the engine."
+        },
+        "sura.packageManagerPath": {
+          "type": "string",
+          "default": "surapkg.exe",
+          "description": "Path to the Sura package manager executable."
+        },
+        "sura.terminalName": {
+          "type": "string",
+          "default": "Sura",
+          "description": "Integrated terminal name used by Sura commands."
+        },
+        "sura.languageServer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the engine-backed Sura language server for diagnostics, navigation, rename, formatting, semantic tokens, and code actions. When disabled or unavailable, the extension keeps basic built-in completion and hover support."
+        },
+        "sura.showRunCodeLens": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Run Sura File and Debug Sura File CodeLens actions at the top of .sura files."
+        },
+        "sura.showStatusBarActions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show Run Sura and Debug actions in the VS Code status bar while a .sura file is active."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run esbuild-base",
+    "esbuild-base": "esbuild ./extension.ts ./debugAdapter.ts --bundle --outdir=out --external:vscode --format=cjs --platform=node",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "compile": "tsc -p ./",
+    "smoke": "node ./scripts/smoke.js",
+    "check": "npm run compile && npm run esbuild && npm run smoke",
+    "package:vsix": "npm run check && node scripts/package-vsix.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.75.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "^0.28.1",
+    "typescript": "^4.8.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "8.1.0"
+  }
+}

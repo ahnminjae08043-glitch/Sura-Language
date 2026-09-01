@@ -1,0 +1,101 @@
+use autograd
+
+limits is autograd.limits()
+assert_eq(limits.backend, "cpu")
+assert_eq(limits.dtype, "float64")
+assert(limits.max_elements > 0)
+assert(limits.memory_limit_bytes > 0)
+assert(limits.max_attention_scores > 0)
+assert_eq(limits.elements_env, "SURA_TENSOR_MAX_ELEMENTS")
+assert_eq(limits.memory_env, "SURA_TENSOR_MEMORY_LIMIT_MB")
+assert_eq(limits.attention_env, "SURA_ATTENTION_MAX_SCORES")
+
+# Create both Adam and momentum-SGD state before saving.
+p is autograd.parameter([1, -2])
+autograd.backward(p, [0.5, -0.25])
+autograd.adam(p, 0.01)
+
+q is autograd.parameter([[1, 2], [3, 4]])
+autograd.backward(q, [[1, -1], [0.5, -0.5]])
+autograd.sgd(q, 0.1, {momentum: 0.9})
+
+checkpoint_path is path_join(temp_dir(), "sura-transformer-" + uuid_v4() + ".surackpt")
+written is autograd.save_checkpoint({p: p, q: q}, checkpoint_path)
+assert(written > 64)
+assert(file_exists(checkpoint_path))
+
+restored is autograd.load_checkpoint(checkpoint_path)
+restored_p is restored.p
+restored_q is restored.q
+assert_eq(autograd.shape(restored_p).join(","), "2")
+assert_eq(autograd.shape(restored_q).join(","), "2,2")
+assert_eq(autograd.requires_grad(restored_p), true)
+assert_eq(json_stringify(autograd.data(restored_p)), json_stringify(autograd.data(p)))
+assert_eq(json_stringify(autograd.data(restored_q)), json_stringify(autograd.data(q)))
+saved_p_data is autograd.data(restored_p)
+
+# A matching next update proves that optimizer moments and step counters were restored.
+autograd.zero_grad(p)
+autograd.zero_grad(restored_p)
+autograd.backward(p, [0.2, 0.4])
+autograd.backward(restored_p, [0.2, 0.4])
+autograd.adam(p, 0.01)
+autograd.adam(restored_p, 0.01)
+p_data is autograd.data(p)
+restored_p_data is autograd.data(restored_p)
+assert_approx(p_data[0], restored_p_data[0], 0.000000000001)
+assert_approx(p_data[1], restored_p_data[1], 0.000000000001)
+
+autograd.zero_grad(q)
+autograd.zero_grad(restored_q)
+autograd.backward(q, [[0.25, 0.5], [-0.25, -0.5]])
+autograd.backward(restored_q, [[0.25, 0.5], [-0.25, -0.5]])
+autograd.sgd(q, 0.1, {momentum: 0.9})
+autograd.sgd(restored_q, 0.1, {momentum: 0.9})
+q_data is autograd.data(q)
+restored_q_data is autograd.data(restored_q)
+assert_eq(json_stringify(q_data), json_stringify(restored_q_data))
+
+# optimizer:false loads weights as fresh leaf parameters without moment buffers.
+weights_only is autograd.load_checkpoint(checkpoint_path, {optimizer: false})
+assert_eq(json_stringify(autograd.data(weights_only.p)), json_stringify(saved_p_data))
+fresh_weights_only_p is autograd.parameter(saved_p_data)
+autograd.backward(weights_only.p, [0.3, -0.1])
+autograd.backward(fresh_weights_only_p, [0.3, -0.1])
+autograd.adam(weights_only.p, 0.01)
+autograd.adam(fresh_weights_only_p, 0.01)
+assert_eq(json_stringify(autograd.data(weights_only.p)), json_stringify(autograd.data(fresh_weights_only_p)))
+
+# optimizer:false on save strips populated state, while requires_grad is preserved.
+weights_only_path is checkpoint_path + ".weights-only"
+frozen is autograd.tensor([7, 8])
+autograd.save_checkpoint({p: p, frozen: frozen}, weights_only_path, {optimizer: false})
+saved_without_optimizer is autograd.load_checkpoint(weights_only_path)
+assert_eq(autograd.requires_grad(saved_without_optimizer.p), true)
+assert_eq(autograd.requires_grad(saved_without_optimizer.frozen), false)
+fresh_saved_p is autograd.parameter(autograd.data(p))
+autograd.backward(saved_without_optimizer.p, [-0.2, 0.6])
+autograd.backward(fresh_saved_p, [-0.2, 0.6])
+autograd.adam(saved_without_optimizer.p, 0.01)
+autograd.adam(fresh_saved_p, 0.01)
+assert_eq(json_stringify(autograd.data(saved_without_optimizer.p)), json_stringify(autograd.data(fresh_saved_p)))
+
+# The checksum must reject a one-byte payload mutation before any Tensor is returned.
+corrupt_path is checkpoint_path + ".corrupt"
+checkpoint_bytes is file_read_bytes(checkpoint_path)
+# Current format v3: the first tensor is named p and its data payload starts at byte 65.
+payload_byte is 65
+checkpoint_bytes[payload_byte] is (checkpoint_bytes[payload_byte] + 1) % 256
+file_write_bytes(corrupt_path, checkpoint_bytes)
+corruption_rejected is false
+try
+  autograd.load_checkpoint(corrupt_path)
+catch error
+  corruption_rejected is true
+end
+assert(corruption_rejected)
+
+file_delete(checkpoint_path)
+file_delete(weights_only_path)
+file_delete(corrupt_path)
+print "18_transformer_checkpoint: PASS"

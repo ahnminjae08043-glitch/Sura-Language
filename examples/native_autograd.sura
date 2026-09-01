@@ -1,0 +1,26 @@
+use autograd
+
+# Fit y = 2x + 1 with native contiguous float64 tensors and Adam.
+x is autograd.tensor([[0], [1], [2], [3]])
+y is autograd.tensor([[1], [3], [5], [7]])
+w is autograd.parameter([[0]])
+b is autograd.parameter([0])
+parameters is [w, b]
+assert_eq(autograd.requires_grad(w), true)
+assert_eq(autograd.requires_grad(x), false)
+
+repeat 400 do
+  autograd.zero_grad(parameters)
+  prediction is autograd.linear(x, w, b)
+  loss is autograd.mse(prediction, y)
+  autograd.backward(loss)
+  autograd.adam(parameters, 0.05)
+end
+
+prediction is autograd.linear(x, w, b)
+loss is autograd.mse(prediction, y)
+
+print("weight = {autograd.data(w)}")
+print("bias = {autograd.data(b)}")
+print("loss = {autograd.item(loss)}")
+print("prediction = {autograd.data(prediction)}")

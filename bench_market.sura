@@ -1,0 +1,103 @@
+# Market Tycoon-style simulator — typical game-loop workload
+# Exercises: struct/method dispatch, field access, arithmetic, ctor allocation,
+#            CMP_EQ + MOD (Phase 9 ops), top-level loop (Phase 10 main JIT)
+# Avoids string interpolation of obj.field (known Sura interpolator quirk)
+
+struct Item do
+    base_price is 0
+    stock is 0
+    sold_today is 0
+    revenue is 0
+
+    func sell_one() do
+        if self.stock > 0 then
+            self.stock is self.stock - 1
+            self.sold_today is self.sold_today + 1
+            self.revenue is self.revenue + self.base_price
+            return self.base_price
+        end
+        return 0
+    end
+
+    func restock(qty) do
+        self.stock is self.stock + qty
+        self.sold_today is 0
+    end
+end
+
+struct Customer do
+    money is 0
+    items_bought is 0
+    spent is 0
+
+    func purchase(item, qty) do
+        i is 0
+        while i < qty do
+            price is item.sell_one()
+            if price > 0 then
+                if self.money >= price then
+                    self.money is self.money - price
+                    self.spent is self.spent + price
+                    self.items_bought is self.items_bought + 1
+                end
+            end
+            i is i + 1
+        end
+    end
+end
+
+# ── Initialize market ──
+apple is Item(10, 100000, 0, 0)
+bread is Item(25, 50000, 0, 0)
+milk  is Item(40, 30000, 0, 0)
+
+# ── Simulation loop ──
+total_revenue is 0
+total_items is 0
+restocks is 0
+customers is 50000
+
+t is clock()
+i is 0
+while i < customers do
+    cust is Customer(300, 0, 0)
+    cust.purchase(apple, 3)
+    cust.purchase(bread, 2)
+    cust.purchase(milk, 1)
+    total_revenue is total_revenue + cust.spent
+    total_items is total_items + cust.items_bought
+
+    # Periodic restock (every 500 customers)
+    if i % 500 == 0 then
+        apple.restock(50)
+        bread.restock(30)
+        milk.restock(20)
+        restocks is restocks + 1
+    end
+
+    i is i + 1
+end
+ms is (clock() - t) * 1000
+
+print "market sim 50000 customers /"
+print ms
+print "ms"
+print ""
+print "revenue total:"
+print total_revenue
+print "items sold:"
+print total_items
+print "restock count:"
+print restocks
+print "apple stock left:"
+print apple.stock
+print "bread stock left:"
+print bread.stock
+print "milk stock left:"
+print milk.stock
+print "apple revenue:"
+print apple.revenue
+print "bread revenue:"
+print bread.revenue
+print "milk revenue:"
+print milk.revenue

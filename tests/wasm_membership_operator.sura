@@ -1,0 +1,39 @@
+func membership_receiver(kind) do
+  if kind == 0 then
+    return ["wasm", "sura"]
+  end
+  if kind == 1 then
+    return {"12": true}
+  end
+  if kind == 2 then
+    return "x12y"
+  end
+  return 7
+end
+
+numbers is [1, 2, 3]
+labels is ["wasm", "su" + "ra"]
+profile is {name: "Sura"}
+flags is [false, true]
+nils is [nil]
+identity_item is [1]
+identity_items is [identity_item]
+
+result is to_str(2 in numbers)
+result is result + "|" + to_str("sura" in labels)
+result is result + "|" + to_str("name" in profile)
+result is result + "|" + to_str(12 in "x12y")
+result is result + "|" + to_str("sura" in membership_receiver(0))
+result is result + "|" + to_str(12 in membership_receiver(1))
+result is result + "|" + to_str(12 in membership_receiver(2))
+result is result + "|" + type(1 in membership_receiver(3))
+result is result + "|" + to_str("missing" in labels)
+
+assert_eq(result, "true|true|true|true|true|true|true|nil|false")
+assert_eq(true in flags, true)
+assert_eq(nil in nils, true)
+assert_eq(identity_item in identity_items, true)
+assert_eq([] in [[]], false)
+assert_eq(type(1 in 7), "nil")
+assert_eq("x" in [], false)
+print_no_nl(result)

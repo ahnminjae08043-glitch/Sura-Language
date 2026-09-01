@@ -1,0 +1,41 @@
+# 에라토스테네스의 체 — 숫자 루프는 JIT의 주특기입니다
+# Sieve of Eratosthenes. Try: sura --jit primes.sura
+
+limit is 100
+
+sieve is []
+i is 0
+while i <= limit do
+    sieve.push(true)
+    i is i + 1
+end
+
+sieve[0] is false
+sieve[1] is false
+
+p is 2
+while p * p <= limit do
+    if sieve[p] then
+        m is p * p
+        while m <= limit do
+            sieve[m] is false
+            m is m + p
+        end
+    end
+    p is p + 1
+end
+
+primes is []
+n is 2
+while n <= limit do
+    if sieve[n] then
+        primes.push(n)
+    end
+    n is n + 1
+end
+
+assert_eq(primes.len(), 25)
+assert_eq(primes[0], 2)
+assert_eq(primes[24], 97)
+print("primes up to {limit}: {primes.len()}")
+print(primes.join(", "))

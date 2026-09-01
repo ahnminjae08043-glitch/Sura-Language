@@ -1,0 +1,73 @@
+# Real-world workload: evaluate feature-flag rollout decisions for many users.
+# Models bucketed rollout thresholds, region blocks, plan overrides, and risk gates.
+
+func rollout_bucket(user_id, salt) do
+  return ((user_id * 1103515245 + salt * 12345) % 10000)
+end
+
+func flag_decision(i) do
+  user_id is i + 100000
+  feature is (i * 17 + 5) % 8
+  plan is (i * 7 + 3) % 5
+  region is (i * 11 + 9) % 13
+  risk is (i * 19 + 23) % 100
+  age_days is (i * 29 + 1) % 730
+  bucket is rollout_bucket(user_id, feature + 41)
+
+  threshold is 1000
+  if feature == 1 then
+    threshold is 2000
+  elif feature == 2 then
+    threshold is 3500
+  elif feature == 3 then
+    threshold is 5000
+  elif feature == 4 then
+    threshold is 6500
+  elif feature == 5 then
+    threshold is 8000
+  end
+
+  enabled is 0
+  if bucket < threshold then
+    enabled is 1
+  end
+  if plan == 4 and risk < 35 then
+    enabled is 1
+  end
+  if region == 7 or risk > 88 then
+    enabled is 0
+  end
+  if age_days < 3 and feature == 4 then
+    enabled is 0
+  end
+
+  return enabled * (feature + 1) + threshold + (bucket % 17)
+end
+
+runs is 5
+decisions is 260000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  enabled_count is 0
+  total is 0
+  i is 0
+  while i < decisions do
+    score is flag_decision(i)
+    if score % 2 == 1 then
+      enabled_count is enabled_count + 1
+    end
+    total is total + score
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is enabled_count * 13 + total
+end
+
+avg is total_ms / runs
+print "feature flag decisions: {decisions}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

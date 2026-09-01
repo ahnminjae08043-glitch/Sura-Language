@@ -1,0 +1,29 @@
+use async
+use json
+
+worker_args is argv()
+if worker_args.len() == 0 then
+  print "async Sura worker fixture: PASS"
+else
+  request is file_read_json(worker_args[0])
+
+  if request.mode == "delay" then
+    sleep_ms(request.delay_ms)
+  end
+
+  if request.mode == "fail" then
+    throw "requested worker failure"
+  end
+
+  if request.mode == "recursive" then
+    blocked is false
+    try
+      async.sura({program: script_name(), input: nil})
+    catch error
+      blocked is error.contains("recursive isolated program spawning is disabled")
+    end
+    print json.stringify({recursive_blocked: blocked})
+  else
+    print json.stringify({value: request.value * 2, mode: request.mode})
+  end
+end

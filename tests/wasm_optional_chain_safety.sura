@@ -1,0 +1,43 @@
+func optional_fallback_first_probe() do
+  local_nil_profile is nil
+  local_items is local_nil_profile?.items ?? ["fallback", "items"]
+  return local_items[0]
+end
+
+func optional_existing_first_probe() do
+  local_holder is {items: ["Ada", "Grace"]}
+  local_items is local_holder?.items ?? ["fallback"]
+  return local_items[0]
+end
+
+nil_profile is nil
+collection_holder is {items: ["Ada", "Grace"]}
+
+fallback_items is nil_profile?.items ?? ["fallback", "items"]
+existing_items is collection_holder?.items ?? ["fallback"]
+
+assert_eq(type(nil_profile?.items), "nil")
+assert_eq(fallback_items[0], "fallback")
+assert_eq(fallback_items[1], "items")
+assert_eq(existing_items[0], "Ada")
+assert_eq(existing_items[1], "Grace")
+assert_eq(length(fallback_items), 2)
+assert_eq(to_bool(fallback_items), true)
+
+falsey_holder is {active: false, count: 0}
+optional_false_value is falsey_holder?.active ?? true
+optional_zero_value is falsey_holder?.count ?? 99
+optional_false_fallback_value is nil_profile?.active ?? true
+optional_zero_fallback_value is nil_profile?.count ?? 99
+assert_eq(optional_false_value, false)
+assert_eq(optional_zero_value, 0)
+assert_eq(optional_false_fallback_value, true)
+assert_eq(optional_zero_fallback_value, 99)
+assert_eq(falsey_holder?.active ?? true, false)
+assert_eq(falsey_holder?.count ?? 99, 0)
+assert_eq(nil_profile?.active ?? true, true)
+assert_eq(nil_profile?.count ?? 99, 99)
+assert_eq("Maybe {nil_profile?.items ?? \"anon\"} Existing {collection_holder?.items[0] ?? \"anon\"}", "Maybe anon Existing Ada")
+assert_eq("Methods {\"SURA\".lower()} {\"  core  \".trim()}", "Methods sura core")
+
+print 74

@@ -1,0 +1,35 @@
+func tagged_index_32_a() do
+  return 32
+end
+
+func tagged_index_32_b() do
+  return 32
+end
+
+tagged_index_handler is true ? tagged_index_32_a : tagged_index_32_b
+tagged_index_result is tagged_index_handler()
+tagged_index is tagged_index_result - 31
+
+tagged_index_text is "sura"
+tagged_index_values is [10, 20, 30]
+
+assert_eq(tagged_index_text[tagged_index], "u")
+assert_eq(type(tagged_index_text[tagged_index]), "string")
+assert_eq(tagged_index_values[tagged_index], 20)
+assert_len(tagged_index_values, tagged_index_result - 29)
+assert_between(tagged_index_result, 30, 40)
+assert_approx(tagged_index_result + 1, 33, 0)
+
+tagged_match_result is 0
+when tagged_index_result do
+is 31 then
+  tagged_match_result is 1
+in 32 to 40 then
+  tagged_match_result is 2
+else then
+  tagged_match_result is 3
+end
+
+assert_eq(tagged_match_result, 2)
+
+print_no_nl("tagged dynamic index ok")

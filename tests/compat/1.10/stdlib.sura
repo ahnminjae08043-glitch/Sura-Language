@@ -1,0 +1,16 @@
+use array
+use dict
+
+values is array.range(1, 6, 2)
+assert_eq(values.join(","), "1,3,5")
+assert_eq(array.unique([1, 1, 2]).join(","), "1,2")
+
+record is json_parse(json_stringify({name: "sura", ok: true}))
+assert_eq(record.name, "sura")
+assert_eq(record.ok, true)
+
+merged is dict.merge({a: 1}, {b: 2}, {a: 3})
+assert_eq(merged.a, 3)
+assert_eq(merged.b, 2)
+assert_eq(sha256("sura").len(), 64)
+print("compat-1.10-stdlib: PASS")

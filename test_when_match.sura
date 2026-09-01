@@ -1,0 +1,12 @@
+x is 5
+when x do
+    is 1 then print "one"
+    in 2 to 10 then print "range"
+    else then print "other"
+end
+
+y is "hello"
+when y do
+    is "hello" then print "hi"
+    else then print "no"
+end

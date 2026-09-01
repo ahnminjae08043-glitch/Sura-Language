@@ -1,0 +1,94 @@
+use math
+
+func keep_float(value) do
+  return to_float(value)
+end
+
+pi_value is math.pi
+negative_value is -2.25
+returned_pi is keep_float(pi_value)
+pi_plus_half is pi_value + 0.5
+static_sum is 1.5 + 2.25
+static_difference is 6.5 - 1.25
+static_product is 1.5 * 4
+static_nested is (1.25 + 2) * (5.5 - 1.5)
+decimal_values is [math.pi, to_float(2.5), negative_value]
+decimal_profile is {pi: math.pi, negative: to_float(-1.25)}
+pi_integer is to_int(pi_value)
+negative_integer is to_int(negative_value)
+bool_integer is to_int(true)
+nil_integer is to_int(nil)
+string_integer is to_int("  -42tail")
+bool_float is to_float(false)
+nil_float is to_float(nil)
+string_float is to_float("  -2.75e1tail")
+nan_float is to_float(" NaN")
+positive_inf_float is to_float(" +INFINITY")
+negative_inf_float is to_float(" -inf")
+
+assert_eq(pi_value, math.pi)
+assert_eq(returned_pi, math.pi)
+assert_eq(pi_plus_half, 3.641592653589793)
+assert_eq(static_sum, 3.75)
+assert_eq(static_difference, 5.25)
+assert_eq(static_product, 6)
+assert_eq(static_nested, 13)
+assert_eq(decimal_values[0], math.pi)
+assert_eq(decimal_values[1], 2.5)
+assert_eq(decimal_values[2], -2.25)
+assert_eq(decimal_profile.pi, math.pi)
+assert_eq(decimal_profile.negative, -1.25)
+assert_eq(pi_integer, 3)
+assert_eq(negative_integer, -3)
+assert_eq(to_int(math.pi), 3)
+assert_eq(to_int(decimal_values[2]), -3)
+assert_eq(to_float(decimal_values[1]), 2.5)
+assert_eq(type(to_float(pi_value)), "number")
+assert_eq(bool_integer, 1)
+assert_eq(nil_integer, 0)
+assert_eq(string_integer, -42)
+assert_eq(bool_float, 0)
+assert_eq(nil_float, 0)
+assert_eq(string_float, -27.5)
+assert_eq(to_str(string_float), "-27.5")
+assert_eq(type(nan_float), "number")
+assert_eq(to_str(nan_float), "nan")
+assert_eq(to_str(positive_inf_float), "inf")
+assert_eq(to_str(negative_inf_float), "-inf")
+assert_eq(to_str(math.pi), "3.141592653589793")
+assert_eq("Pi {math.pi}", "Pi 3.141592653589793")
+assert_eq(to_str(pi_plus_half), "3.641592653589793")
+
+int_parse_error_caught is false
+try
+  invalid_int is to_int("not-a-number")
+catch int_error
+  int_parse_error_caught is true
+end
+assert(int_parse_error_caught)
+
+float_parse_error_caught is false
+try
+  invalid_float is to_float("not-a-number")
+catch float_error
+  float_parse_error_caught is true
+end
+assert(float_parse_error_caught)
+
+int_type_error_caught is false
+try
+  invalid_int_type is to_int([])
+catch int_type_error
+  int_type_error_caught is true
+end
+assert(int_type_error_caught)
+
+float_type_error_caught is false
+try
+  invalid_float_type is to_float({})
+catch float_type_error
+  float_type_error_caught is true
+end
+assert(float_type_error_caught)
+
+print_no_nl("decimal conversion ok")

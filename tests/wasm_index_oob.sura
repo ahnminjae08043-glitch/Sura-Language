@@ -1,0 +1,3 @@
+# sura-test: expect-error E202
+values is [1, 2, 3]
+print values[1000000]

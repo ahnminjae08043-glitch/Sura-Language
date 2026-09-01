@@ -1,0 +1,176 @@
+func dynamic_subtract(left, right) do
+  return left - right
+end
+
+func dynamic_divide(left, right) do
+  return left / right
+end
+
+func dynamic_modulo(left, right) do
+  return left % right
+end
+
+func dynamic_less(left, right) do
+  return left < right
+end
+
+func dynamic_shift_left(left, right) do
+  return left << right
+end
+
+func dynamic_shift_right(left, right) do
+  return left >> right
+end
+
+func dynamic_bit_and(left, right) do
+  return left & right
+end
+
+func dynamic_bit_or(left, right) do
+  return left | right
+end
+
+func dynamic_bit_xor(left, right) do
+  return left ^ right
+end
+
+func dynamic_bit_not(value) do
+  return ~value
+end
+
+max_safe_integer is 9007199254740991
+
+assert_eq(dynamic_subtract(5, 2), 3)
+assert_eq(dynamic_divide(8, 2), 4)
+assert_eq(dynamic_modulo(7, 4), 3)
+assert(dynamic_less(1, 2))
+assert_eq(dynamic_shift_left(1, 4), 16)
+assert_eq(dynamic_shift_right(-8, 1), -4)
+assert_eq(dynamic_shift_left(1, 40), 1099511627776)
+assert_eq(dynamic_bit_and(max_safe_integer, 255), 255)
+assert_eq(dynamic_bit_or(16, 3), 19)
+assert_eq(dynamic_bit_xor(19, 3), 16)
+assert_eq(dynamic_bit_not(16), -17)
+
+type_error_caught is false
+try
+  ignored is dynamic_subtract("unsafe", 1)
+catch error
+  type_error_caught is true
+  assert(contains(to_str(error), "E200"))
+end
+assert(type_error_caught)
+
+comparison_error_caught is false
+try
+  ignored is dynamic_less("unsafe", 1)
+catch error
+  comparison_error_caught is true
+  assert_eq(type(error), "string")
+end
+assert(comparison_error_caught)
+
+division_error_caught is false
+try
+  ignored is dynamic_divide(1, 0)
+catch error
+  division_error_caught is true
+  assert(contains(to_str(error), "division by zero"))
+end
+assert(division_error_caught)
+
+modulo_error_caught is false
+try
+  ignored is dynamic_modulo(7, 0)
+catch error
+  modulo_error_caught is true
+  assert(contains(to_str(error), "modulo by zero"))
+end
+assert(modulo_error_caught)
+
+in_place_division_value is 9
+in_place_division_caught is false
+try
+  in_place_division_value /= 0
+catch error
+  in_place_division_caught is true
+  assert(contains(to_str(error), "division by zero"))
+end
+assert(in_place_division_caught)
+assert_eq(in_place_division_value, 9)
+
+in_place_modulo_value is 9
+in_place_modulo_caught is false
+try
+  in_place_modulo_value %= 0
+catch error
+  in_place_modulo_caught is true
+  assert(contains(to_str(error), "modulo by zero"))
+end
+assert(in_place_modulo_caught)
+assert_eq(in_place_modulo_value, 9)
+
+negative_shift_caught is false
+try
+  ignored is dynamic_shift_left(1, -1)
+catch error
+  negative_shift_caught is true
+  assert(contains(to_str(error), "shift count"))
+end
+assert(negative_shift_caught)
+
+wide_shift_caught is false
+try
+  ignored is dynamic_shift_right(1, 64)
+catch error
+  wide_shift_caught is true
+  assert(contains(to_str(error), "shift count"))
+end
+assert(wide_shift_caught)
+
+fractional_bitwise_caught is false
+try
+  ignored is dynamic_bit_and(1.5, 1)
+catch error
+  fractional_bitwise_caught is true
+  assert(contains(to_str(error), "E203"))
+end
+assert(fractional_bitwise_caught)
+
+direct_fractional_bitwise_caught is false
+try
+  ignored is 1.5 | 1
+catch error
+  direct_fractional_bitwise_caught is true
+  assert(contains(to_str(error), "finite safe integers"))
+end
+assert(direct_fractional_bitwise_caught)
+
+fractional_shift_count_caught is false
+try
+  ignored is dynamic_shift_left(1, 1.5)
+catch error
+  fractional_shift_count_caught is true
+  assert(contains(to_str(error), "E203"))
+end
+assert(fractional_shift_count_caught)
+
+overflowing_shift_caught is false
+try
+  ignored is dynamic_shift_left(max_safe_integer, 1)
+catch error
+  overflowing_shift_caught is true
+  assert(contains(to_str(error), "safe integer range"))
+end
+assert(overflowing_shift_caught)
+
+overflowing_not_caught is false
+try
+  ignored is dynamic_bit_not(max_safe_integer)
+catch error
+  overflowing_not_caught is true
+  assert(contains(to_str(error), "safe integer range"))
+end
+assert(overflowing_not_caught)
+
+print_no_nl("dynamic numeric errors ok")

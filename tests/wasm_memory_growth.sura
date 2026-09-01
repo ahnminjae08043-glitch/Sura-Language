@@ -1,0 +1,7 @@
+values is []
+for i in 0 to 300 do
+  values.push(i)
+end
+assert_eq(length(values), 301)
+assert_eq(values[-1], 300)
+print 301

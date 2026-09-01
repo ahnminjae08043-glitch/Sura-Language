@@ -1,0 +1,36 @@
+path is "sura_practical_tmp.txt"
+
+file_write(path, "hello")
+file_append(path, " world")
+print file_exists(path)
+print file_read(path)
+
+original is {"name": "sura", "nums": [1,2,3], "ok": true}
+data is json_parse(json_stringify(original))
+print data.name
+print data.nums[1]
+print data.ok
+print json_stringify(data).contains("\"name\"")
+
+print http_get("file://sura_practical_tmp.txt").trim()
+api_json_path is "sura_practical_api.json"
+file_write(api_json_path, json_stringify({ok: true, name: "sura"}))
+print http_request({url: "file://sura_practical_tmp.txt"}).trim()
+api_response is http_request_json({url: "file://sura_practical_api.json"})
+print api_response.ok
+print api_response.name
+print file_delete(api_json_path)
+
+task is async_cmd("echo async-ok")
+print async_await(task).trim()
+tasks is [async_cmd("echo one"), async_cmd("echo two")]
+assert(type(async_ready_all(tasks)) == "bool")
+outputs is async_all(tasks)
+assert_eq(outputs[0].trim(), "one")
+assert_eq(outputs[1].trim(), "two")
+more_tasks is [task("echo alias-one"), task("echo alias-two")]
+more_outputs is await_all(more_tasks)
+assert_eq(more_outputs[0].trim(), "alias-one")
+assert_eq(more_outputs[1].trim(), "alias-two")
+
+print file_delete(path)

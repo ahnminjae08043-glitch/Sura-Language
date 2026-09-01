@@ -1,0 +1,84 @@
+# Native emitter coverage for DICT_KEYS.
+#
+# This is the opcode the key-value loop form runs first: `for k, v in dict do`
+# materialises the dict's keys, then walks that array with FOREACH_NEXT. (The
+# single-variable form `for k in dict` takes the plain FOREACH_NEXT path, which
+# handles arrays and strings only, so it iterates zero times over a dict - that
+# is existing language behaviour, not something this file is testing.)
+#
+# DICT_KEYS surfaced only after the root-level tests were brought into the
+# differential lane. The tests/ ranking had never shown it, because every
+# program there was already disqualified by something else first - the
+# "programs report only their first blocker" caveat showing up in practice.
+#
+# Run under tools/sura_jit_differential.ps1: native and VM output must match.
+
+lookup is {alpha: 1, beta: 2, gamma: 3}
+
+# ── Key-value iteration reaches every entry ──
+key_count is 0
+value_total is 0
+for k, v in lookup do
+  key_count is key_count + 1
+  value_total is value_total + v
+end
+assert_eq(key_count, 3)
+assert_eq(value_total, 6)
+
+# The key really is the key: looking it back up must agree with the bound value.
+matched is 0
+for k, v in lookup do
+  if lookup[k] == v then
+    matched is matched + 1
+  end
+end
+assert_eq(matched, 3)
+
+# An empty dict iterates zero times rather than erroring, so the exit branch is
+# taken without a value ever being produced.
+empty is {}
+empty_runs is 0
+for k, v in empty do
+  empty_runs is empty_runs + 1
+end
+assert_eq(empty_runs, 0)
+
+# Single entry, so continue and exit are each taken exactly once.
+single is {only: 42}
+single_total is 0
+for k, v in single do
+  single_total is single_total + v
+end
+assert_eq(single_total, 42)
+
+# ── Repeated traversal in a hot loop, so the opcode runs far past warm-up and
+#    a fresh key array is built each time ──
+runs is 0
+i is 0
+while i < 100 do
+  for k, v in lookup do
+    runs is runs + v
+  end
+  i is i + 1
+end
+assert_eq(runs, 600)
+
+# Iterating a dict inside a callee, so the function-level emitter path is
+# covered too, not only the top level.
+func sum_values(d) do
+  s is 0
+  for k, v in d do
+    s is s + v
+  end
+  return s
+end
+
+acc is 0
+j is 0
+while j < 40 do
+  acc is acc + sum_values(lookup)
+  j is j + 1
+end
+assert_eq(acc, 240)
+
+print "83_jit_dict_keys_differential: PASS"

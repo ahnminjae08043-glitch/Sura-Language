@@ -1,0 +1,38 @@
+use autograd
+
+args is argv()
+assert_eq(args.len(), 6)
+
+rendezvous is args[0]
+run_id is args[1]
+step is args[2].to_num()
+rank is args[3].to_num()
+world_size is args[4].to_num()
+average is args[5] == "true"
+
+assert_eq(rank, 0)
+assert_eq(world_size, 2)
+p is autograd.parameter([1, 2])
+q is autograd.parameter([[1, 2], [3, 4]])
+p_loss is autograd.sum(autograd.mul(p, 1))
+q_loss is autograd.sum(autograd.mul(q, 2))
+autograd.backward(autograd.add(p_loss, q_loss))
+
+rejected is false
+try
+  autograd.all_reduce_gradients([p, q], {rendezvous: rendezvous, run_id: run_id, step: step, rank: rank, world_size: world_size, average: average, timeout_ms: 15000})
+catch error
+  rejected is true
+end
+assert(rejected)
+
+# A checksum/metadata failure must not partially replace either gradient.
+p_grad is autograd.grad(p)
+q_grad is autograd.grad(q)
+assert_eq(p_grad[0], 1)
+assert_eq(p_grad[1], 1)
+assert_eq(q_grad[0][0], 2)
+assert_eq(q_grad[0][1], 2)
+assert_eq(q_grad[1][0], 2)
+assert_eq(q_grad[1][1], 2)
+print "distributed_worker_ok"

@@ -1,0 +1,49 @@
+use autograd
+
+info is autograd.cuda_info()
+assert_eq(info.available, autograd.cuda_available())
+if info.cublas_available then
+  assert_eq(info.backend, "cuda-driver-cublas+ptx")
+  assert_eq(info.matmul_backend, "cublas-sgemm")
+else
+  assert_eq(info.backend, "cuda-driver-ptx")
+  assert_eq(info.matmul_backend, "sura-reference-ptx")
+end
+
+if info.available then
+  assert(info.device_index >= 0)
+  assert(info.device_index < info.device_count)
+  print("CUDA device = {info.device_name}, compute capability = {info.compute_capability}")
+  left is autograd.parameter([[1, 2, 3], [4, 5, 6]], {dtype: "float32"})
+  right is autograd.parameter([[7, 8], [9, 10], [11, 12]], {dtype: "float32"})
+
+  cpu is autograd.matmul(left, right)
+  gpu is autograd.matmul(left, right, {backend: "cuda"})
+  assert_eq(autograd.dtype(gpu), "float32")
+  cpu_data is autograd.data(cpu)
+  gpu_data is autograd.data(gpu)
+  assert_approx(gpu_data[0][0], cpu_data[0][0], 0.00001)
+  assert_approx(gpu_data[0][1], cpu_data[0][1], 0.00001)
+  assert_approx(gpu_data[1][0], cpu_data[1][0], 0.00001)
+  assert_approx(gpu_data[1][1], cpu_data[1][1], 0.00001)
+
+  # CUDA forward keeps the normal MATMUL graph; audited CPU backward remains exact.
+  autograd.backward(autograd.sum(gpu))
+  left_grad is autograd.grad(left)
+  right_grad is autograd.grad(right)
+  assert_eq(json_stringify(left_grad), "[[15,19,23],[15,19,23]]")
+  assert_eq(json_stringify(right_grad), "[[5,5],[7,7],[9,9]]")
+  autograd.cuda_synchronize()
+
+  dtype_rejected is false
+  try
+    autograd.matmul(autograd.tensor([[1]], "float64"), autograd.tensor([[1]], "float64"), {backend: "cuda"})
+  catch error
+    dtype_rejected is true
+  end
+  assert(dtype_rejected)
+else
+  assert(info.error.len() > 0)
+end
+
+print "22_cuda_backend: PASS"

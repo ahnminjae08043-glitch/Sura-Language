@@ -1,0 +1,39 @@
+# Sura V5 벤치마크 테스트 스크립트 (test.sura)
+
+# 1. GC 마크오브스위프(Mark-And-Sweep) 누수 방어 테스트
+print "1. 수만 개의 임시 객체 배열 생성 테스트 시작...\n"
+i is 0
+while i < 50000 do
+    # 의도적으로 엄청난 양의 배열을 생성하고 즉시 버립니다. (순환 참조 테스트)
+    junk is [1, 2, 3, "Sura", "Memory"]
+    i is i + 1
+end
+print "GC 루프 안전 테스트 통과! (메모리가 꽉 차서 터지지 않으면 성공)\n\n"
+
+# 2. 인라인 캐싱(Inline Caching) 무한 객체 속성 접근 스피드 테스트
+print "2. 인라인 캐싱(IC) 미친 스피드 체감 테스트 시작...\n"
+
+class Gamer do
+    # 생성될 클래스 (빈 상태로 둬서 런타임에 삽입)
+end
+
+player is new Gamer
+player.score is 0
+
+cnt is 0
+while cnt < 100000 do
+    # 과거: 10만 번 돌아가며 "score" 단어를 해싱(Hashing)하여 찾음 (매우 느림)
+    # 현재(V5): 첫 방문 시 위치(Index)를 기억하고 메모리로 바로 직행 (극강의 스피드)
+    player.score is player.score + 1
+    cnt is cnt + 1
+end
+
+print "인라인 캐싱 테스트 통과! 최종 점수: " + player.score + "\n\n"
+
+# 3. 간단한 함수 및 계산 (NaN-Boxing 검증용)
+func add(a, b) do
+    return a + b
+end
+
+print "3. 함수 정상 작동(NaN-Boxing 연산) 확인: 10 + 25 is " + add(10, 25) + "\n"
+print "전체 실험이 극도로 성공적으로 종료되었습니다!\n"

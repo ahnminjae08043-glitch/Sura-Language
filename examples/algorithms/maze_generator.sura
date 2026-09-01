@@ -1,0 +1,69 @@
+use random
+
+# Iterative depth-first maze generation on a 15 x 9 character grid.
+random.seed(2026)
+W is 15
+H is 9
+cells is []
+visited is []
+
+i is 0
+while i < W * H do
+  cells.push("#")
+  visited.push(false)
+  i += 1
+end
+
+func index_of(x, y) do
+  return y * W + x
+end
+
+stack_x is [1]
+stack_y is [1]
+visited[index_of(1, 1)] is true
+cells[index_of(1, 1)] is " "
+
+while stack_x.len() > 0 do
+  top is stack_x.len() - 1
+  x is stack_x[top]
+  y is stack_y[top]
+  options is []
+
+  if x - 2 > 0 and not visited[index_of(x - 2, y)] then options.push([-2, 0])
+  if x + 2 < W - 1 and not visited[index_of(x + 2, y)] then options.push([2, 0])
+  if y - 2 > 0 and not visited[index_of(x, y - 2)] then options.push([0, -2])
+  if y + 2 < H - 1 and not visited[index_of(x, y + 2)] then options.push([0, 2])
+
+  if options.len() == 0 then
+    stack_x.remove(top)
+    stack_y.remove(top)
+  else
+    move is options[random.int(0, options.len() - 1)]
+    nx is x + move[0]
+    ny is y + move[1]
+    cells[index_of(x + move[0] / 2, y + move[1] / 2)] is " "
+    cells[index_of(nx, ny)] is " "
+    visited[index_of(nx, ny)] is true
+    stack_x.push(nx)
+    stack_y.push(ny)
+  end
+end
+
+cells[index_of(0, 1)] is "S"
+cells[index_of(W - 1, H - 2)] is "G"
+
+print("Generated maze (seed 2026)")
+y is 0
+while y < H do
+  line is ""
+  x is 0
+  while x < W do
+    line += cells[index_of(x, y)]
+    x += 1
+  end
+  print(line)
+  y += 1
+end
+
+assert_eq(cells[index_of(0, 1)], "S")
+assert_eq(cells[index_of(W - 1, H - 2)], "G")

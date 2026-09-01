@@ -1,0 +1,42 @@
+func double_reference(value) do
+  return value * 2
+end
+
+handler is double_reference
+score is 0
+while handler do
+  score += 1
+  handler is nil
+end
+handler is double_reference
+
+text_value is "live"
+text_value is nil
+if text_value then
+  score += 10
+end
+text_value is "live"
+
+array_value is [1, 2]
+array_value is nil
+if array_value then
+  score += 100
+end
+array_value is [1, 2]
+
+dict_value is {answer: 42}
+dict_value is nil
+if dict_value then
+  score += 1000
+end
+dict_value is {answer: 42}
+
+fallback_name is (nil ?? {name: "Fallback"}).name
+fallback_number is (nil ?? [7, 9])[1]
+assert_eq(type(fallback_name), "string")
+assert_eq(fallback_name, "Fallback")
+assert_eq(type(fallback_number), "number")
+assert_eq(fallback_number, 9)
+
+assert_eq(score, 1)
+print score

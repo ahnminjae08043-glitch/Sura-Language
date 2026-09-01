@@ -1,0 +1,119 @@
+# Tiny tower-defense simulation. Towers automatically target the first enemy.
+# Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 760
+H is 500
+if not win_init(W, H, "Sura Tower Defense") then
+  print("win_init failed")
+  exit(1)
+end
+
+enemy_progress is [-100, -240, -380, -520, -660, -800]
+enemy_hp is [3, 3, 4, 4, 5, 5]
+tower_x is [210, 390, 560]
+tower_y is [170, 330, 170]
+cooldowns is [0, 12, 24]
+gold is 0
+lives is 10
+frame is 0
+running is true
+
+func path_x(progress) do
+  return 40 + progress
+end
+
+func path_y(progress) do
+  return H / 2 + sin(progress / 80) * 105
+end
+
+while running do
+  frame += 1
+  if key_down("q") or key_down("escape") then running is false
+
+  i is 0
+  while i < enemy_progress.len() do
+    if enemy_hp[i] > 0 then
+      enemy_progress[i] += 1.5
+      if path_x(enemy_progress[i]) > W + 30 then
+        enemy_progress[i] is random(-500, -100)
+        enemy_hp[i] is 3 + i % 3
+        lives -= 1
+      end
+    else
+      enemy_progress[i] is random(-600, -100)
+      enemy_hp[i] is 3 + i % 3
+      gold += 5
+    end
+    i += 1
+  end
+
+  tower is 0
+  while tower < tower_x.len() do
+    if cooldowns[tower] > 0 then cooldowns[tower] -= 1
+    if cooldowns[tower] == 0 then
+      target is -1
+      best_progress is -99999
+      i is 0
+      while i < enemy_progress.len() do
+        if enemy_hp[i] > 0 then
+          ex is path_x(enemy_progress[i])
+          ey is path_y(enemy_progress[i])
+          dx is ex - tower_x[tower]
+          dy is ey - tower_y[tower]
+          if dx * dx + dy * dy < 145 * 145 and enemy_progress[i] > best_progress then
+            target is i
+            best_progress is enemy_progress[i]
+          end
+        end
+        i += 1
+      end
+      if target >= 0 then
+        enemy_hp[target] -= 1
+        cooldowns[tower] is 28
+      end
+    end
+    tower += 1
+  end
+
+  win_clear(32, 82, 48)
+  last_x is 0
+  last_y is path_y(-40)
+  p is -40
+  while p < W do
+    x is path_x(p)
+    y is path_y(p)
+    win_line(last_x, last_y, x, y, 155, 125, 80)
+    win_line(last_x, last_y + 18, x, y + 18, 155, 125, 80)
+    last_x is x
+    last_y is y
+    p += 10
+  end
+
+  tower is 0
+  while tower < tower_x.len() do
+    win_circle(tower_x[tower], tower_y[tower], 18, 80, 150, 230)
+    win_rect(tower_x[tower] - 5, tower_y[tower] - 30, 10, 26, 180, 220, 255)
+    tower += 1
+  end
+  i is 0
+  while i < enemy_progress.len() do
+    if enemy_hp[i] > 0 then
+      ex is path_x(enemy_progress[i])
+      ey is path_y(enemy_progress[i])
+      win_circle(ex, ey, 10, 230, 80, 75)
+      win_rect(ex - 12, ey - 18, enemy_hp[i] * 6, 3, 100, 240, 110)
+    end
+    i += 1
+  end
+  win_text("TOWER DEFENSE  gold {gold}  lives {lives}", 18, 16, 235, 245, 220)
+  if not win_update() then running is false
+  if lives <= 0 then running is false
+  if SMOKE and frame >= 16 then running is false
+  wait(16)
+end
+
+win_close()
+print("tower_defense: frames={frame}, gold={gold}, lives={lives}")
+assert(frame > 0)
+

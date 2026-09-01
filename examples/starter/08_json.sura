@@ -1,0 +1,10 @@
+use json
+
+user is {name: "Sura", level: 1, topics: ["문법", "도구", "패키지"]}
+
+encoded is json.stringify(user)
+decoded is json.parse(encoded)
+
+print(encoded)
+print("이름: {decoded.name}")
+print("첫 주제: {decoded.topics[0]}")

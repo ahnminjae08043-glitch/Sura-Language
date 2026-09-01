@@ -1,0 +1,203 @@
+// ================================
+// 수라 표준 라이브러리: os
+// 시스템 프로그래밍 지원
+// 사용법: use os
+// ================================
+// 내장 명령어 (interpreter.hpp 지원 필요):
+//   system_exec 명령어 결과      → 시스템 명령어 실행
+//   env_get 변수명 결과          → 환경변수 읽기
+//   env_set 변수명 값            → 환경변수 설정
+//   dir_list 경로 결과           → 디렉토리 목록
+//   file_exists 경로 결과        → 파일 존재 여부
+//   file_delete 경로             → 파일 삭제
+//   file_copy 소스 목표          → 파일 복사
+//   file_move 소스 목표          → 파일 이동
+//   dir_create 경로              → 디렉토리 생성
+//   dir_delete 경로              → 디렉토리 삭제
+
+// ================================
+// 환경변수 관리
+// ================================
+
+// 환경변수 읽기
+// 입력: _env_name
+// 출력: _value
+func get_env do
+    env_get _env_name _value
+end
+
+// 환경변수 설정
+// 입력: _env_name, _value
+func set_env do
+    env_set _env_name _value
+end
+
+// 현재 작업 디렉토리
+// 출력: _cwd
+func get_cwd do
+    env_get "PWD" _cwd
+end
+
+// ================================
+// 파일 시스템
+// ================================
+
+// 파일 존재 여부 확인
+// 입력: _filepath
+// 출력: _exists (0 또는 1)
+func path_exists do
+    file_exists _filepath _exists
+end
+
+// 파일 크기 (바이트)
+// 입력: _filepath
+// 출력: _size
+func file_size do
+    # 파일 크기 조회
+end
+
+// 파일 수정 시간
+// 입력: _filepath
+// 출력: _timestamp
+func file_modified_time do
+    # 파일 수정 시간 조회
+end
+
+// 파일 복사
+// 입력: _source, _dest
+func copy_file do
+    file_copy _source _dest
+end
+
+// 파일 이동/이름변경
+// 입력: _source, _dest
+func move_file do
+    file_move _source _dest
+end
+
+// 파일 삭제
+// 입력: _filepath
+func delete_file do
+    file_delete _filepath
+end
+
+// ================================
+// 디렉토리 관리
+// ================================
+
+// 디렉토리 목록
+// 입력: _dirpath
+// 출력: _items (배열)
+func list_dir do
+    dir_list _dirpath _items
+end
+
+// 디렉토리 생성
+// 입력: _dirpath
+func create_dir do
+    dir_create _dirpath
+end
+
+// 디렉토리 삭제
+// 입력: _dirpath
+func delete_dir do
+    dir_delete _dirpath
+end
+
+// 재귀적 디렉토리 생성
+// 입력: _dirpath
+func create_dirs do
+    # mkdir -p 같은 기능
+end
+
+// ================================
+// 프로세스 제어
+// ================================
+
+// 시스템 명령어 실행
+// 입력: _command
+// 출력: _output
+func exec do
+    system_exec _command _output
+end
+
+// 백그라운드 프로세스 실행
+// 입력: _command
+// 출력: _pid
+func exec_background do
+    # 백그라운드에서 실행 후 PID 반환
+end
+
+// 프로세스 종료 대기
+// 입력: _pid
+// 출력: _exit_code
+func wait_process do
+    # PID의 프로세스 종료 대기
+end
+
+// ================================
+// 경로 조작
+// ================================
+
+// 경로 결합
+// 입력: _part1, _part2
+// 출력: _path
+func path_join do
+    # 경로 구분자 자동 처리
+end
+
+// 파일명 추출
+// 입력: _filepath
+// 출력: _filename
+func get_filename do
+    # /path/to/file.txt → file.txt
+end
+
+// 디렉토리명 추출
+// 입력: _filepath
+// 출력: _dirname
+func get_dirname do
+    # /path/to/file.txt → /path/to
+end
+
+// 확장자 추출
+// 입력: _filepath
+// 출력: _ext
+func get_extension do
+    # file.txt → txt
+end
+
+// 확장자 변경
+// 입력: _filepath, _new_ext
+// 출력: _result
+func change_extension do
+    # file.txt + "md" → file.md
+end
+
+// ================================
+// 시스템 정보
+// ================================
+
+// OS 이름
+// 출력: _os_name
+func get_os_name do
+    # "Windows", "Linux", "macOS" 등
+end
+
+// 시스템 아키텍처
+// 출력: _arch
+func get_architecture do
+    # "x86_64", "ARM64" 등
+end
+
+// 사용 가능한 메모리
+// 출력: _memory_mb
+func get_free_memory do
+    # MB 단위
+end
+
+// CPU 개수
+// 출력: _cpu_count
+func get_cpu_count do
+    # 논리적 CPU 개수
+end

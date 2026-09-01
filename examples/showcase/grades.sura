@@ -1,0 +1,52 @@
+# 성적 통계 — 분기, 배열 집계, 예외 처리, when
+# Score statistics with branching, aggregation, and error handling.
+
+func grade_of(score) do
+    if score < 0 then
+        throw "score out of range: {score}"
+    end
+    if score >= 90 then
+        return "A"
+    elif score >= 80 then
+        return "B"
+    elif score >= 70 then
+        return "C"
+    end
+    return "F"
+end
+
+scores is [95, 82, 77, 64, 91]
+
+sum is 0
+best is scores[0]
+for s in scores do
+    sum is sum + s
+    if s > best then
+        best is s
+    end
+end
+average is sum / scores.len()
+
+assert_eq(sum, 409)
+assert_eq(best, 95)
+assert_eq(grade_of(95), "A")
+assert_eq(grade_of(82), "B")
+assert_eq(grade_of(77), "C")
+assert_eq(grade_of(64), "F")
+
+caught is ""
+try
+    grade_of(0 - 5)
+catch e
+    caught is "caught"
+end
+assert_eq(caught, "caught")
+
+# when은 값에 대한 분기를 한눈에 보여줍니다 (최상위 문).
+when best do
+    in 90 to 100 then print "best grade: A"
+    in 80 to 89 then print "best grade: B"
+    else then print "best grade: C or lower"
+end
+
+print("average {average}, best {best} ({grade_of(best)})")

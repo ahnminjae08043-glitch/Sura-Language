@@ -1,0 +1,5 @@
+func wasm_import_double(value) do
+  return value * 2
+end
+
+wasm_import_value is 21

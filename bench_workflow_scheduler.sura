@@ -1,0 +1,105 @@
+# Automation workload: schedule dependency-ordered workflow tasks.
+# Models a hot CI/agent scheduler loop over dependency depth, retry risk, cost, and lane selection.
+
+func task_count(workflow) do
+  return 6 + ((workflow * 7 + 5) % 9)
+end
+
+func dependency_depth(workflow, task) do
+  base is (workflow * 11 + task * 7 + 3) % 5
+  if task < base then
+    return task % 3
+  end
+  return base + ((workflow + task * 13) % 3)
+end
+
+func task_priority(workflow, task) do
+  priority is 40 + ((workflow * 17 + task * 31) % 120)
+  if task == 0 then
+    priority is priority + 60
+  end
+  if workflow % 23 == 0 and task % 4 == 0 then
+    priority is priority + 45
+  end
+  return priority
+end
+
+func task_cost(workflow, task) do
+  cost is 12 + ((workflow * 19 + task * 29) % 80)
+  if task % 5 == 0 then
+    cost is cost + 25
+  end
+  return cost
+end
+
+func retry_risk(workflow, task, round) do
+  risk is ((workflow + 3) * (task + 5) * (round + 7)) % 101
+  if task % 6 == 0 then
+    risk is risk + 30
+  end
+  if workflow % 37 == 0 then
+    risk is risk + 20
+  end
+  return risk
+end
+
+func schedule_score(workflow, task, round) do
+  priority is task_priority(workflow, task)
+  cost is task_cost(workflow, task)
+  risk is retry_risk(workflow, task, round)
+  lane is (workflow + task * 3 + round * 5) % 6
+  score is priority * 9 - cost * 4 - risk * 3 + lane * 17
+  if risk > 95 then
+    score is score - 180
+  end
+  if cost > 70 and priority < 90 then
+    score is score - 90
+  end
+  if lane == 0 or lane == 5 then
+    score is score + 35
+  end
+  return score
+end
+
+runs is 5
+workflows is 95000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  workflow is 0
+  scheduled is 0
+  escalated is 0
+  lane_total is 0
+  score_total is 0
+  while workflow < workflows do
+    tasks is task_count(workflow)
+    round is 0
+    while round < 8 do
+      task is 0
+      while task < tasks do
+        if dependency_depth(workflow, task) == round then
+          score is schedule_score(workflow, task, round)
+          if score < 120 then
+            escalated is escalated + 1
+          end
+          scheduled is scheduled + 1
+          lane_total is lane_total + ((workflow + task * 3 + round * 5) % 6)
+          score_total is score_total + score
+        end
+        task is task + 1
+      end
+      round is round + 1
+    end
+    workflow is workflow + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is scheduled * 11 + escalated * 17 + lane_total * 19 + score_total
+end
+
+avg is total_ms / runs
+print "workflow scheduler workflows: {workflows}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

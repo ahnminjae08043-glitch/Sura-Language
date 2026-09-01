@@ -1,0 +1,401 @@
+{
+    "updated_utc":  "2026-05-18T00:00:55.1624918Z",
+    "limit":  100,
+    "entries":  [
+                    {
+                        "generated_utc":  "2026-05-18T00:00:55.1624918Z",
+                        "engine":  "C:\\Users\\user\\OneDrive\\문서\\Project\\Sura-Language\\SuraFinal.exe",
+                        "python":  "python",
+                        "summary":  {
+                                        "benchmark_count":  19,
+                                        "python_comparison_count":  18,
+                                        "faster_than_python_count":  18,
+                                        "average_jit_speedup":  7.7660117879395987,
+                                        "average_sura_python_ratio":  7.0734828361377478,
+                                        "best_python_comparison":  {
+                                                                       "label":  "game physics Vec2 loop",
+                                                                       "python_file":  "bench_physics.py",
+                                                                       "sura_file":  "bench_physics.sura",
+                                                                       "python_ms":  43.16,
+                                                                       "sura_jit_ms":  0.663,
+                                                                       "sura_faster_by":  65.098039215686271
+                                                                   },
+                                        "native_performance_available":  true,
+                                        "native_performance":  {
+                                                                   "source":  "C:\\Users\\user\\OneDrive\\문서\\Project\\Sura-Language\\artifacts\\native_perf.json",
+                                                                   "schema":  "sura.native.performance.v1",
+                                                                   "passed":  true,
+                                                                   "compiler":  "g++",
+                                                                   "benchmark":  "game physics Vec2 loop",
+                                                                   "sura_file":  "bench_physics.sura",
+                                                                   "native_file":  "bench_physics_native.cpp",
+                                                                   "sura_jit_ms":  0.051728571428571443,
+                                                                   "sura_jit_time_source":  "script_loop",
+                                                                   "sura_jit_run_count":  7,
+                                                                   "native_ms":  0.04776,
+                                                                   "native_time_source":  "native_avg",
+                                                                   "sura_native_ratio":  1.0830940416367554,
+                                                                   "native_faster_by":  1.0830940416367554,
+                                                                   "warnings":  [
+
+                                                                                ]
+                                                               }
+                                    },
+                        "release_notes":  {
+                                              "headline":  "19 benchmark cases, 18 Python comparisons, 18 faster-than-Python cases",
+                                              "average_jit_speedup":  7.7660117879395987,
+                                              "average_sura_python_ratio":  7.0734828361377478,
+                                              "best_python_comparison":  {
+                                                                             "label":  "game physics Vec2 loop",
+                                                                             "python_file":  "bench_physics.py",
+                                                                             "sura_file":  "bench_physics.sura",
+                                                                             "python_ms":  43.16,
+                                                                             "sura_jit_ms":  0.663,
+                                                                             "sura_faster_by":  65.098039215686271
+                                                                         },
+                                              "native_performance":  {
+                                                                         "source":  "C:\\Users\\user\\OneDrive\\문서\\Project\\Sura-Language\\artifacts\\native_perf.json",
+                                                                         "schema":  "sura.native.performance.v1",
+                                                                         "passed":  true,
+                                                                         "compiler":  "g++",
+                                                                         "benchmark":  "game physics Vec2 loop",
+                                                                         "sura_file":  "bench_physics.sura",
+                                                                         "native_file":  "bench_physics_native.cpp",
+                                                                         "sura_jit_ms":  0.051728571428571443,
+                                                                         "sura_jit_time_source":  "script_loop",
+                                                                         "sura_jit_run_count":  7,
+                                                                         "native_ms":  0.04776,
+                                                                         "native_time_source":  "native_avg",
+                                                                         "sura_native_ratio":  1.0830940416367554,
+                                                                         "native_faster_by":  1.0830940416367554,
+                                                                         "warnings":  [
+
+                                                                                      ]
+                                                                     },
+                                              "highlights":  [
+                                                                 {
+                                                                     "label":  "game physics Vec2 loop",
+                                                                     "sura_faster_by":  65.098039215686271,
+                                                                     "python_ms":  43.16,
+                                                                     "sura_jit_ms":  0.663,
+                                                                     "sura_file":  "bench_physics.sura",
+                                                                     "python_file":  "bench_physics.py"
+                                                                 },
+                                                                 {
+                                                                     "label":  "game physics in-place Vec2 loop",
+                                                                     "sura_faster_by":  6.1922365988909425,
+                                                                     "python_ms":  16.75,
+                                                                     "sura_jit_ms":  2.705,
+                                                                     "sura_file":  "bench_physics_inplace.sura",
+                                                                     "python_file":  "bench_physics_inplace.py"
+                                                                 },
+                                                                 {
+                                                                     "label":  "fib(30)",
+                                                                     "sura_faster_by":  5.3658021929021311,
+                                                                     "python_ms":  107.82,
+                                                                     "sura_jit_ms":  20.09392,
+                                                                     "sura_file":  "bench_fib.sura",
+                                                                     "python_file":  "bench_python.py"
+                                                                 },
+                                                                 {
+                                                                     "label":  "AI tool routing scheduler",
+                                                                     "sura_faster_by":  4.8751064088532159,
+                                                                     "python_ms":  100.22,
+                                                                     "sura_jit_ms":  20.5575,
+                                                                     "sura_file":  "bench_tool_routing.sura",
+                                                                     "python_file":  "bench_tool_routing.py"
+                                                                 },
+                                                                 {
+                                                                     "label":  "AI guardrail event scoring",
+                                                                     "sura_faster_by":  4.3786995426109359,
+                                                                     "python_ms":  133.7,
+                                                                     "sura_jit_ms":  30.53418,
+                                                                     "sura_file":  "bench_guardrail.sura",
+                                                                     "python_file":  "bench_guardrail.py"
+                                                                 }
+                                                             ]
+                                          },
+                        "native_performance":  {
+                                                   "source":  "C:\\Users\\user\\OneDrive\\문서\\Project\\Sura-Language\\artifacts\\native_perf.json",
+                                                   "schema":  "sura.native.performance.v1",
+                                                   "passed":  true,
+                                                   "compiler":  "g++",
+                                                   "benchmark":  "game physics Vec2 loop",
+                                                   "sura_file":  "bench_physics.sura",
+                                                   "native_file":  "bench_physics_native.cpp",
+                                                   "sura_jit_ms":  0.051728571428571443,
+                                                   "sura_jit_time_source":  "script_loop",
+                                                   "sura_jit_run_count":  7,
+                                                   "native_ms":  0.04776,
+                                                   "native_time_source":  "native_avg",
+                                                   "sura_native_ratio":  1.0830940416367554,
+                                                   "native_faster_by":  1.0830940416367554,
+                                                   "warnings":  [
+
+                                                                ]
+                                               },
+                        "benchmarks":  [
+                                           {
+                                               "benchmark":  "bench_jit.sura",
+                                               "interpreter_ms":  60.487,
+                                               "jit_ms":  16.799,
+                                               "speedup":  3.6006309899398774
+                                           },
+                                           {
+                                               "benchmark":  "bench_fib.sura",
+                                               "interpreter_ms":  426.079,
+                                               "jit_ms":  95.396,
+                                               "speedup":  4.4664241687282482
+                                           },
+                                           {
+                                               "benchmark":  "bench_agent_scoring.sura",
+                                               "interpreter_ms":  61.796,
+                                               "jit_ms":  31.615,
+                                               "speedup":  1.9546417839633086
+                                           },
+                                           {
+                                               "benchmark":  "bench_ai_schema.sura",
+                                               "interpreter_ms":  2344.28,
+                                               "jit_ms":  2346.78,
+                                               "speedup":  0.99893471053954785
+                                           },
+                                           {
+                                               "benchmark":  "bench_api_log_etl.sura",
+                                               "interpreter_ms":  422.1,
+                                               "jit_ms":  305.152,
+                                               "speedup":  1.383245071308725
+                                           },
+                                           {
+                                               "benchmark":  "bench_rag_vector.sura",
+                                               "interpreter_ms":  150.919,
+                                               "jit_ms":  121.772,
+                                               "speedup":  1.2393571592812798
+                                           },
+                                           {
+                                               "benchmark":  "bench_tool_routing.sura",
+                                               "interpreter_ms":  183.76,
+                                               "jit_ms":  104.427,
+                                               "speedup":  1.759698162352648
+                                           },
+                                           {
+                                               "benchmark":  "bench_policy_gate.sura",
+                                               "interpreter_ms":  552.081,
+                                               "jit_ms":  247.797,
+                                               "speedup":  2.2279567549243939
+                                           },
+                                           {
+                                               "benchmark":  "bench_guardrail.sura",
+                                               "interpreter_ms":  315.423,
+                                               "jit_ms":  191.928,
+                                               "speedup":  1.6434444166562461
+                                           },
+                                           {
+                                               "benchmark":  "bench_dependency_resolver.sura",
+                                               "interpreter_ms":  2543.18,
+                                               "jit_ms":  1051.1,
+                                               "speedup":  2.4195414327847016
+                                           },
+                                           {
+                                               "benchmark":  "bench_workflow_scheduler.sura",
+                                               "interpreter_ms":  7531.98,
+                                               "jit_ms":  4927.21,
+                                               "speedup":  1.5286500879808247
+                                           },
+                                           {
+                                               "benchmark":  "bench_order_etl.sura",
+                                               "interpreter_ms":  595.202,
+                                               "jit_ms":  537.011,
+                                               "speedup":  1.1083609088081996
+                                           },
+                                           {
+                                               "benchmark":  "bench_telemetry_window.sura",
+                                               "interpreter_ms":  953.286,
+                                               "jit_ms":  707.099,
+                                               "speedup":  1.3481648255760508
+                                           },
+                                           {
+                                               "benchmark":  "bench_log_regex.sura",
+                                               "interpreter_ms":  5757.65,
+                                               "jit_ms":  3546.54,
+                                               "speedup":  1.6234555369458683
+                                           },
+                                           {
+                                               "benchmark":  "bench_fraud_scoring.sura",
+                                               "interpreter_ms":  376.979,
+                                               "jit_ms":  215.724,
+                                               "speedup":  1.7475060725742153
+                                           },
+                                           {
+                                               "benchmark":  "bench_feature_flags.sura",
+                                               "interpreter_ms":  517.975,
+                                               "jit_ms":  330.091,
+                                               "speedup":  1.5691884965055092
+                                           },
+                                           {
+                                               "benchmark":  "bench_physics.sura",
+                                               "interpreter_ms":  51.011,
+                                               "jit_ms":  0.477,
+                                               "speedup":  106.94129979035641
+                                           },
+                                           {
+                                               "benchmark":  "bench_physics_inplace.sura",
+                                               "interpreter_ms":  15.605,
+                                               "jit_ms":  2.695,
+                                               "speedup":  5.79035250463822
+                                           },
+                                           {
+                                               "benchmark":  "bench_market.sura",
+                                               "interpreter_ms":  76.06,
+                                               "jit_ms":  18.095,
+                                               "speedup":  4.2033710969881186
+                                           }
+                                       ],
+                        "python_comparisons":  [
+                                                   {
+                                                       "label":  "fib(30)",
+                                                       "python_file":  "bench_python.py",
+                                                       "sura_file":  "bench_fib.sura",
+                                                       "python_ms":  107.82,
+                                                       "sura_jit_ms":  20.09392,
+                                                       "sura_faster_by":  5.3658021929021311
+                                                   },
+                                                   {
+                                                       "label":  "AI agent task scoring",
+                                                       "python_file":  "bench_agent_scoring.py",
+                                                       "sura_file":  "bench_agent_scoring.sura",
+                                                       "python_ms":  25.39,
+                                                       "sura_jit_ms":  6.18324,
+                                                       "sura_faster_by":  4.10626144222123
+                                                   },
+                                                   {
+                                                       "label":  "AI JSON/schema validation",
+                                                       "python_file":  "bench_ai_schema.py",
+                                                       "sura_file":  "bench_ai_schema.sura",
+                                                       "python_ms":  575.92,
+                                                       "sura_jit_ms":  477.32646,
+                                                       "sura_faster_by":  1.2065536865481958
+                                                   },
+                                                   {
+                                                       "label":  "API log ETL aggregation",
+                                                       "python_file":  "bench_api_log_etl.py",
+                                                       "sura_file":  "bench_api_log_etl.sura",
+                                                       "python_ms":  180.34,
+                                                       "sura_jit_ms":  59.6623,
+                                                       "sura_faster_by":  3.0226793134022656
+                                                   },
+                                                   {
+                                                       "label":  "RAG vector ranking",
+                                                       "python_file":  "bench_rag_vector.py",
+                                                       "sura_file":  "bench_rag_vector.sura",
+                                                       "python_ms":  71.51,
+                                                       "sura_jit_ms":  23.47112,
+                                                       "sura_faster_by":  3.0467229514398975
+                                                   },
+                                                   {
+                                                       "label":  "AI tool routing scheduler",
+                                                       "python_file":  "bench_tool_routing.py",
+                                                       "sura_file":  "bench_tool_routing.sura",
+                                                       "python_ms":  100.22,
+                                                       "sura_jit_ms":  20.5575,
+                                                       "sura_faster_by":  4.8751064088532159
+                                                   },
+                                                   {
+                                                       "label":  "AI tool policy gate",
+                                                       "python_file":  "bench_policy_gate.py",
+                                                       "sura_file":  "bench_policy_gate.sura",
+                                                       "python_ms":  213.15,
+                                                       "sura_jit_ms":  58.95626,
+                                                       "sura_faster_by":  3.6153921568294867
+                                                   },
+                                                   {
+                                                       "label":  "AI guardrail event scoring",
+                                                       "python_file":  "bench_guardrail.py",
+                                                       "sura_file":  "bench_guardrail.sura",
+                                                       "python_ms":  133.7,
+                                                       "sura_jit_ms":  30.53418,
+                                                       "sura_faster_by":  4.3786995426109359
+                                                   },
+                                                   {
+                                                       "label":  "dependency resolver hot loop",
+                                                       "python_file":  "bench_dependency_resolver.py",
+                                                       "sura_file":  "bench_dependency_resolver.sura",
+                                                       "python_ms":  936.34,
+                                                       "sura_jit_ms":  230.79822,
+                                                       "sura_faster_by":  4.0569636975536474
+                                                   },
+                                                   {
+                                                       "label":  "automation workflow scheduler",
+                                                       "python_file":  "bench_workflow_scheduler.py",
+                                                       "sura_file":  "bench_workflow_scheduler.sura",
+                                                       "python_ms":  3396.72,
+                                                       "sura_jit_ms":  1016.75126,
+                                                       "sura_faster_by":  3.3407580925938563
+                                                   },
+                                                   {
+                                                       "label":  "order CSV normalization ETL",
+                                                       "python_file":  "bench_order_etl.py",
+                                                       "sura_file":  "bench_order_etl.sura",
+                                                       "python_ms":  299.87,
+                                                       "sura_jit_ms":  118.76554,
+                                                       "sura_faster_by":  2.5248906374694209
+                                                   },
+                                                   {
+                                                       "label":  "telemetry rolling window",
+                                                       "python_file":  "bench_telemetry_window.py",
+                                                       "sura_file":  "bench_telemetry_window.sura",
+                                                       "python_ms":  420.84,
+                                                       "sura_jit_ms":  126.96266,
+                                                       "sura_faster_by":  3.314675354155308
+                                                   },
+                                                   {
+                                                       "label":  "regex log summarization",
+                                                       "python_file":  "bench_log_regex.py",
+                                                       "sura_file":  "bench_log_regex.sura",
+                                                       "python_ms":  1079.17,
+                                                       "sura_jit_ms":  716.32694,
+                                                       "sura_faster_by":  1.506532757235125
+                                                   },
+                                                   {
+                                                       "label":  "payment fraud scoring",
+                                                       "python_file":  "bench_fraud_scoring.py",
+                                                       "sura_file":  "bench_fraud_scoring.sura",
+                                                       "python_ms":  169.59,
+                                                       "sura_jit_ms":  46.86022,
+                                                       "sura_faster_by":  3.6190611140963487
+                                                   },
+                                                   {
+                                                       "label":  "feature flag rollout",
+                                                       "python_file":  "bench_feature_flags.py",
+                                                       "sura_file":  "bench_feature_flags.sura",
+                                                       "python_ms":  217.93,
+                                                       "sura_jit_ms":  55.64602,
+                                                       "sura_faster_by":  3.9163627515498862
+                                                   },
+                                                   {
+                                                       "label":  "game physics Vec2 loop",
+                                                       "python_file":  "bench_physics.py",
+                                                       "sura_file":  "bench_physics.sura",
+                                                       "python_ms":  43.16,
+                                                       "sura_jit_ms":  0.663,
+                                                       "sura_faster_by":  65.098039215686271
+                                                   },
+                                                   {
+                                                       "label":  "game physics in-place Vec2 loop",
+                                                       "python_file":  "bench_physics_inplace.py",
+                                                       "sura_file":  "bench_physics_inplace.sura",
+                                                       "python_ms":  16.75,
+                                                       "sura_jit_ms":  2.705,
+                                                       "sura_faster_by":  6.1922365988909425
+                                                   },
+                                                   {
+                                                       "label":  "market simulation objects",
+                                                       "python_file":  "bench_market.py",
+                                                       "sura_file":  "bench_market.sura",
+                                                       "python_ms":  67.78,
+                                                       "sura_jit_ms":  16.388,
+                                                       "sura_faster_by":  4.135953136441298
+                                                   }
+                                               ]
+                    }
+                ]
+}

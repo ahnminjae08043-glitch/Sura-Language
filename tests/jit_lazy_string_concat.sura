@@ -1,0 +1,17 @@
+# A user function must keep string globals and parameters intact when its
+# sixth call crosses the lazy native-JIT threshold.
+prefix is "C:/workspace"
+
+func file_url(path) do
+  return "file://" + prefix + "/" + path
+end
+
+assert_eq(file_url("a"), "file://C:/workspace/a")
+assert_eq(file_url("b"), "file://C:/workspace/b")
+assert_eq(file_url("c"), "file://C:/workspace/c")
+assert_eq(file_url("d"), "file://C:/workspace/d")
+assert_eq(file_url("e"), "file://C:/workspace/e")
+assert_eq(file_url("f"), "file://C:/workspace/f")
+assert_eq(file_url("g"), "file://C:/workspace/g")
+
+print("jit_lazy_string_concat: PASS")

@@ -1,0 +1,84 @@
+use nn
+
+# Binary classification: learn XOR entirely inside the Sura runtime.
+x is [[0, 0], [0, 1], [1, 0], [1, 1]]
+y is [0, 1, 1, 0]
+
+standardizer is nn.fit_standardizer([[1, 10], [3, 10]])
+assert_eq(standardizer.mean.join(","), "2,10")
+assert_eq(standardizer.scale.join(","), "1,1")
+standardized is nn.standardize([[1, 10], [3, 10]], standardizer)
+assert_eq(standardized[0].join(","), "-1,0")
+assert_eq(standardized[1].join(","), "1,0")
+assert_eq(nn.standardize([2, 10], standardizer).join(","), "0,0")
+
+partition is nn.split(x, y, {test_count: 1, shuffle: false})
+assert_eq(partition.train_size, 3)
+assert_eq(partition.test_size, 1)
+assert_eq(partition.test.inputs[0].join(","), "1,1")
+assert_eq(partition.test.targets[0], 0)
+
+model is nn.mlp([2, 6, 1], {activation: "tanh", task: "binary", seed: 7})
+original_probability is nn.predict(model, [0, 1])[0]
+same_seed_model is nn.mlp([2, 6, 1], {activation: "tanh", task: "binary", seed: 7})
+assert_approx(nn.predict(same_seed_model, [0, 1])[0], original_probability, 0.000000000001)
+
+summary is nn.summary(model)
+assert_eq(summary.architecture.join(","), "2,6,1")
+assert_eq(summary.activations.join(","), "tanh,sigmoid")
+assert_eq(summary.parameters, 25)
+
+training is nn.train(model, x, y, {optimizer: "adam", epochs: 3000, learning_rate: 0.05, batch_size: 4, seed: 7, target_loss: 0.015})
+
+assert(training.loss < 0.03)
+assert_eq(training.samples, 4)
+assert(training.history.len() >= 2)
+assert_eq(training.model.task, "binary")
+assert_eq(training.model.seed, 7)
+assert_approx(nn.predict(model, [0, 1])[0], original_probability, 0.000000000001)
+assert_eq(nn.classify(training.model, x).join(","), "0,1,1,0")
+
+metrics is nn.evaluate(training.model, x, y)
+assert_eq(metrics.accuracy, 1)
+assert(metrics.loss < 0.03)
+
+probabilities is nn.predict(training.model, x)
+assert(probabilities[0][0] < 0.1)
+assert(probabilities[1][0] > 0.9)
+assert(probabilities[2][0] > 0.9)
+assert(probabilities[3][0] < 0.1)
+
+# A loaded model must produce the same classifications.
+model_path is path_join(temp_dir(), "sura-native-nn-" + uuid_v4() + ".json")
+nn.save(training.model, model_path)
+loaded is nn.load(model_path)
+assert_eq(nn.classify(loaded, x).join(","), "0,1,1,0")
+assert_approx(nn.predict(loaded, [0, 1])[0], probabilities[1][0], 0.000000000001)
+file_delete(model_path)
+
+# Multiclass targets may be zero-based labels; one-hot conversion is optional.
+classes is nn.one_hot([0, 2, 1], 3)
+assert_eq(classes[0].join(","), "1,0,0")
+assert_eq(classes[1].join(","), "0,0,1")
+
+multi_x is [[1, 0], [0, 1], [-1, -1]]
+multi_model is nn.mlp([2, 5, 3], {activation: "tanh", task: "multiclass", seed: 11})
+multi_training is nn.train(multi_model, multi_x, [0, 1, 2], {epochs: 1800, learning_rate: 0.04, batch_size: 3, seed: 11, target_loss: 0.01})
+assert_eq(nn.classify(multi_training.model, multi_x).join(","), "0,1,2")
+assert_eq(nn.evaluate(multi_training.model, multi_x, [0, 1, 2]).accuracy, 1)
+
+# Regression uses a linear output and mean-squared error automatically.
+reg_x is [[-1], [0], [1], [2]]
+reg_y is [[-1], [1], [3], [5]]
+reg_model is nn.mlp([1, 6, 1], {activation: "tanh", task: "regression", seed: 19})
+reg_training is nn.train(reg_model, reg_x, reg_y, {epochs: 2500, learning_rate: 0.025, batch_size: 4, seed: 19, target_loss: 0.002})
+reg_prediction is nn.predict(reg_training.model, [[0.5]])
+assert_approx(reg_prediction[0][0], 2, 0.12)
+assert_eq(type(nn.evaluate(reg_training.model, reg_x, reg_y).accuracy), "nil")
+
+sgd_model is nn.mlp([1, 1], {task: "regression", init: "zeros", seed: 23})
+sgd_training is nn.train(sgd_model, [[0], [1], [2]], [[1], [3], [5]], {optimizer: "sgd", momentum: 0, epochs: 600, learning_rate: 0.1, batch_size: 3, shuffle: false, target_loss: 0.00001})
+assert(sgd_training.loss < 0.001)
+assert_approx(nn.predict(sgd_training.model, [3])[0], 7, 0.05)
+
+print "12_native_nn: PASS"

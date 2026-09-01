@@ -1,0 +1,334 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+# Gradient metadata must describe the real backing gradient storage without
+# materializing the payload. CPU autograd gradients are accumulated as f64
+# even when the parameter's packed data storage uses a narrower dtype.
+cpu_info_parameter is autograd.parameter([1.25, -2.5], {dtype: "float16"})
+cpu_empty_grad_info is autograd.grad_info(cpu_info_parameter)
+assert_eq(cpu_empty_grad_info.present, false)
+assert_eq(cpu_empty_grad_info.dtype, "float64")
+assert_eq(cpu_empty_grad_info.device, "cpu")
+assert_eq(cpu_empty_grad_info.elements, 0)
+assert_eq(cpu_empty_grad_info.storage_bytes, 0)
+assert_eq(cpu_empty_grad_info.scale, 0)
+assert_eq(cpu_empty_grad_info.scaled, false)
+assert(cpu_empty_grad_info.leaf)
+assert(cpu_empty_grad_info.requires_grad)
+assert(cpu_empty_grad_info.optimizer_ready)
+cpu_info_loss is autograd.sum(autograd.mul(cpu_info_parameter, cpu_info_parameter))
+autograd.backward(cpu_info_loss)
+cpu_grad_info is autograd.grad_info(cpu_info_parameter)
+assert(cpu_grad_info.present)
+assert_eq(cpu_grad_info.dtype, "float64")
+assert_eq(cpu_grad_info.device, "cpu")
+assert_eq(cpu_grad_info.elements, 2)
+assert_eq(cpu_grad_info.storage_bytes, 16)
+assert_eq(cpu_grad_info.scale, 1)
+assert_eq(cpu_grad_info.scaled, false)
+assert(cpu_grad_info.leaf)
+assert(cpu_grad_info.requires_grad)
+assert(cpu_grad_info.optimizer_ready)
+
+cpu_no_grad_tensor is autograd.tensor([1], {requires_grad: false})
+cpu_no_grad_info is autograd.grad_info(cpu_no_grad_tensor)
+assert(cpu_no_grad_info.leaf)
+assert_eq(cpu_no_grad_info.requires_grad, false)
+assert_eq(cpu_no_grad_info.optimizer_ready, false)
+
+info is autograd.cuda_info()
+if info.available then
+  # Scaled backward must reproduce an ordinary f32 gradient after exactly one
+  # transactional unscale status readback.
+  baseline is autograd.parameter([1.5, -2], {device: "cuda"})
+  scaled is autograd.parameter([1.5, -2], {device: "cuda"})
+  baseline_loss is autograd.sum(autograd.mul(baseline, baseline))
+  scaled_loss is autograd.sum(autograd.mul(scaled, scaled))
+  autograd.backward(baseline_loss)
+  autograd.backward_scaled(scaled_loss, 128)
+
+  autograd.cuda_reset_stats()
+  scaled_grad_info is autograd.grad_info(scaled)
+  grad_info_stats is autograd.cuda_stats()
+  assert(scaled_grad_info.present)
+  assert_eq(scaled_grad_info.dtype, "float32")
+  assert_contains(scaled_grad_info.device, "cuda:")
+  assert_eq(scaled_grad_info.elements, 2)
+  assert_eq(scaled_grad_info.storage_bytes, 8)
+  assert_eq(scaled_grad_info.scale, 128)
+  assert(scaled_grad_info.scaled)
+  assert(scaled_grad_info.leaf)
+  assert(scaled_grad_info.requires_grad)
+  assert_eq(scaled_grad_info.optimizer_ready, false)
+  assert_eq(grad_info_stats.h2d_bytes, 0)
+  assert_eq(grad_info_stats.d2h_bytes, 0)
+  approx_rank1(autograd.grad(scaled), [384, -512], 0.0001)
+
+  before_scaled_step is autograd.data(scaled)
+  sgd_rejected is false
+  try
+    autograd.sgd([scaled], 0.1)
+  catch error
+    sgd_rejected is true
+  end
+  assert(sgd_rejected)
+  approx_rank1(autograd.data(scaled), before_scaled_step, 0.000001)
+
+  adam_rejected is false
+  try
+    autograd.adam([scaled], 0.1)
+  catch error
+    adam_rejected is true
+  end
+  assert(adam_rejected)
+  approx_rank1(autograd.data(scaled), before_scaled_step, 0.000001)
+
+  autograd.cuda_reset_stats()
+  unscaled_status is autograd.unscale_gradients([scaled])
+  unscaled_stats is autograd.cuda_stats()
+  assert(unscaled_status.finite)
+  assert_eq(unscaled_status.found_inf, false)
+  assert(unscaled_status.committed)
+  assert_eq(unscaled_status.scale, 128)
+  assert_eq(unscaled_status.gradient_tensors, 1)
+  assert_eq(unscaled_status.status, 0)
+  assert_eq(unscaled_stats.h2d_bytes, 0)
+  assert_eq(unscaled_stats.d2h_bytes, 4)
+  ready_grad_info is autograd.grad_info(scaled)
+  assert(ready_grad_info.present)
+  assert_eq(ready_grad_info.scale, 1)
+  assert_eq(ready_grad_info.scaled, false)
+  assert(ready_grad_info.optimizer_ready)
+  approx_rank1(autograd.grad(scaled), autograd.grad(baseline), 0.0001)
+
+  autograd.sgd([baseline], 0.1)
+  autograd.sgd([scaled], 0.1)
+  approx_rank1(autograd.data(scaled), autograd.data(baseline), 0.0001)
+
+  double_unscale_rejected is false
+  try
+    autograd.unscale_gradients([scaled])
+  catch error
+    double_unscale_rejected is true
+  end
+  assert(double_unscale_rejected)
+
+  # The same declared scale may accumulate, but a different scale or an
+  # ordinary backward must fail before changing the persistent gradient.
+  accumulated is autograd.parameter([2], {device: "cuda"})
+  first_loss is autograd.sum(autograd.mul(accumulated, accumulated))
+  autograd.backward_scaled(first_loss, 64)
+  second_loss is autograd.sum(autograd.mul(accumulated, accumulated))
+  autograd.backward_scaled(second_loss, 64)
+  assert_approx(autograd.grad(accumulated)[0], 512, 0.0001)
+
+  different_scale_rejected is false
+  try
+    third_loss is autograd.sum(autograd.mul(accumulated, accumulated))
+    autograd.backward_scaled(third_loss, 32)
+  catch error
+    different_scale_rejected is true
+  end
+  assert(different_scale_rejected)
+  assert_approx(autograd.grad(accumulated)[0], 512, 0.0001)
+
+  ordinary_mix_rejected is false
+  try
+    ordinary_loss is autograd.sum(autograd.mul(accumulated, accumulated))
+    autograd.backward(ordinary_loss)
+  catch error
+    ordinary_mix_rejected is true
+  end
+  assert(ordinary_mix_rejected)
+  wrong_explicit_rejected is false
+  try
+    autograd.unscale_gradients([accumulated], 32)
+  catch error
+    wrong_explicit_rejected is true
+  end
+  assert(wrong_explicit_rejected)
+  assert_approx(autograd.grad(accumulated)[0], 512, 0.0001)
+  correct_explicit is autograd.unscale_gradients([accumulated], 64)
+  assert(correct_explicit.committed)
+  assert_approx(autograd.grad(accumulated)[0], 8, 0.0001)
+
+  # zero_grad is a scale-neutral sentinel and permits a new scale. It also
+  # makes an empty unscale a no-op without a device-to-host status transfer.
+  autograd.zero_grad([accumulated])
+  zero_grad_info is autograd.grad_info(accumulated)
+  assert(zero_grad_info.present)
+  assert_eq(zero_grad_info.storage_bytes, 4)
+  assert_eq(zero_grad_info.scale, 0)
+  assert_eq(zero_grad_info.scaled, false)
+  assert(zero_grad_info.optimizer_ready)
+  autograd.cuda_reset_stats()
+  empty_status is autograd.unscale_gradients([accumulated])
+  empty_stats is autograd.cuda_stats()
+  assert(empty_status.finite)
+  assert(empty_status.committed)
+  assert_eq(empty_status.scale, 0)
+  assert_eq(empty_status.gradient_tensors, 0)
+  assert_eq(empty_stats.d2h_bytes, 0)
+  reset_loss is autograd.sum(autograd.mul(accumulated, accumulated))
+  autograd.backward_scaled(reset_loss, 32)
+  reset_status is autograd.unscale_gradients([accumulated], 32)
+  assert(reset_status.committed)
+  assert_approx(autograd.grad(accumulated)[0], 4, 0.0001)
+
+  # A single non-finite candidate must roll back the complete parameter list.
+  # The finite parameter therefore remains scaled after found_inf.
+  finite_parameter is autograd.parameter([1], {device: "cuda"})
+  overflow_parameter is autograd.parameter([2 * pow(10, 38)], {device: "cuda"})
+  finite_loss is autograd.sum(autograd.mul(finite_parameter, finite_parameter))
+  overflow_loss is autograd.sum(autograd.mul(overflow_parameter, overflow_parameter))
+  autograd.backward_scaled(finite_loss, 2)
+  autograd.backward_scaled(overflow_loss, 2)
+  assert_approx(autograd.grad(finite_parameter)[0], 4, 0.0001)
+  autograd.cuda_reset_stats()
+  overflow_status is autograd.unscale_gradients([finite_parameter, overflow_parameter])
+  overflow_stats is autograd.cuda_stats()
+  assert_eq(overflow_status.finite, false)
+  assert(overflow_status.found_inf)
+  assert_eq(overflow_status.committed, false)
+  assert_eq(overflow_status.scale, 2)
+  assert_eq(overflow_status.gradient_tensors, 2)
+  assert(overflow_status.status > 0)
+  assert_eq(overflow_stats.h2d_bytes, 0)
+  assert_eq(overflow_stats.d2h_bytes, 4)
+  rollback_grad_info is autograd.grad_info(finite_parameter)
+  assert_eq(rollback_grad_info.scale, 2)
+  assert(rollback_grad_info.scaled)
+  assert_eq(rollback_grad_info.optimizer_ready, false)
+  assert_approx(autograd.grad(finite_parameter)[0], 4, 0.0001)
+
+  rollback_step_rejected is false
+  try
+    autograd.sgd([finite_parameter, overflow_parameter], 0.1)
+  catch error
+    rollback_step_rejected is true
+  end
+  assert(rollback_step_rejected)
+
+  # retain_graph is forwarded by backward_scaled, allowing a second pass after
+  # clearing the first scaled gradient.
+  retained is autograd.parameter([3], {device: "cuda"})
+  retained_loss is autograd.sum(autograd.mul(retained, retained))
+  autograd.backward_scaled(retained_loss, 8, true)
+  assert(autograd.unscale_gradients([retained]).committed)
+  autograd.zero_grad([retained])
+  autograd.backward_scaled(retained_loss, 8, false)
+  assert(autograd.unscale_gradients([retained]).committed)
+  assert_approx(autograd.grad(retained)[0], 6, 0.0001)
+
+  adam_parameter is autograd.parameter([1], {device: "cuda"})
+  adam_loss is autograd.sum(autograd.mul(adam_parameter, adam_parameter))
+  autograd.backward_scaled(adam_loss, 16)
+  assert(autograd.unscale_gradients([adam_parameter]).committed)
+  autograd.adam([adam_parameter], 0.1)
+  assert_approx(autograd.item(adam_parameter), 0.9, 0.0001)
+
+  scale_one_rejected is false
+  try
+    one_loss is autograd.sum(autograd.mul(retained, retained))
+    autograd.backward_scaled(one_loss, 1)
+  catch error
+    scale_one_rejected is true
+  end
+  assert(scale_one_rejected)
+
+  # A one-element leaf with shape [1] is also a valid scalar loss. The
+  # implicit scaled seed must not manufacture a shape-{} gradient tensor.
+  leaf_loss is autograd.parameter([2], {device: "cuda"})
+  autograd.backward_scaled(leaf_loss, 4)
+  assert_approx(autograd.grad(leaf_loss)[0], 4, 0.0001)
+  assert(autograd.unscale_gradients([leaf_loss]).committed)
+  assert_approx(autograd.grad(leaf_loss)[0], 1, 0.0001)
+
+  # Reject a scale whose reciprocal cannot be represented before creating
+  # any persistent gradient.
+  reciprocal_parameter is autograd.parameter([1], {device: "cuda"})
+  reciprocal_loss is autograd.sum(autograd.mul(reciprocal_parameter, reciprocal_parameter))
+  reciprocal_rejected is false
+  try
+    autograd.backward_scaled(reciprocal_loss, pow(10, -40))
+  catch error
+    reciprocal_rejected is true
+  end
+  assert(reciprocal_rejected)
+  assert_eq(autograd.grad(reciprocal_parameter), nil)
+
+  # zero_grad validates the complete list before commit. A non-leaf entry
+  # must not erase the valid parameter's previously scaled gradient.
+  zero_transaction is autograd.parameter([2], {device: "cuda"})
+  zero_loss is autograd.sum(autograd.mul(zero_transaction, zero_transaction))
+  autograd.backward_scaled(zero_loss, 8)
+  zero_nonleaf is autograd.add(zero_transaction, 0)
+  zero_rejected is false
+  try
+    autograd.zero_grad([zero_transaction, zero_nonleaf])
+  catch error
+    zero_rejected is true
+  end
+  assert(zero_rejected)
+  assert_approx(autograd.grad(zero_transaction)[0], 32, 0.0001)
+  assert(autograd.unscale_gradients([zero_transaction]).committed)
+  assert_approx(autograd.grad(zero_transaction)[0], 4, 0.0001)
+
+  non_scalar_rejected is false
+  non_scalar is autograd.parameter([1, 2], {device: "cuda"})
+  try
+    autograd.backward_scaled(non_scalar, 8)
+  catch error
+    non_scalar_rejected is true
+  end
+  assert(non_scalar_rejected)
+  assert_eq(autograd.grad(non_scalar), nil)
+
+  retain_type_parameter is autograd.parameter([1], {device: "cuda"})
+  retain_type_loss is autograd.sum(autograd.mul(retain_type_parameter, retain_type_parameter))
+  retain_type_rejected is false
+  try
+    autograd.backward_scaled(retain_type_loss, 8, "yes")
+  catch error
+    retain_type_rejected is true
+  end
+  assert(retain_type_rejected)
+  assert_eq(autograd.grad(retain_type_parameter), nil)
+
+  disabled_parameter is autograd.parameter([1], {device: "cuda"})
+  disabled_loss is autograd.sum(autograd.mul(disabled_parameter, disabled_parameter))
+  autograd.backward_scaled(disabled_loss, 8)
+  autograd.set_requires_grad(disabled_parameter, false)
+  assert_eq(autograd.grad(disabled_parameter), nil)
+  disabled_grad_info is autograd.grad_info(disabled_parameter)
+  assert_eq(disabled_grad_info.present, false)
+  assert_eq(disabled_grad_info.scale, 0)
+  assert(disabled_grad_info.leaf)
+  assert_eq(disabled_grad_info.requires_grad, false)
+  assert_eq(disabled_grad_info.optimizer_ready, false)
+  autograd.set_requires_grad(disabled_parameter, true)
+  autograd.backward(disabled_parameter, [1])
+  assert_approx(autograd.grad(disabled_parameter)[0], 1, 0.0001)
+
+  cpu_rejected is false
+  try
+    cpu_parameter is autograd.parameter([1], {dtype: "float32"})
+    cpu_loss is autograd.sum(autograd.mul(cpu_parameter, cpu_parameter))
+    autograd.backward_scaled(cpu_loss, 8)
+  catch error
+    cpu_rejected is true
+  end
+  assert(cpu_rejected)
+else
+  print "49_cuda_loss_scaling: SKIP ({info.error})"
+end
+
+print "49_cuda_loss_scaling: PASS"

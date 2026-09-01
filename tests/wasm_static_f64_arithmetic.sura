@@ -1,0 +1,115 @@
+use math
+
+func static_sum() do
+  return 1.5 + 2.25
+end
+
+func static_product() do
+  return (1.5 + 0.5) * 2.25
+end
+
+func add_quarter(value) do
+  return value + 0.25
+end
+
+func nested_static() do
+  return static_sum() * 2
+end
+
+func branch_static(flag) do
+  if flag then
+    return 1.25 * 2
+  end
+  return 3 / 2
+end
+
+func f64_identity(value) do
+  return value
+end
+
+sum_value is static_sum()
+product_value is static_product()
+parameter_value is add_quarter(1.5)
+nested_value is nested_static()
+branch_true is branch_static(true)
+branch_false is branch_static(false)
+
+assert_eq(sum_value, 3.75)
+assert_eq(product_value, 4.5)
+assert_eq(parameter_value, 1.75)
+assert_eq(nested_value, 7.5)
+assert_eq(branch_true, 2.5)
+assert_eq(branch_false, 1.5)
+assert_eq((1.25 + 0.75) * 3, 6)
+assert_eq(10 - (1.5 * 2), 7)
+assert_eq(type(nested_value), "number")
+assert_eq(to_str(nested_value), "7.5")
+assert_eq("static={sum_value}/{product_value}", "static=3.75/4.5")
+
+values is [static_sum(), static_product(), nested_static()]
+profile is {sum: static_sum(), product: static_product()}
+assert_eq(to_str(values), "[3.75, 4.5, 7.5]")
+profile_text is to_str(profile)
+assert(profile_text.contains("3.75"))
+assert(profile_text.contains("4.5"))
+
+compound is 1.5
+compound += 0.5
+compound *= 3
+compound -= 1.25
+assert_eq(compound, 4.75)
+
+sqrt_value is sqrt(f64_identity(2.25))
+abs_value is abs(f64_identity(-2.5))
+pow_value is pow(f64_identity(1.5), 2)
+min_value is min(f64_identity(1.5), 2.25)
+max_value is max(f64_identity(1.5), 2.25)
+clamp_value is clamp(f64_identity(3.75), 0.5, 2.5)
+sqrt_literal is sqrt(2.25)
+math_sqrt_value is math.sqrt(f64_identity(6.25))
+floor_value is floor(f64_identity(-2.25))
+ceil_value is math.ceil(f64_identity(-2.25))
+round_positive is round(f64_identity(2.5))
+round_negative is math.round(f64_identity(-2.5))
+sign_value is math.sign(f64_identity(-0.5))
+variadic_min is math.min(f64_identity(3.5), 2.25, 4.75)
+variadic_max is max(f64_identity(3.5), 2.25, 4.75)
+negative_pow is math.pow(f64_identity(2.0), -2)
+sqrt_two_pow is pow(f64_identity(2.0), f64_identity(0.5))
+fractional_pow is math.pow(f64_identity(9.0), 0.5)
+sin_value is sin(f64_identity(math.pi / 6))
+cos_value is math.cos(f64_identity(math.pi / 3))
+tan_value is tan(f64_identity(math.pi / 4))
+zero_sin is math.sin(0)
+assert_eq(sqrt_value, 1.5)
+assert_eq(abs_value, 2.5)
+assert_eq(pow_value, 2.25)
+assert_eq(min_value, 1.5)
+assert_eq(max_value, 2.25)
+assert_eq(clamp_value, 2.5)
+assert_eq(sqrt_literal, 1.5)
+assert_eq(math_sqrt_value, 2.5)
+assert_eq(floor_value, -3)
+assert_eq(ceil_value, -2)
+assert_eq(round_positive, 3)
+assert_eq(round_negative, -3)
+assert_eq(sign_value, -1)
+assert_eq(variadic_min, 2.25)
+assert_eq(variadic_max, 4.75)
+assert_eq(negative_pow, 0.25)
+assert(abs(sqrt_two_pow - 1.4142135623730951) < 0.000000000001)
+assert(abs(fractional_pow - 3) < 0.000000000001)
+assert(abs(sin_value - 0.5) < 0.000000000001)
+assert(abs(cos_value - 0.5) < 0.000000000001)
+assert(abs(tan_value - 1) < 0.000000000001)
+assert_eq(zero_sin, 0)
+
+math_type_error_caught is false
+try
+  ignored_math is sqrt(f64_identity("shape"))
+catch error
+  math_type_error_caught is true
+end
+assert(math_type_error_caught)
+
+print_no_nl("static f64 arithmetic ok")

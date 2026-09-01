@@ -1,0 +1,37 @@
+func decimal_return() do
+  return 1.5
+end
+
+func decimal_add_quarter(value) do
+  return value + 0.25
+end
+
+local_decimal is 2.75
+negative_decimal is -2.5
+returned_decimal is decimal_return()
+argument_decimal is decimal_add_quarter(1.5)
+
+decimal_array is [1.25, returned_decimal, -3.5]
+decimal_dict is {"first": 4.5, "second": argument_decimal}
+
+assert_eq(local_decimal, 2.75)
+assert_eq(negative_decimal, -2.5)
+assert_eq(returned_decimal, 1.5)
+assert_eq(argument_decimal, 1.75)
+assert_eq(decimal_array[0], 1.25)
+assert_eq(decimal_array[1], 1.5)
+assert_eq(decimal_array[2], -3.5)
+assert_eq(decimal_dict.first, 4.5)
+assert_eq(decimal_dict.second, 1.75)
+assert_eq(type(local_decimal), "number")
+assert_eq(type(decimal_array[0]), "number")
+assert_eq(to_str(1.5), "1.5")
+assert_eq(to_str(local_decimal), "2.75")
+assert_eq("direct {1.5}", "direct 1.5")
+assert_eq("decimal {local_decimal}", "decimal 2.75")
+assert_eq(to_str(decimal_array), "[1.25, 1.5, -3.5]")
+decimal_dict_text is to_str(decimal_dict)
+assert(decimal_dict_text.contains("4.5"))
+assert(decimal_dict_text.contains("1.75"))
+
+print_no_nl("decimal storage ok")

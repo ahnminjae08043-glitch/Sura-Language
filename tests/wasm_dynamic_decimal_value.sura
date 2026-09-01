@@ -1,0 +1,14 @@
+func decimal_identity(value) do
+  return value
+end
+
+decimal_value is decimal_identity(1.5)
+ignored_shape is decimal_identity("shape")
+
+assert_eq(decimal_value, 1.5)
+assert_eq(type(decimal_value), "number")
+assert(to_bool(decimal_value))
+assert(not to_bool(decimal_identity(0.0)))
+assert_eq(decimal_identity(-2.25), -2.25)
+
+print_no_nl("dynamic decimal value ok")

@@ -1,0 +1,101 @@
+# Native emitter coverage for NEW_INSTANCE.
+#
+# This one looked like TRY_BEGIN at first glance - the interpreter case pushes a
+# frame and keeps interpreting inside the constructor - but the control transfer
+# is a *call* that returns, not a non-local jump. So the helper can drive the
+# constructor to completion with execute_frame() and come back, which is what
+# dispatch_method_call_from_jit already does for ordinary method calls.
+#
+# Two interpreter orderings are load-bearing and are what this file pins:
+#   * the instance is written to its destination register *before* the
+#     constructor runs, which is what makes the constructor's return value
+#     discarded rather than overwriting the instance;
+#   * constructor frame registers are released afterwards, so repeated
+#     construction in a loop does not grow the stack.
+#
+# Run under tools/sura_jit_differential.ps1: native and VM output must match.
+
+# A class with no constructor at all: fields take their declared defaults.
+struct Plain do
+  x is 7
+  y is 8
+end
+
+# A constructor that returns a value. That value must be discarded - the
+# variable has to hold the instance, not the return.
+class Returning do
+  func init(v) do
+    self.v is v
+    return 999
+  end
+end
+
+# Inheritance. Derived defines no constructor of its own, so constructing it
+# has to find Base's - which is the class-chain lookup this exercises.
+class Base do
+  func init(n) do
+    self.n is n
+    self.tag is "base"
+  end
+  func label() do
+    return "base"
+  end
+end
+
+class Derived extends Base do
+  func label() do
+    return "derived"
+  end
+end
+
+# ── No constructor: declared defaults survive ──
+p is Plain(1, 2)
+assert_eq(p.x, 1)
+assert_eq(p.y, 2)
+
+bare is Plain()
+assert_eq(bare.x, 7)
+assert_eq(bare.y, 8)
+
+# ── Constructor return value is discarded ──
+r is new Returning(5)
+assert_eq(r.v, 5)
+
+# ── Inheritance ──
+d is new Derived(3)
+assert_eq(d.n, 3)
+assert_eq(d.tag, "base")
+assert_eq(d.label(), "derived")
+
+b is new Base(4)
+assert_eq(b.n, 4)
+assert_eq(b.tag, "base")
+
+# ── Repeated construction in a hot loop. If constructor frame registers were
+#    not released, this would exhaust the value stack rather than merely run
+#    slowly, so reaching the end is itself part of the assertion. ──
+total is 0
+i is 0
+while i < 300 do
+  made is new Returning(i)
+  total is total + made.v
+  i is i + 1
+end
+assert_eq(total, 44850)
+
+# Construction inside a callee, so the function-level emitter path is covered
+# too, not only the top level.
+func build(n) do
+  made is new Base(n)
+  return made.n
+end
+
+sum is 0
+j is 1
+while j <= 40 do
+  sum is sum + build(j)
+  j is j + 1
+end
+assert_eq(sum, 820)
+
+print "81_jit_new_instance_differential: PASS"

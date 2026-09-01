@@ -1,0 +1,10 @@
+func add(left: number, right: number) -> number do
+  return left + right
+end
+
+func greet(name: string) -> string do
+  return "반가워요, {name}!"
+end
+
+print(add(20, 22))
+print(greet("Sura"))

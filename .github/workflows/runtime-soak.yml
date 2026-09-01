@@ -1,0 +1,94 @@
+name: Runtime Soak
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: Minimum soak duration per platform
+        required: true
+        type: number
+        default: 300
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            cxx: C:\msys64\mingw64\bin\g++.exe
+            engine: .\SuraLanguage.exe
+          - name: Ubuntu x64
+            os: ubuntu-latest
+            cxx: g++
+            engine: ./SuraLanguage
+          - name: Ubuntu ARM64
+            os: ubuntu-24.04-arm
+            cxx: g++
+            engine: ./SuraLanguage
+          - name: macOS ARM64
+            os: macos-15
+            cxx: c++
+            engine: ./SuraLanguage
+    env:
+      SURA_SOAK_DURATION_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.duration_seconds || 900 }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Windows compiler
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Build Sura on Windows
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: build.bat portable
+
+      - name: Build Sura on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ matrix.cxx }}" --version
+          make clean
+          make CXX="${{ matrix.cxx }}"
+          chmod +x SuraLanguage
+
+      - name: Run repeated VM, JIT, GC, exception, async, BPE, and ONNX soak
+        shell: pwsh
+        run: |
+          $duration = [int]$env:SURA_SOAK_DURATION_SECONDS
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_runtime_soak.ps1 `
+            -Engine "${{ matrix.engine }}" `
+            -DurationSeconds $duration `
+            -PerRunTimeoutSeconds 60 `
+            -JsonOut "artifacts/runtime-soak-${{ runner.os }}-${{ runner.arch }}.json"
+
+      - name: Upload runtime soak evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-soak-${{ runner.os }}-${{ runner.arch }}
+          path: artifacts/runtime-soak-${{ runner.os }}-${{ runner.arch }}.json
+          if-no-files-found: error
+

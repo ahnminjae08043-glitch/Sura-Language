@@ -1,0 +1,93 @@
+use autograd
+
+# A deterministic one-block causal language model. Fixed initial values keep
+# this training test reproducible across standard-library RNG implementations.
+tokens is [[0, 1, 2], [1, 2, 3]]
+targets is [[1, 2, 3], [2, 3, 0]]
+
+token_embedding is autograd.parameter([[0.3, 0], [0, 0.3], [-0.3, 0], [0, -0.3]])
+
+query_weight is autograd.parameter([[0.1, -0.05], [0.02, 0.08]])
+key_weight is autograd.parameter([[0.06, 0.03], [-0.04, 0.09]])
+value_weight is autograd.parameter([[0.12, -0.02], [0.05, 0.1]])
+attention_output_weight is autograd.parameter([[0.08, -0.03], [0.04, 0.07]])
+
+norm1_weight is autograd.parameter([1, 1])
+norm1_bias is autograd.parameter([0, 0])
+norm2_weight is autograd.parameter([1, 1])
+norm2_bias is autograd.parameter([0, 0])
+
+feedforward_in_weight is autograd.parameter([[0.1, -0.1, 0.05, 0.02], [-0.03, 0.07, 0.09, -0.08]])
+feedforward_in_bias is autograd.parameter([0, 0, 0, 0])
+feedforward_out_weight is autograd.parameter([[0.05, -0.02], [-0.04, 0.06], [0.08, 0.03], [-0.01, -0.07]])
+feedforward_out_bias is autograd.parameter([0, 0])
+
+language_head_weight is autograd.parameter([[0.05, -0.02, 0.01, -0.04], [-0.01, 0.03, -0.05, 0.02]])
+language_head_bias is autograd.parameter([0, 0, 0, 0])
+
+parameters is [token_embedding, query_weight, key_weight, value_weight, attention_output_weight, norm1_weight, norm1_bias, norm2_weight, norm2_bias, feedforward_in_weight, feedforward_in_bias, feedforward_out_weight, feedforward_out_bias, language_head_weight, language_head_bias]
+
+func tiny_transformer(input_ids) do
+  embedded is autograd.embedding(input_ids, token_embedding)
+
+  normalized1 is autograd.layer_norm(embedded, norm1_weight, norm1_bias)
+  query is autograd.matmul(normalized1, query_weight)
+  key is autograd.matmul(normalized1, key_weight)
+  value is autograd.matmul(normalized1, value_weight)
+  context is autograd.causal_attention(query, key, value)
+  attention_output is autograd.matmul(context, attention_output_weight)
+  residual1 is autograd.add(embedded, attention_output)
+
+  normalized2 is autograd.layer_norm(residual1, norm2_weight, norm2_bias)
+  feedforward_hidden is autograd.gelu(autograd.linear(normalized2, feedforward_in_weight, feedforward_in_bias))
+  feedforward_output is autograd.linear(feedforward_hidden, feedforward_out_weight, feedforward_out_bias)
+  residual2 is autograd.add(residual1, feedforward_output)
+
+  return autograd.linear(residual2, language_head_weight, language_head_bias)
+end
+
+func row_argmax(row) do
+  best is 0
+  i is 1
+  while i < row.len() do
+    if row[i] > row[best] then
+      best is i
+    end
+    i is i + 1
+  end
+  return best
+end
+
+func flatten_predictions(logit_data) do
+  predictions is []
+  for batch in logit_data do
+    for row in batch do
+      predictions.push(row_argmax(row))
+    end
+  end
+  return predictions
+end
+
+initial_loss is autograd.item(autograd.cross_entropy_ids(tiny_transformer(tokens), targets))
+assert(initial_loss > 1)
+
+step is 0
+while step < 120 do
+  autograd.zero_grad(parameters)
+  logits is tiny_transformer(tokens)
+  loss is autograd.cross_entropy_ids(logits, targets)
+  autograd.backward(loss)
+  autograd.clip_grad_norm(parameters, 1)
+  autograd.adam(parameters, 0.03)
+  step is step + 1
+end
+
+final_logits is tiny_transformer(tokens)
+final_loss is autograd.item(autograd.cross_entropy_ids(final_logits, targets))
+predictions is flatten_predictions(autograd.data(final_logits))
+
+assert(final_loss < 0.01)
+assert(final_loss < initial_loss * 0.01)
+assert_eq(predictions.join(","), "1,2,3,2,3,0")
+
+print "19_tiny_transformer_training: PASS"

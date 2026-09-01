@@ -1,0 +1,81 @@
+# Frame-for-frame ASCII playback of a user-supplied, authorized video file.
+# No copyrighted video or audio is bundled with Sura.
+#
+# Run:
+#   sura examples/bad_apple_from_video.sura -- "C:/path/to/bad_apple.mp4"
+
+use media
+use os
+use console
+
+if os.argc() < 1 then
+  throw "usage: sura examples/bad_apple_from_video.sura -- <authorized-video-file>"
+end
+
+source is os.argv()[0]
+preview is false
+convert_only is false
+decoder is ""
+arg_index is 1
+while arg_index < os.argc() do
+  if os.argv()[arg_index] == "--preview" then preview is true
+  if os.argv()[arg_index] == "--convert-only" then convert_only is true
+  if os.argv()[arg_index] == "--ffmpeg" then
+    if arg_index + 1 >= os.argc() then
+      throw "--ffmpeg requires an executable path"
+    end
+    decoder is os.argv()[arg_index + 1]
+    arg_index += 1
+  end
+  arg_index += 1
+end
+
+# imageio_ffmpeg already installed on this machine provides a private FFmpeg
+# binary even when ffmpeg.exe is not on PATH. Keep explicit --ffmpeg and
+# SURA_FFMPEG higher priority, then try the known per-user package location.
+if decoder == "" and not media.available() then
+  imageio_decoder is os.home_dir() + "/AppData/Roaming/Python/Python314/site-packages/imageio_ffmpeg/binaries/ffmpeg-win-x86_64-v7.1.exe"
+  if file_exists(imageio_decoder) then
+    decoder is imageio_decoder
+  end
+end
+
+if decoder == "" then
+  if not media.available() then
+    throw "FFmpeg was not found; install it, set SURA_FFMPEG, or pass --ffmpeg <path>"
+  end
+else
+  if not media.available(decoder) then
+    throw "the --ffmpeg executable was not found"
+  end
+end
+
+options is {width: 96, fps: 30, max_frames: 7000, char_aspect: 0.5, charset: " @", dither: false, timeout_ms: 600000}
+if decoder != "" then
+  options["ffmpeg"] is decoder
+end
+if preview then
+  options["width"] is 64
+  options["max_frames"] is 90
+  options["duration"] is 3
+end
+clip is media.ascii_frames(source, options)
+print("converted {clip.frame_count} frames at {clip.width}x{clip.height}, {clip.fps} fps")
+
+delay_ms is clip.frame_duration_ms
+if not convert_only then
+  for frame in clip.frames do
+    console.clear()
+    console.raw(frame)
+    console.raw("\n")
+    wait(delay_ms)
+  end
+end
+
+if convert_only then
+  print("conversion-only validation complete")
+elif clip.truncated then
+  print("playback stopped at max_frames; raise the bounded limit for a longer authorized source")
+else
+  print("played {clip.frame_count} source-derived monochrome frames")
+end

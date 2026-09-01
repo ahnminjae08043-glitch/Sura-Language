@@ -1,0 +1,20 @@
+// ================================
+// 수라 표준 라이브러리: system
+// 사용법: use system
+// ================================
+// 내장 명령어 (main.cpp 지원):
+//   file_save 경로 내용   → 파일 저장
+//   file_load 경로 변수   → 파일 불러오기
+//   now 변수              → 현재 타임스탬프 (초)
+//   sleep 밀리초          → 대기
+//   cls                   → 화면 지우기
+
+// save_data: "save.txt"에 data 저장
+func save_data do
+    file_save "save.txt" data
+end
+
+// load_data: "save.txt"에서 loaded_data로 불러오기
+func load_data do
+    file_load "save.txt" loaded_data
+end

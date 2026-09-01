@@ -1,0 +1,105 @@
+# Package automation workload: resolve dependency version candidates.
+# Models hot dependency resolver scoring for version constraints, risk, and freshness.
+
+func dependency_count(pkg) do
+  return 1 + ((pkg * 7 + 3) % 4)
+end
+
+func version_count(pkg, dep) do
+  return 6 + ((pkg * 5 + dep * 11) % 7)
+end
+
+func min_version(pkg, dep) do
+  return 1 + ((pkg * 3 + dep * 5) % 5)
+end
+
+func max_version(pkg, dep) do
+  return min_version(pkg, dep) + 2 + ((pkg * dep + 7) % 4)
+end
+
+func vulnerability_risk(pkg, dep, version) do
+  risk is ((pkg + 1) * (dep + 3) * (version + 5)) % 113
+  if version % 7 == 0 then
+    risk is risk + 55
+  end
+  if pkg % 19 == 0 and dep == 2 then
+    risk is risk + 35
+  end
+  return risk
+end
+
+func candidate_score(pkg, dep, version) do
+  freshness is version * 97
+  downloads is (pkg * 31 + dep * 17 + version * 13) % 1000
+  risk is vulnerability_risk(pkg, dep, version)
+  score is freshness * 5 + downloads * 2 - risk * 11
+  if version == max_version(pkg, dep) then
+    score is score + 80
+  end
+  if risk > 120 then
+    score is score - 260
+  end
+  return score
+end
+
+func choose_version(pkg, dep) do
+  min_v is min_version(pkg, dep)
+  max_v is max_version(pkg, dep)
+  count is version_count(pkg, dep)
+  best_v is 0
+  best_score is -999999
+  v is 1
+  while v <= count do
+    if v >= min_v and v <= max_v then
+      score is candidate_score(pkg, dep, v)
+      if score > best_score then
+        best_score is score
+        best_v is v
+      end
+    end
+    v is v + 1
+  end
+  return best_v * 10000 + best_score
+end
+
+runs is 5
+packages is 85000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  pkg is 0
+  resolved is 0
+  latest_selected is 0
+  rejected is 0
+  score_total is 0
+  while pkg < packages do
+    dep is 0
+    deps is dependency_count(pkg)
+    while dep < deps do
+      chosen is choose_version(pkg, dep)
+      version is floor(chosen / 10000)
+      score is chosen - version * 10000
+      if version > 0 then
+        resolved is resolved + 1
+      else
+        rejected is rejected + 1
+      end
+      if version == max_version(pkg, dep) then
+        latest_selected is latest_selected + 1
+      end
+      score_total is score_total + score + version * 17
+      dep is dep + 1
+    end
+    pkg is pkg + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is resolved * 11 + latest_selected * 13 + rejected * 17 + score_total
+end
+
+avg is total_ms / runs
+print "dependency resolver packages: {packages}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

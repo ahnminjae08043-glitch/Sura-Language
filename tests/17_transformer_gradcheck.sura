@@ -1,0 +1,130 @@
+use autograd
+use array
+
+func numeric_layer_norm_loss(p) do
+  x is autograd.tensor([[p[0], p[1], p[2]], [p[3], p[4], p[5]]])
+  weight is autograd.tensor([p[6], p[7], p[8]])
+  bias is autograd.tensor([p[9], p[10], p[11]])
+  normalized is autograd.layer_norm(x, weight, bias, 0.00001)
+  upstream is [[1, 2, 3], [4, 5, 6]]
+  return autograd.item(autograd.sum(autograd.mul(normalized, upstream)))
+end
+
+func layer_norm_difference(p, index, epsilon) do
+  plus is array.clone(p)
+  minus is array.clone(p)
+  plus[index] is plus[index] + epsilon
+  minus[index] is minus[index] - epsilon
+  return (numeric_layer_norm_loss(plus) - numeric_layer_norm_loss(minus)) / (2 * epsilon)
+end
+
+layer_values is [1, 2, 3, 2, 4, 6, 1.5, 0.5, -1, 0.1, -0.2, 0.3]
+layer_x is autograd.parameter([[layer_values[0], layer_values[1], layer_values[2]], [layer_values[3], layer_values[4], layer_values[5]]])
+layer_weight is autograd.parameter([layer_values[6], layer_values[7], layer_values[8]])
+layer_bias is autograd.parameter([layer_values[9], layer_values[10], layer_values[11]])
+layer_output is autograd.layer_norm(layer_x, layer_weight, layer_bias, 0.00001)
+layer_loss is autograd.sum(autograd.mul(layer_output, [[1, 2, 3], [4, 5, 6]]))
+autograd.backward(layer_loss)
+layer_x_grad is autograd.grad(layer_x)
+layer_weight_grad is autograd.grad(layer_weight)
+layer_bias_grad is autograd.grad(layer_bias)
+layer_analytic is [layer_x_grad[0][0], layer_x_grad[0][1], layer_x_grad[0][2], layer_x_grad[1][0], layer_x_grad[1][1], layer_x_grad[1][2], layer_weight_grad[0], layer_weight_grad[1], layer_weight_grad[2], layer_bias_grad[0], layer_bias_grad[1], layer_bias_grad[2]]
+
+i is 0
+while i < layer_analytic.len() do
+  numerical is layer_norm_difference(layer_values, i, 0.00001)
+  assert_approx(layer_analytic[i], numerical, 0.00002)
+  i is i + 1
+end
+
+func numeric_attention_loss(p) do
+  q is autograd.tensor([[[p[0]], [p[1]]]])
+  k is autograd.tensor([[[p[2]], [p[3]]]])
+  v is autograd.tensor([[[p[4]], [p[5]]]])
+  output is autograd.causal_attention(q, k, v, {scale: 1})
+  return autograd.item(autograd.sum(output))
+end
+
+func attention_difference(p, index, epsilon) do
+  plus is array.clone(p)
+  minus is array.clone(p)
+  plus[index] is plus[index] + epsilon
+  minus[index] is minus[index] - epsilon
+  return (numeric_attention_loss(plus) - numeric_attention_loss(minus)) / (2 * epsilon)
+end
+
+attention_values is [1, 2, 1, 3, 2, 4]
+attention_q is autograd.parameter([[[attention_values[0]], [attention_values[1]]]])
+attention_k is autograd.parameter([[[attention_values[2]], [attention_values[3]]]])
+attention_v is autograd.parameter([[[attention_values[4]], [attention_values[5]]]])
+attention_output is autograd.causal_attention(attention_q, attention_k, attention_v, {scale: 1})
+attention_loss is autograd.sum(attention_output)
+autograd.backward(attention_loss)
+q_grad is autograd.grad(attention_q)
+k_grad is autograd.grad(attention_k)
+v_grad is autograd.grad(attention_v)
+attention_analytic is [q_grad[0][0][0], q_grad[0][1][0], k_grad[0][0][0], k_grad[0][1][0], v_grad[0][0][0], v_grad[0][1][0]]
+
+i is 0
+while i < attention_analytic.len() do
+  numerical is attention_difference(attention_values, i, 0.00001)
+  assert_approx(attention_analytic[i], numerical, 0.00002)
+  i is i + 1
+end
+
+func numeric_token_loss(p) do
+  logits is autograd.tensor([[[p[0], p[1], p[2]], [p[3], p[4], p[5]]]])
+  return autograd.item(autograd.cross_entropy_ids(logits, [[0, 2]]))
+end
+
+func token_loss_difference(p, index, epsilon) do
+  plus is array.clone(p)
+  minus is array.clone(p)
+  plus[index] is plus[index] + epsilon
+  minus[index] is minus[index] - epsilon
+  return (numeric_token_loss(plus) - numeric_token_loss(minus)) / (2 * epsilon)
+end
+
+token_values is [2, 1, 0, 0, 1, 2]
+token_logits is autograd.parameter([[[token_values[0], token_values[1], token_values[2]], [token_values[3], token_values[4], token_values[5]]]])
+token_loss is autograd.cross_entropy_ids(token_logits, [[0, 2]])
+autograd.backward(token_loss)
+token_grad is autograd.grad(token_logits)
+token_analytic is [token_grad[0][0][0], token_grad[0][0][1], token_grad[0][0][2], token_grad[0][1][0], token_grad[0][1][1], token_grad[0][1][2]]
+
+i is 0
+while i < token_analytic.len() do
+  numerical is token_loss_difference(token_values, i, 0.00001)
+  assert_approx(token_analytic[i], numerical, 0.00002)
+  i is i + 1
+end
+
+func numeric_gelu_loss(p) do
+  input is autograd.tensor([p[0], p[1], p[2]])
+  output is autograd.gelu(input)
+  return autograd.item(autograd.sum(autograd.mul(output, [0.5, -2, 1.25])))
+end
+
+func gelu_difference(p, index, epsilon) do
+  plus is array.clone(p)
+  minus is array.clone(p)
+  plus[index] is plus[index] + epsilon
+  minus[index] is minus[index] - epsilon
+  return (numeric_gelu_loss(plus) - numeric_gelu_loss(minus)) / (2 * epsilon)
+end
+
+gelu_values is [-1.3, 0.2, 1.7]
+gelu_input is autograd.parameter(gelu_values)
+gelu_output is autograd.gelu(gelu_input)
+gelu_loss is autograd.sum(autograd.mul(gelu_output, [0.5, -2, 1.25]))
+autograd.backward(gelu_loss)
+gelu_analytic is autograd.grad(gelu_input)
+
+i is 0
+while i < gelu_analytic.len() do
+  numerical is gelu_difference(gelu_values, i, 0.00001)
+  assert_approx(gelu_analytic[i], numerical, 0.00002)
+  i is i + 1
+end
+
+print "17_transformer_gradcheck: PASS"

@@ -1,0 +1,55 @@
+use autograd
+
+info is autograd.cuda_info()
+assert_eq(info.available, autograd.cuda_available())
+
+if info.available then
+  if info.cublas_available then
+    assert_eq(info.backend, "cuda-driver-cublas+ptx")
+    assert_eq(info.matmul_backend, "cublas-sgemm")
+    assert(info.cublas_library.len() > 0)
+    assert_eq(info.cublas_error, "")
+  else
+    assert_eq(info.backend, "cuda-driver-ptx")
+    assert_eq(info.matmul_backend, "sura-reference-ptx")
+    assert(info.cublas_error.len() > 0)
+    if info.cublas_disabled then
+      assert_eq(info.cublas_error, "cuBLAS disabled by SURA_CUBLAS_DISABLE=1")
+    end
+  end
+
+  left is autograd.tensor([[1, -2, 3], [4, 0.5, -1]], {device: "cuda"})
+  right is autograd.tensor([[2, 1, -1, 0], [3, -2, 0.5, 4], [-1, 2, 3, -0.5]], {device: "cuda"})
+  autograd.cuda_reset_stats()
+  product is autograd.matmul(left, right)
+  autograd.cuda_synchronize()
+  before_read is autograd.cuda_stats()
+  assert_eq(before_read.matmul_launches, 1)
+  assert_eq(before_read.kernel_launches, 1)
+  assert_eq(before_read.cublas_matmul_launches + before_read.reference_matmul_launches, 1)
+  assert_eq(before_read.h2d_bytes, 0)
+  assert_eq(before_read.d2h_bytes, 0)
+  if info.cublas_available then
+    assert_eq(before_read.cublas_matmul_launches, 1)
+    assert_eq(before_read.reference_matmul_launches, 0)
+  else
+    assert_eq(before_read.cublas_matmul_launches, 0)
+    assert_eq(before_read.reference_matmul_launches, 1)
+  end
+
+  actual is autograd.data(product)
+  expected is [[-7, 11, 7, -9.5], [10.5, 1, -6.75, 2.5]]
+  row is 0
+  while row < expected.len() do
+    col is 0
+    while col < expected[row].len() do
+      assert_approx(actual[row][col], expected[row][col], 0.0001)
+      col is col + 1
+    end
+    row is row + 1
+  end
+else
+  assert(info.error.len() > 0)
+end
+
+print "37_cuda_cublas_dispatch: PASS ({info.matmul_backend})"

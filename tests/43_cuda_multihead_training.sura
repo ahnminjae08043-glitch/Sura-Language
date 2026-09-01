@@ -1,0 +1,81 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  input_ids is [[0, 1, 2]]
+  target_ids is [[1, 2, 3]]
+  batch_size is 1
+  sequence is 3
+  heads is 2
+  head_dim is 2
+  model_dim is 4
+
+  embedding_weight is autograd.parameter([[0.5, 0, 0, 0], [0, 0.5, 0, 0], [0, 0, 0.5, 0], [0, 0, 0, 0.5]], {device: "cuda"})
+  norm_weight is autograd.parameter([1, 1, 1, 1], {device: "cuda"})
+  norm_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+
+  q_weight is autograd.parameter([[0.2, 0, 0, 0], [0, 0.2, 0, 0], [0, 0, 0.2, 0], [0, 0, 0, 0.2]], {device: "cuda"})
+  q_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+  k_weight is autograd.parameter([[0.2, 0, 0, 0], [0, 0.2, 0, 0], [0, 0, 0.2, 0], [0, 0, 0, 0.2]], {device: "cuda"})
+  k_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+  v_weight is autograd.parameter([[0.3, 0, 0, 0], [0, 0.3, 0, 0], [0, 0, 0.3, 0], [0, 0, 0, 0.3]], {device: "cuda"})
+  v_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+
+  attention_weight is autograd.parameter([[0.3, 0, 0, 0], [0, 0.3, 0, 0], [0, 0, 0.3, 0], [0, 0, 0, 0.3]], {device: "cuda"})
+  attention_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+  language_weight is autograd.parameter([[0.05, -0.02, 0.01, 0.03], [-0.01, 0.04, -0.03, 0.02], [0.02, 0.01, 0.05, -0.04], [-0.03, 0.02, 0.01, 0.04]], {device: "cuda"})
+  language_bias is autograd.parameter([0, 0, 0, 0], {device: "cuda"})
+
+  parameters is [embedding_weight, norm_weight, norm_bias, q_weight, q_bias, k_weight, k_bias, v_weight, v_bias, attention_weight, attention_bias, language_weight, language_bias]
+
+  func split_heads(x) do
+    sequence_major is autograd.reshape(x, [batch_size, sequence, heads, head_dim])
+    return autograd.transpose(sequence_major, 1, 2)
+  end
+
+  func merge_heads(x) do
+    sequence_major is autograd.transpose(x, 1, 2)
+    return autograd.reshape(sequence_major, [batch_size, sequence, model_dim])
+  end
+
+  func tiny_multihead_model(ids) do
+    embedded is autograd.embedding(ids, embedding_weight)
+    normalized is autograd.layer_norm(embedded, norm_weight, norm_bias)
+    query is split_heads(autograd.linear(normalized, q_weight, q_bias))
+    key is split_heads(autograd.linear(normalized, k_weight, k_bias))
+    value is split_heads(autograd.linear(normalized, v_weight, v_bias))
+    head_context is autograd.causal_attention(query, key, value)
+    context is merge_heads(head_context)
+    projected is autograd.linear(context, attention_weight, attention_bias)
+    return autograd.linear(projected, language_weight, language_bias)
+  end
+
+  initial_loss is autograd.item(autograd.cross_entropy_ids(tiny_multihead_model(input_ids), target_ids))
+  assert(initial_loss > 1)
+
+  steps is 60
+  autograd.cuda_reset_stats()
+  step is 0
+  while step < steps do
+    autograd.zero_grad(parameters)
+    logits is tiny_multihead_model(input_ids)
+    loss is autograd.cross_entropy_ids(logits, target_ids)
+    autograd.backward(loss)
+    autograd.adam(parameters, 0.03)
+    step is step + 1
+  end
+
+  training_stats is autograd.cuda_stats()
+  assert_eq(training_stats.attention_launches, steps * 2)
+  assert_eq(training_stats.transpose_launches, steps * 8)
+  assert_eq(training_stats.h2d_bytes, steps * 24)
+  assert_eq(training_stats.d2h_bytes, steps * 4)
+
+  final_loss is autograd.item(autograd.cross_entropy_ids(tiny_multihead_model(input_ids), target_ids))
+  assert(final_loss < initial_loss * 0.5)
+  assert(final_loss < 0.5)
+else
+  print "43_cuda_multihead_training: SKIP ({info.error})"
+end
+
+print "43_cuda_multihead_training: PASS"

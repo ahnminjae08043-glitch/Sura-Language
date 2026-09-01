@@ -1,0 +1,351 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func verify_rectangular_typed_matmul(dtype, epsilon) do
+  left_values is [[1, 2, 3, 4, 5], [-1, 0.5, 2, -2, 1], [0.25, -0.5, 1.5, 2.5, -3]]
+  right_values is [[2, -1], [0.5, 3], [-2, 1], [1.5, -0.5], [0.25, 2]]
+  seed_values is [[1, -2], [0.5, 3], [-1, 0.25]]
+  expected_output is [[4.25, 16], [-8.5, 7.5], [0.25, -7.5]]
+  expected_left_grad is [[4, -5.5, -4, 2.5, -3.75], [-2, 9.25, 2, -0.75, 6.125], [-2.25, 0.25, 2.25, -1.625, 0.25]]
+  expected_right_grad is [[0.25, -4.9375], [2.75, -2.625], [2.5, 0.375], [0.5, -13.375], [8.5, -7.75]]
+
+  left is autograd.parameter(left_values, {dtype: dtype, device: "cuda"})
+  right is autograd.parameter(right_values, {dtype: dtype, device: "cuda"})
+  seed is autograd.tensor(seed_values, {dtype: "float32", device: "cuda"})
+  autograd.cuda_reset_stats()
+  output is autograd.matmul(left, right)
+  autograd.backward(output, seed)
+  stats is autograd.cuda_stats()
+  assert_eq(stats.matmul_launches, 3)
+  assert_eq(stats.typed_storage_matmul_launches, 3)
+  assert_eq(stats.storage_conversion_launches, 0)
+  assert_eq(stats.h2d_bytes, 0)
+  assert_eq(stats.d2h_bytes, 0)
+  approx_rank2(autograd.data(output), expected_output, epsilon)
+  approx_rank2(autograd.grad(left), expected_left_grad, epsilon)
+  approx_rank2(autograd.grad(right), expected_right_grad, epsilon)
+end
+
+info is autograd.cuda_info()
+if info.available then
+  values is [0.3333, -1.2345, 2.718, 16]
+
+  # Device allocation and transfer accounting must describe the physical
+  # payload, not merely the logical dtype metadata. These are frozen tensors,
+  # so no optimizer master allocation is involved in the exact byte deltas.
+  autograd.cuda_reset_stats()
+  allocation_baseline is autograd.cuda_stats().allocated_bytes
+  direct_f16 is autograd.tensor(values, {dtype: "float16", device: "cuda"})
+  after_f16 is autograd.cuda_stats()
+  assert_eq(after_f16.allocated_bytes - allocation_baseline, 8)
+  assert_eq(after_f16.h2d_bytes, 8)
+  direct_bf16 is autograd.tensor(values, {dtype: "bfloat16", device: "cuda"})
+  after_bf16 is autograd.cuda_stats()
+  assert_eq(after_bf16.allocated_bytes - after_f16.allocated_bytes, 8)
+  assert_eq(after_bf16.h2d_bytes, 16)
+  direct_f32 is autograd.tensor(values, {dtype: "float32", device: "cuda"})
+  after_f32 is autograd.cuda_stats()
+  assert_eq(after_f32.allocated_bytes - after_bf16.allocated_bytes, 16)
+  assert_eq(after_f32.h2d_bytes, 32)
+  assert_eq(autograd.storage_bytes(direct_f16), 8)
+  assert_eq(autograd.storage_bytes(direct_bf16), 8)
+  assert_eq(autograd.storage_bytes(direct_f32), 16)
+
+  # Resident casts must convert on-device and retain device-only outputs.
+  # CPU packed storage supplies the independent quantization oracle.
+  cpu_source is autograd.tensor(values, {dtype: "float32"})
+  cpu_f16 is autograd.cast(cpu_source, "float16")
+  cpu_bf16 is autograd.cast(cpu_source, "bfloat16")
+  cpu_f16_back is autograd.cast(cpu_f16, "float32")
+  cpu_bf16_back is autograd.cast(cpu_bf16, "float32")
+
+  autograd.cuda_reset_stats()
+  cast_baseline is autograd.cuda_stats().allocated_bytes
+  gpu_f16 is autograd.cast(direct_f32, "float16")
+  gpu_f16_back is autograd.cast(gpu_f16, "float32")
+  gpu_bf16 is autograd.cast(direct_f32, "bfloat16")
+  gpu_bf16_back is autograd.cast(gpu_bf16, "float32")
+  cast_stats is autograd.cuda_stats()
+  assert_eq(autograd.dtype(gpu_f16), "float16")
+  assert_eq(autograd.dtype(gpu_f16_back), "float32")
+  assert_eq(autograd.dtype(gpu_bf16), "bfloat16")
+  assert_eq(autograd.dtype(gpu_bf16_back), "float32")
+  assert_eq(autograd.storage_bytes(gpu_f16), 8)
+  assert_eq(autograd.storage_bytes(gpu_f16_back), 16)
+  assert_eq(autograd.storage_bytes(gpu_bf16), 8)
+  assert_eq(autograd.storage_bytes(gpu_bf16_back), 16)
+  assert_eq(cast_stats.allocated_bytes - cast_baseline, 48)
+  assert_eq(cast_stats.storage_conversion_launches, 4)
+  assert_eq(cast_stats.h2d_bytes, 0)
+  assert_eq(cast_stats.d2h_bytes, 0)
+  approx_rank1(autograd.data(gpu_f16), autograd.data(cpu_f16), 0.000001)
+  approx_rank1(autograd.data(gpu_f16_back), autograd.data(cpu_f16_back), 0.000001)
+  approx_rank1(autograd.data(gpu_bf16), autograd.data(cpu_bf16), 0.000001)
+  approx_rank1(autograd.data(gpu_bf16_back), autograd.data(cpu_bf16_back), 0.000001)
+  assert_eq(autograd.cuda_stats().d2h_bytes, 48)
+
+  matrix_values is [[1, 2], [3, 4]]
+  weight_values is [[2, -1], [0.5, 3]]
+  seed_values is [[1, 0.25], [-2, 0.5]]
+  expected_output is [[3, 5], [8, 9]]
+  expected_input_grad is [[1.75, 1.25], [-4.5, 0.5]]
+  expected_weight_grad is [[-5, 1.75], [-6, 2.5]]
+
+  # Typed storage is consumed directly by forward and both backward matmuls.
+  # The output and persistent gradients deliberately remain float32.
+  f16_input is autograd.parameter(matrix_values, {dtype: "float16", device: "cuda"})
+  f16_weight is autograd.parameter(weight_values, {dtype: "float16", device: "cuda"})
+  f16_seed is autograd.tensor(seed_values, {dtype: "float32", device: "cuda"})
+  autograd.cuda_reset_stats()
+  f16_output is autograd.matmul(f16_input, f16_weight)
+  autograd.backward(f16_output, f16_seed)
+  f16_compute_stats is autograd.cuda_stats()
+  assert_eq(autograd.dtype(f16_input), "float16")
+  assert_eq(autograd.dtype(f16_weight), "float16")
+  assert_eq(autograd.dtype(f16_output), "float32")
+  assert_eq(autograd.storage_bytes(f16_input), 8)
+  assert_eq(autograd.storage_bytes(f16_weight), 8)
+  assert_eq(autograd.storage_bytes(f16_output), 16)
+  assert_eq(f16_compute_stats.matmul_launches, 3)
+  assert_eq(f16_compute_stats.typed_storage_matmul_launches, 3)
+  assert_eq(f16_compute_stats.float16_matmul_launches, 1)
+  assert_eq(f16_compute_stats.float32_matmul_launches, 2)
+  assert_eq(f16_compute_stats.storage_conversion_launches, 0)
+  assert_eq(f16_compute_stats.h2d_bytes, 0)
+  assert_eq(f16_compute_stats.d2h_bytes, 0)
+  f16_input_grad_info is autograd.grad_info(f16_input)
+  f16_weight_grad_info is autograd.grad_info(f16_weight)
+  assert_eq(f16_input_grad_info.dtype, "float32")
+  assert_eq(f16_weight_grad_info.dtype, "float32")
+  assert_eq(f16_input_grad_info.storage_bytes, 16)
+  assert_eq(f16_weight_grad_info.storage_bytes, 16)
+  approx_rank2(autograd.data(f16_output), expected_output, 0.005)
+  approx_rank2(autograd.grad(f16_input), expected_input_grad, 0.005)
+  approx_rank2(autograd.grad(f16_weight), expected_weight_grad, 0.005)
+
+  bf16_input is autograd.parameter(matrix_values, {dtype: "bfloat16", device: "cuda"})
+  bf16_weight is autograd.parameter(weight_values, {dtype: "bfloat16", device: "cuda"})
+  bf16_seed is autograd.tensor(seed_values, {dtype: "float32", device: "cuda"})
+  autograd.cuda_reset_stats()
+  bf16_output is autograd.matmul(bf16_input, bf16_weight)
+  autograd.backward(bf16_output, bf16_seed)
+  bf16_compute_stats is autograd.cuda_stats()
+  assert_eq(autograd.dtype(bf16_output), "float32")
+  assert_eq(autograd.storage_bytes(bf16_input), 8)
+  assert_eq(autograd.storage_bytes(bf16_weight), 8)
+  assert_eq(bf16_compute_stats.matmul_launches, 3)
+  assert_eq(bf16_compute_stats.typed_storage_matmul_launches, 3)
+  assert_eq(bf16_compute_stats.bfloat16_matmul_launches, 1)
+  assert_eq(bf16_compute_stats.float32_matmul_launches, 2)
+  assert_eq(bf16_compute_stats.storage_conversion_launches, 0)
+  assert_eq(bf16_compute_stats.h2d_bytes, 0)
+  assert_eq(bf16_compute_stats.d2h_bytes, 0)
+  bf16_input_grad_info is autograd.grad_info(bf16_input)
+  bf16_weight_grad_info is autograd.grad_info(bf16_weight)
+  assert_eq(bf16_input_grad_info.dtype, "float32")
+  assert_eq(bf16_weight_grad_info.dtype, "float32")
+  assert_eq(bf16_input_grad_info.storage_bytes, 16)
+  assert_eq(bf16_weight_grad_info.storage_bytes, 16)
+  approx_rank2(autograd.data(bf16_output), expected_output, 0.025)
+  approx_rank2(autograd.grad(bf16_input), expected_input_grad, 0.025)
+  approx_rank2(autograd.grad(bf16_weight), expected_weight_grad, 0.025)
+
+  # Odd rectangular M=3, K=5, N=2 shapes expose row-major/leading-dimension
+  # mistakes that a symmetric 2x2 case can hide. The same contract is run for
+  # native cuBLAS and, in CI, with SURA_CUBLAS_DISABLE=1 for PTX fallback.
+  verify_rectangular_typed_matmul("float16", 0.005)
+  verify_rectangular_typed_matmul("bfloat16", 0.025)
+
+  # A master-weight optimizer must accumulate updates below one f16 ULP.
+  # Updating the packed f16 payload in-place would leave the value at 1.
+  cpu_master is autograd.parameter([1], {dtype: "float32"})
+  master_step is 0
+  while master_step < 4 do
+    autograd.zero_grad([cpu_master])
+    autograd.backward(cpu_master, [1])
+    autograd.sgd([cpu_master], 0.0002, {momentum: 0})
+    master_step is master_step + 1
+  end
+  expected_master_f16 is autograd.cast(cpu_master, "float16")
+
+  low_parameter is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  autograd.cuda_reset_stats()
+  low_step is 0
+  while low_step < 4 do
+    autograd.zero_grad([low_parameter])
+    autograd.backward(low_parameter, [1])
+    autograd.sgd([low_parameter], 0.0002, {momentum: 0})
+    low_step is low_step + 1
+  end
+  optimizer_stats is autograd.cuda_stats()
+  low_grad_info is autograd.grad_info(low_parameter)
+  assert_eq(autograd.dtype(low_parameter), "float16")
+  assert_eq(autograd.storage_bytes(low_parameter), 2)
+  assert_eq(low_grad_info.dtype, "float32")
+  assert_eq(low_grad_info.storage_bytes, 4)
+  assert(optimizer_stats.optimizer_launches >= 4)
+  assert(optimizer_stats.storage_conversion_launches >= 4)
+  assert_eq(optimizer_stats.h2d_bytes, 0)
+  low_value is autograd.item(low_parameter)
+  assert(low_value < 1)
+  assert_approx(low_value, autograd.item(expected_master_f16), 0.000001)
+
+  cpu_master_bf16 is autograd.parameter([1], {dtype: "float32"})
+  bf16_master_step is 0
+  while bf16_master_step < 4 do
+    autograd.zero_grad([cpu_master_bf16])
+    autograd.backward(cpu_master_bf16, [1])
+    autograd.sgd([cpu_master_bf16], 0.001, {momentum: 0})
+    bf16_master_step is bf16_master_step + 1
+  end
+  expected_master_bf16 is autograd.cast(cpu_master_bf16, "bfloat16")
+  low_bf16_parameter is autograd.parameter([1], {dtype: "bfloat16", device: "cuda"})
+  bf16_low_step is 0
+  while bf16_low_step < 4 do
+    autograd.zero_grad([low_bf16_parameter])
+    autograd.backward(low_bf16_parameter, [1])
+    autograd.sgd([low_bf16_parameter], 0.001, {momentum: 0})
+    bf16_low_step is bf16_low_step + 1
+  end
+  assert(autograd.item(low_bf16_parameter) < 1)
+  assert_approx(autograd.item(low_bf16_parameter), autograd.item(expected_master_bf16), 0.000001)
+
+  # Adam shares the same f32 master contract and must not round its update
+  # into the packed visible value on every step.
+  cpu_adam_master is autograd.parameter([1], {dtype: "float32"})
+  adam_master_step is 0
+  while adam_master_step < 4 do
+    autograd.zero_grad([cpu_adam_master])
+    autograd.backward(cpu_adam_master, [1])
+    autograd.adam([cpu_adam_master], 0.0002)
+    adam_master_step is adam_master_step + 1
+  end
+  expected_adam_f16 is autograd.cast(cpu_adam_master, "float16")
+
+  low_adam_parameter is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  autograd.cuda_reset_stats()
+  low_adam_step is 0
+  while low_adam_step < 4 do
+    autograd.zero_grad([low_adam_parameter])
+    autograd.backward(low_adam_parameter, [1])
+    autograd.adam([low_adam_parameter], 0.0002)
+    low_adam_step is low_adam_step + 1
+  end
+  adam_optimizer_stats is autograd.cuda_stats()
+  assert_eq(autograd.dtype(low_adam_parameter), "float16")
+  assert_eq(autograd.storage_bytes(low_adam_parameter), 2)
+  assert(adam_optimizer_stats.optimizer_launches >= 4)
+  assert(adam_optimizer_stats.storage_conversion_launches >= 4)
+  assert_eq(adam_optimizer_stats.h2d_bytes, 0)
+  assert_eq(adam_optimizer_stats.d2h_bytes, 16)
+  assert_approx(autograd.item(low_adam_parameter), autograd.item(expected_adam_f16), 0.000001)
+
+  # Training-memory truth: packed visible weights alone are smaller, but the
+  # current f32 master makes low-precision Adam steady state 18N bytes versus
+  # 16N for f32 (visible + gradient + m + v [+ master for low]).
+  memory_baseline is autograd.cuda_stats().allocated_bytes
+  memory_f32 is autograd.parameter([1], {dtype: "float32", device: "cuda"})
+  autograd.backward(memory_f32, [1])
+  autograd.adam([memory_f32], 0.001)
+  after_memory_f32 is autograd.cuda_stats().allocated_bytes
+  assert_eq(after_memory_f32 - memory_baseline, 16)
+  memory_f16 is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  autograd.backward(memory_f16, [1])
+  autograd.adam([memory_f16], 0.001)
+  after_memory_f16 is autograd.cuda_stats().allocated_bytes
+  assert_eq(after_memory_f16 - after_memory_f32, 18)
+
+  scaled_low is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  autograd.backward_scaled(scaled_low, 128)
+  assert_eq(autograd.grad_info(scaled_low).scale, 128)
+  scaled_status is autograd.unscale_gradients([scaled_low], 128)
+  assert(scaled_status.finite)
+  assert(scaled_status.committed)
+  assert_eq(autograd.grad_info(scaled_low).scale, 1)
+  autograd.adam([scaled_low], 0.001)
+  assert(autograd.item(scaled_low) < 1)
+
+  # One overflowing low-precision candidate must roll back every parameter,
+  # including candidates that were otherwise valid and lazy master buffers.
+  rollback_safe is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  rollback_overflow is autograd.parameter([65504], {dtype: "float16", device: "cuda"})
+  autograd.backward(rollback_safe, [1])
+  autograd.backward(rollback_overflow, [-65504])
+  rollback_bytes is autograd.cuda_stats().allocated_bytes
+  rollback_rejected is false
+  try
+    autograd.sgd([rollback_safe, rollback_overflow], 2)
+  catch error
+    rollback_rejected is true
+  end
+  assert(rollback_rejected)
+  assert_eq(autograd.cuda_stats().allocated_bytes, rollback_bytes)
+  assert_eq(autograd.item(rollback_safe), 1)
+  assert_eq(autograd.item(rollback_overflow), 65504)
+
+  # Backward needs this same typed-storage combination: a low operand and an
+  # f32 upstream operand are valid only under explicit f32 compute. A low
+  # compute request still requires both operands to use that exact low dtype.
+  f32_identity is autograd.tensor([[1, 0], [0, 1]], {dtype: "float32", device: "cuda"})
+  autograd.cuda_reset_stats()
+  mixed_f32_output is autograd.matmul(f16_input, f32_identity, {compute_dtype: "float32"})
+  mixed_f32_stats is autograd.cuda_stats()
+  assert_eq(autograd.dtype(mixed_f32_output), "float32")
+  assert_eq(mixed_f32_stats.matmul_launches, 1)
+  assert_eq(mixed_f32_stats.typed_storage_matmul_launches, 1)
+  assert_eq(mixed_f32_stats.float32_matmul_launches, 1)
+  assert_eq(mixed_f32_stats.h2d_bytes, 0)
+  assert_eq(mixed_f32_stats.d2h_bytes, 0)
+  approx_rank2(autograd.data(mixed_f32_output), matrix_values, 0.005)
+
+  invalid_low_compute_rejected is false
+  try
+    autograd.matmul(f16_input, f32_identity, {compute_dtype: "float16"})
+  catch error
+    invalid_low_compute_rejected is true
+  end
+  assert(invalid_low_compute_rejected)
+
+  # Low-precision storage must never be accepted accidentally by an f32-only
+  # CUDA kernel. Rejection occurs before a launch or any host fallback.
+  autograd.cuda_reset_stats()
+  wrong_storage_rejected is false
+  try
+    autograd.relu(direct_f16)
+  catch error
+    wrong_storage_rejected is true
+  end
+  assert(wrong_storage_rejected)
+  wrong_storage_stats is autograd.cuda_stats()
+  assert_eq(wrong_storage_stats.kernel_launches, 0)
+  assert_eq(wrong_storage_stats.d2h_bytes, 0)
+
+  incompatible_storage_rejected is false
+  try
+    autograd.matmul(f16_input, bf16_weight)
+  catch error
+    incompatible_storage_rejected is true
+  end
+  assert(incompatible_storage_rejected)
+else
+  print("50_cuda_typed_storage: SKIP ({info.error})")
+end
+
+print("50_cuda_typed_storage: PASS")

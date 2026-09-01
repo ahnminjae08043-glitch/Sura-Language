@@ -1,0 +1,51 @@
+use autograd
+
+args is argv()
+assert_eq(args.len(), 6)
+
+rendezvous is args[0]
+run_id is args[1]
+step is args[2].to_num()
+rank is args[3].to_num()
+world_size is args[4].to_num()
+average is args[5] == "true"
+
+# Rank 0 contributes p=[1,1], q=[[2,2],[2,2]].
+# Rank 1 contributes p=[3,3], q=[[4,4],[4,4]].
+factor is rank * 2 + 1
+p is autograd.parameter([1, 2])
+q is autograd.parameter([[1, 2], [3, 4]])
+p_loss is autograd.sum(autograd.mul(p, factor))
+q_loss is autograd.sum(autograd.mul(q, factor + 1))
+autograd.backward(autograd.add(p_loss, q_loss))
+
+report is autograd.all_reduce_gradients([p, q], {rendezvous: rendezvous, run_id: run_id, step: step, rank: rank, world_size: world_size, average: average, timeout_ms: 15000})
+
+expected_p is factor
+expected_q is factor + 1
+if world_size == 2 then
+  if average then
+    expected_p is 2
+    expected_q is 3
+  else
+    expected_p is 4
+    expected_q is 6
+  end
+end
+
+p_grad is autograd.grad(p)
+q_grad is autograd.grad(q)
+assert_eq(p_grad[0], expected_p)
+assert_eq(p_grad[1], expected_p)
+assert_eq(q_grad[0][0], expected_q)
+assert_eq(q_grad[0][1], expected_q)
+assert_eq(q_grad[1][0], expected_q)
+assert_eq(q_grad[1][1], expected_q)
+
+assert_eq(report.rank, rank)
+assert_eq(report.world_size, world_size)
+assert_eq(report.step, step)
+assert_eq(report.parameters, 2)
+assert_eq(report.elements, 6)
+assert_eq(report.average, average)
+print "distributed_worker_ok"

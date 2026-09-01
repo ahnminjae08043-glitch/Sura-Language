@@ -1,0 +1,42 @@
+# Native emitter coverage for USE_LIB.
+#
+# USE_LIB used to bail unconditionally. Because the top-level chunk compiles
+# all-or-nothing, that meant a single `use` anywhere dropped the entire program
+# back to the register VM - and most real programs open with a `use`.
+#
+# USE_LIB is not a pure opcode: it binds a stdlib module into a global slot. So
+# the risk is not a wrong number, it is a program whose observable state depends
+# on whether the top level happened to compile. This file therefore uses the
+# module after importing it, so that a binding performed differently - or not at
+# all - shows up as a failed assertion rather than as a silent difference.
+#
+# Run under tools/sura_jit_differential.ps1: the VM and native runs must agree.
+
+use math
+
+# The import must actually have bound something usable.
+assert_eq(math.floor(3.7), 3)
+assert_eq(math.ceil(3.2), 4)
+assert_eq(math.abs(-5), 5)
+assert_eq(math.max(2, 9), 9)
+assert_eq(math.min(2, 9), 2)
+
+# Values derived from the module, so the binding is exercised repeatedly rather
+# than only at the point of import.
+total is 0
+i is 1
+while i <= 10 do
+  total is total + math.abs(0 - i)
+  i is i + 1
+end
+assert_eq(total, 55)
+
+# Interleave module calls with plain arithmetic, keeping the whole top level
+# inside what the emitter accepts.
+scaled is math.floor(total / 2)
+assert_eq(scaled, 27)
+
+shifted is scaled + math.ceil(0.1)
+assert_eq(shifted, 28)
+
+print "78_jit_use_lib_differential: PASS"

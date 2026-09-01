@@ -1,0 +1,79 @@
+# Native emitter coverage for INDEX_SET.
+#
+# The mirror of INDEX_GET, and the register roles are the trap: here `a` is the
+# container being written to rather than a destination, and there is no result.
+# An emitter that copies INDEX_GET's shape without noticing that writes to the
+# wrong place, which is a silent wrong answer rather than a crash.
+#
+# The interpreter also ignores writes to anything that is neither array nor
+# dict, so the helper has to ignore them too - a "helpful" error there would be
+# a behavioural difference between the two engines.
+#
+# Run under tools/sura_jit_differential.ps1: native and VM output must match.
+
+nums is [10, 20, 30]
+lookup is {a: 1}
+
+# ── Array writes ──
+nums[0] is 11
+nums[2] is 33
+assert_eq(nums[0], 11)
+assert_eq(nums[1], 20)
+assert_eq(nums[2], 33)
+
+# ── Dict writes: existing key and new key ──
+lookup["a"] is 2
+lookup["b"] is 7
+assert_eq(lookup["a"], 2)
+assert_eq(lookup["b"], 7)
+
+# ── Writing to a non-container is ignored rather than raising ──
+plain is 5
+plain[0] is 99
+assert_eq(plain, 5)
+
+nothing is nil
+nothing[0] is 99
+assert_eq(nothing, nil)
+
+# ── Repeated writes in a hot loop, so the opcode runs many times rather than
+#    only during warm-up. Each slot ends holding its last write. ──
+buffer is [0, 0, 0, 0]
+i is 0
+while i < 200 do
+  buffer[i % 4] is i
+  i is i + 1
+end
+assert_eq(buffer[0], 196)
+assert_eq(buffer[1], 197)
+assert_eq(buffer[2], 198)
+assert_eq(buffer[3], 199)
+
+# Read-modify-write, so INDEX_GET and INDEX_SET are exercised against the same
+# container in the same loop.
+totals is [0, 0]
+j is 0
+while j < 100 do
+  totals[j % 2] is totals[j % 2] + j
+  j is j + 1
+end
+assert_eq(totals[0], 2450)
+assert_eq(totals[1], 2500)
+
+# Writing from inside a callee, so the function-level emitter path is covered
+# too, not only the top level.
+func store(arr, idx, v) do
+  arr[idx] is v
+end
+
+target is [0, 0, 0]
+k is 0
+while k < 30 do
+  store(target, k % 3, k)
+  k is k + 1
+end
+assert_eq(target[0], 27)
+assert_eq(target[1], 28)
+assert_eq(target[2], 29)
+
+print "80_jit_index_set_differential: PASS"

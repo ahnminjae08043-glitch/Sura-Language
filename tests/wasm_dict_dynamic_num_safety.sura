@@ -1,0 +1,8 @@
+score is 16
+key is "points"
+profile is {count: 11, label: "skip"}
+profile[key] is score
+
+assert_eq(profile[key], 16)
+assert_eq(length(profile), 3)
+print "NumDict {profile[key]}"

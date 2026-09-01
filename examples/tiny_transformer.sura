@@ -1,0 +1,53 @@
+use autograd
+
+# A compact decoder-only Transformer trained entirely by the Sura runtime.
+# Token ids 0,1,2,3 represent the repeating sequence S,u,r,a.
+tokens is [[0, 1, 2], [1, 2, 3]]
+targets is [[1, 2, 3], [2, 3, 0]]
+
+embedding is autograd.parameter([[0.3, 0], [0, 0.3], [-0.3, 0], [0, -0.3]])
+wq is autograd.parameter([[0.1, -0.05], [0.02, 0.08]])
+wk is autograd.parameter([[0.06, 0.03], [-0.04, 0.09]])
+wv is autograd.parameter([[0.12, -0.02], [0.05, 0.1]])
+wo is autograd.parameter([[0.08, -0.03], [0.04, 0.07]])
+norm1_weight is autograd.parameter([1, 1])
+norm1_bias is autograd.parameter([0, 0])
+norm2_weight is autograd.parameter([1, 1])
+norm2_bias is autograd.parameter([0, 0])
+ff1_weight is autograd.parameter([[0.1, -0.1, 0.05, 0.02], [-0.03, 0.07, 0.09, -0.08]])
+ff1_bias is autograd.parameter([0, 0, 0, 0])
+ff2_weight is autograd.parameter([[0.05, -0.02], [-0.04, 0.06], [0.08, 0.03], [-0.01, -0.07]])
+ff2_bias is autograd.parameter([0, 0])
+head_weight is autograd.parameter([[0.05, -0.02, 0.01, -0.04], [-0.01, 0.03, -0.05, 0.02]])
+head_bias is autograd.parameter([0, 0, 0, 0])
+
+parameters is [embedding, wq, wk, wv, wo, norm1_weight, norm1_bias, norm2_weight, norm2_bias, ff1_weight, ff1_bias, ff2_weight, ff2_bias, head_weight, head_bias]
+
+func transformer(input_ids) do
+  x is autograd.embedding(input_ids, embedding)
+  normalized is autograd.layer_norm(x, norm1_weight, norm1_bias)
+  query is autograd.matmul(normalized, wq)
+  key is autograd.matmul(normalized, wk)
+  value is autograd.matmul(normalized, wv)
+  attention is autograd.matmul(autograd.causal_attention(query, key, value), wo)
+  x is autograd.add(x, attention)
+  normalized is autograd.layer_norm(x, norm2_weight, norm2_bias)
+  hidden is autograd.gelu(autograd.linear(normalized, ff1_weight, ff1_bias))
+  x is autograd.add(x, autograd.linear(hidden, ff2_weight, ff2_bias))
+  return autograd.linear(x, head_weight, head_bias)
+end
+
+step is 0
+while step < 120 do
+  autograd.zero_grad(parameters)
+  loss is autograd.cross_entropy_ids(transformer(tokens), targets)
+  autograd.backward(loss)
+  autograd.clip_grad_norm(parameters, 1)
+  autograd.adam(parameters, 0.03)
+  step is step + 1
+end
+
+logits is transformer(tokens)
+loss is autograd.cross_entropy_ids(logits, targets)
+print("final loss = {autograd.item(loss)}")
+print("logits = {autograd.data(logits)}")

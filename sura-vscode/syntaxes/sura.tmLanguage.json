@@ -1,0 +1,127 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Sura",
+  "scopeName": "source.sura",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#builtins" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.sura",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.sura",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.sura",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.sura",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.sura",
+          "match": "\\b-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.sura",
+          "match": "\\b(?:if|then|else|elif|end|while|do|repeat|for|foreach|in|to|step|when|case|default|break|continue|return|try|catch|throw)\\b"
+        },
+        {
+          "name": "keyword.declaration.sura",
+          "match": "\\b(?:is|func|class|extends|enum|import|use|new|self|super)\\b"
+        },
+        {
+          "name": "constant.language.sura",
+          "match": "\\b(?:true|false|nil)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.sura",
+          "match": "\\b(?:and|or|not)\\b"
+        }
+      ]
+    },
+    "builtins": {
+      "patterns": [
+        {
+          "match": "\\b(nn|ai)(\\.)(mlp|forward|predict|train|classify|evaluate|summary|one_hot|fit_standardizer|standardize|split|save|load)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "support.namespace.sura" },
+            "3": { "name": "support.function.sura" }
+          }
+        },
+        {
+          "match": "\\b(autograd)(\\.)(tensor|parameter|zeros|ones|randn|data|grad|grad_info|dtype|device|to|storage_bytes|cast|shape|numel|limits|autocast|cuda_available|cuda_info|cuda_stats|cuda_reset_stats|cuda_synchronize|item|detach|requires_grad|set_requires_grad|add|sub|mul|div|neg|reshape|matmul|transpose|linear|relu|tanh|sigmoid|gelu|layer_norm|embedding|causal_attention|softmax|sum|mean|mse|bce|bce_logits|cross_entropy|cross_entropy_ids|backward|backward_scaled|zero_grad|unscale_gradients|sgd|adam|reset_optimizer|grad_norm|clip_grad_norm|save_checkpoint|load_checkpoint|save_safetensors|load_safetensors|save_onnx_weights|load_onnx_weights|run_onnx|all_reduce_gradients)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "support.namespace.sura" },
+            "3": { "name": "support.function.sura" }
+          }
+        },
+        {
+          "match": "\\b(tokenizer)(\\.)(byte|train_bpe|encode|decode|info|save|load)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "support.namespace.sura" },
+            "3": { "name": "support.function.sura" }
+          }
+        },
+        {
+          "match": "\\b(dataset)(\\.)(pack_text|open|next|reset|close|info)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "support.namespace.sura" },
+            "3": { "name": "support.function.sura" }
+          }
+        },
+        {
+          "name": "support.function.sura",
+          "match": "\\b(?:autograd_grad_info|autograd_device|autograd_to|autograd_autocast|autograd_backward_scaled|autograd_unscale_gradients|autograd_cuda_stats|autograd_cuda_reset_stats)\\b"
+        },
+        {
+          "name": "support.function.sura",
+          "match": "\\btokenizer_train_bpe\\b"
+        },
+        {
+          "name": "support.function.sura",
+          "match": "\\bautograd_run_onnx\\b"
+        },
+        {
+          "name": "support.function.sura",
+            "match": "\\b(?:print|print_n|input|type|clock|sqrt|sin|cos|tan|floor|ceil|round|abs|pow|random|random_seed|random_int|random_float|random_bool|random_choice|random_shuffle|random_bytes|clamp|min|max|split|join|trim|upper|lower|contains|startsWith|endsWith|indexOf|substring|replace|string_lines|string_words|string_repeat|string_pad_left|string_pad_right|length|slice|sort|reverse|concat|push|pop|array_sum|array_avg|array_unique|array_flatten|array_range|array_chunk|array_zip|array_repeat|set_union|set_intersection|set_difference|set_symmetric_difference|set_is_subset|set_is_superset|to_int|to_float|to_str|to_bool|clone|Error|assert|assert_eq|assert_ne|assert_neq|assert_contains|assert_not_contains|assert_match|assert_type|assert_len|assert_between|assert_approx|check|check_eq|check_match|test_summary|test_report|file_read|file_write|file_append|file_exists|file_delete|file_remove_tree|file_lines|file_list|file_walk|file_is_dir|file_is_file|file_size|file_copy|file_move|file_info|mkdir|cwd|path_join|path_basename|path_dirname|path_ext|path_stem|path_normalize|path_abs|path_relative|json_parse|json_stringify|dict_keys|dict_values|dict_items|dict_merge|dict_pick|dict_omit|serialize|deserialize|schema_validate|regex_match|regex_replace|regex_find_all|regex_escape|regex_capture|regex_captures|regex_split|datetime_now|datetime_format|datetime_utc_format|datetime_parse|datetime_parts|timestamp|sha256|hmac_sha256|hex_encode|hex_decode|base64_encode|base64_decode|url_encode|url_decode|url_parse|url_build|query_build|query_parse|form_build|form_parse|auth_bearer|auth_basic|headers_merge|headers_get|headers_has|headers_redact|cookie_parse|cookie_build|cookie_get|http_content_type|http_charset|http_is_json|http_status_ok|http_status_text|http_status_retryable|http_retry_after|http_backoff_delays|cli_parse|argv|argc|script_name|log_set_file|log_set_json|log_set_level|log_get_level|log_level|log_info|log_warn|log_error|console_log|console_write|console_write_line|console_info|console_debug|console_warn|console_error|console_exception|console_raw|console_flush|console_json|console_inspect|console_hrtime|console_beep|console_status|console_clear|console_assert|console_time|console_time_log|console_time_end|console_time_stamp|console_count|console_count_reset|console_table|console_dir|console_dirxml|console_trace|console_group|console_group_collapsed|console_group_end|console_profile|console_profile_end|db_set|db_get|db_has|db_delete|db_keys|db_all|db_insert|db_find|db_count|db_update|db_remove|db_query|vec_add|vec_dot|vec_scale|vec_norm|tensor_shape|tensor_zeros|tensor_fill|tensor_add|tensor_mul|tensor_clip|tensor_flatten|tensor_sum|tensor_mean|tensor_variance|tensor_std|tensor_min|tensor_max|tensor_argmin|tensor_argmax|tensor_zscore|tensor_softmax|tensor_transpose|tensor_matmul|nn_mlp|nn_forward|nn_predict|nn_train|nn_classify|nn_evaluate|nn_summary|nn_one_hot|nn_fit_standardizer|nn_standardize|nn_split|nn_save|nn_load|autograd_tensor|autograd_parameter|autograd_zeros|autograd_ones|autograd_randn|autograd_data|autograd_grad|autograd_grad_info|autograd_dtype|autograd_storage_bytes|autograd_cast|autograd_shape|autograd_numel|autograd_item|autograd_detach|autograd_requires_grad|autograd_set_requires_grad|autograd_add|autograd_sub|autograd_mul|autograd_div|autograd_neg|autograd_matmul|autograd_transpose|autograd_reshape|autograd_linear|autograd_relu|autograd_gelu|autograd_tanh|autograd_sigmoid|autograd_softmax|autograd_layer_norm|autograd_embedding|autograd_causal_attention|autograd_sum|autograd_mean|autograd_mse|autograd_bce|autograd_bce_logits|autograd_cross_entropy|autograd_cross_entropy_ids|autograd_backward|autograd_zero_grad|autograd_sgd|autograd_adam|autograd_reset_optimizer|autograd_grad_norm|autograd_clip_grad_norm|autograd_limits|autograd_cuda_available|autograd_cuda_info|autograd_cuda_synchronize|autograd_save_checkpoint|autograd_load_checkpoint|autograd_save_safetensors|autograd_load_safetensors|autograd_save_onnx_weights|autograd_load_onnx_weights|autograd_all_reduce_gradients|tokenizer_byte|tokenizer_encode|tokenizer_decode|tokenizer_info|tokenizer_save|tokenizer_load|dataset_pack_text|dataset_open|dataset_next|dataset_reset|dataset_close|dataset_info|stream_from|stream_next|stream_take|stream_batch|stream_map|stream_filter|stream_window|stream_skip|stream_count|stream_join|stream_sum|stream_avg|stream_collect|stream_lines|llm_message|llm_messages|llm_request|llm_request_json|llm_extract_text|llm_usage|llm_cost|llm_budget|llm_chat|http_get|http_json|http_post|http_request|http_request_full|http_request_retry|http_request_json|http_request_json_checked|http_request_retry_json|http_request_json_checked|http_request_retry_json_checked|async_http_get|async_http_request|async_sleep|http_serve_static|tool_call|tool|tool_spec|tool_validate|tool_schema|tool_allowed|tool_call_policy|tool_list|python_available|python_executable|python_eval|python_call|python_call_json|ffi_load|ffi_call|plugin_load|plugin_load_manifest|plugin_call|plugin_info|plugin_unload|async_cmd|task|async_ready|async_status|async_pending|async_forget|async_cleanup|async_await|async_await_timeout|async_ready_all|async_any|async_all|async_all_timeout|await|await_timeout|await_any|await_all|await_all_timeout|sleep_ms|wait)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.sura",
+          "match": "\\?\\?|\\?\\.|==|!=|<=|>=|\\+|-|\\*|/|%|<|>|="
+        }
+      ]
+    }
+  }
+}

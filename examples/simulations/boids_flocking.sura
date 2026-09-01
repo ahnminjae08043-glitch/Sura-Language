@@ -1,0 +1,116 @@
+# 2D boids: cohesion, alignment, and separation.
+# Q/Escape quits.
+
+SMOKE is argc() > 0 and argv()[0] == "--smoke"
+W is 780
+H is 520
+if not win_init(W, H, "Sura Boids Flocking") then
+  print("win_init failed")
+  exit(1)
+end
+
+bx is []
+by is []
+bvx is []
+bvy is []
+i is 0
+while i < 28 do
+  bx.push(random(40, W - 40))
+  by.push(random(50, H - 40))
+  bvx.push(random(-30, 30) / 20)
+  bvy.push(random(-30, 30) / 20)
+  i += 1
+end
+
+frame is 0
+running is true
+while running do
+  frame += 1
+  if key_down("q") or key_down("escape") then running is false
+
+  next_vx is []
+  next_vy is []
+  i is 0
+  while i < bx.len() do
+    center_x is 0
+    center_y is 0
+    average_vx is 0
+    average_vy is 0
+    separate_x is 0
+    separate_y is 0
+    neighbors is 0
+    j is 0
+    while j < bx.len() do
+      if i != j then
+        dx is bx[j] - bx[i]
+        dy is by[j] - by[i]
+        d2 is dx * dx + dy * dy
+        if d2 < 85 * 85 then
+          center_x += bx[j]
+          center_y += by[j]
+          average_vx += bvx[j]
+          average_vy += bvy[j]
+          neighbors += 1
+        end
+        if d2 < 24 * 24 and d2 > 0 then
+          separate_x -= dx / d2
+          separate_y -= dy / d2
+        end
+      end
+      j += 1
+    end
+
+    vx is bvx[i]
+    vy is bvy[i]
+    if neighbors > 0 then
+      center_x /= neighbors
+      center_y /= neighbors
+      average_vx /= neighbors
+      average_vy /= neighbors
+      vx += (center_x - bx[i]) * 0.0008 + (average_vx - vx) * 0.035 + separate_x * 2.5
+      vy += (center_y - by[i]) * 0.0008 + (average_vy - vy) * 0.035 + separate_y * 2.5
+    end
+    speed is sqrt(vx * vx + vy * vy)
+    if speed > 3.2 then
+      vx is vx / speed * 3.2
+      vy is vy / speed * 3.2
+    end
+    next_vx.push(vx)
+    next_vy.push(vy)
+    i += 1
+  end
+
+  i is 0
+  while i < bx.len() do
+    bvx[i] is next_vx[i]
+    bvy[i] is next_vy[i]
+    bx[i] += bvx[i]
+    by[i] += bvy[i]
+    if bx[i] < 0 then bx[i] += W
+    if bx[i] > W then bx[i] -= W
+    if by[i] < 35 then by[i] += H - 35
+    if by[i] > H then by[i] -= H - 35
+    i += 1
+  end
+
+  win_clear(7, 14, 25)
+  i is 0
+  while i < bx.len() do
+    speed is sqrt(bvx[i] * bvx[i] + bvy[i] * bvy[i])
+    if speed < 0.01 then speed is 0.01
+    nose_x is bx[i] + bvx[i] / speed * 10
+    nose_y is by[i] + bvy[i] / speed * 10
+    win_line(bx[i], by[i], nose_x, nose_y, 90, 220, 255)
+    win_circle(bx[i], by[i], 3, 180, 245, 255)
+    i += 1
+  end
+  win_text("BOIDS FLOCKING  count {bx.len()}", 18, 14, 220, 235, 255)
+  if not win_update() then running is false
+  if SMOKE and frame >= 10 then running is false
+  wait(16)
+end
+
+win_close()
+print("boids_flocking: frames={frame}")
+assert(frame > 0)
+

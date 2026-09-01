@@ -1,0 +1,65 @@
+func dynamic_decimal_identity(value) do
+  return value
+end
+
+a is dynamic_decimal_identity(1.5)
+b is dynamic_decimal_identity(2.25)
+shape is dynamic_decimal_identity("shape")
+
+sum is a + b
+difference is b - a
+product is a * b
+quotient is b / a
+remainder is dynamic_decimal_identity(5.5) % dynamic_decimal_identity(2.0)
+nested is (a + 0.5) * 2.0
+mixed is 2 + a
+compound is 7
+compound /= 2
+compound += 0.5
+compound *= 2
+compound -= 1
+compound %= 4
+
+assert_eq(sum, 3.75)
+assert_eq(difference, 0.75)
+assert_eq(product, 3.375)
+assert_eq(quotient, 1.5)
+assert_eq(remainder, 1.5)
+assert_eq(nested, 4.0)
+assert_eq(mixed, 3.5)
+assert_eq(compound, 3.0)
+assert_eq(to_str(compound), "3")
+
+assert(a < b)
+assert(a <= 1.5)
+assert(b > a)
+assert(b >= 2)
+
+type_error_caught is false
+try
+  ignored is a - shape
+catch error
+  type_error_caught is true
+  assert(contains(to_str(error), "E200"))
+end
+assert(type_error_caught)
+
+division_error_caught is false
+try
+  ignored is a / dynamic_decimal_identity(0.0)
+catch error
+  division_error_caught is true
+  assert(contains(to_str(error), "division by zero"))
+end
+assert(division_error_caught)
+
+modulo_error_caught is false
+try
+  ignored is a % dynamic_decimal_identity(0.0)
+catch error
+  modulo_error_caught is true
+  assert(contains(to_str(error), "modulo by zero"))
+end
+assert(modulo_error_caught)
+
+print_no_nl("dynamic decimal arithmetic ok")

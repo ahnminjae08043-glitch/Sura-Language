@@ -1,0 +1,252 @@
+use autograd
+
+func approx_rank1(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    assert_approx(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank2(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank1(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func approx_rank3(actual, expected, epsilon) do
+  assert_eq(actual.len(), expected.len())
+  i is 0
+  while i < actual.len() do
+    approx_rank2(actual[i], expected[i], epsilon)
+    i is i + 1
+  end
+end
+
+func assert_shared_sum(shared, q_grad, k_grad, v_grad, epsilon) do
+  batch is 0
+  while batch < shared.len() do
+    row is 0
+    while row < shared[batch].len() do
+      col is 0
+      while col < shared[batch][row].len() do
+        expected is q_grad[batch][row][col] + k_grad[batch][row][col] + v_grad[batch][row][col]
+        assert_approx(shared[batch][row][col], expected, epsilon)
+        col is col + 1
+      end
+      row is row + 1
+    end
+    batch is batch + 1
+  end
+end
+
+func assert_scaled_rank3(actual, base, scale, epsilon) do
+  batch is 0
+  while batch < actual.len() do
+    row is 0
+    while row < actual[batch].len() do
+      col is 0
+      while col < actual[batch][row].len() do
+        assert_approx(actual[batch][row][col], scale * base[batch][row][col], epsilon)
+        col is col + 1
+      end
+      row is row + 1
+    end
+    batch is batch + 1
+  end
+end
+
+info is autograd.cuda_info()
+if info.available then
+  # CPU oracle: modifying only the final value must not change rows zero or
+  # one. Zero q/k scores make the expected causal prefix averages explicit.
+  leak_q_values is [[[0], [0], [0]]]
+  leak_k_values is [[[0], [0], [0]]]
+  leak_v_a_values is [[[1], [3], [5]]]
+  leak_v_b_values is [[[1], [3], [999]]]
+  leak_cpu_q is autograd.tensor(leak_q_values, {dtype: "float32"})
+  leak_cpu_k is autograd.tensor(leak_k_values, {dtype: "float32"})
+  leak_cpu_v_a is autograd.tensor(leak_v_a_values, {dtype: "float32"})
+  leak_cpu_v_b is autograd.tensor(leak_v_b_values, {dtype: "float32"})
+  leak_cpu_a_data is autograd.data(autograd.causal_attention(leak_cpu_q, leak_cpu_k, leak_cpu_v_a))
+  leak_cpu_b_data is autograd.data(autograd.causal_attention(leak_cpu_q, leak_cpu_k, leak_cpu_v_b))
+  assert_approx(leak_cpu_a_data[0][0][0], 1, 0.000001)
+  assert_approx(leak_cpu_a_data[0][1][0], 2, 0.000001)
+  assert_approx(leak_cpu_a_data[0][0][0], leak_cpu_b_data[0][0][0], 0.000001)
+  assert_approx(leak_cpu_a_data[0][1][0], leak_cpu_b_data[0][1][0], 0.000001)
+  assert(abs(leak_cpu_a_data[0][2][0] - leak_cpu_b_data[0][2][0]) > 100)
+
+  # CPU oracle for T=1 with Dv != D. A one-element softmax is constant, so q
+  # and k gradients are zero while the v gradient is the explicit seed.
+  single_q_values is [[[1, 2]]]
+  single_k_values is [[[3, 4]]]
+  single_v_values is [[[5, 6, 7]]]
+  single_seed_values is [[[1, -2, 3]]]
+  single_cpu_q is autograd.parameter(single_q_values, {dtype: "float32"})
+  single_cpu_k is autograd.parameter(single_k_values, {dtype: "float32"})
+  single_cpu_v is autograd.parameter(single_v_values, {dtype: "float32"})
+  single_cpu_output is autograd.causal_attention(single_cpu_q, single_cpu_k, single_cpu_v)
+  single_cpu_data is autograd.data(single_cpu_output)
+  assert_eq(autograd.shape(single_cpu_output).join(","), "1,1,3")
+  approx_rank3(single_cpu_data, single_v_values, 0.000001)
+  autograd.backward(single_cpu_output, single_seed_values)
+  single_cpu_q_grad is autograd.grad(single_cpu_q)
+  single_cpu_k_grad is autograd.grad(single_cpu_k)
+  single_cpu_v_grad is autograd.grad(single_cpu_v)
+  approx_rank3(single_cpu_q_grad, [[[0, 0]]], 0.000001)
+  approx_rank3(single_cpu_k_grad, [[[0, 0]]], 0.000001)
+  approx_rank3(single_cpu_v_grad, single_seed_values, 0.000001)
+
+  # One all-active CPU graph supplies references for only-Q/K/V CUDA graphs.
+  # Passing the same leaf as q, k, and v must equal the sum of all three roles.
+  role_values is [[[1], [2]]]
+  role_seed_values is [[[1], [3]]]
+  role_cpu_q is autograd.parameter(role_values, {dtype: "float32"})
+  role_cpu_k is autograd.parameter(role_values, {dtype: "float32"})
+  role_cpu_v is autograd.parameter(role_values, {dtype: "float32"})
+  role_cpu_output is autograd.causal_attention(role_cpu_q, role_cpu_k, role_cpu_v, {scale: 1})
+  autograd.backward(role_cpu_output, role_seed_values)
+  role_cpu_q_grad is autograd.grad(role_cpu_q)
+  role_cpu_k_grad is autograd.grad(role_cpu_k)
+  role_cpu_v_grad is autograd.grad(role_cpu_v)
+
+  shared_cpu_leaf is autograd.parameter(role_values, {dtype: "float32"})
+  shared_cpu_output is autograd.causal_attention(shared_cpu_leaf, shared_cpu_leaf, shared_cpu_leaf, {scale: 1})
+  shared_cpu_data is autograd.data(shared_cpu_output)
+  autograd.backward(shared_cpu_output, role_seed_values)
+  shared_cpu_grad is autograd.grad(shared_cpu_leaf)
+  assert_shared_sum(shared_cpu_grad, role_cpu_q_grad, role_cpu_k_grad, role_cpu_v_grad, 0.000001)
+
+  # No-grad CUDA forwards must allocate only their packed outputs. They must
+  # not retain score/probability state, and each call increments the dedicated
+  # attention launch counter without any host transfer.
+  leak_gpu_q is autograd.tensor(leak_q_values, {device: "cuda"})
+  leak_gpu_k is autograd.tensor(leak_k_values, {device: "cuda"})
+  leak_gpu_v_a is autograd.tensor(leak_v_a_values, {device: "cuda"})
+  leak_gpu_v_b is autograd.tensor(leak_v_b_values, {device: "cuda"})
+  leak_host_baseline is autograd.limits().memory_used_bytes
+  autograd.cuda_reset_stats()
+  leak_before is autograd.cuda_stats()
+  leak_allocated_before is leak_before.allocated_bytes
+  leak_gpu_a_output is autograd.causal_attention(leak_gpu_q, leak_gpu_k, leak_gpu_v_a)
+  leak_after_a is autograd.cuda_stats()
+  assert_eq(leak_after_a.allocated_bytes - leak_allocated_before, 12)
+  leak_gpu_b_output is autograd.causal_attention(leak_gpu_q, leak_gpu_k, leak_gpu_v_b)
+  leak_after_b is autograd.cuda_stats()
+  assert_eq(leak_after_b.allocated_bytes - leak_allocated_before, 24)
+  assert(leak_after_b.attention_launches >= leak_before.attention_launches + 2)
+  assert_eq(leak_after_b.h2d_bytes, 0)
+  assert_eq(leak_after_b.d2h_bytes, 0)
+  assert_eq(autograd.requires_grad(leak_gpu_a_output), false)
+  assert_eq(autograd.requires_grad(leak_gpu_b_output), false)
+  leak_gpu_a_data is autograd.data(leak_gpu_a_output)
+  leak_gpu_b_data is autograd.data(leak_gpu_b_output)
+  approx_rank3(leak_gpu_a_data, leak_cpu_a_data, 0.0001)
+  approx_rank3(leak_gpu_b_data, leak_cpu_b_data, 0.001)
+  assert_approx(leak_gpu_a_data[0][0][0], leak_gpu_b_data[0][0][0], 0.000001)
+  assert_approx(leak_gpu_a_data[0][1][0], leak_gpu_b_data[0][1][0], 0.000001)
+  assert_eq(autograd.limits().memory_used_bytes, leak_host_baseline + 24)
+
+  # CUDA T=1/Dv!=D forward and all three backward roles match the CPU oracle.
+  single_gpu_q is autograd.parameter(single_q_values, {device: "cuda"})
+  single_gpu_k is autograd.parameter(single_k_values, {device: "cuda"})
+  single_gpu_v is autograd.parameter(single_v_values, {device: "cuda"})
+  single_gpu_seed is autograd.tensor(single_seed_values, {device: "cuda"})
+  single_launches_before is autograd.cuda_stats().attention_launches
+  single_gpu_output is autograd.causal_attention(single_gpu_q, single_gpu_k, single_gpu_v)
+  autograd.backward(single_gpu_output, single_gpu_seed)
+  single_launches_after is autograd.cuda_stats().attention_launches
+  assert(single_launches_after > single_launches_before)
+  approx_rank3(autograd.data(single_gpu_output), single_cpu_data, 0.0001)
+  approx_rank3(autograd.grad(single_gpu_q), single_cpu_q_grad, 0.0001)
+  approx_rank3(autograd.grad(single_gpu_k), single_cpu_k_grad, 0.0001)
+  approx_rank3(autograd.grad(single_gpu_v), single_cpu_v_grad, 0.0001)
+
+  # A single CUDA leaf used in all three argument positions must accumulate q,
+  # k, and v contributions rather than overwrite one role with another.
+  shared_gpu_leaf is autograd.parameter(role_values, {device: "cuda"})
+  shared_gpu_seed is autograd.tensor(role_seed_values, {device: "cuda"})
+  shared_gpu_output is autograd.causal_attention(shared_gpu_leaf, shared_gpu_leaf, shared_gpu_leaf, {scale: 1})
+  autograd.backward(shared_gpu_output, shared_gpu_seed)
+  approx_rank3(autograd.data(shared_gpu_output), shared_cpu_data, 0.0002)
+  shared_gpu_grad is autograd.grad(shared_gpu_leaf)
+  approx_rank3(shared_gpu_grad, shared_cpu_grad, 0.0003)
+  assert_shared_sum(shared_gpu_grad, role_cpu_q_grad, role_cpu_k_grad, role_cpu_v_grad, 0.0003)
+
+  # Exercise graphs where exactly one role requires gradients. Frozen parents
+  # must remain gradient-free and the active contribution must match CPU.
+  role_gpu_seed is autograd.tensor(role_seed_values, {device: "cuda"})
+  frozen_role_q is autograd.tensor(role_values, {device: "cuda"})
+  frozen_role_k is autograd.tensor(role_values, {device: "cuda"})
+  frozen_role_v is autograd.tensor(role_values, {device: "cuda"})
+
+  only_q is autograd.parameter(role_values, {device: "cuda"})
+  only_q_output is autograd.causal_attention(only_q, frozen_role_k, frozen_role_v, {scale: 1})
+  autograd.backward(only_q_output, role_gpu_seed)
+  approx_rank3(autograd.grad(only_q), role_cpu_q_grad, 0.0003)
+  assert_eq(autograd.grad(frozen_role_k), nil)
+  assert_eq(autograd.grad(frozen_role_v), nil)
+
+  only_k is autograd.parameter(role_values, {device: "cuda"})
+  only_k_output is autograd.causal_attention(frozen_role_q, only_k, frozen_role_v, {scale: 1})
+  autograd.backward(only_k_output, role_gpu_seed)
+  approx_rank3(autograd.grad(only_k), role_cpu_k_grad, 0.0003)
+  assert_eq(autograd.grad(frozen_role_q), nil)
+  assert_eq(autograd.grad(frozen_role_v), nil)
+
+  only_v is autograd.parameter(role_values, {device: "cuda"})
+  only_v_output is autograd.causal_attention(frozen_role_q, frozen_role_k, only_v, {scale: 1})
+  autograd.backward(only_v_output, role_gpu_seed)
+  approx_rank3(autograd.grad(only_v), role_cpu_v_grad, 0.0003)
+  assert_eq(autograd.grad(frozen_role_q), nil)
+  assert_eq(autograd.grad(frozen_role_k), nil)
+
+  # Two retained passes reuse the graph and accumulate exactly twice. A final
+  # non-retained pass frees it; attempting a fourth pass must be rejected.
+  retained_q is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  retained_k is autograd.tensor([[[0], [0]]], {device: "cuda"})
+  retained_v is autograd.parameter([[[1], [3]]], {device: "cuda"})
+  retained_seed is autograd.tensor([[[1], [2]]], {device: "cuda"})
+  retained_output is autograd.causal_attention(retained_q, retained_k, retained_v)
+  autograd.backward(retained_output, retained_seed, true)
+  retained_once is autograd.grad(retained_v)
+  autograd.backward(retained_output, retained_seed, true)
+  retained_twice is autograd.grad(retained_v)
+  assert_scaled_rank3(retained_twice, retained_once, 2, 0.0003)
+  autograd.backward(retained_output, retained_seed, false)
+  retained_thrice is autograd.grad(retained_v)
+  assert_scaled_rank3(retained_thrice, retained_once, 3, 0.0005)
+  freed_graph_rejected is false
+  try
+    autograd.backward(retained_output, retained_seed)
+  catch error
+    freed_graph_rejected is true
+  end
+  assert(freed_graph_rejected)
+
+  # Mutating a saved parent after forward must trip the version check before
+  # attention backward commits any new gradient contribution.
+  mutated_q is autograd.parameter([[[1], [2]]], {device: "cuda"})
+  mutated_k is autograd.tensor([[[1], [2]]], {device: "cuda"})
+  mutated_v is autograd.tensor([[[3], [4]]], {device: "cuda"})
+  mutated_output is autograd.causal_attention(mutated_q, mutated_k, mutated_v)
+  mutated_q_seed is autograd.ones([1, 2, 1], {device: "cuda"})
+  mutated_output_seed is autograd.ones([1, 2, 1], {device: "cuda"})
+  autograd.backward(mutated_q, mutated_q_seed)
+  autograd.sgd([mutated_q], 0.01)
+  mutation_rejected is false
+  try
+    autograd.backward(mutated_output, mutated_output_seed)
+  catch error
+    mutation_rejected is true
+  end
+  assert(mutation_rejected)
+else
+  print "41_cuda_causal_attention_graph: SKIP ({info.error})"
+end
+
+print "41_cuda_causal_attention_graph: PASS"

@@ -1,0 +1,88 @@
+# AI automation workload: evaluate many tool-policy gates for model-selected actions.
+# Models method allow-lists, domain prefixes, header checks, body limits, timeouts, and risk scoring.
+
+func method_code(i) do
+  return (i * 7 + 3) % 6
+end
+
+func domain_code(i) do
+  return (i * 11 + i * i) % 13
+end
+
+func header_score(i) do
+  return (i * 17 + 5) % 9
+end
+
+func body_bytes(i) do
+  return 128 + ((i * 97 + i * 3) % 8192)
+end
+
+func timeout_ms(i) do
+  return 250 + ((i * 31 + 19) % 9000)
+end
+
+func policy_score(i) do
+  method is method_code(i)
+  domain is domain_code(i)
+  headers is header_score(i)
+  body is body_bytes(i)
+  timeout is timeout_ms(i)
+
+  allowed is 1
+  score is 100
+  if not (method == 0 or method == 1 or method == 3) then
+    allowed is 0
+    score is score - 130
+  end
+  if not (domain == 2 or domain == 5 or domain == 8) then
+    allowed is 0
+    score is score - 90
+  end
+  if headers < 3 then
+    allowed is 0
+    score is score - 70
+  end
+  if body > 4096 then
+    allowed is 0
+    score is score - 45
+  end
+  if timeout > 5000 then
+    allowed is 0
+    score is score - 35
+  end
+  if allowed == 1 then
+    return score + headers * 4 - method * 3
+  end
+  return score - body % 97 - timeout % 53
+end
+
+runs is 5
+requests is 240000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  allowed_count is 0
+  rejected_count is 0
+  risk_total is 0
+  while i < requests do
+    score is policy_score(i)
+    if score > 80 then
+      allowed_count is allowed_count + 1
+    else
+      rejected_count is rejected_count + 1
+    end
+    risk_total is risk_total + score
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is allowed_count * 7 + rejected_count * 13 + risk_total
+end
+
+avg is total_ms / runs
+print "policy gate requests: {requests}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

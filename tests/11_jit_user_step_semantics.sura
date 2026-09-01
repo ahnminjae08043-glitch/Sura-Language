@@ -1,0 +1,69 @@
+# Regression: JIT optimizations must execute user-defined step/step3 bodies.
+# Older benchmark shortcuts replaced these calls with hard-coded physics math.
+
+struct Vec2 do
+    x is 0
+    y is 0
+
+    func add(other) do
+        return Vec2(self.x - other.x, self.y - other.y)
+    end
+
+    func scale(k) do
+        return Vec2(self.x * k, self.y * k)
+    end
+end
+
+func step(pos, vel, dt) do
+    return pos.add(vel.scale(dt))
+end
+
+p is Vec2(1, 10)
+v is Vec2(2, 3)
+dt is 0.5
+i is 0
+while i < 3 do
+    p is step(p, v, dt)
+    i is i + 1
+end
+
+assert_eq(p.x, -2)
+assert_eq(p.y, 5.5)
+
+struct Vec3 do
+    x is 0
+    y is 0
+    z is 0
+
+    func add(other) do
+        return Vec3(self.x + other.x, self.y + other.y, self.z + other.z)
+    end
+
+    func scale(k) do
+        return Vec3(self.x * k, self.y * k, self.z * k)
+    end
+
+    func cross(other) do
+        return Vec3(self.y * other.z - self.z * other.y, self.z * other.x - self.x * other.z, self.x * other.y - self.y * other.x)
+    end
+end
+
+func step3(pos, vel, gravity, wind, dt) do
+    return pos.add(vel)
+end
+
+p3 is Vec3(1, 2, 3)
+v3 is Vec3(4, 5, 6)
+gravity is Vec3(0, -9.8, 0)
+wind is Vec3(0.2, 0.1, 0.4)
+dt3 is 0.016
+j is 0
+while j < 2 do
+    p3 is step3(p3, v3, gravity, wind, dt3)
+    j is j + 1
+end
+
+assert_eq(p3.x, 9)
+assert_eq(p3.y, 12)
+assert_eq(p3.z, 15)
+print "11_jit_user_step_semantics: PASS"

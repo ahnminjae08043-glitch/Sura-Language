@@ -1,0 +1,20 @@
+use nn
+
+# Learn y = 2x + 1 with Sura's native neural-network runtime.
+inputs is [[-2], [-1], [0], [1], [2], [3]]
+targets is [[-3], [-1], [1], [3], [5], [7]]
+
+model is nn.mlp([1, 1], {task: "regression", init: "zeros", seed: 31})
+run is nn.train(model, inputs, targets, {optimizer: "sgd", momentum: 0, epochs: 800, learning_rate: 0.08, batch_size: 6, shuffle: false, target_loss: 0.00001, seed: 31})
+
+predictions is nn.predict(run.model, [[4], [5]])
+metrics is nn.evaluate(run.model, inputs, targets)
+
+print("Native linear regression")
+print("epochs={run.epochs}, loss={run.loss}")
+print("x=4 -> {predictions[0][0]}")
+print("x=5 -> {predictions[1][0]}")
+print("training MSE={metrics.loss}")
+
+assert_approx(predictions[0][0], 9, 0.05)
+assert_approx(predictions[1][0], 11, 0.05)

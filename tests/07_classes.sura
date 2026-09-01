@@ -1,0 +1,37 @@
+# 클래스 기본
+class Point do
+  func init(x, y) do
+    self.x is x
+    self.y is y
+  end
+  func dist() do
+    return sqrt(self.x * self.x + self.y * self.y)
+  end
+end
+
+p is new Point(3, 4)
+assert_eq(p.x, 3)
+assert_eq(p.y, 4)
+assert_eq(p.dist(), 5)
+
+# 상속
+class Animal do
+  func init(name) do
+    self.name is name
+  end
+  func speak() do
+    return "..."
+  end
+end
+
+class Dog extends Animal do
+  func speak() do
+    return self.name + ": 멍!"
+  end
+end
+
+dog is new Dog("바둑이")
+assert_eq(dog.name, "바둑이")
+assert_eq(dog.speak(), "바둑이: 멍!")
+
+print "07_classes: PASS"

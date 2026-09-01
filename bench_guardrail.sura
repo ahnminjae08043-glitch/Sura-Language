@@ -1,0 +1,64 @@
+# AI automation workload: score agent events for prompt/tool guardrail risk.
+# This models a hot policy loop over tool calls, URLs, token pressure, and secret-like signals.
+
+func event_risk(i) do
+  token_count is 80 + ((i * 29) % 1800)
+  url_class is (i * 17 + 3) % 11
+  tool_class is (i * 31 + 7) % 9
+  secret_signal is (i * i + 97) % 101
+  retry_count is (i * 13) % 6
+  user_trust is 100 - ((i * 19) % 70)
+
+  risk is secret_signal * 4 + retry_count * 35 - user_trust * 2
+  if token_count > 1200 then
+    risk is risk + 90
+  end
+  if url_class == 0 or url_class == 7 then
+    risk is risk + 160
+  end
+  if tool_class == 2 or tool_class == 5 then
+    risk is risk + 110
+  end
+  if user_trust > 75 and retry_count < 2 then
+    risk is risk - 80
+  end
+  if secret_signal > 85 then
+    risk is risk + 240
+  end
+  return risk
+end
+
+runs is 5
+events is 180000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  blocked is 0
+  reviewed is 0
+  total is 0
+  max_risk is -999999
+  while i < events do
+    risk is event_risk(i)
+    if risk >= 420 then
+      blocked is blocked + 1
+    elif risk >= 260 then
+      reviewed is reviewed + 1
+    end
+    if risk > max_risk then
+      max_risk is risk
+    end
+    total is total + risk
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is blocked * 3 + reviewed * 5 + max_risk + total
+end
+
+avg is total_ms / runs
+print "guardrail events: {events}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

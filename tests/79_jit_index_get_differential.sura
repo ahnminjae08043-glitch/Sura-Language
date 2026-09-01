@@ -1,0 +1,91 @@
+# Native emitter coverage for INDEX_GET.
+#
+# Indexing had no case in emit_op at all, so it fell to the default bail. That
+# made it the single largest blocker in the suite: 53 of 136 programs lost
+# native compilation to it, more than DIV and USE_LIB together.
+#
+# It is also the most polymorphic opcode to have been given an emitter so far.
+# One `a[i]` dispatches four different ways depending on what `a` is, and two of
+# those paths raise. Every branch is pinned here, because a helper that gets one
+# of them subtly wrong - a negative index, an out-of-range boundary, a missing
+# dict key - produces a wrong value rather than a crash.
+#
+# Run under tools/sura_jit_differential.ps1: native and VM output must match.
+
+nums is [10, 20, 30, 40]
+words is ["alpha", "beta"]
+lookup is {name: "sura", kind: "lang"}
+text is "hello"
+
+# ── Array: positive, negative, and both boundaries ──
+assert_eq(nums[0], 10)
+assert_eq(nums[3], 40)
+assert_eq(nums[-1], 40)
+assert_eq(nums[-4], 10)
+assert_eq(words[1], "beta")
+
+# Out of range raises rather than returning nil.
+high_error is ""
+try
+  ignored is nums[4]
+catch e
+  high_error is e
+end
+assert(contains(high_error, "E202"))
+
+low_error is ""
+try
+  ignored2 is nums[-5]
+catch e
+  low_error is e
+end
+assert(contains(low_error, "E202"))
+
+# ── Dict: present and absent keys ──
+assert_eq(lookup["name"], "sura")
+assert_eq(lookup["kind"], "lang")
+assert_eq(lookup["absent"], nil)
+
+# ── String: indexing yields one-character strings, out of range yields nil ──
+assert_eq(text[0], "h")
+assert_eq(text[4], "o")
+assert_eq(text[-1], "o")
+assert_eq(text[-5], "h")
+assert_eq(text[5], nil)
+assert_eq(text[-6], nil)
+
+# ── nil target raises ──
+nothing is nil
+nil_error is ""
+try
+  ignored3 is nothing[0]
+catch e
+  nil_error is e
+end
+assert(contains(nil_error, "E201"))
+
+# ── Repeated indexing in a hot loop, so the opcode is exercised many times
+#    rather than only once during warm-up ──
+total is 0
+i is 0
+while i < 200 do
+  total is total + nums[i % 4]
+  i is i + 1
+end
+assert_eq(total, 5000)
+
+# Indexing inside a callee, so the function-level emitter path is covered too,
+# not only the top level.
+func pick(arr, idx) do
+  return arr[idx]
+end
+
+picked is 0
+j is 0
+while j < 40 do
+  picked is picked + pick(nums, j % 4)
+  j is j + 1
+end
+assert_eq(picked, 1000)
+
+print "79_jit_index_get_differential: PASS"

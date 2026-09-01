@@ -1,0 +1,31 @@
+use vector
+
+# Content-based recommendation using cosine similarity.
+games is [{title: "Nebula Racer", embedding: [0.9, 0.2, 0.1]}, {title: "Castle Builder", embedding: [0.1, 0.9, 0.3]}, {title: "Pixel Tactics", embedding: [0.2, 0.7, 0.8]}, {title: "Star Fighter", embedding: [0.95, 0.1, 0.2]}]
+player_profile is [1.0, 0.1, 0.15]
+ranked is []
+
+for game in games do
+  ranked.push({title: game.title, score: vector.cosine(player_profile, game.embedding)})
+end
+
+i is 0
+while i < ranked.len() do
+  best is i
+  j is i + 1
+  while j < ranked.len() do
+    if ranked[j].score > ranked[best].score then best is j
+    j += 1
+  end
+  temp is ranked[i]
+  ranked[i] is ranked[best]
+  ranked[best] is temp
+  i += 1
+end
+
+print("Recommendations")
+for item in ranked do
+  print("{item.title}: {item.score}")
+end
+
+assert_eq(ranked[0].title, "Star Fighter")

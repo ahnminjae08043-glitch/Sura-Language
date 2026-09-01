@@ -1,0 +1,147 @@
+use autograd
+
+base is path_join(temp_dir(), "sura-safetensors-" + uuid_v4())
+weights_path is base + ".safetensors"
+roundtrip_path is base + ".roundtrip.safetensors"
+trainable_path is base + ".trainable.safetensors"
+bad_header_path is base + ".bad-header.safetensors"
+bad_offset_path is base + ".bad-offset.safetensors"
+truncated_path is base + ".truncated.safetensors"
+
+f64 is autograd.tensor([[1.25, -2.5], [3.125, 4.5]], "float64")
+f32 is autograd.tensor([0.1, -0.2, 123.5], "float32")
+f16 is autograd.tensor([1.5, -2.25, 0.33325], "float16")
+bf16 is autograd.tensor([1.5, -2.25, 0.333], "bfloat16")
+scalar is autograd.tensor(7.25, "float16")
+
+# Insertion order is deliberately different from lexical order. A canonical
+# writer sorts names, so loading and saving again must produce identical bytes.
+state is {}
+state.scalar is scalar
+state.f32 is f32
+state.f64 is f64
+state.bf16 is bf16
+state.f16 is f16
+
+written is autograd.save_safetensors(state, weights_path)
+assert(written > 8)
+assert_eq(written, file_size(weights_path))
+
+raw is file_read_bytes(weights_path)
+assert_eq(raw[8], 123) # The bounded JSON header must begin with '{'.
+
+loaded is autograd.load_safetensors(weights_path)
+assert_eq(autograd.requires_grad(loaded.f64), false)
+assert_eq(autograd.requires_grad(loaded.f32), false)
+assert_eq(autograd.requires_grad(loaded.f16), false)
+assert_eq(autograd.requires_grad(loaded.bf16), false)
+assert_eq(autograd.shape(loaded.scalar).len(), 0)
+
+# Exact equality against the already-quantized source proves value fidelity.
+assert_eq(json_stringify(autograd.data(loaded.f64)), json_stringify(autograd.data(f64)))
+assert_eq(json_stringify(autograd.data(loaded.f32)), json_stringify(autograd.data(f32)))
+assert_eq(json_stringify(autograd.data(loaded.f16)), json_stringify(autograd.data(f16)))
+assert_eq(json_stringify(autograd.data(loaded.bf16)), json_stringify(autograd.data(bf16)))
+assert_eq(autograd.item(loaded.scalar), autograd.item(scalar))
+
+# A byte-identical second file proves that all four storage dtypes and shapes
+# survived loading; silently widening them to float64 would change the file.
+autograd.save_safetensors(loaded, roundtrip_path)
+assert_eq(file_sha256(roundtrip_path), file_sha256(weights_path))
+
+trainable is autograd.load_safetensors(weights_path, {requires_grad: true})
+assert(autograd.requires_grad(trainable.f64))
+assert(autograd.requires_grad(trainable.f32))
+assert(autograd.requires_grad(trainable.f16))
+assert(autograd.requires_grad(trainable.bf16))
+autograd.save_safetensors(trainable, trainable_path)
+assert_eq(file_sha256(trainable_path), file_sha256(weights_path))
+
+# Duplicate tensor aliases are rejected because Safetensors cannot preserve
+# shared-parameter identity.
+duplicate_rejected is false
+try
+  autograd.save_safetensors({left: f64, right: f64}, base + ".duplicate")
+catch error
+  duplicate_rejected is true
+end
+assert(duplicate_rejected)
+
+non_tensor_rejected is false
+try
+  autograd.save_safetensors({weight: [1, 2]}, base + ".non-tensor")
+catch error
+  non_tensor_rejected is true
+end
+assert(non_tensor_rejected)
+
+reserved_name_rejected is false
+reserved is {}
+reserved["__metadata__"] is f64
+try
+  autograd.save_safetensors(reserved, base + ".reserved")
+catch error
+  reserved_name_rejected is true
+end
+assert(reserved_name_rejected)
+
+unknown_option_rejected is false
+try
+  autograd.load_safetensors(weights_path, {trainable: true})
+catch error
+  unknown_option_rejected is true
+end
+assert(unknown_option_rejected)
+
+# Invalid JSON is rejected before any Tensor is returned.
+bad_header is file_read_bytes(weights_path)
+bad_header[8] is 91 # '['
+file_write_bytes(bad_header_path, bad_header)
+bad_header_rejected is false
+try
+  autograd.load_safetensors(bad_header_path)
+catch error
+  bad_header_rejected is true
+end
+assert(bad_header_rejected)
+
+# Change the first canonical data offset from 0 to 1 without changing header
+# length. Strict coverage validation must reject the resulting leading gap.
+bad_offset is file_read_bytes(weights_path)
+offset_digit is -1
+i is 8
+while i + 17 < bad_offset.len() and offset_digit < 0 do
+  if bad_offset[i] == 34 and bad_offset[i + 1] == 100 and bad_offset[i + 2] == 97 and bad_offset[i + 3] == 116 and bad_offset[i + 4] == 97 and bad_offset[i + 5] == 95 and bad_offset[i + 6] == 111 and bad_offset[i + 7] == 102 and bad_offset[i + 8] == 102 and bad_offset[i + 9] == 115 and bad_offset[i + 10] == 101 and bad_offset[i + 11] == 116 and bad_offset[i + 12] == 115 and bad_offset[i + 13] == 34 and bad_offset[i + 14] == 58 and bad_offset[i + 15] == 91 and bad_offset[i + 16] == 48 and bad_offset[i + 17] == 44 then
+    offset_digit is i + 16
+  end
+  i is i + 1
+end
+assert(offset_digit >= 0)
+bad_offset[offset_digit] is 49 # '1'
+file_write_bytes(bad_offset_path, bad_offset)
+bad_offset_rejected is false
+try
+  autograd.load_safetensors(bad_offset_path)
+catch error
+  bad_offset_rejected is true
+end
+assert(bad_offset_rejected)
+
+truncated is file_read_bytes(weights_path)
+truncated.pop()
+file_write_bytes(truncated_path, truncated)
+truncated_rejected is false
+try
+  autograd.load_safetensors(truncated_path)
+catch error
+  truncated_rejected is true
+end
+assert(truncated_rejected)
+
+file_delete(weights_path)
+file_delete(roundtrip_path)
+file_delete(trainable_path)
+file_delete(bad_header_path)
+file_delete(bad_offset_path)
+file_delete(truncated_path)
+print "20_safetensors: PASS"

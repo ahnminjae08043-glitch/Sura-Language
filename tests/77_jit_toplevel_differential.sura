@@ -1,0 +1,52 @@
+# Native emitter coverage for the top-level main chunk.
+#
+# main is compiled as one function with no warm-up threshold, but it is
+# all-or-nothing: a single opcode its emitter rejects disqualifies the entire
+# top level, and everything falls back to the register VM. That makes this the
+# only place STORE_GLOBAL and HALT are reachable at all.
+#
+# This file deliberately stays inside what the top-level emitter accepts, so
+# the compile succeeds and those opcodes are exercised. In particular it uses
+# no `use` statement: USE_LIB bails unconditionally, and one `use` anywhere is
+# enough to drop the whole main body back to the interpreter.
+#
+# If a change makes the top level stop compiling, the [JIT-OPS] line for this
+# file collapses to "(none)" and the differential lane reports it as
+# "No native compilation" rather than Verified.
+
+counter is 0
+step is 3
+limit is 40
+
+while counter < limit do
+  counter is counter + step
+end
+assert_eq(counter, 42)
+
+scaled is counter * 2
+shifted is scaled - 4
+assert_eq(shifted, 80)
+
+flag is shifted > 50
+assert_eq(flag, true)
+
+negated is not flag
+assert_eq(negated, false)
+
+# Globals read back after being written, so STORE_GLOBAL and LOAD_GLOBAL both
+# take part rather than the values staying in registers.
+acc is 0
+n is 1
+while n <= 6 do
+  acc is acc + (n * n)
+  n is n + 1
+end
+assert_eq(acc, 91)
+
+remainder is acc % 10
+assert_eq(remainder, 1)
+
+quotient is acc / 7
+assert_eq(quotient, 13)
+
+print "77_jit_toplevel_differential: PASS"

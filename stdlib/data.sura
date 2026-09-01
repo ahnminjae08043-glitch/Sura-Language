@@ -1,0 +1,218 @@
+// ================================
+// 수라 표준 라이브러리: data
+// 데이터과학 지원 (CSV, 통계, 데이터 처리)
+// 사용법: use data
+// ================================
+// 내장 명령어 (interpreter.hpp 지원 필요):
+//   csv_load 파일경로 결과          → CSV 파일 읽기
+//   csv_save 파일경로 배열          → CSV 파일 저장
+//   json_load 파일경로 결과         → JSON 파일 읽기
+//   json_save 파일경로 객체         → JSON 파일 저장
+
+// ================================
+// CSV 데이터 처리
+// ================================
+
+// CSV 파일 읽기
+// 입력: _filepath
+// 출력: _data (2D 배열)
+func load_csv do
+    csv_load _filepath _data
+end
+
+// CSV 파일 저장
+// 입력: _filepath, _data (2D 배열)
+func save_csv do
+    csv_save _filepath _data
+end
+
+// CSV 데이터 필터링
+// 입력: _data, _column_index, _value
+// 출력: _filtered
+func filter_csv do
+    _filtered is []
+    arr_len _data _rows
+    for _i in 0 to _rows - 1 do
+        arr_get _data _i _row
+        arr_get _row _column_index _cell
+        if _cell == _value then
+            arr_push _filtered _row
+        end
+    end
+end
+
+// ================================
+// 통계 함수
+// ================================
+
+// 합계 계산
+// 입력: _array
+// 출력: _sum
+func sum do
+    _sum is 0
+    arr_len _array _len
+    for _i in 0 to _len - 1 do
+        arr_get _array _i _val
+        _sum + _val
+    end
+end
+
+// 평균 계산
+// 입력: _array
+// 출력: _mean
+func mean do
+    sum _array _sum
+    arr_len _array _len
+    _mean is _sum / _len
+end
+
+// 중앙값 계산
+// 입력: _array
+// 출력: _median
+func median do
+    arr_len _array _len
+    _mid is _len / 2
+    if _len % 2 == 0 then
+        arr_get _array _mid - 1 _v1
+        arr_get _array _mid _v2
+        _median is (_v1 + _v2) / 2
+    else
+        arr_get _array _mid _median
+    end
+end
+
+// 표준편차 계산
+// 입력: _array
+// 출력: _stddev
+func stddev do
+    mean _array _m
+    _sum_sq is 0
+    arr_len _array _len
+    for _i in 0 to _len - 1 do
+        arr_get _array _i _val
+        _diff is _val - _m
+        _sum_sq + (_diff * _diff)
+    end
+    _variance is _sum_sq / _len
+    sqrt _variance _stddev
+end
+
+// 최빈값 (가장 빈번한 값)
+// 입력: _array
+// 출력: _mode
+func mode do
+    # 간단한 버전: 첫 번째 중복 값 반환
+    arr_len _array _len
+    _max_count is 0
+    _mode is nil
+    
+    for _i in 0 to _len - 1 do
+        arr_get _array _i _val1
+        _count is 0
+        for _j in 0 to _len - 1 do
+            arr_get _array _j _val2
+            if _val1 == _val2 then
+                inc _count
+            end
+        end
+        if _count > _max_count then
+            _max_count is _count
+            _mode is _val1
+        end
+    end
+end
+
+// ================================
+// 배열 변환
+// ================================
+
+// 배열 정렬 (간단한 버블소트)
+// 입력: _array
+// 출력: _sorted
+func sort_array do
+    arr_len _array _len
+    _sorted is []
+    for _i in 0 to _len - 1 do
+        arr_push _sorted 0
+    end
+    
+    # 배열 복사
+    for _i in 0 to _len - 1 do
+        arr_get _array _i _val
+        arr_set _sorted _i _val
+    end
+    
+    # 버블 정렬
+    for _i in 0 to _len - 1 do
+        for _j in 0 to _len - 2 do
+            arr_get _sorted _j _a
+            arr_get _sorted (_j + 1) _b
+            if _a > _b then
+                arr_set _sorted _j _b
+                arr_set _sorted (_j + 1) _a
+            end
+        end
+    end
+end
+
+// 배열 역순
+// 입력: _array
+// 출력: _reversed
+func reverse_array do
+    arr_len _array _len
+    _reversed is []
+    for _i in _len - 1 to 0 step -1 do
+        arr_get _array _i _val
+        arr_push _reversed _val
+    end
+end
+
+// 배열 중복 제거
+// 입력: _array
+// 출력: _unique
+func unique_array do
+    _unique is []
+    arr_len _array _len
+    for _i in 0 to _len - 1 do
+        arr_get _array _i _val
+        _found is 0
+        arr_len _unique _ulen
+        for _j in 0 to _ulen - 1 do
+            arr_get _unique _j _uval
+            if _uval == _val then
+                _found is 1
+            end
+        end
+        if _found == 0 then
+            arr_push _unique _val
+        end
+    end
+end
+
+// ================================
+// 범주형 데이터 (카테고리)
+// ================================
+
+// 카테고리 빈도 계산
+// 입력: _array
+// 출력: _freq (객체)
+func frequency do
+    # 카테고리별 빈도 계산
+end
+
+// ================================
+// JSON 데이터 처리
+// ================================
+
+// JSON 파일 읽기
+// 입력: _filepath
+// 출력: _data
+func load_json do
+    json_load _filepath _data
+end
+
+// JSON 파일 저장
+// 입력: _filepath, _data
+func save_json do
+    json_save _filepath _data
+end

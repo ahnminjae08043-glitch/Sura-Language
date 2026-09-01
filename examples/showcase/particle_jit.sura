@@ -1,0 +1,31 @@
+# Particles under gravity — the shape of loop the JIT compiles to native code.
+
+class Particle do
+    x is 0.0
+    y is 0.0
+    vx is 0.0
+    vy is 0.0
+
+    func init(x, y, vx, vy) do
+        self.x is x
+        self.y is y
+        self.vx is vx
+        self.vy is vy
+    end
+
+    func step(dt) do
+        self.vy is self.vy - 9.8 * dt
+        self.x is self.x + self.vx * dt
+        self.y is self.y + self.vy * dt
+    end
+end
+
+p is new Particle(0.0, 100.0, 1.5, 0.0)
+
+steps is 0
+while p.y > 0 do
+    p.step(0.016)
+    steps is steps + 1
+end
+
+print("landed after {steps} steps at x = {p.x}")

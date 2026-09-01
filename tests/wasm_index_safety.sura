@@ -1,0 +1,5 @@
+values is [10, 20, 30]
+assert_eq(values[-1], 30)
+values[-2] is 99
+assert_eq(values[1], 99)
+print 41

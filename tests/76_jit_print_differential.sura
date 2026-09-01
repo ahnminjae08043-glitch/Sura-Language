@@ -1,0 +1,59 @@
+# Native emitter coverage for PRINT and PRINT_NO_NL.
+#
+# The aggregate [JIT-OPS] report showed both had emitters that nothing in the
+# suite ever reached. The reason was mundane rather than deep: every hot callee
+# in the suite returns a value instead of printing, so the output opcodes never
+# appeared inside a function that warmed past the JIT threshold. A printing
+# callee compiles fine - it just had no test.
+#
+# The output is deterministic and small, which matters because
+# tools/sura_jit_differential.ps1 compares stdout byte for byte between the
+# native and register-VM runs. Anything varying per run would be excluded as a
+# nondeterministic oracle instead of checked.
+
+func emit_line(n) do
+  print "line {n}"
+  return n
+end
+
+func emit_piece(n) do
+  print_n "[{n}]"
+  return n
+end
+
+# Well past FUNC_LAZY_JIT_THRESHOLD (6) so both bodies go native, while keeping
+# the transcript short enough to read in a diff.
+total is 0
+i is 1
+while i <= 10 do
+  total is total + emit_line(i)
+  i is i + 1
+end
+assert_eq(total, 55)
+
+# PRINT_NO_NL pieces accumulate on one line; the trailing print closes it.
+pieces is 0
+j is 1
+while j <= 10 do
+  pieces is pieces + emit_piece(j)
+  j is j + 1
+end
+print ""
+assert_eq(pieces, 55)
+
+# Mixed in one callee, so both opcodes are emitted into the same native body.
+func emit_pair(a, b) do
+  print_n "{a}+{b}="
+  print a + b
+  return a + b
+end
+
+sum is 0
+k is 1
+while k <= 8 do
+  sum is sum + emit_pair(k, k)
+  k is k + 1
+end
+assert_eq(sum, 72)
+
+print "76_jit_print_differential: PASS"

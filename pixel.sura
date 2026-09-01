@@ -1,0 +1,41 @@
+// ================================
+// 수라 엔진: 첫 픽셀 그래픽 게임
+// ================================
+
+print "그래픽 창을 시작합니다..."
+
+win_init 600 400 "수라 픽셀 게임"
+
+px is 280
+py is 180
+size is 40
+speed is 5
+
+print "조작: w(위) a(왼쪽) s(아래) d(오른쪽) / 종료: q"
+
+while 1 do
+    // 화면 지우기 및 그리기
+    win_clear 30 30 50
+    win_rect px py size size 255 100 100
+    win_rect 100 100 50 150 100 255 100
+    win_update
+
+    // 실시간 키보드 상태 감지 (눌려있으면 1, 아니면 0)
+    key_down "w" k_w
+    key_down "s" k_s
+    key_down "a" k_a
+    key_down "d" k_d
+    key_down "q" k_q
+
+    // 이동 로직 (꾹 누르고 있으면 부드럽게 연속 이동)
+    if k_w then py - speed
+    if k_s then py + speed
+    if k_a then px - speed
+    if k_d then px + speed
+    if k_q then break
+
+    // 60 FPS (약 16ms 대기) - 프레임 및 CPU 점유율 안정화
+    sleep 16
+end
+
+print "게임 종료!"

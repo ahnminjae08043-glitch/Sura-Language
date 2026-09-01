@@ -1,0 +1,100 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  base is path_join(temp_dir(), "sura-cuda-sgd-checkpoint-" + uuid_v4())
+  checkpoint_path is base + ".surackpt"
+  roundtrip_path is base + ".roundtrip.surackpt"
+
+  f16 is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  f16_reference is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  bf16 is autograd.parameter([1], {dtype: "bfloat16", device: "cuda"})
+  bf16_reference is autograd.parameter([1], {dtype: "bfloat16", device: "cuda"})
+  f32 is autograd.parameter([0.5], {dtype: "float32", device: "cuda"})
+  f32_reference is autograd.parameter([0.5], {dtype: "float32", device: "cuda"})
+  no_momentum is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+  no_momentum_reference is autograd.parameter([1], {dtype: "float16", device: "cuda"})
+
+  warmup_gradients is [1, -0.25, 2]
+  step is 0
+  while step < warmup_gradients.len() do
+    gradient is warmup_gradients[step]
+    autograd.zero_grad([f16, f16_reference, bf16, bf16_reference, f32, f32_reference, no_momentum, no_momentum_reference])
+    autograd.backward(f16, [gradient])
+    autograd.backward(f16_reference, [gradient])
+    autograd.backward(bf16, [-gradient])
+    autograd.backward(bf16_reference, [-gradient])
+    autograd.backward(f32, [gradient * 0.5])
+    autograd.backward(f32_reference, [gradient * 0.5])
+    autograd.backward(no_momentum, [gradient])
+    autograd.backward(no_momentum_reference, [gradient])
+    autograd.sgd([f16], 0.0002, {momentum: 0.9})
+    autograd.sgd([f16_reference], 0.0002, {momentum: 0.9})
+    autograd.sgd([bf16], 0.001, {momentum: 0.9})
+    autograd.sgd([bf16_reference], 0.001, {momentum: 0.9})
+    autograd.sgd([f32], 0.01, {momentum: 0.9})
+    autograd.sgd([f32_reference], 0.01, {momentum: 0.9})
+    autograd.sgd([no_momentum], 0.0002, {momentum: 0})
+    autograd.sgd([no_momentum_reference], 0.0002, {momentum: 0})
+    step is step + 1
+  end
+
+  state is {bf16: bf16, f16: f16, f32: f32, no_momentum: no_momentum}
+  autograd.cuda_reset_stats()
+  autograd.save_checkpoint(state, checkpoint_path, {optimizer: true})
+  save_stats is autograd.cuda_stats()
+  # low+momentum 10 each, f32+momentum 8, low master-only 6
+  assert_eq(save_stats.d2h_bytes, 34)
+
+  cpu_restore_rejected is false
+  try
+    autograd.load_checkpoint(checkpoint_path)
+  catch error
+    cpu_restore_rejected is true
+  end
+  assert(cpu_restore_rejected)
+
+  restored is autograd.load_checkpoint(checkpoint_path, {optimizer: true, device: "cuda"})
+  assert_eq(autograd.grad_info(restored.f16).leaf, true)
+  assert_eq(autograd.grad_info(restored.bf16).leaf, true)
+  assert_eq(autograd.grad_info(restored.f32).leaf, true)
+  assert_eq(autograd.grad_info(restored.no_momentum).leaf, true)
+  autograd.save_checkpoint(restored, roundtrip_path, {optimizer: true})
+  assert_eq(file_sha256(roundtrip_path), file_sha256(checkpoint_path))
+
+  continuation_gradients is [-1.5, 0.125, 3]
+  step is 0
+  while step < continuation_gradients.len() do
+    gradient is continuation_gradients[step]
+    autograd.zero_grad([restored.f16, f16_reference, restored.bf16, bf16_reference, restored.f32, f32_reference, restored.no_momentum, no_momentum_reference])
+    autograd.backward(restored.f16, [gradient])
+    autograd.backward(f16_reference, [gradient])
+    autograd.backward(restored.bf16, [-gradient])
+    autograd.backward(bf16_reference, [-gradient])
+    autograd.backward(restored.f32, [gradient * 0.5])
+    autograd.backward(f32_reference, [gradient * 0.5])
+    autograd.backward(restored.no_momentum, [gradient])
+    autograd.backward(no_momentum_reference, [gradient])
+    autograd.sgd([restored.f16], 0.0002, {momentum: 0.9})
+    autograd.sgd([f16_reference], 0.0002, {momentum: 0.9})
+    autograd.sgd([restored.bf16], 0.001, {momentum: 0.9})
+    autograd.sgd([bf16_reference], 0.001, {momentum: 0.9})
+    autograd.sgd([restored.f32], 0.01, {momentum: 0.9})
+    autograd.sgd([f32_reference], 0.01, {momentum: 0.9})
+    autograd.sgd([restored.no_momentum], 0.0002, {momentum: 0})
+    autograd.sgd([no_momentum_reference], 0.0002, {momentum: 0})
+    step is step + 1
+  end
+
+  assert_eq(json_stringify(autograd.data(restored.f16)), json_stringify(autograd.data(f16_reference)))
+  assert_eq(json_stringify(autograd.data(restored.bf16)), json_stringify(autograd.data(bf16_reference)))
+  assert_eq(json_stringify(autograd.data(restored.f32)), json_stringify(autograd.data(f32_reference)))
+  assert_eq(json_stringify(autograd.data(restored.no_momentum)), json_stringify(autograd.data(no_momentum_reference)))
+
+  file_delete(checkpoint_path)
+  file_delete(roundtrip_path)
+else
+  print("51_cuda_sgd_checkpoint: SKIP ({info.error})")
+end
+
+print("51_cuda_sgd_checkpoint: PASS")

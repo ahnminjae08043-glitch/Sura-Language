@@ -1,0 +1,105 @@
+alias_post_call_count is 0
+method_post_call_count is 0
+constructor_post_call_count is 0
+
+func safe_dynamic_handler(value) do
+  return value + 1
+end
+
+func throwing_dynamic_handler(value) do
+  if value > 0 then
+    throw "alias boom"
+  end
+  return value + 1
+end
+
+func invoke_dynamic_handler(handler, value) do
+  global alias_post_call_count
+  result is handler(value)
+  alias_post_call_count += 1
+  return result
+end
+
+repeat 24 do
+  assert_eq(invoke_dynamic_handler(safe_dynamic_handler, 0), 1)
+end
+assert_eq(alias_post_call_count, 24)
+
+alias_caught is false
+try
+  invoke_dynamic_handler(throwing_dynamic_handler, 1)
+catch err
+  alias_caught is type(err) == "string" and err == "alias boom"
+end
+assert_eq(alias_caught, true)
+assert_eq(alias_post_call_count, 24)
+
+class SafeDynamicWorker do
+  func run(value) do
+    return value + 2
+  end
+end
+
+class ThrowingDynamicWorker do
+  func run(value) do
+    if value > 0 then
+      throw "method boom"
+    end
+    return value + 2
+  end
+end
+
+func invoke_dynamic_worker(worker, value) do
+  global method_post_call_count
+  result is worker.run(value)
+  method_post_call_count += 1
+  return result
+end
+
+safe_worker is new SafeDynamicWorker()
+repeat 24 do
+  assert_eq(invoke_dynamic_worker(safe_worker, 0), 2)
+end
+assert_eq(method_post_call_count, 24)
+
+method_caught is false
+throwing_worker is new ThrowingDynamicWorker()
+try
+  invoke_dynamic_worker(throwing_worker, 1)
+catch err
+  method_caught is type(err) == "string" and err == "method boom"
+end
+assert_eq(method_caught, true)
+assert_eq(method_post_call_count, 24)
+
+class ConditionalThrowConstructor do
+  func init(should_throw) do
+    if should_throw then
+      throw "constructor boom"
+    end
+    self.value is 3
+  end
+end
+
+func invoke_dynamic_constructor(should_throw) do
+  global constructor_post_call_count
+  instance is new ConditionalThrowConstructor(should_throw)
+  constructor_post_call_count += 1
+  return instance.value
+end
+
+repeat 24 do
+  assert_eq(invoke_dynamic_constructor(false), 3)
+end
+assert_eq(constructor_post_call_count, 24)
+
+constructor_caught is false
+try
+  invoke_dynamic_constructor(true)
+catch err
+  constructor_caught is type(err) == "string" and err == "constructor boom"
+end
+assert_eq(constructor_caught, true)
+assert_eq(constructor_post_call_count, 24)
+
+print("jit_dynamic_throw_safety: PASS")

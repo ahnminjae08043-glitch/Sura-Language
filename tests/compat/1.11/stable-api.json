@@ -1,0 +1,597 @@
+{
+  "schema": "sura.stable_api.v1",
+  "series": "1.11",
+  "baseline_version": "1.11.1",
+  "modules": [
+    {
+      "name": "array",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "avg",
+          "signature": "array.avg(array)"
+        },
+        {
+          "kind": "function",
+          "name": "chunk",
+          "signature": "array.chunk(array, size)"
+        },
+        {
+          "kind": "function",
+          "name": "clone",
+          "signature": "array.clone(array)"
+        },
+        {
+          "kind": "function",
+          "name": "concat",
+          "signature": "array.concat(array, ...)"
+        },
+        {
+          "kind": "function",
+          "name": "contains",
+          "signature": "array.contains(array, value)"
+        },
+        {
+          "kind": "function",
+          "name": "flatten",
+          "signature": "array.flatten(array, [depth])"
+        },
+        {
+          "kind": "function",
+          "name": "index_of",
+          "signature": "array.index_of(array, value)"
+        },
+        {
+          "kind": "function",
+          "name": "len",
+          "signature": "array.len(array)"
+        },
+        {
+          "kind": "function",
+          "name": "length",
+          "signature": "array.length(array)"
+        },
+        {
+          "kind": "function",
+          "name": "pop",
+          "signature": "array.pop(array)"
+        },
+        {
+          "kind": "function",
+          "name": "push",
+          "signature": "array.push(array, value, ...)"
+        },
+        {
+          "kind": "function",
+          "name": "range",
+          "signature": "array.range(end) | array.range(start, end, [step])"
+        },
+        {
+          "kind": "function",
+          "name": "repeat",
+          "signature": "array.repeat(value, count)"
+        },
+        {
+          "kind": "function",
+          "name": "reverse",
+          "signature": "array.reverse(array)"
+        },
+        {
+          "kind": "function",
+          "name": "size",
+          "signature": "array.size(array)"
+        },
+        {
+          "kind": "function",
+          "name": "slice",
+          "signature": "array.slice(array, start, [end])"
+        },
+        {
+          "kind": "function",
+          "name": "sort",
+          "signature": "array.sort(array)"
+        },
+        {
+          "kind": "function",
+          "name": "sum",
+          "signature": "array.sum(array)"
+        },
+        {
+          "kind": "function",
+          "name": "unique",
+          "signature": "array.unique(array)"
+        },
+        {
+          "kind": "function",
+          "name": "zip",
+          "signature": "array.zip(array, ...)"
+        }
+      ]
+    },
+    {
+      "name": "dict",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "get_path",
+          "signature": "dict.get_path(value, path, [default])"
+        },
+        {
+          "kind": "function",
+          "name": "items",
+          "signature": "dict.items(dict)"
+        },
+        {
+          "kind": "function",
+          "name": "keys",
+          "signature": "dict.keys(dict)"
+        },
+        {
+          "kind": "function",
+          "name": "merge",
+          "signature": "dict.merge(dict, ...)"
+        },
+        {
+          "kind": "function",
+          "name": "omit",
+          "signature": "dict.omit(dict, keys)"
+        },
+        {
+          "kind": "function",
+          "name": "pick",
+          "signature": "dict.pick(dict, keys)"
+        },
+        {
+          "kind": "function",
+          "name": "values",
+          "signature": "dict.values(dict)"
+        }
+      ]
+    },
+    {
+      "name": "fs",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "append",
+          "signature": "fs.append(path, text)"
+        },
+        {
+          "kind": "function",
+          "name": "basename",
+          "signature": "fs.basename(path)"
+        },
+        {
+          "kind": "function",
+          "name": "copy",
+          "signature": "fs.copy(src, dst, [overwrite])"
+        },
+        {
+          "kind": "function",
+          "name": "cwd",
+          "signature": "fs.cwd()"
+        },
+        {
+          "kind": "function",
+          "name": "delete",
+          "signature": "fs.delete(path)"
+        },
+        {
+          "kind": "function",
+          "name": "dirname",
+          "signature": "fs.dirname(path)"
+        },
+        {
+          "kind": "function",
+          "name": "exists",
+          "signature": "fs.exists(path)"
+        },
+        {
+          "kind": "function",
+          "name": "glob",
+          "signature": "fs.glob(pattern)"
+        },
+        {
+          "kind": "function",
+          "name": "join",
+          "signature": "fs.join(part, ...)"
+        },
+        {
+          "kind": "function",
+          "name": "list",
+          "signature": "fs.list(path)"
+        },
+        {
+          "kind": "function",
+          "name": "mkdir",
+          "signature": "fs.mkdir(path)"
+        },
+        {
+          "kind": "function",
+          "name": "move",
+          "signature": "fs.move(src, dst, [overwrite])"
+        },
+        {
+          "kind": "function",
+          "name": "read",
+          "signature": "fs.read(path)"
+        },
+        {
+          "kind": "function",
+          "name": "read_bytes",
+          "signature": "fs.read_bytes(path)"
+        },
+        {
+          "kind": "function",
+          "name": "read_json",
+          "signature": "fs.read_json(path)"
+        },
+        {
+          "kind": "function",
+          "name": "remove_tree",
+          "signature": "fs.remove_tree(path)"
+        },
+        {
+          "kind": "function",
+          "name": "sha256",
+          "signature": "fs.sha256(path)"
+        },
+        {
+          "kind": "function",
+          "name": "walk",
+          "signature": "fs.walk(path, [extension])"
+        },
+        {
+          "kind": "function",
+          "name": "write",
+          "signature": "fs.write(path, text)"
+        },
+        {
+          "kind": "function",
+          "name": "write_bytes",
+          "signature": "fs.write_bytes(path, bytes)"
+        },
+        {
+          "kind": "function",
+          "name": "write_json",
+          "signature": "fs.write_json(path, value)"
+        }
+      ]
+    },
+    {
+      "name": "json",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "count_by",
+          "signature": "json.count_by(rows, path)"
+        },
+        {
+          "kind": "function",
+          "name": "csv_parse",
+          "signature": "json.csv_parse(text, [has_header])"
+        },
+        {
+          "kind": "function",
+          "name": "csv_stringify",
+          "signature": "json.csv_stringify(rows, [headers])"
+        },
+        {
+          "kind": "function",
+          "name": "delete_path",
+          "signature": "json.delete_path(value, path)"
+        },
+        {
+          "kind": "function",
+          "name": "get_path",
+          "signature": "json.get_path(value, path, [default])"
+        },
+        {
+          "kind": "function",
+          "name": "group_by",
+          "signature": "json.group_by(rows, path)"
+        },
+        {
+          "kind": "function",
+          "name": "has_path",
+          "signature": "json.has_path(value, path)"
+        },
+        {
+          "kind": "function",
+          "name": "ini_parse",
+          "signature": "json.ini_parse(text)"
+        },
+        {
+          "kind": "function",
+          "name": "ini_stringify",
+          "signature": "json.ini_stringify(dict)"
+        },
+        {
+          "kind": "function",
+          "name": "jsonl_parse",
+          "signature": "json.jsonl_parse(text)"
+        },
+        {
+          "kind": "function",
+          "name": "jsonl_stringify",
+          "signature": "json.jsonl_stringify(rows, [trailing_newline])"
+        },
+        {
+          "kind": "function",
+          "name": "merge_patch",
+          "signature": "json.merge_patch(target, patch)"
+        },
+        {
+          "kind": "function",
+          "name": "parse",
+          "signature": "json.parse(text)"
+        },
+        {
+          "kind": "function",
+          "name": "path",
+          "signature": "json.path(value, path, [default])"
+        },
+        {
+          "kind": "function",
+          "name": "pluck",
+          "signature": "json.pluck(rows, path, [default])"
+        },
+        {
+          "kind": "function",
+          "name": "pretty",
+          "signature": "json.pretty(value, [indent])"
+        },
+        {
+          "kind": "function",
+          "name": "render",
+          "signature": "json.render(text, data, [missing])"
+        },
+        {
+          "kind": "function",
+          "name": "schema_errors",
+          "signature": "json.schema_errors(value, schema)"
+        },
+        {
+          "kind": "function",
+          "name": "schema_to_json_schema",
+          "signature": "json.schema_to_json_schema(schema, [strict])"
+        },
+        {
+          "kind": "function",
+          "name": "schema_validate",
+          "signature": "json.schema_validate(value, schema)"
+        },
+        {
+          "kind": "function",
+          "name": "set_path",
+          "signature": "json.set_path(value, path, new_value)"
+        },
+        {
+          "kind": "function",
+          "name": "sort_by",
+          "signature": "json.sort_by(rows, path, [descending])"
+        },
+        {
+          "kind": "function",
+          "name": "sse_data",
+          "signature": "json.sse_data(text, [parse_json])"
+        },
+        {
+          "kind": "function",
+          "name": "sse_parse",
+          "signature": "json.sse_parse(text)"
+        },
+        {
+          "kind": "function",
+          "name": "stringify",
+          "signature": "json.stringify(value)"
+        },
+        {
+          "kind": "function",
+          "name": "template_render",
+          "signature": "json.template_render(text, data, [missing])"
+        },
+        {
+          "kind": "function",
+          "name": "to_json_schema",
+          "signature": "json.to_json_schema(schema, [strict])"
+        },
+        {
+          "kind": "function",
+          "name": "try_parse",
+          "signature": "json.try_parse(text, [fallback])"
+        }
+      ]
+    },
+    {
+      "name": "string",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "chunks",
+          "signature": "string.chunks(text, [max_chars], [overlap])"
+        },
+        {
+          "kind": "function",
+          "name": "contains",
+          "signature": "string.contains(text, needle)"
+        },
+        {
+          "kind": "function",
+          "name": "ends_with",
+          "signature": "string.ends_with(text, suffix)"
+        },
+        {
+          "kind": "function",
+          "name": "index_of",
+          "signature": "string.index_of(text, needle)"
+        },
+        {
+          "kind": "function",
+          "name": "join",
+          "signature": "string.join(array, separator)"
+        },
+        {
+          "kind": "function",
+          "name": "len",
+          "signature": "string.len(text)"
+        },
+        {
+          "kind": "function",
+          "name": "length",
+          "signature": "string.length(text)"
+        },
+        {
+          "kind": "function",
+          "name": "lines",
+          "signature": "string.lines(text)"
+        },
+        {
+          "kind": "function",
+          "name": "lower",
+          "signature": "string.lower(text)"
+        },
+        {
+          "kind": "function",
+          "name": "pad_left",
+          "signature": "string.pad_left(text, width, [fill])"
+        },
+        {
+          "kind": "function",
+          "name": "pad_right",
+          "signature": "string.pad_right(text, width, [fill])"
+        },
+        {
+          "kind": "function",
+          "name": "repeat",
+          "signature": "string.repeat(text, count)"
+        },
+        {
+          "kind": "function",
+          "name": "replace",
+          "signature": "string.replace(text, from, to)"
+        },
+        {
+          "kind": "function",
+          "name": "size",
+          "signature": "string.size(text)"
+        },
+        {
+          "kind": "function",
+          "name": "split",
+          "signature": "string.split(text, separator)"
+        },
+        {
+          "kind": "function",
+          "name": "starts_with",
+          "signature": "string.starts_with(text, prefix)"
+        },
+        {
+          "kind": "function",
+          "name": "sub",
+          "signature": "string.sub(text, start, [end])"
+        },
+        {
+          "kind": "function",
+          "name": "trim",
+          "signature": "string.trim(text)"
+        },
+        {
+          "kind": "function",
+          "name": "upper",
+          "signature": "string.upper(text)"
+        },
+        {
+          "kind": "function",
+          "name": "words",
+          "signature": "string.words(text)"
+        }
+      ]
+    },
+    {
+      "name": "test",
+      "symbols": [
+        {
+          "kind": "function",
+          "name": "approx",
+          "signature": "test.approx(actual, expected, [epsilon], [message])"
+        },
+        {
+          "kind": "function",
+          "name": "assert",
+          "signature": "test.assert(condition, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "between",
+          "signature": "test.between(value, min, max, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "check",
+          "signature": "test.check(name, condition, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "check_eq",
+          "signature": "test.check_eq(name, actual, expected, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "check_match",
+          "signature": "test.check_match(name, text, pattern, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "contains",
+          "signature": "test.contains(container, value, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "eq",
+          "signature": "test.eq(actual, expected, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "len",
+          "signature": "test.len(value, length, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "match",
+          "signature": "test.match(text, pattern, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "ne",
+          "signature": "test.ne(actual, expected, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "neq",
+          "signature": "test.neq(actual, expected, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "not_contains",
+          "signature": "test.not_contains(container, value, [message])"
+        },
+        {
+          "kind": "function",
+          "name": "report",
+          "signature": "test.report(results, [title])"
+        },
+        {
+          "kind": "function",
+          "name": "summary",
+          "signature": "test.summary(results)"
+        },
+        {
+          "kind": "function",
+          "name": "type",
+          "signature": "test.type(value, type, [message])"
+        }
+      ]
+    }
+  ]
+}

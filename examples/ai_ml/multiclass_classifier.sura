@@ -1,0 +1,15 @@
+use nn
+
+# Three small point clouds: red, green, and blue classes.
+inputs is [[1.0, 0.1], [0.8, 0.2], [1.2, -0.1], [0.1, 1.0], [0.2, 0.8], [-0.1, 1.2], [-1.0, -1.0], [-0.8, -1.1], [-1.2, -0.8]]
+targets is [0, 0, 0, 1, 1, 1, 2, 2, 2]
+
+model is nn.mlp([2, 10, 3], {activation: "tanh", task: "multiclass", seed: 11})
+run is nn.train(model, inputs, targets, {epochs: 1600, learning_rate: 0.035, batch_size: 9, target_loss: 0.015, seed: 11})
+
+queries is [[0.9, 0], [0, 0.9], [-1, -0.9]]
+classes is nn.classify(run.model, queries)
+print("Multiclass predictions: {classes.join(",")}")
+print("training accuracy={nn.evaluate(run.model, inputs, targets).accuracy}")
+
+assert_eq(classes.join(","), "0,1,2")

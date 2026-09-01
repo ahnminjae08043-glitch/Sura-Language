@@ -1,0 +1,29 @@
+# 단어 빈도 세기 — 딕셔너리와 배열, 문자열 보간
+# Word frequency counting with dictionaries.
+
+words is ["sura", "fast", "sura", "simple", "fast", "sura"]
+
+counts is {}
+for word in words do
+    if counts.has(word) then
+        counts[word] is counts[word] + 1
+    else
+        counts[word] is 1
+    end
+end
+
+assert_eq(counts["sura"], 3)
+assert_eq(counts["fast"], 2)
+assert_eq(counts["simple"], 1)
+
+top_word is ""
+top_count is 0
+for word in counts.keys() do
+    if counts[word] > top_count then
+        top_word is word
+        top_count is counts[word]
+    end
+end
+
+assert_eq(top_word, "sura")
+print("most frequent: {top_word} ({top_count} times)")

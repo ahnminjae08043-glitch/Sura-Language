@@ -1,0 +1,7 @@
+use http
+
+url is http.url_build({scheme: "https", host: "api.example.com", path: "v1/search", params: {q: "sura language", page: 1}})
+
+print(url)
+print("200 성공 여부: {http.status_ok(200)}")
+print("404 성공 여부: {http.status_ok(404)}")

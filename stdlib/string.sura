@@ -1,0 +1,30 @@
+// ================================
+// 수라 표준 라이브러리: string
+// 사용법: use string
+// ================================
+// 내장 명령어 (main.cpp 지원):
+//   str_len 문자열 결과              → 길이
+//   str_sub 문자열 시작 길이 결과    → 부분 문자열
+//   str_upper 문자열 결과            → 대문자
+//   str_lower 문자열 결과            → 소문자
+//   str_find 문자열 검색어 결과      → 위치 (-1이면 없음)
+
+// repeat_str: _s를 _n번 반복 → _r
+// 입력: _s _n
+func repeat_str do
+    _r is ""
+    _i is 0
+    while _i < _n do
+        _r is _r + _s
+        inc _i
+    end
+end
+
+// starts_with: _str이 _prefix로 시작하면 _r=1
+// 입력: _str _prefix
+func starts_with do
+    str_len _prefix _plen
+    str_sub _str 0 _plen _head
+    _r is 0
+    if _head == _prefix then _r is 1
+end

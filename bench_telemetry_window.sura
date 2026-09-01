@@ -1,0 +1,97 @@
+# Automation/game ops workload: rolling telemetry window aggregation.
+# Models real-time anomaly scoring over device or game-server metric streams.
+
+func device_id(i) do
+  return (i * 29 + 7) % 32
+end
+
+func telemetry_value(i) do
+  base is 700 + ((i * 31 + 11) % 300)
+  noise is (i * i + 13) % 80
+  spike is 0
+  if i % 997 == 0 then
+    spike is spike + 900
+  end
+  if i % 443 == 0 then
+    spike is spike + 450
+  end
+  return base + noise + spike
+end
+
+func expected_value(device, i) do
+  return 710 + device * 9 + ((i * 13 + device * 17) % 120)
+end
+
+func abs_diff(a, b) do
+  d is a - b
+  if d < 0 then
+    return 0 - d
+  end
+  return d
+end
+
+func risk_score(value, avg, expected, device) do
+  diff is abs_diff(value, expected)
+  jitter is abs_diff(value, avg)
+  score is 0
+  if diff > 700 then
+    score is score + 140
+  end
+  if diff > 360 then
+    score is score + 65
+  end
+  if jitter > 260 then
+    score is score + 45
+  end
+  if device == 3 or device == 19 then
+    score is score + 12
+  end
+  return score
+end
+
+runs is 5
+samples is 280000
+window is 24
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  rolling is 0
+  warnings is 0
+  anomalies is 0
+  score_total is 0
+  avg_total is 0
+  while i < samples do
+    value is telemetry_value(i)
+    device is device_id(i)
+    rolling is rolling + value
+    if i >= window then
+      rolling is rolling - telemetry_value(i - window)
+    end
+    window_count is window
+    if i < window then
+      window_count is i + 1
+    end
+    avg is rolling / window_count
+    score is risk_score(value, avg, expected_value(device, i), device)
+    if score >= 180 then
+      anomalies is anomalies + 1
+    end
+    if score >= 120 then
+      warnings is warnings + 1
+    end
+    score_total is score_total + score
+    avg_total is avg_total + floor(avg)
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is anomalies * 17 + warnings * 13 + score_total + avg_total
+end
+
+avg_ms is total_ms / runs
+print "telemetry window samples: {samples}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg_ms} ms"

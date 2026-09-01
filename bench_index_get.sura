@@ -1,0 +1,42 @@
+# Array indexing in a hot loop.
+#
+# INDEX_GET had no case in emit_op at all, so it reached the default bail. Since
+# both callables and the top level compile all-or-nothing, a single `a[i]`
+# anywhere disqualified its whole enclosing body - and indexing appears in most
+# non-trivial programs. It was the largest single blocker in the suite: 53 of
+# 136 tests lost native compilation to it, more than DIV and USE_LIB together.
+#
+# Measured with tools/sura_ab_bench.ps1 -Jit, 10 interleaved rounds:
+#   INDEX_GET bailing : 12.96 ms   (top level compiled 0 opcodes)
+#   INDEX_GET emitted :  4.08 ms   (top level compiled 16 opcodes)
+#   10/10 rounds, 3.2x
+#
+# Run with --jit and check the [JIT-OPS] line: INDEX_GET must appear. If it does
+# not, the emitter has regressed and this benchmark will show it as a ~3x
+# slowdown.
+
+data is [3, 1, 4, 1, 5, 9, 2, 6]
+
+runs is 5
+total is 0
+
+repeat runs do
+  t0 is clock()
+  acc is 0
+  i is 0
+  while i < 300000 do
+    acc is acc + data[i % 8]
+    i is i + 1
+  end
+  t1 is clock()
+  total is total + (t1 - t0) * 1000
+end
+
+avg is total / runs
+
+# Pinned so a miscompiled index - a wrong element, a mishandled wrap - shows up
+# as a wrong answer rather than only as a timing change.
+assert_eq(acc, 1162500)
+
+print "checksum: {acc}"
+print "avg ({runs} runs): {avg} ms"

@@ -1,0 +1,55 @@
+func captured_text() do
+  prefix is "Sura"
+  suffix is "Lang"
+  handler is func() do
+    return prefix + suffix
+  end
+  return handler()
+end
+
+func captured_bool() do
+  ready is true
+  handler is func() do
+    return ready
+  end
+  return handler()
+end
+
+func captured_array() do
+  values is [10, 12]
+  handler is func() do
+    return values
+  end
+  return handler()
+end
+
+func captured_interpolated_text() do
+  prefix is "Sura"
+  suffix is "Lang"
+  handler is func() do
+    return "Name {prefix} {suffix}"
+  end
+  return handler()
+end
+
+func captured_collection_text() do
+  values is [10, 12]
+  profile is {name: "Sura"}
+  handler is func() do
+    return "Snapshot {values[1]} {profile.name}"
+  end
+  return handler()
+end
+
+text is captured_text()
+ready is captured_bool()
+values is captured_array()
+interpolated is captured_interpolated_text()
+collection_text is captured_collection_text()
+assert_eq(text, "SuraLang")
+assert_eq(ready, true)
+assert_eq(type(values), "array")
+assert_eq(values[1], 12)
+assert_eq(interpolated, "Name Sura Lang")
+assert_eq(collection_text, "Snapshot 12 Sura")
+print "{text} {ready} {values[1]}"

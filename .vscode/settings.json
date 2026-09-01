@@ -1,0 +1,23 @@
+{
+  "files.associations": {
+    "*.sura": "sura"
+  },
+  "sura.enginePath": ".\\SuraLanguage.exe",
+  "[sura]": {
+    "editor.quickSuggestions": {
+      "other": true,
+      "comments": false,
+      "strings": false
+    },
+    "editor.suggestOnTriggerCharacters": true,
+    "editor.inlineSuggest.enabled": false,
+    "editor.wordBasedSuggestions": "off",
+    "editor.suggest.showWords": false,
+    "editor.suggest.showText": false,
+    "github.copilot.completions.enabled": false,
+    "github.copilot.nextEditSuggestions.enabled": false
+  },
+  "github.copilot.enable": {
+    "sura": false
+  }
+}

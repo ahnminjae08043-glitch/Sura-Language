@@ -1,0 +1,203 @@
+use autograd
+use array
+
+# Public synchronized eager CUDA mixed-compute benchmark. Timed samples include
+# Sura dispatch, output allocation, eager matmul/autograd work, and the ending
+# CUDA synchronization. Process startup, deterministic input construction,
+# initial uploads, gradient clearing, and host observation are excluded.
+#
+# Sura keeps CUDA input, weight, output, and gradient storage in float32.
+# compute_dtype selects only the matmul compute plan. A separate small shape is
+# used for output/dInput/dWeight correctness fingerprints after performance
+# timing, and the PowerShell driver compares those fingerprints with PyTorch.
+size is to_int(env_get("SURA_MIXED_BENCH_SIZE", "1024"))
+correctness_size is to_int(env_get("SURA_MIXED_BENCH_CORRECTNESS_SIZE", "16"))
+warmup is to_int(env_get("SURA_MIXED_BENCH_WARMUP", "3"))
+runs is to_int(env_get("SURA_MIXED_BENCH_RUNS", "10"))
+shared_inputs is env_get("SURA_MIXED_BENCH_INPUTS", "")
+tf32_override is env_get("NVIDIA_TF32_OVERRIDE", "")
+
+if size < 128 or size % 16 != 0 then
+  throw "mixed benchmark size must be at least 128 and divisible by 16"
+end
+if correctness_size < 16 or correctness_size % 16 != 0 then
+  throw "mixed benchmark correctness size must be at least 16 and divisible by 16"
+end
+if warmup < 0 or runs < 1 then
+  throw "mixed benchmark warmup must be non-negative and runs must be positive"
+end
+
+func median(values) do
+  ordered is array.sort(array.clone(values))
+  middle is floor(ordered.len() / 2)
+  if ordered.len() % 2 == 0 then
+    return (ordered[middle - 1] + ordered[middle]) / 2
+  end
+  return ordered[middle]
+end
+
+func p95(values) do
+  ordered is array.sort(array.clone(values))
+  index is ceil(ordered.len() * 0.95) - 1
+  return ordered[index]
+end
+
+func rank2_fingerprint(values) do
+  rows is values.len()
+  cols is values[0].len()
+  total is 0
+  l1 is 0
+  squared is 0
+  row is 0
+  while row < rows do
+    col is 0
+    while col < cols do
+      value is values[row][col]
+      total is total + value
+      l1 is l1 + abs(value)
+      squared is squared + value * value
+      col is col + 1
+    end
+    row is row + 1
+  end
+  middle_row is floor(rows / 2)
+  middle_col is floor(cols / 2)
+  samples is {first: values[0][0], center: values[middle_row][middle_col], last: values[rows - 1][cols - 1]}
+  return {sum: total, l1: l1, l2: sqrt(squared), samples: samples}
+end
+
+func run_compute_case(compute_dtype, input_host, weight_host, seed_host, warmup_count, run_count) do
+  # Upload and tensor introspection are setup work. Both training operands
+  # require gradients, so the current backward contract performs two GEMMs.
+  input_cuda is autograd.parameter(autograd.data(input_host), {dtype: "float32", device: "cuda"})
+  weight_cuda is autograd.parameter(autograd.data(weight_host), {dtype: "float32", device: "cuda"})
+  seed_cuda is autograd.to(seed_host, "cuda")
+  forward_input is autograd.detach(input_cuda)
+  forward_weight is autograd.detach(weight_cuda)
+  options is {compute_dtype: compute_dtype}
+
+  input_dtype is autograd.dtype(input_cuda)
+  weight_dtype is autograd.dtype(weight_cuda)
+  input_storage_bytes is autograd.storage_bytes(input_cuda)
+  weight_storage_bytes is autograd.storage_bytes(weight_cuda)
+
+  i is 0
+  forward_output is nil
+  while i < warmup_count do
+    forward_output is autograd.matmul(forward_input, forward_weight, options)
+    i is i + 1
+  end
+  autograd.cuda_synchronize()
+
+  autograd.cuda_reset_stats()
+  forward_samples_ms is []
+  i is 0
+  while i < run_count do
+    autograd.cuda_synchronize()
+    started is clock()
+    forward_output is autograd.matmul(forward_input, forward_weight, options)
+    autograd.cuda_synchronize()
+    forward_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+  forward_stats is autograd.cuda_stats()
+  forward_output_dtype is autograd.dtype(forward_output)
+  forward_output_storage_bytes is autograd.storage_bytes(forward_output)
+  forward_checksum is autograd.item(autograd.sum(forward_output))
+  forward_after_read is autograd.cuda_stats()
+
+  i is 0
+  training_output is nil
+  while i < warmup_count do
+    autograd.zero_grad([input_cuda, weight_cuda])
+    training_output is autograd.matmul(input_cuda, weight_cuda, options)
+    autograd.backward(training_output, seed_cuda)
+    i is i + 1
+  end
+  autograd.cuda_synchronize()
+
+  autograd.cuda_reset_stats()
+  training_samples_ms is []
+  i is 0
+  while i < run_count do
+    # zero_grad is intentionally outside the measured interval. Its logical
+    # kernels remain visible in the stats region and are not called GEMMs.
+    autograd.zero_grad([input_cuda, weight_cuda])
+    autograd.cuda_synchronize()
+    started is clock()
+    training_output is autograd.matmul(input_cuda, weight_cuda, options)
+    autograd.backward(training_output, seed_cuda)
+    autograd.cuda_synchronize()
+    training_samples_ms.push((clock() - started) * 1000)
+    i is i + 1
+  end
+  training_stats is autograd.cuda_stats()
+  training_output_dtype is autograd.dtype(training_output)
+  training_output_storage_bytes is autograd.storage_bytes(training_output)
+  input_gradient_info is autograd.grad_info(input_cuda)
+  weight_gradient_info is autograd.grad_info(weight_cuda)
+  training_checksum is autograd.item(autograd.sum(autograd.detach(training_output)))
+  training_after_read is autograd.cuda_stats()
+
+  forward_report is {status: "ok", workload: "synchronized eager matmul forward", compute_dtype: compute_dtype, input_dtype: input_dtype, weight_dtype: weight_dtype, output_dtype: forward_output_dtype, input_storage_bytes: input_storage_bytes, weight_storage_bytes: weight_storage_bytes, output_storage_bytes: forward_output_storage_bytes, median_ms: median(forward_samples_ms), p95_ms: p95(forward_samples_ms), raw_ms: forward_samples_ms, output_checksum: forward_checksum, stats_before_read: forward_stats, stats_after_read: forward_after_read, resident_transfer_free: forward_stats.h2d_bytes == 0 and forward_stats.d2h_bytes == 0}
+  training_report is {status: "ok", workload: "synchronized eager matmul forward+autograd backward", compute_dtype: compute_dtype, input_dtype: input_dtype, weight_dtype: weight_dtype, output_dtype: training_output_dtype, input_storage_bytes: input_storage_bytes, weight_storage_bytes: weight_storage_bytes, output_storage_bytes: training_output_storage_bytes, input_gradient_info: input_gradient_info, weight_gradient_info: weight_gradient_info, gradient_zeroing_timed: false, median_ms: median(training_samples_ms), p95_ms: p95(training_samples_ms), raw_ms: training_samples_ms, output_checksum: training_checksum, stats_before_read: training_stats, stats_after_read: training_after_read, resident_transfer_free: training_stats.h2d_bytes == 0 and training_stats.d2h_bytes == 0}
+  return {status: "ok", compute_dtype: compute_dtype, storage_model: "f32-input-weight-output-gradient; low-precision matmul compute only", forward: forward_report, forward_backward: training_report}
+end
+
+func run_correctness_case(compute_dtype, input_host, weight_host, seed_host) do
+  input_cuda is autograd.parameter(autograd.data(input_host), {dtype: "float32", device: "cuda"})
+  weight_cuda is autograd.parameter(autograd.data(weight_host), {dtype: "float32", device: "cuda"})
+  seed_cuda is autograd.to(seed_host, "cuda")
+  options is {compute_dtype: compute_dtype}
+
+  autograd.cuda_reset_stats()
+  output is autograd.matmul(input_cuda, weight_cuda, options)
+  autograd.backward(output, seed_cuda)
+  autograd.cuda_synchronize()
+  stats_before_read is autograd.cuda_stats()
+
+  input_gradient_info is autograd.grad_info(input_cuda)
+  weight_gradient_info is autograd.grad_info(weight_cuda)
+  tensor_contract is {input_dtype: autograd.dtype(input_cuda), weight_dtype: autograd.dtype(weight_cuda), output_dtype: autograd.dtype(output), input_storage_bytes: autograd.storage_bytes(input_cuda), weight_storage_bytes: autograd.storage_bytes(weight_cuda), output_storage_bytes: autograd.storage_bytes(output), input_gradient_info: input_gradient_info, weight_gradient_info: weight_gradient_info}
+
+  output_fingerprint is rank2_fingerprint(autograd.data(output))
+  input_gradient_fingerprint is rank2_fingerprint(autograd.grad(input_cuda))
+  weight_gradient_fingerprint is rank2_fingerprint(autograd.grad(weight_cuda))
+  training_fingerprint is {output: output_fingerprint, input_gradient: input_gradient_fingerprint, weight_gradient: weight_gradient_fingerprint}
+  stats_after_read is autograd.cuda_stats()
+  return {status: "ok", compute_dtype: compute_dtype, shape: autograd.shape(output), output: output_fingerprint, input_gradient: input_gradient_fingerprint, weight_gradient: weight_gradient_fingerprint, training_fingerprint: training_fingerprint, tensor_contract: tensor_contract, stats_before_read: stats_before_read, stats_after_read: stats_after_read, resident_transfer_free_before_observation: stats_before_read.h2d_bytes == 0 and stats_before_read.d2h_bytes == 0}
+end
+
+# Performance and correctness values are generated once in f32 with fixed seeds
+# and exported in one Safetensors file for byte-identical PyTorch source input.
+input_host is autograd.randn([size, size], {seed: 41011, dtype: "float32"})
+weight_host is autograd.randn([size, size], {seed: 52021, dtype: "float32"})
+seed_host is autograd.randn([size, size], {seed: 63031, dtype: "float32"})
+correctness_input_host is autograd.randn([correctness_size, correctness_size], {seed: 71011, dtype: "float32"})
+correctness_weight_host is autograd.randn([correctness_size, correctness_size], {seed: 72019, dtype: "float32"})
+correctness_seed_host is autograd.randn([correctness_size, correctness_size], {seed: 73009, dtype: "float32"})
+input_checksums is {input: autograd.item(autograd.sum(input_host)), weight: autograd.item(autograd.sum(weight_host)), seed: autograd.item(autograd.sum(seed_host))}
+correctness_input_checksums is {input: autograd.item(autograd.sum(correctness_input_host)), weight: autograd.item(autograd.sum(correctness_weight_host)), seed: autograd.item(autograd.sum(correctness_seed_host))}
+if shared_inputs != "" then
+  autograd.save_safetensors({input: input_host, weight: weight_host, seed: seed_host, correctness_input: correctness_input_host, correctness_weight: correctness_weight_host, correctness_seed: correctness_seed_host}, shared_inputs)
+end
+
+cuda is autograd.cuda_info()
+if not cuda.available then
+  report is {schema: "sura.cuda-mixed-compute-benchmark.v2", status: "unavailable", reason: cuda.error, matrix_size: size, correctness_size: correctness_size, aligned_multiple: 16, warmup: warmup, runs: runs, source_dtype: "float32", input_checksums: input_checksums, correctness_input_checksums: correctness_input_checksums, nvidia_tf32_override: tf32_override, cases: nil, correctness: nil}
+  print(json_stringify(report))
+else
+  f32_case is run_compute_case("float32", input_host, weight_host, seed_host, warmup, runs)
+  f16_case is run_compute_case("float16", input_host, weight_host, seed_host, warmup, runs)
+  bf16_case is run_compute_case("bfloat16", input_host, weight_host, seed_host, warmup, runs)
+  cases is {float32: f32_case, float16: f16_case, bfloat16: bf16_case}
+
+  f32_correctness is run_correctness_case("float32", correctness_input_host, correctness_weight_host, correctness_seed_host)
+  f16_correctness is run_correctness_case("float16", correctness_input_host, correctness_weight_host, correctness_seed_host)
+  bf16_correctness is run_correctness_case("bfloat16", correctness_input_host, correctness_weight_host, correctness_seed_host)
+  correctness is {float32: f32_correctness, float16: f16_correctness, bfloat16: bf16_correctness}
+
+  limits is autograd.limits()
+  report is {schema: "sura.cuda-mixed-compute-benchmark.v2", status: "ok", device: cuda.device_name, device_index: cuda.device_index, device_uuid: nil, pci_bus_id: nil, device_identity_note: "current Sura CUDA API exposes index/name/compute capability but not UUID or PCI bus id", compute_capability: cuda.compute_capability, backend: cuda.backend, matmul_backend: cuda.matmul_backend, mixed_matmul_backend: cuda.mixed_matmul_backend, cublas_available: cuda.cublas_available, cublas_gemm_ex_available: cuda.cublas_gemm_ex_available, cublas_library: cuda.cublas_library, cublas_error: cuda.cublas_error, matrix_size: size, correctness_size: correctness_size, aligned_multiple: 16, warmup: warmup, runs: runs, source_dtype: "float32", sura_storage_dtype: limits.cuda_dtype, sura_gradient_dtype: limits.cuda_gradient_dtype, float32_math_policy: "cublasSgemm_v2 with a cuBLAS handle in its default math mode; NVIDIA_TF32_OVERRIDE=0 is applied by the benchmark driver, but this is not an instruction-level IEEE-mode proof", nvidia_tf32_override: tf32_override, timing_scope: "synchronized eager forward/autograd wall-clock; includes dispatch, allocation, graph work, and ending synchronization; not a pure GEMM-kernel timer", setup_and_upload_excluded: true, process_startup_excluded: true, synchronization_inside_each_sample: true, gradient_zeroing_timed: false, input_checksums: input_checksums, correctness_input_checksums: correctness_input_checksums, cases: cases, correctness: correctness}
+  print(json_stringify(report))
+end

@@ -1,0 +1,344 @@
+name: Cross Platform Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "*.cpp"
+      - "*.hpp"
+      - "*.sura"
+      - "Makefile"
+      - "compatibility.json"
+      - "COMPATIBILITY.md"
+      - "SCOPE.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "SECURITY_AUDIT.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/ISSUE_TEMPLATE/feature_request.yml"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - "examples/**"
+      - "examples/README.md"
+      - "tests/**"
+      - "tests/parser_untrusted_input_test.cpp"
+      - "tests/bytecode_validation_test.cpp"
+      - "tests/jit_sysv_baseline_test.cpp"
+      - "tests/jit_portable_baseline.sura"
+      - "tests/jit_arm64_baseline_test.cpp"
+      - "tools/**"
+      - ".github/workflows/cross-platform-smoke.yml"
+  push:
+    branches: [main, master]
+    paths:
+      - "*.cpp"
+      - "*.hpp"
+      - "*.sura"
+      - "Makefile"
+      - "compatibility.json"
+      - "COMPATIBILITY.md"
+      - "SCOPE.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "SECURITY_AUDIT.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/ISSUE_TEMPLATE/feature_request.yml"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - "examples/**"
+      - "examples/README.md"
+      - "tests/**"
+      - "tests/parser_untrusted_input_test.cpp"
+      - "tests/bytecode_validation_test.cpp"
+      - "tests/jit_sysv_baseline_test.cpp"
+      - "tests/jit_portable_baseline.sura"
+      - "tests/jit_arm64_baseline_test.cpp"
+      - "tools/**"
+      - ".github/workflows/cross-platform-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu
+            os: ubuntu-latest
+            cxx: g++
+          - name: Ubuntu ARM64
+            os: ubuntu-24.04-arm
+            cxx: g++
+          - name: macOS ARM64
+            os: macos-15
+            cxx: c++
+          - name: macOS Intel
+            os: macos-15-intel
+            cxx: c++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run CI coverage gate
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_ci_coverage_gate_smoke.ps1
+
+      - name: Verify project scope and contribution contracts
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_project_governance_smoke.ps1
+
+      - name: Verify security policy and audit-status contract
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_security_policy_smoke.ps1
+
+      - name: Verify external security review handoff generator
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_security_audit_bundle_smoke.ps1 -RepoRoot .
+
+      - name: Build Sura
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${{ matrix.cxx }}" --version
+          make clean
+          make CXX="${{ matrix.cxx }}"
+          chmod +x SuraLanguage surapkg
+
+      - name: Generate external security review handoff with engine evidence
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_security_audit_bundle.ps1 `
+            -RepoRoot . `
+            -Engine ./SuraLanguage `
+            -OutDir "$env:RUNNER_TEMP/security-audit-bundle" `
+            -ZipOut "$env:RUNNER_TEMP/sura-security-audit.zip" `
+            -ReportOut "$env:RUNNER_TEMP/security-audit-report.json" `
+            -SummaryOut "$env:RUNNER_TEMP/security-audit-summary.md" `
+            -Force
+
+      - name: Verify published reference matches the runtime API
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_reference_freshness_smoke.ps1 -Surapkg ./surapkg
+
+      - name: Verify JIT target and ABI contract
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_jit_target_smoke.ps1 -Engine ./SuraLanguage -Cxx "${{ matrix.cxx }}"
+
+      - name: Verify portable x86-64 and ARM64 baseline source fallback
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_jit_portable_baseline_smoke.ps1 -Engine ./SuraLanguage -Cxx "${{ matrix.cxx }}"
+
+      - name: Verify ARM64 baseline encoding, execution, and fallback
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_jit_arm64_baseline_smoke.ps1 -Engine ./SuraLanguage -Cxx "${{ matrix.cxx }}"
+
+      - name: Verify stable API snapshot generation
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_compatibility_api_snapshot.ps1 -Surapkg ./surapkg -Check
+
+      - name: Verify source, API, bytecode, and ABI compatibility contract
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_compatibility_gate.ps1 -Engine ./SuraLanguage -Surapkg ./surapkg
+
+      - name: Verify compatibility gate failure detection
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_compatibility_gate_smoke.ps1 -Engine ./SuraLanguage -Surapkg ./surapkg
+
+      - name: Run typechecker hardening C++ test
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_typechecker_hardening_smoke.ps1 -Cxx "${{ matrix.cxx }}"
+
+      - name: Run parser and bytecode untrusted-input regression
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_untrusted_input_smoke.ps1 -Cxx "${{ matrix.cxx }}"
+
+      - name: Run JIT and VM safety regression
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_jit_vm_safety_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run GC memory-safety regression
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_gc_memory_safety_smoke.ps1 -Cxx "${{ matrix.cxx }}"
+
+      - name: Run GC statistics and allocation-pressure regression
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_gc_stats_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run one complete runtime soak cycle
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_runtime_soak.ps1 -Engine ./SuraLanguage -DurationSeconds 1 -PerRunTimeoutSeconds 60 -JsonOut "$env:RUNNER_TEMP/runtime_soak_smoke.json"
+
+      - name: Run engine and stdlib smokes
+        shell: pwsh
+        run: |
+          ./SuraLanguage test_stdlib.sura
+          ./SuraLanguage test_stdlib_practical.sura
+          ./SuraLanguage ./tests/12_native_nn.sura
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_nn_smoke.ps1 -Engine ./SuraLanguage
+          ./SuraLanguage ./tests/13_autograd_core.sura
+          ./SuraLanguage ./tests/14_autograd_gradcheck.sura
+          ./SuraLanguage ./tests/15_autograd_training.sura
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_autograd_smoke.ps1 -Engine ./SuraLanguage
+          ./SuraLanguage ./tests/20_safetensors.sura
+          ./SuraLanguage ./tests/21_dtype_storage.sura
+          ./SuraLanguage ./tests/22_cuda_backend.sura
+          ./SuraLanguage ./tests/23_tokenizer_dataset.sura
+          ./SuraLanguage ./tests/70_bpe_tokenizer.sura
+          ./SuraLanguage ./tests/25_onnx_weights.sura
+          ./SuraLanguage ./tests/71_onnx_execution.sura
+          ./SuraLanguage ./tests/52_media_text_frames.sura
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_distributed_autograd_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_stdlib_modules_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_media_smoke.ps1 -Engine ./SuraLanguage -Cxx "${{ matrix.cxx }}"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_bad_apple_ascii_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_console_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_async_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_async_structured_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_random_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_cli_args_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_undefined_variable_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_ast_json_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run JS and WASM target smokes
+        shell: pwsh
+        run: |
+          node --version
+          npx --version
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_js_target_smoke.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_wasm_target_smoke.ps1
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_wasm_function_dispatch_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_wasm_exception_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_wasm_memory_safety_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run interop and protected release smokes
+        shell: pwsh
+        run: |
+          python3 --version
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_python_bridge_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_release_pack_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run package metadata smokes
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_doctor_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_list_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_info_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_docs_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_search_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_version_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_clean_smoke.ps1 -Surapkg ./surapkg
+
+      - name: Run installed example gallery smoke
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_pkg_examples_smoke.ps1 -Surapkg ./surapkg -Engine ./SuraLanguage
+
+      - name: Run package release gate smokes
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_quality_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_ci_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_release_smoke.ps1 -Surapkg ./surapkg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_update_smoke.ps1 -Surapkg ./surapkg
+
+      - name: Run plugin policy smokes
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_plugin_smoke.ps1 -Engine ./SuraLanguage
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_plugin_manifest_audit_smoke.ps1 -Surapkg ./surapkg
+
+      - name: Verify strict type safety defaults
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_strict_default_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run native embedding smokes
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_embed_smoke.ps1 -Cxx "${{ matrix.cxx }}"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_ffi_safety_smoke.ps1 -Cxx "${{ matrix.cxx }}"
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_embed_template_smoke.ps1 -Surapkg ./surapkg -Cxx "${{ matrix.cxx }}"
+
+  sanitizers:
+    name: Ubuntu ASan + UBSan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build instrumented runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ --version
+          make clean
+          make CXX=g++ \
+            CXXFLAGS="-std=c++17 -O1 -g -DNDEBUG -Wall -fno-omit-frame-pointer -fsanitize=address,undefined" \
+            LDFLAGS="-fsanitize=address,undefined" \
+            engine
+
+      - name: Run core interpreter and JIT tests under sanitizers
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          set -euo pipefail
+          for test_file in tests/[0-9][0-9]_*.sura; do
+            echo "[sanitizer/interpreter] ${test_file}"
+            ./SuraLanguage "${test_file}"
+            echo "[sanitizer/jit] ${test_file}"
+            ./SuraLanguage --jit "${test_file}"
+          done
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_jit_vm_safety_smoke.ps1 -Engine ./SuraLanguage
+
+      - name: Run embedding GC isolation with ASan, UBSan, and leak detection
+        shell: pwsh
+        run: |
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_ffi_safety_smoke.ps1 -Cxx g++ -Sanitize
+
+      - name: Run GC memory-safety harness under ASan and UBSan
+        shell: pwsh
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_gc_memory_safety_smoke.ps1 -Cxx g++ -Sanitize
+
+      - name: Fuzz parser and bytecode loader under ASan and UBSan
+        shell: pwsh
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_untrusted_input_smoke.ps1 -Cxx g++ -Sanitize
+
+  thread-sanitizer:
+    name: Ubuntu TSan - structured async runtime
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build thread-sanitized runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          g++ --version
+          make clean
+          make CXX=g++ \
+            CXXFLAGS="-std=c++17 -O1 -g -DNDEBUG -Wall -fno-omit-frame-pointer -fsanitize=thread" \
+            LDFLAGS="-fsanitize=thread" \
+            engine
+
+      - name: Stress cancellation, bounds, scopes, and cleanup under TSan
+        shell: bash
+        env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=7
+        run: |
+          set -euo pipefail
+          ./SuraLanguage ./tests/async_structured_stress.sura
+          ./SuraLanguage --jit ./tests/async_structured_stress.sura
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/sura_async_runtime_concurrency_smoke.ps1 -Cxx g++ -ThreadSanitize

@@ -1,0 +1,41 @@
+# Single-lane cellular traffic model with periodic boundaries.
+
+ROAD is 60
+cars is [0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
+passed is 0
+
+func occupied(positions, cell) do
+  for position in positions do
+    if position == cell then return true
+  end
+  return false
+end
+
+step is 0
+while step < 45 do
+  moved is []
+  for position in cars do
+    destination is (position + 1) % ROAD
+    if occupied(cars, destination) then
+      moved.push(position)
+    else
+      moved.push(destination)
+      if destination == 0 then passed += 1
+    end
+  end
+  cars is moved
+
+  if step % 5 == 0 then
+    line is ""
+    cell is 0
+    while cell < ROAD do
+      if occupied(cars, cell) then line += ">" else line += "."
+      cell += 1
+    end
+    print("step {step}: {line}")
+  end
+  step += 1
+end
+
+print("cars passed checkpoint={passed}")
+assert(passed > 0)

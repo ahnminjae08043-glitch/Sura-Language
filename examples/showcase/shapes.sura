@@ -1,0 +1,51 @@
+# 도형 면적 — 클래스 상속과 메서드 오버라이드
+# Class inheritance with overridden methods.
+
+use math
+
+class Shape do
+    name is "shape"
+    func area() do
+        return 0
+    end
+    func describe() do
+        return "{self.name}: {self.area()}"
+    end
+end
+
+class Rect extends Shape do
+    width is 0
+    height is 0
+    func init(width, height) do
+        self.name is "rect"
+        self.width is width
+        self.height is height
+    end
+    func area() do
+        return self.width * self.height
+    end
+end
+
+class Circle extends Shape do
+    radius is 0
+    func init(radius) do
+        self.name is "circle"
+        self.radius is radius
+    end
+    func area() do
+        return round(math.pi * self.radius * self.radius)
+    end
+end
+
+shapes is [new Rect(3, 4), new Circle(5)]
+
+total is 0
+for shape in shapes do
+    total is total + shape.area()
+    print(shape.describe())
+end
+
+assert_eq(shapes[0].area(), 12)
+assert_eq(shapes[1].area(), 79)
+assert_eq(total, 91)
+print("total area: {total}")

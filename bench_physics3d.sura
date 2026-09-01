@@ -1,0 +1,42 @@
+// 3D physics loop benchmark for game-style vector updates.
+
+struct Vec3 do
+    x is 0
+    y is 0
+    z is 0
+
+    func add(other) do
+        return Vec3(self.x + other.x, self.y + other.y, self.z + other.z)
+    end
+
+    func scale(k) do
+        return Vec3(self.x * k, self.y * k, self.z * k)
+    end
+
+    func cross(other) do
+        return Vec3(self.y * other.z - self.z * other.y, self.z * other.x - self.x * other.z, self.x * other.y - self.y * other.x)
+    end
+end
+
+func step3(pos, vel, gravity, wind, dt) do
+    swirl is vel.cross(wind).scale(0.001)
+    next_vel is vel.add(gravity.scale(dt)).add(swirl)
+    return pos.add(next_vel.scale(dt))
+end
+
+p is Vec3(0, 0, 0)
+v is Vec3(1, 2, 3)
+gravity is Vec3(0, -9.8, 0)
+wind is Vec3(0.2, 0.1, 0.4)
+dt is 0.016
+
+t is clock()
+i is 0
+while i < 100000 do
+    p is step3(p, v, gravity, wind, dt)
+    i is i + 1
+end
+ms is (clock() - t) * 1000
+print "physics 3d step 100k x  {ms} ms"
+print "final pos.z:"
+print p.z

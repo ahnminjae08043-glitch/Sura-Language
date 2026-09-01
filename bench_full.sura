@@ -1,0 +1,71 @@
+print "========================================"
+print " Sura 종합 성능 벤치마크"
+print "========================================"
+
+func fib(n) do
+  if n <= 1 then
+    return n
+  end
+  return fib(n-1) + fib(n-2)
+end
+
+t is clock()
+x is fib(30)
+ms is (clock() - t) * 1000
+print "[재귀]     fib(30) = {x}  /  {ms} ms"
+
+t is clock()
+i is 0
+s is 0
+while i < 10000000 do
+  s is s + i
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+print "[루프]     1000만 반복     /  {ms} ms"
+
+t is clock()
+arr is []
+i is 0
+while i < 1000000 do
+  push(arr, i)
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+n is length(arr)
+print "[배열]     100만 push      /  {ms} ms  (len={n})"
+
+t is clock()
+str is ""
+i is 0
+while i < 10000 do
+  str is str + "abcdefghij"
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+n is length(str)
+print "[문자열]   1만 concat       /  {ms} ms  (len={n})"
+
+t is clock()
+i is 1
+while i <= 1000000 do
+  r is sqrt(i)
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+print "[수학]     sqrt 100만 번   /  {ms} ms"
+
+func add(a, b) do
+  return a + b
+end
+
+t is clock()
+i is 0
+while i < 1000000 do
+  r is add(i, 1)
+  i is i + 1
+end
+ms is (clock() - t) * 1000
+print "[함수호출] 100만 call      /  {ms} ms"
+
+print "========================================"

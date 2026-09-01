@@ -1,0 +1,54 @@
+use random
+
+# Agent-based SIR epidemic simulation.
+# State: 0 susceptible, 1 infected, 2 recovered.
+random.seed(2026)
+POPULATION is 180
+state is []
+days_infected is []
+i is 0
+while i < POPULATION do
+  if i < 4 then state.push(1) else state.push(0)
+  days_infected.push(0)
+  i += 1
+end
+
+day is 0
+peak_infected is 0
+while day < 80 do
+  next_state is []
+  for value in state do
+    next_state.push(value)
+  end
+
+  i is 0
+  while i < POPULATION do
+    if state[i] == 1 then
+      contacts is 0
+      while contacts < 5 do
+        other is random.int(0, POPULATION - 1)
+        if state[other] == 0 and random.int(1, 100) <= 13 then next_state[other] is 1
+        contacts += 1
+      end
+      days_infected[i] += 1
+      if days_infected[i] >= 8 then next_state[i] is 2
+    end
+    i += 1
+  end
+  state is next_state
+
+  susceptible is 0
+  infected is 0
+  recovered is 0
+  for value in state do
+    if value == 0 then susceptible += 1
+    if value == 1 then infected += 1
+    if value == 2 then recovered += 1
+  end
+  if infected > peak_infected then peak_infected is infected
+  if day % 10 == 0 or infected == 0 then print("day {day}: S={susceptible} I={infected} R={recovered}")
+  if infected == 0 then day is 80 else day += 1
+end
+
+print("peak infected={peak_infected}")
+assert(peak_infected >= 4)

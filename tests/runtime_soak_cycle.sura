@@ -1,0 +1,74 @@
+# One deterministic, long-lived runtime cycle. The scheduled soak runner repeats
+# this file in both VM and JIT modes and records GC and process statistics.
+
+struct SoakVec2 do
+  x is 0
+  y is 0
+
+  func add(other) do
+    return SoakVec2(self.x + other.x, self.y + other.y)
+  end
+
+  func scale(factor) do
+    return SoakVec2(self.x * factor, self.y * factor)
+  end
+end
+
+func soak_step(position, velocity, factor) do
+  return position.add(velocity.scale(factor))
+end
+
+func make_counter(seed) do
+  value is seed
+  return func(delta) do
+    value += delta
+    return value
+  end
+end
+
+func maybe_throw(value) do
+  if value % 257 == 0 then
+    throw "soak expected"
+  end
+  return value
+end
+
+rounds is 20000
+position is SoakVec2(0, 0)
+velocity is SoakVec2(1, 2)
+caught is 0
+closure_total is 0
+last_record is {index: -1, text: ""}
+i is 0
+
+while i < rounds do
+  position is soak_step(position, velocity, 0.5)
+
+  scratch is [i, "item-{i}", [i + 1, i + 2]]
+  last_record is {index: i, text: scratch[1], nested: scratch[2]}
+
+  if i % 101 == 0 then
+    counter is make_counter(i)
+    closure_total += counter(1)
+    closure_total += counter(2)
+  end
+
+  try
+    maybe_throw(i)
+  catch error
+    assert_eq(error, "soak expected")
+    caught += 1
+  end
+
+  i += 1
+end
+
+assert_eq(position.x, 10000)
+assert_eq(position.y, 20000)
+assert_eq(caught, 78)
+assert(closure_total > 0)
+assert_eq(last_record.index, 19999)
+assert_eq(last_record.text, "item-19999")
+assert_eq(last_record.nested[1], 20001)
+
+print "runtime_soak_cycle: PASS"

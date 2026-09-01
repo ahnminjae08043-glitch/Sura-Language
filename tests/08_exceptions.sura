@@ -1,0 +1,20 @@
+# try/catch
+caught is false
+try
+  throw "test error"
+catch e
+  caught is true
+  assert_eq(e, "test error")
+end
+assert(caught)
+
+# 0 나누기
+got_err is false
+try
+  x is 1 / 0
+catch e
+  got_err is true
+end
+assert(got_err)
+
+print "08_exceptions: PASS"

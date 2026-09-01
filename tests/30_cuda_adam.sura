@@ -1,0 +1,77 @@
+use autograd
+
+info is autograd.cuda_info()
+if info.available then
+  cpu is autograd.parameter([1, -2, 3], {dtype: "float32"})
+  gpu is autograd.parameter([1, -2, 3], {device: "cuda"})
+  autograd.cuda_reset_stats()
+
+  step is 0
+  while step < 3 do
+    autograd.zero_grad([cpu])
+    cpu_loss is autograd.sum(autograd.mul(cpu, cpu))
+    autograd.backward(cpu_loss)
+
+    autograd.zero_grad([gpu])
+    gpu_loss is autograd.sum(autograd.mul(gpu, gpu))
+    autograd.backward(gpu_loss)
+
+    if step == 0 then
+      options is {beta1: 0.5, beta2: 0.75, epsilon: 0.00000001, weight_decay: 0.1}
+    else
+      options is {beta1: 0.8, beta2: 0.9, epsilon: 0.00000001, weight_decay: 0.1}
+    end
+    autograd.adam([cpu], 0.1, options)
+    autograd.adam([gpu], 0.1, options)
+    step is step + 1
+  end
+
+  before_read is autograd.cuda_stats()
+  assert_eq(before_read.h2d_bytes, 0)
+  # Each transactional Adam call validates one shared u32 status word.
+  assert_eq(before_read.d2h_bytes, 12)
+  assert(before_read.optimizer_launches >= 3)
+
+  cpu_data is autograd.data(cpu)
+  host_before_gpu_read is autograd.limits().memory_used_bytes
+  gpu_data is autograd.data(gpu)
+  # CUDA leaves already own a stale host mirror after an optimizer update;
+  # refreshing it must not reserve the same bytes a second time.
+  assert_eq(autograd.limits().memory_used_bytes, host_before_gpu_read)
+  assert_approx(gpu_data[0], cpu_data[0], 0.0001)
+  assert_approx(gpu_data[1], cpu_data[1], 0.0001)
+  assert_approx(gpu_data[2], cpu_data[2], 0.0001)
+  after_read is autograd.cuda_stats()
+  assert_eq(after_read.d2h_bytes, 24)
+
+  autograd.reset_optimizer([gpu])
+
+  safe is autograd.parameter([1], {device: "cuda"})
+  bad is autograd.parameter([2], {device: "cuda"})
+  autograd.zero_grad([safe, bad])
+  autograd.backward(safe, [1])
+  autograd.backward(bad, [100000000000000000000])
+
+  rejected is false
+  try
+    autograd.adam([safe, bad], 0.1)
+  catch error
+    rejected is true
+  end
+  assert(rejected)
+  assert_approx(autograd.item(safe), 1, 0.000001)
+  assert_approx(autograd.item(bad), 2, 0.000001)
+
+  # A retry must behave like a fresh first step; failed pending moments and
+  # counters must not leak into the parameter.
+  autograd.zero_grad([safe, bad])
+  autograd.backward(safe, [1])
+  autograd.backward(bad, [1])
+  autograd.adam([safe, bad], 0.1)
+  assert_approx(autograd.item(safe), 0.9, 0.0001)
+  assert_approx(autograd.item(bad), 1.9, 0.0001)
+else
+  print "30_cuda_adam: SKIP ({info.error})"
+end
+
+print "30_cuda_adam: PASS"

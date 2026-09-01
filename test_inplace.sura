@@ -1,0 +1,35 @@
+x is 5
+
+# 기존: x + 3 이 x = x + 3 이 되던 버그
+# 이제 x + 3 은 오류 (의도치 않은 수정 방지)
+
+# 명시적 복합 대입
+x += 3
+print "x += 3: {x}"   # 8
+
+x -= 2
+print "x -= 2: {x}"   # 6
+
+x *= 4
+print "x *= 4: {x}"   # 24
+
+x /= 6
+print "x /= 6: {x}"   # 4
+
+x %= 3
+print "x %= 3: {x}"   # 1
+
+# 메서드 반환값 저장 (이미 됨)
+class 계산기 do
+    값 is 0
+    func 생성자(초기값) do
+        self.값 is 초기값
+    end
+    func 두배() do
+        return self.값 * 2
+    end
+end
+
+계산기 is new 계산기(10)
+결과 is 계산기.두배()
+print "두배: {결과}"   # 20

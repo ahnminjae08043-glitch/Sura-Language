@@ -1,0 +1,81 @@
+use autograd
+
+f32 is autograd.tensor([0.1, -2.5, 3.25], {dtype: "float32", requires_grad: true})
+f16 is autograd.tensor([0.5, -1.25, 2], "float16")
+bf16 is autograd.tensor([0.5, -1.25, 2], "bfloat16")
+
+assert_eq(autograd.dtype(f32), "float32")
+assert_eq(autograd.dtype(f16), "float16")
+assert_eq(autograd.dtype(bf16), "bfloat16")
+assert_eq(autograd.storage_bytes(f32), 12)
+assert_eq(autograd.storage_bytes(f16), 6)
+assert_eq(autograd.storage_bytes(bf16), 6)
+
+# Unary operations and weak numeric literals retain the Tensor dtype.
+assert_eq(autograd.dtype(autograd.gelu(f32)), "float32")
+assert_eq(autograd.dtype(autograd.add(f32, 1)), "float32")
+assert_eq(autograd.dtype(autograd.reshape(f32, [3, 1])), "float32")
+
+# Mixed low precision promotes to float32; a float64 operand promotes to float64.
+assert_eq(autograd.dtype(autograd.add(f16, bf16)), "float32")
+assert_eq(autograd.dtype(autograd.add(f32, autograd.tensor([1, 2, 3]))), "float64")
+
+left is autograd.parameter([[1, 2], [3, 4]], {dtype: "float16"})
+right is autograd.parameter([[1, 0], [0, 1]], {dtype: "float16"})
+product is autograd.matmul(left, right)
+assert_eq(autograd.dtype(product), "float16")
+assert_eq(autograd.storage_bytes(product), 8)
+
+# Cast is differentiable and sends an identity gradient to the source leaf.
+source is autograd.parameter([1.25, -0.75])
+casted is autograd.cast(source, "bfloat16")
+assert_eq(autograd.dtype(casted), "bfloat16")
+autograd.backward(autograd.sum(casted))
+source_grad is autograd.grad(source)
+assert_eq(source_grad[0], 1)
+assert_eq(source_grad[1], 1)
+
+# Transformer primitives preserve or explicitly promote storage dtype.
+embedding_weight is autograd.parameter([[1, 2], [3, 4]], {dtype: "float32"})
+embedded is autograd.embedding([[0, 1]], embedding_weight)
+assert_eq(autograd.dtype(embedded), "float32")
+normalized is autograd.layer_norm(embedded)
+assert_eq(autograd.dtype(normalized), "float32")
+attended is autograd.causal_attention(normalized, normalized, normalized)
+assert_eq(autograd.dtype(attended), "float32")
+loss is autograd.cross_entropy_ids(autograd.tensor([[[2, 1], [1, 2]]], "float32"), [[0, 1]])
+assert_eq(autograd.dtype(loss), "float32")
+
+# Checkpoint v3 preserves dtype metadata and packed storage.
+checkpoint_path is path_join(temp_dir(), "sura-dtype-" + uuid_v4() + ".surackpt")
+autograd.save_checkpoint({f32: f32, f16: f16, bf16: bf16}, checkpoint_path, {optimizer: false})
+loaded is autograd.load_checkpoint(checkpoint_path)
+assert_eq(autograd.dtype(loaded.f32), "float32")
+assert_eq(autograd.dtype(loaded.f16), "float16")
+assert_eq(autograd.dtype(loaded.bf16), "bfloat16")
+assert_eq(autograd.storage_bytes(loaded.f32), 12)
+assert_eq(autograd.storage_bytes(loaded.f16), 6)
+file_delete(checkpoint_path)
+
+overflow_rejected is false
+try
+  autograd.tensor([70000], "float16")
+catch error
+  overflow_rejected is true
+end
+assert(overflow_rejected)
+
+# BF16's maximum finite value is below float32::max because its last finite
+# exponent bucket has only seven fraction bits. Packing must reject a value
+# that would round to infinity instead of silently creating an Inf tensor.
+bf16_finite is autograd.tensor([3.38 * pow(10, 38)], "bfloat16")
+assert(autograd.data(bf16_finite)[0] < 3.4 * pow(10, 38))
+bf16_overflow_rejected is false
+try
+  autograd.tensor([3.4 * pow(10, 38)], "bfloat16")
+catch error
+  bf16_overflow_rejected is true
+end
+assert(bf16_overflow_rejected)
+
+print "21_dtype_storage: PASS"

@@ -1,0 +1,94 @@
+# Automation workload: normalize synthetic order/CSV rows for an API report.
+# Models discount/tax normalization, channel bucketing, and revenue aggregation.
+
+func region_id(i) do
+  return (i * 17 + 5) % 8
+end
+
+func channel_id(i) do
+  return (i * 31 + 7) % 5
+end
+
+func gross_cents(i) do
+  return 500 + ((i * 7919 + i * i) % 250000)
+end
+
+func discount_bps(i) do
+  return (i * 43 + 19) % 2500
+end
+
+func tax_bps(region) do
+  if region == 0 then
+    return 725
+  end
+  if region == 1 then
+    return 825
+  end
+  if region == 2 then
+    return 925
+  end
+  if region == 3 then
+    return 1025
+  end
+  return 625 + region * 25
+end
+
+func normalized_cents(gross, discount, tax) do
+  after_discount is gross - (gross * discount) / 10000
+  return after_discount + (after_discount * tax) / 10000
+end
+
+func bucket_score(amount) do
+  if amount >= 180000 then
+    return 4
+  end
+  if amount >= 90000 then
+    return 3
+  end
+  if amount >= 25000 then
+    return 2
+  end
+  return 1
+end
+
+runs is 5
+rows is 260000
+total_ms is 0
+checksum is 0
+
+repeat runs do
+  t0 is clock()
+  i is 0
+  net_total is 0
+  high_value is 0
+  paid_channels is 0
+  risky_regions is 0
+  bucket_total is 0
+  while i < rows do
+    region is region_id(i)
+    channel is channel_id(i)
+    gross is gross_cents(i)
+    net is normalized_cents(gross, discount_bps(i), tax_bps(region))
+    net_floor is floor(net)
+    net_total is net_total + net_floor
+    if net_floor >= 125000 then
+      high_value is high_value + 1
+    end
+    if channel == 2 or channel == 4 then
+      paid_channels is paid_channels + 1
+    end
+    if region == 3 or region == 6 then
+      risky_regions is risky_regions + 1
+    end
+    bucket_total is bucket_total + bucket_score(net_floor)
+    i is i + 1
+  end
+  t1 is clock()
+  total_ms is total_ms + (t1 - t0) * 1000
+  checksum is net_total + high_value * 7 + paid_channels * 11 + risky_regions * 13 + bucket_total * 17
+end
+
+avg is total_ms / runs
+print "order ETL rows: {rows}"
+print "checksum: {checksum}"
+print "avg ({runs} runs): {avg} ms"

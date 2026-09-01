@@ -1,0 +1,773 @@
+# =====================================================
+# Sura RPG: 던전 오브 수라
+# =====================================================
+
+use math
+
+
+# --- 유틸 ---
+func clear_screen() do
+    repeat 30 do
+        print ""
+    end
+end
+
+func line() do
+    print "================================================"
+end
+
+func wait_enter() do
+    print_n "[엔터로 계속...] "
+    input()
+end
+
+func chance(percent) do
+    return random(1, 100) <= percent
+end
+
+
+# --- 플레이어 ---
+player is {}
+player["name"] is "용사"
+player["job"] is "전사"
+player["level"] is 1
+player["exp"] is 0
+player["exp_next"] is 50
+player["hp"] is 100
+player["max_hp"] is 100
+player["mp"] is 30
+player["max_mp"] is 30
+player["atk"] is 10
+player["defense"] is 5
+player["crit"] is 10
+player["dodge"] is 5
+player["gold"] is 50
+player["potions"] is 3
+player["floor"] is 1
+player["weapon"] is "맨손"
+player["weapon_atk"] is 0
+player["armor"] is "평상복"
+player["armor_def"] is 0
+
+
+# --- 직업 선택 ---
+func choose_job() do
+    clear_screen()
+    line()
+    print "      < 직업 선택 >"
+    line()
+    print ""
+    print "  [1] 전사   HP130 MP20 ATK12 DEF8  CRIT10% DODGE3%"
+    print "      스킬: 강타 / 방패막기 / 분노의 일격"
+    print ""
+    print "  [2] 도적   HP90  MP25 ATK14 DEF4  CRIT25% DODGE15%"
+    print "      스킬: 독칼 / 그림자베기 / 암살"
+    print ""
+    print "  [3] 마법사 HP75  MP60 ATK8  DEF3  CRIT15% DODGE8%"
+    print "      스킬: 파이어볼 / 아이스스피어 / 메테오"
+    print ""
+
+    print_n "이름 > "
+    nm is input()
+    if nm == "" then
+        nm is "용사"
+    end
+    player["name"] is nm
+
+    print_n "직업(1/2/3) > "
+    c is input()
+
+    if c == "2" then
+        player["job"] is "도적"
+        player["max_hp"] is 90
+        player["hp"] is 90
+        player["max_mp"] is 25
+        player["mp"] is 25
+        player["atk"] is 14
+        player["defense"] is 4
+        player["crit"] is 25
+        player["dodge"] is 15
+    elif c == "3" then
+        player["job"] is "마법사"
+        player["max_hp"] is 75
+        player["hp"] is 75
+        player["max_mp"] is 60
+        player["mp"] is 60
+        player["atk"] is 8
+        player["defense"] is 3
+        player["crit"] is 15
+        player["dodge"] is 8
+    else
+        player["job"] is "전사"
+        player["max_hp"] is 130
+        player["hp"] is 130
+        player["max_mp"] is 20
+        player["mp"] is 20
+        player["atk"] is 12
+        player["defense"] is 8
+        player["crit"] is 10
+        player["dodge"] is 3
+    end
+
+    clear_screen()
+    line()
+    print "  {player[\"name\"]} ({player[\"job\"]}) 모험 시작!"
+    line()
+    wait_enter()
+end
+
+
+# --- 몬스터 생성 ---
+func make_monster(fl) do
+    m is {}
+
+    if fl == 10 then
+        m["name"] is "어둠의 군주 수라"
+        m["hp"] is 300
+        m["max_hp"] is 300
+        m["atk"] is 25
+        m["defense"] is 10
+        m["crit"] is 20
+        m["dodge"] is 10
+        m["exp"] is 200
+        m["gold"] is 500
+        m["is_boss"] is true
+        m["poison"] is 0
+        m["frozen"] is 0
+        return m
+    end
+
+    pick is random(1, 4)
+    bonus is (fl - 1) * 3
+
+    if pick == 1 then
+        m["name"] is "슬라임"
+        m["hp"] is 40 + bonus * 4
+        m["max_hp"] is 40 + bonus * 4
+        m["atk"] is 6 + bonus
+        m["defense"] is 2
+        m["crit"] is 5
+        m["dodge"] is 3
+        m["exp"] is 15 + bonus * 2
+        m["gold"] is 10 + bonus
+    elif pick == 2 then
+        m["name"] is "고블린"
+        m["hp"] is 55 + bonus * 5
+        m["max_hp"] is 55 + bonus * 5
+        m["atk"] is 9 + bonus
+        m["defense"] is 4
+        m["crit"] is 12
+        m["dodge"] is 10
+        m["exp"] is 25 + bonus * 2
+        m["gold"] is 20 + bonus * 2
+    elif pick == 3 then
+        m["name"] is "오크"
+        m["hp"] is 80 + bonus * 6
+        m["max_hp"] is 80 + bonus * 6
+        m["atk"] is 12 + bonus
+        m["defense"] is 6
+        m["crit"] is 8
+        m["dodge"] is 5
+        m["exp"] is 40 + bonus * 3
+        m["gold"] is 35 + bonus * 2
+    else
+        m["name"] is "다크 울프"
+        m["hp"] is 65 + bonus * 5
+        m["max_hp"] is 65 + bonus * 5
+        m["atk"] is 14 + bonus
+        m["defense"] is 3
+        m["crit"] is 18
+        m["dodge"] is 12
+        m["exp"] is 35 + bonus * 3
+        m["gold"] is 25 + bonus * 2
+    end
+
+    m["is_boss"] is false
+    m["poison"] is 0
+    m["frozen"] is 0
+    return m
+end
+
+
+# --- 데미지 계산 ---
+func calc_damage(atk_v, def_v, crit_v) do
+    base is atk_v - def_v
+    if base < 1 then base is 1
+
+    var is random(80, 120)
+    dmg is base * var / 100
+
+    is_crit is chance(crit_v)
+    if is_crit then
+        dmg is dmg * 2
+    end
+
+    result is {}
+    result["damage"] is dmg
+    result["crit"] is is_crit
+    return result
+end
+
+
+# --- 전투 화면 ---
+func show_battle(m) do
+    clear_screen()
+    line()
+    print "  층: {player[\"floor\"]}/10   vs {m[\"name\"]}"
+    line()
+    print ""
+    print "  [{m[\"name\"]}]"
+    print "  HP: {m[\"hp\"]}/{m[\"max_hp\"]}  ATK: {m[\"atk\"]}  DEF: {m[\"defense\"]}"
+    if m["poison"] > 0 then
+        print "  독: {m[\"poison\"]}턴 남음"
+    end
+    if m["frozen"] > 0 then
+        print "  빙결: {m[\"frozen\"]}턴"
+    end
+    print ""
+    print "  --------------------------------"
+    print ""
+    print "  [{player[\"name\"]} Lv.{player[\"level\"]} ({player[\"job\"]})]"
+    print "  HP: {player[\"hp\"]}/{player[\"max_hp\"]}  MP: {player[\"mp\"]}/{player[\"max_mp\"]}"
+    total_atk is player["atk"] + player["weapon_atk"]
+    total_def is player["defense"] + player["armor_def"]
+    print "  ATK: {total_atk}  DEF: {total_def}"
+    print "  포션: {player[\"potions\"]}개  골드: {player[\"gold\"]}G"
+    print ""
+    line()
+end
+
+
+# --- 스킬 사용 ---
+func use_skill(m) do
+    print ""
+    j is player["job"]
+
+    if j == "전사" then
+        print "  [1] 강타 (MP5) 1.5배 데미지"
+        print "  [2] 방패막기 (MP8) 다음턴 방어"
+        print "  [3] 분노의 일격 (MP15) 2.5배 + 크리율+30"
+    elif j == "도적" then
+        print "  [1] 독칼 (MP5) 1.3배 + 독 3턴"
+        print "  [2] 그림자베기 (MP10) 2배 + 회피+20"
+        print "  [3] 암살 (MP20) 50%즉사 또는 3배"
+    else
+        print "  [1] 파이어볼 (MP8) 1.8배"
+        print "  [2] 아이스스피어 (MP12) 2배 + 빙결"
+        print "  [3] 메테오 (MP25) 3.5배"
+    end
+    print "  [0] 취소"
+    print_n "  > "
+    p is input()
+
+    if p == "0" then
+        return "cancel"
+    end
+
+    atk_t is player["atk"] + player["weapon_atk"]
+    crit_v is player["crit"]
+
+    if j == "전사" then
+        if p == "1" then
+            if player["mp"] < 5 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 5
+            r is calc_damage(atk_t * 3 / 2, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            if r["crit"] then
+                print "  강타 크리티컬! {r[\"damage\"]} 데미지!"
+            else
+                print "  강타! {r[\"damage\"]} 데미지!"
+            end
+            return "ok"
+        elif p == "2" then
+            if player["mp"] < 8 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 8
+            print "  방패막기! 다음 공격 80% 감소!"
+            return "defend"
+        elif p == "3" then
+            if player["mp"] < 15 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 15
+            r is calc_damage(atk_t * 5 / 2, m["defense"], crit_v + 30)
+            m["hp"] is m["hp"] - r["damage"]
+            print "  분노의 일격! {r[\"damage\"]} 데미지!"
+            return "ok"
+        end
+    elif j == "도적" then
+        if p == "1" then
+            if player["mp"] < 5 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 5
+            r is calc_damage(atk_t * 13 / 10, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            m["poison"] is 3
+            print "  독칼! {r[\"damage\"]} 데미지! (독 3턴)"
+            return "ok"
+        elif p == "2" then
+            if player["mp"] < 10 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 10
+            r is calc_damage(atk_t * 2, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            print "  그림자베기! {r[\"damage\"]} 데미지!"
+            return "dodge_boost"
+        elif p == "3" then
+            if player["mp"] < 20 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 20
+            if chance(50) and not m["is_boss"] then
+                m["hp"] is 0
+                print "  암살 성공! 즉사!"
+            else
+                r is calc_damage(atk_t * 3, m["defense"], crit_v)
+                m["hp"] is m["hp"] - r["damage"]
+                print "  암살! {r[\"damage\"]} 데미지!"
+            end
+            return "ok"
+        end
+    else
+        if p == "1" then
+            if player["mp"] < 8 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 8
+            r is calc_damage(atk_t * 18 / 10, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            print "  파이어볼! {r[\"damage\"]} 데미지!"
+            return "ok"
+        elif p == "2" then
+            if player["mp"] < 12 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 12
+            r is calc_damage(atk_t * 2, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            m["frozen"] is 1
+            print "  아이스스피어! {r[\"damage\"]} 데미지! 빙결!"
+            return "ok"
+        elif p == "3" then
+            if player["mp"] < 25 then
+                print "  MP 부족!"
+                return "cancel"
+            end
+            player["mp"] is player["mp"] - 25
+            r is calc_damage(atk_t * 35 / 10, m["defense"], crit_v)
+            m["hp"] is m["hp"] - r["damage"]
+            print "  메테오! {r[\"damage\"]} 데미지!"
+            return "ok"
+        end
+    end
+
+    return "cancel"
+end
+
+
+# --- 몬스터 턴 ---
+func monster_turn(m, defending, dodge_boost) do
+    if m["frozen"] > 0 then
+        print "  {m[\"name\"]} 얼어있다! 행동 불가!"
+        m["frozen"] is m["frozen"] - 1
+        return
+    end
+
+    td is player["dodge"]
+    if dodge_boost then
+        td is td + 20
+    end
+
+    if chance(td) then
+        print "  회피 성공!"
+        return
+    end
+
+    r is calc_damage(m["atk"], player["defense"] + player["armor_def"], m["crit"])
+    dmg is r["damage"]
+
+    if defending then
+        dmg is dmg / 5
+        if dmg < 1 then dmg is 1
+        print "  방어! {m[\"name\"]} 공격 {dmg} 데미지로 감소!"
+    else
+        if r["crit"] then
+            print "  {m[\"name\"]} 크리티컬! {dmg} 데미지!"
+        else
+            print "  {m[\"name\"]} 공격! {dmg} 데미지!"
+        end
+    end
+
+    player["hp"] is player["hp"] - dmg
+end
+
+
+# --- 독 처리 ---
+func apply_poison(m) do
+    if m["poison"] > 0 then
+        pd is 5 + player["level"] * 2
+        m["hp"] is m["hp"] - pd
+        m["poison"] is m["poison"] - 1
+        print "  독 데미지! {pd}"
+    end
+end
+
+
+# --- 레벨업 ---
+func check_levelup() do
+    while player["exp"] >= player["exp_next"] do
+        player["exp"] is player["exp"] - player["exp_next"]
+        player["level"] is player["level"] + 1
+        player["exp_next"] is player["exp_next"] * 3 / 2
+
+        player["max_hp"] is player["max_hp"] + 15
+        player["hp"] is player["max_hp"]
+        player["max_mp"] is player["max_mp"] + 8
+        player["mp"] is player["max_mp"]
+        player["atk"] is player["atk"] + 3
+        player["defense"] is player["defense"] + 2
+
+        print ""
+        print "  *** 레벨업! Lv.{player[\"level\"]} ***"
+        print "  HP+15 MP+8 ATK+3 DEF+2 / HP MP 완전회복!"
+    end
+end
+
+
+# --- 전투 실행 ---
+func battle(m) do
+    defending is false
+    dodge_boost is false
+
+    while m["hp"] > 0 and player["hp"] > 0 do
+        show_battle(m)
+
+        print ""
+        print "  [1] 공격  [2] 스킬  [3] 방어  [4] 포션  [5] 도망"
+        print_n "  > "
+        cmd is input()
+
+        action_done is false
+
+        if cmd == "1" then
+            atk_t is player["atk"] + player["weapon_atk"]
+            r is calc_damage(atk_t, m["defense"], player["crit"])
+            m["hp"] is m["hp"] - r["damage"]
+            if r["crit"] then
+                print "  크리티컬! {r[\"damage\"]} 데미지!"
+            else
+                print "  공격! {r[\"damage\"]} 데미지!"
+            end
+            action_done is true
+            defending is false
+            dodge_boost is false
+
+        elif cmd == "2" then
+            rs is use_skill(m)
+            if rs == "ok" then
+                action_done is true
+                defending is false
+                dodge_boost is false
+            elif rs == "defend" then
+                action_done is true
+                defending is true
+                dodge_boost is false
+            elif rs == "dodge_boost" then
+                action_done is true
+                defending is false
+                dodge_boost is true
+            end
+
+        elif cmd == "3" then
+            defending is true
+            dodge_boost is false
+            action_done is true
+            print "  방어 자세!"
+
+        elif cmd == "4" then
+            if player["potions"] <= 0 then
+                print "  포션 없음!"
+            else
+                player["potions"] is player["potions"] - 1
+                heal is 50 + player["level"] * 10
+                player["hp"] is player["hp"] + heal
+                if player["hp"] > player["max_hp"] then
+                    player["hp"] is player["max_hp"]
+                end
+                print "  포션 사용! HP +{heal}"
+                action_done is true
+            end
+
+        elif cmd == "5" then
+            if m["is_boss"] then
+                print "  보스에게서 도망 불가!"
+            else
+                if chance(60) then
+                    print "  도망 성공!"
+                    wait_enter()
+                    return "escape"
+                else
+                    print "  도망 실패!"
+                    action_done is true
+                end
+            end
+        else
+            print "  잘못된 입력!"
+        end
+
+        if action_done then
+            apply_poison(m)
+
+            if m["hp"] > 0 then
+                monster_turn(m, defending, dodge_boost)
+            end
+
+            wait_enter()
+        end
+    end
+
+    if player["hp"] <= 0 then
+        return "dead"
+    end
+
+    if m["hp"] <= 0 then
+        clear_screen()
+        line()
+        print "  *** 승리! ***"
+        line()
+        print ""
+        print "  {m[\"name\"]} 처치!"
+        print "  EXP +{m[\"exp\"]}"
+        print "  Gold +{m[\"gold\"]}"
+
+        player["exp"] is player["exp"] + m["exp"]
+        player["gold"] is player["gold"] + m["gold"]
+
+        if chance(30) then
+            player["potions"] is player["potions"] + 1
+            print "  포션 +1"
+        end
+
+        check_levelup()
+        wait_enter()
+        return "win"
+    end
+
+    return "unknown"
+end
+
+
+# --- 상점 ---
+func shop() do
+    while true do
+        clear_screen()
+        line()
+        print "       < 상점 >"
+        line()
+        print ""
+        print "  골드: {player[\"gold\"]}G"
+        print ""
+        print "  [1] 포션 30G"
+        print "  [2] 청동 검 100G (ATK+5)"
+        print "  [3] 강철 검 300G (ATK+12)"
+        print "  [4] 미스릴 검 800G (ATK+25)"
+        print "  [5] 가죽 갑옷 80G (DEF+4)"
+        print "  [6] 사슬 갑옷 250G (DEF+10)"
+        print "  [7] 미스릴 갑옷 700G (DEF+20)"
+        print "  [0] 나가기"
+        print ""
+        print_n "  > "
+        cmd is input()
+
+        if cmd == "0" then
+            return
+        elif cmd == "1" then
+            if player["gold"] >= 30 then
+                player["gold"] is player["gold"] - 30
+                player["potions"] is player["potions"] + 1
+                print "  포션 구매!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "2" then
+            if player["gold"] >= 100 then
+                player["gold"] is player["gold"] - 100
+                player["weapon"] is "청동 검"
+                player["weapon_atk"] is 5
+                print "  청동 검 장착!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "3" then
+            if player["gold"] >= 300 then
+                player["gold"] is player["gold"] - 300
+                player["weapon"] is "강철 검"
+                player["weapon_atk"] is 12
+                print "  강철 검 장착!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "4" then
+            if player["gold"] >= 800 then
+                player["gold"] is player["gold"] - 800
+                player["weapon"] is "미스릴 검"
+                player["weapon_atk"] is 25
+                print "  미스릴 검 장착!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "5" then
+            if player["gold"] >= 80 then
+                player["gold"] is player["gold"] - 80
+                player["armor"] is "가죽 갑옷"
+                player["armor_def"] is 4
+                print "  가죽 갑옷 장착!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "6" then
+            if player["gold"] >= 250 then
+                player["gold"] is player["gold"] - 250
+                player["armor"] is "사슬 갑옷"
+                player["armor_def"] is 10
+                print "  사슬 갑옷 장착!"
+            else
+                print "  골드 부족!"
+            end
+        elif cmd == "7" then
+            if player["gold"] >= 700 then
+                player["gold"] is player["gold"] - 700
+                player["armor"] is "미스릴 갑옷"
+                player["armor_def"] is 20
+                print "  미스릴 갑옷 장착!"
+            else
+                print "  골드 부족!"
+            end
+        end
+
+        wait_enter()
+    end
+end
+
+
+# --- 마을 ---
+func town() do
+    while true do
+        clear_screen()
+        line()
+        print "    < 마을 - {player[\"floor\"]}층 진입 전 >"
+        line()
+        print ""
+        print "  {player[\"name\"]} Lv.{player[\"level\"]} ({player[\"job\"]})"
+        print "  HP {player[\"hp\"]}/{player[\"max_hp\"]}  MP {player[\"mp\"]}/{player[\"max_mp\"]}"
+        print "  무기: {player[\"weapon\"]} (+{player[\"weapon_atk\"]})"
+        print "  방어구: {player[\"armor\"]} (+{player[\"armor_def\"]})"
+        print "  포션: {player[\"potions\"]}개  골드: {player[\"gold\"]}G"
+        print ""
+        print "  [1] 던전 입장"
+        print "  [2] 상점"
+        print "  [3] 휴식 (20G, 완전회복)"
+        print "  [4] 상태 확인"
+        print ""
+        print_n "  > "
+        cmd is input()
+
+        if cmd == "1" then
+            return
+        elif cmd == "2" then
+            shop()
+        elif cmd == "3" then
+            if player["gold"] >= 20 then
+                player["gold"] is player["gold"] - 20
+                player["hp"] is player["max_hp"]
+                player["mp"] is player["max_mp"]
+                print "  완전 회복!"
+            else
+                print "  골드 부족!"
+            end
+            wait_enter()
+        elif cmd == "4" then
+            print ""
+            print "  ATK: {player[\"atk\"] + player[\"weapon_atk\"]}"
+            print "  DEF: {player[\"defense\"] + player[\"armor_def\"]}"
+            print "  CRIT: {player[\"crit\"]}%"
+            print "  DODGE: {player[\"dodge\"]}%"
+            print "  EXP: {player[\"exp\"]}/{player[\"exp_next\"]}"
+            wait_enter()
+        end
+    end
+end
+
+
+# --- 메인 ---
+func main() do
+    clear_screen()
+    line()
+    print ""
+    print "      *** 던전 오브 수라 ***"
+    print ""
+    print "      10층 던전을 클리어하라!"
+    print ""
+    line()
+    wait_enter()
+
+    choose_job()
+
+    while player["floor"] <= 10 and player["hp"] > 0 do
+        town()
+
+        m is make_monster(player["floor"])
+
+        clear_screen()
+        line()
+        if m["is_boss"] then
+            print "  !!! 보스 출현 !!!"
+            print "  {m[\"name\"]} 등장!"
+        else
+            print "  {m[\"name\"]} 출현!"
+        end
+        line()
+        wait_enter()
+
+        result is battle(m)
+
+        if result == "win" then
+            player["floor"] is player["floor"] + 1
+        elif result == "dead" then
+            break
+        end
+    end
+
+    clear_screen()
+    line()
+    if player["hp"] <= 0 then
+        print "  *** GAME OVER ***"
+        print ""
+        print "  {player[\"name\"]} 사망..."
+        print "  도달층: {player[\"floor\"]}/10"
+        print "  레벨: {player[\"level\"]}"
+    else
+        print "  *** 게임 클리어! ***"
+        print ""
+        print "  {player[\"name\"]}({player[\"job\"]}) 던전 정복!"
+        print "  최종 레벨: {player[\"level\"]}"
+        print "  골드: {player[\"gold\"]}G"
+    end
+    line()
+end
+
+
+main()

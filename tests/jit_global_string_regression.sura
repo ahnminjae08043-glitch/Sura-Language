@@ -1,0 +1,33 @@
+use fs
+
+base_dir is fs.abs(".").replace("\\", "/")
+
+func file_url(path) do
+  return "file://" + base_dir + "/" + path
+end
+
+u1 is file_url("one.txt")
+u2 is file_url("two.txt")
+u3 is file_url("three.txt")
+u4 is file_url("four.txt")
+u5 is file_url("five.txt")
+u6 is file_url("six.txt")
+u7 is file_url("seven.txt")
+
+print "u1=" + u1
+print "u2=" + u2
+print "u3=" + u3
+print "u4=" + u4
+print "u5=" + u5
+print "u6=" + u6
+print "u7=" + u7
+
+assert_eq(u1, "file://" + base_dir + "/one.txt")
+assert_eq(u2, "file://" + base_dir + "/two.txt")
+assert_eq(u3, "file://" + base_dir + "/three.txt")
+assert_eq(u4, "file://" + base_dir + "/four.txt")
+assert_eq(u5, "file://" + base_dir + "/five.txt")
+assert_eq(u6, "file://" + base_dir + "/six.txt")
+assert_eq(u7, "file://" + base_dir + "/seven.txt")
+
+print "jit global string regression: PASS"

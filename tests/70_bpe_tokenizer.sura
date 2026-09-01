@@ -1,0 +1,113 @@
+use tokenizer
+use dataset
+use autograd
+
+corpus is "banana banana bandana banana banana bandana banana banana bandana"
+tok is tokenizer.train_bpe(corpus, {vocab_size: 280, min_frequency: 2, bos_id: 1000, eos_id: 1001, pad_id: 1002})
+
+info is tokenizer.info(tok)
+assert_eq(info.type, "bpe")
+assert_eq(info.format, "sura.tokenizer.bpe.v1")
+assert(info.merge_count > 0)
+assert_eq(info.learned_vocab_size, 256 + info.merge_count)
+assert_eq(info.vocab_size, 1003)
+
+# Learned repeated byte sequences must use fewer IDs than the raw byte tokenizer.
+encoded is tokenizer.encode(tok, corpus)
+raw_encoded is tokenizer.encode(tokenizer.byte(), corpus)
+assert(encoded.len() < raw_encoded.len())
+assert_eq(tokenizer.decode(tok, encoded), corpus)
+
+# Byte-level BPE remains lossless for arbitrary UTF-8 bytes, including tokens
+# that were not present in the training corpus.
+utf8_text is "수라 😀 banana"
+utf8_ids is tokenizer.encode(tok, utf8_text, {add_bos: true, add_eos: true})
+assert_eq(utf8_ids[0], 1000)
+assert_eq(utf8_ids[utf8_ids.len() - 1], 1001)
+assert_eq(tokenizer.decode(tok, utf8_ids), utf8_text)
+assert_eq(tokenizer.decode(tok, utf8_ids, {skip_special: false}), "<bos>" + utf8_text + "<eos>")
+
+# Fixed pair-count and tie-breaking rules make training deterministic.
+tok_again is tokenizer.train_bpe(corpus, {vocab_size: 280, min_frequency: 2})
+assert_eq(json_stringify(tok.merges), json_stringify(tok_again.merges))
+assert_eq(tokenizer.encode(tok, corpus).join(","), tokenizer.encode(tok_again, corpus).join(","))
+
+# Version 2 files preserve merge ranks and reject corruption.
+path is path_join(temp_dir(), "sura-bpe-" + uuid_v4() + ".suratok")
+corrupt_path is path + ".corrupt"
+saved_bytes is tokenizer.save(tok, path)
+assert(saved_bytes >= 48)
+loaded is tokenizer.load(path)
+assert_eq(tokenizer.info(loaded).type, "bpe")
+assert_eq(tokenizer.encode(loaded, utf8_text).join(","), tokenizer.encode(tok, utf8_text).join(","))
+assert_eq(tokenizer.decode(loaded, tokenizer.encode(loaded, utf8_text)), utf8_text)
+
+bytes is file_read_bytes(path)
+bytes[bytes.len() - 1] is (bytes[bytes.len() - 1] + 1) % 256
+file_write_bytes(corrupt_path, bytes)
+corruption_rejected is false
+try
+  tokenizer.load(corrupt_path)
+catch error
+  corruption_rejected is true
+end
+assert(corruption_rejected)
+
+# Public operations revalidate transparent handles. The first learned token
+# cannot refer to token 256 because it does not exist before that merge.
+forged_rejected is false
+try
+  tokenizer.info({__sura_handle: "tokenizer.bpe.v1", type: "bpe", bos_id: nil, eos_id: nil, pad_id: nil, learned_vocab_size: 257, vocab_size: 257, merges: [[256, 0]]})
+catch error
+  forged_rejected is true
+end
+assert(forged_rejected)
+
+# Dataset packing retains enough raw suffix bytes to preserve merges across
+# arbitrary input chunks. Several adversarial chunk sizes must match direct
+# encoding for repeated, alternating, and UTF-8 input.
+dataset_path is path + ".suradata"
+samples is [corpus, "aaaaaaaaaaaaaaaaaaaa", "banana bandana banana", "수라 😀 banana 수라"]
+chunk_sizes is [1, 2, 3, 5, 7, 64]
+for sample in samples do
+  sample_ids is tokenizer.encode(tok, sample)
+  for chunk_size in chunk_sizes do
+    current_dataset_path is dataset_path + "." + uuid_v4()
+    packed is dataset.pack_text(sample, tok, current_dataset_path, {chunk_bytes: chunk_size})
+    assert_eq(packed.token_count, sample_ids.len())
+    loader is dataset.open(current_dataset_path, {batch_size: 1, sequence_length: sample_ids.len() - 1, shuffle: false})
+    batch is dataset.next(loader)
+    packed_input is autograd.data(batch.input_ids)[0]
+    packed_target is autograd.data(batch.target_ids)[0]
+    assert_eq(packed_input.join(","), sample_ids.slice(0, sample_ids.len() - 1).join(","))
+    assert_eq(packed_target.join(","), sample_ids.slice(1).join(","))
+    dataset.close(loader)
+    file_delete(current_dataset_path)
+  end
+end
+
+# More than one 64 KiB streaming window exercises non-final prefix commits.
+large_sample is string_repeat(corpus, 2000)
+large_ids is tokenizer.encode(tok, large_sample)
+large_dataset_path is dataset_path + ".large"
+large_packed is dataset.pack_text(large_sample, tok, large_dataset_path, {chunk_bytes: 1})
+assert_eq(large_packed.token_count, large_ids.len())
+large_loader is dataset.open(large_dataset_path, {batch_size: 1, sequence_length: large_ids.len() - 1, shuffle: false})
+large_batch is dataset.next(large_loader)
+assert_eq(autograd.data(large_batch.input_ids)[0].join(","), large_ids.slice(0, large_ids.len() - 1).join(","))
+assert_eq(autograd.data(large_batch.target_ids)[0].join(","), large_ids.slice(1).join(","))
+dataset.close(large_loader)
+file_delete(large_dataset_path)
+
+# File mode uses the same exact boundary-preserving path.
+source_path is path + ".txt"
+file_dataset_path is dataset_path + ".file"
+file_write(source_path, corpus)
+file_packed is dataset.pack_text([source_path], tok, file_dataset_path, {input: "files", chunk_bytes: 1})
+assert_eq(file_packed.token_count, encoded.len())
+
+file_delete(path)
+file_delete(corrupt_path)
+file_delete(source_path)
+file_delete(file_dataset_path)
+print "70_bpe_tokenizer: PASS"

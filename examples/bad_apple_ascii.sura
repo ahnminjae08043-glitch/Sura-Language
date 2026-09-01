@@ -1,0 +1,223 @@
+# Original high-contrast silhouette animation inspired by monochrome ASCII
+# music-video aesthetics. No frames or artwork from the original video are
+# embedded. Run:
+#   sura examples/bad_apple_ascii.sura
+# Smoke:
+#   sura examples/bad_apple_ascii.sura --smoke
+
+SMOKE is false
+if argc() > 0 then
+  if argv()[0] == "--smoke" then SMOKE is true
+end
+
+W is 72
+H is 28
+TOTAL_FRAMES is 240
+DELAY_MS is 50
+if SMOKE then
+  W is 40
+  H is 18
+  TOTAL_FRAMES is 4
+  DELAY_MS is 0
+end
+
+PI is 3.141592653589793
+grid_init(W, H)
+
+func put(x, y, ch) do
+  px is round(x)
+  py is round(y)
+  if px >= 0 and px < W and py >= 0 and py < H then
+    grid_set(px, py, ch)
+  end
+end
+
+func background(ch) do
+  if ch == " " then return nil
+  y is 0
+  while y < H do
+    x is 0
+    while x < W do
+      grid_set(x, y, ch)
+      x += 1
+    end
+    y += 1
+  end
+end
+
+func ellipse(cx, cy, rx, ry, ch) do
+  if rx <= 0 or ry <= 0 then return nil
+  y is floor(cy - ry - 1)
+  y_end is ceil(cy + ry + 1)
+  while y <= y_end do
+    x is floor(cx - rx - 1)
+    x_end is ceil(cx + rx + 1)
+    while x <= x_end do
+      dx is (x - cx) / rx
+      dy is (y - cy) / ry
+      if dx * dx + dy * dy <= 1 then put(x, y, ch)
+      x += 1
+    end
+    y += 1
+  end
+end
+
+func ring(cx, cy, rx, ry, thickness, ch) do
+  y is floor(cy - ry - 1)
+  y_end is ceil(cy + ry + 1)
+  while y <= y_end do
+    x is floor(cx - rx - 1)
+    x_end is ceil(cx + rx + 1)
+    while x <= x_end do
+      dx is (x - cx) / rx
+      dy is (y - cy) / ry
+      distance is sqrt(dx * dx + dy * dy)
+      if abs(distance - 1) <= thickness then put(x, y, ch)
+      x += 1
+    end
+    y += 1
+  end
+end
+
+func line(x1, y1, x2, y2, ch) do
+  steps is ceil(max(abs(x2 - x1), abs(y2 - y1)))
+  if steps < 1 then steps is 1
+  i is 0
+  while i <= steps do
+    ratio is i / steps
+    put(x1 + (x2 - x1) * ratio, y1 + (y2 - y1) * ratio, ch)
+    i += 1
+  end
+end
+
+func triangle(cx, top_y, half_width, bottom_y, ch) do
+  height is bottom_y - top_y
+  if height <= 0 then return nil
+  y is ceil(top_y)
+  while y <= floor(bottom_y) do
+    ratio is (y - top_y) / height
+    width is half_width * ratio
+    x is ceil(cx - width)
+    while x <= floor(cx + width) do
+      put(x, y, ch)
+      x += 1
+    end
+    y += 1
+  end
+end
+
+func apple(cx, cy, size, foreground, cutout) do
+  ellipse(cx - size * 0.22, cy, size * 0.62, size * 0.78, foreground)
+  ellipse(cx + size * 0.22, cy, size * 0.62, size * 0.78, foreground)
+  ellipse(cx + size * 0.62, cy - size * 0.18, size * 0.22, size * 0.22, cutout)
+  line(cx, cy - size * 0.68, cx + size * 0.12, cy - size * 1.05, foreground)
+  ellipse(cx + size * 0.38, cy - size * 0.95, size * 0.34, size * 0.14, foreground)
+end
+
+func dancer(cx, cy, size, turn, ch) do
+  sway is sin(turn) * size * 0.12
+  ellipse(cx + sway, cy - size * 0.92, size * 0.20, size * 0.25, ch)
+  line(cx + sway, cy - size * 0.65, cx, cy + size * 0.05, ch)
+  shoulder_y is cy - size * 0.52
+  left_angle is turn + PI * 0.85
+  right_angle is -turn + PI * 0.15
+  line(cx, shoulder_y, cx + cos(left_angle) * size * 0.72, shoulder_y + sin(left_angle) * size * 0.52, ch)
+  line(cx, shoulder_y, cx + cos(right_angle) * size * 0.72, shoulder_y + sin(right_angle) * size * 0.52, ch)
+  triangle(cx, cy - size * 0.05, size * 0.58, cy + size * 0.65, ch)
+  line(cx - size * 0.18, cy + size * 0.60, cx - size * 0.32, cy + size * 1.12, ch)
+  line(cx + size * 0.18, cy + size * 0.60, cx + size * 0.42, cy + size * 1.08, ch)
+end
+
+func wave(cy, amplitude, phase, ch) do
+  x is 0
+  while x < W do
+    y is cy + sin(x * 0.28 + phase) * amplitude + sin(x * 0.07 - phase) * amplitude * 0.35
+    put(x, y, ch)
+    put(x, y + 1, ch)
+    x += 1
+  end
+end
+
+func eye(cx, cy, size, foreground, cutout) do
+  ellipse(cx, cy, size * 1.5, size * 0.62, foreground)
+  ellipse(cx, cy, size * 1.18, size * 0.42, cutout)
+  ellipse(cx, cy, size * 0.28, size * 0.42, foreground)
+  put(cx, cy, cutout)
+end
+
+func butterfly(cx, cy, size, phase, ch) do
+  flap is 0.72 + abs(sin(phase)) * 0.45
+  ellipse(cx - size * 0.46, cy, size * 0.52 * flap, size * 0.70, ch)
+  ellipse(cx + size * 0.46, cy, size * 0.52 * flap, size * 0.70, ch)
+  line(cx, cy - size * 0.72, cx, cy + size * 0.72, ch)
+  line(cx, cy - size * 0.65, cx - size * 0.25, cy - size, ch)
+  line(cx, cy - size * 0.65, cx + size * 0.25, cy - size, ch)
+end
+
+frame is 0
+checksum is 0
+while frame < TOTAL_FRAMES do
+  grid_clear()
+  scene is floor(frame * 4 / TOTAL_FRAMES)
+  local_frame is frame - scene * TOTAL_FRAMES / 4
+  scene_length is TOTAL_FRAMES / 4
+  progress is local_frame / max(1, scene_length - 1)
+  phase is progress * PI * 2
+
+  bg is " "
+  fg is "#"
+  if scene == 1 or scene == 3 then
+    bg is "#"
+    fg is " "
+  end
+  background(bg)
+
+  if scene == 0 then
+    moon_x is W * (0.22 + progress * 0.56)
+    moon_size is min(W * 0.16, H * 0.42)
+    ellipse(moon_x, H * 0.48, moon_size, moon_size * 0.62, fg)
+    ellipse(moon_x + cos(phase) * moon_size * 0.38, H * 0.48, moon_size * 0.76, moon_size * 0.48, bg)
+    apple(W * 0.50, H * 0.53, min(W, H) * (0.16 + 0.02 * sin(phase)), fg, bg)
+    ring(W * 0.50, H * 0.53, min(W, H) * 0.23, min(W, H) * 0.17, 0.08, fg)
+  elif scene == 1 then
+    dancer(W * 0.50 + sin(phase) * W * 0.08, H * 0.50, H * 0.30, phase, fg)
+    wave(H * 0.84, 1.5, phase, fg)
+    i is 0
+    while i < 9 do
+      angle is phase + i * PI * 2 / 9
+      put(W * 0.50 + cos(angle) * W * 0.34, H * 0.48 + sin(angle) * H * 0.34, fg)
+      i += 1
+    end
+  elif scene == 2 then
+    wave(H * 0.72, 2.2, phase, fg)
+    i is 0
+    while i < 5 do
+      fall is (progress + i * 0.19) % 1
+      ax is W * (0.12 + i * 0.19) + sin(phase + i) * 2
+      ay is -3 + fall * (H + 6)
+      apple(ax, ay, 2.0 + (i % 2), fg, bg)
+      i += 1
+    end
+    ring(W * 0.5, H * 0.46, W * (0.08 + progress * 0.34), H * (0.06 + progress * 0.28), 0.045, fg)
+  else
+    eye(W * 0.50, H * 0.43, min(W, H) * 0.19, fg, bg)
+    butterfly(W * (0.20 + progress * 0.60), H * 0.74 + sin(phase * 2) * 1.5, min(W, H) * 0.10, phase * 2, fg)
+    ring(W * 0.50, H * 0.43, W * 0.28, H * 0.30, 0.035, fg)
+  end
+
+  checksum += scene * 101 + round(progress * 1000)
+  grid_draw()
+  if DELAY_MS > 0 then wait(DELAY_MS)
+  frame += 1
+end
+
+grid_clear()
+grid_draw()
+if SMOKE then
+  assert_eq(frame, 4)
+  assert(checksum > 0)
+  print("bad_apple_ascii: PASS")
+else
+  print("Sura monochrome silhouette animation complete.")
+end
+

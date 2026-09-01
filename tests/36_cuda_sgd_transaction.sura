@@ -1,0 +1,124 @@
+use autograd
+
+# A finite f32 parameter and finite f32 gradient whose effective gradient is
+# still finite, but learning-rate scaling overflows the CUDA f32 candidate.
+huge_parameter is 2 * pow(10, 38)
+huge_gradient is pow(10, 38)
+failing_options is {momentum: 0.5, weight_decay: 1}
+good_bad_gradient is 0.5 * pow(10, 38)
+good_options is {momentum: 0.5, weight_decay: 0}
+
+# The CPU implementation is the public contract oracle: it preflights the
+# complete parameter list, rejects the overflowing candidate, and commits
+# neither the safe parameter nor the bad one.
+cpu_safe is autograd.parameter([1], {dtype: "float32"})
+cpu_bad is autograd.parameter([huge_parameter], {dtype: "float32"})
+cpu_safe_before is autograd.item(cpu_safe)
+cpu_bad_before is autograd.item(cpu_bad)
+autograd.backward(cpu_safe, [0.25])
+autograd.backward(cpu_bad, [huge_gradient])
+cpu_rejected is false
+try
+  autograd.sgd([cpu_safe, cpu_bad], 2, failing_options)
+catch error
+  cpu_rejected is true
+end
+assert(cpu_rejected)
+assert_eq(autograd.item(cpu_safe), cpu_safe_before)
+assert_eq(autograd.item(cpu_bad), cpu_bad_before)
+
+info is autograd.cuda_info()
+if info.available then
+  # First prove that an ordinary finite CUDA SGD update succeeds and agrees
+  # with the CPU f32 path. Resetting counters immediately before item() also
+  # makes the two scalar D2H observation boundary explicit.
+  success_gpu_safe is autograd.parameter([1], {device: "cuda"})
+  success_gpu_bad is autograd.parameter([huge_parameter], {device: "cuda"})
+  autograd.backward(success_gpu_safe, [0.5])
+  autograd.backward(success_gpu_bad, [good_bad_gradient])
+  autograd.sgd([success_gpu_safe, success_gpu_bad], 0.1, good_options)
+  autograd.cuda_reset_stats()
+  success_gpu_safe_after is autograd.item(success_gpu_safe)
+  success_gpu_bad_after is autograd.item(success_gpu_bad)
+  success_observation is autograd.cuda_stats()
+  assert_eq(success_observation.d2h_bytes, 8)
+
+  success_cpu_safe is autograd.parameter([1], {dtype: "float32"})
+  success_cpu_bad is autograd.parameter([huge_parameter], {dtype: "float32"})
+  autograd.backward(success_cpu_safe, [0.5])
+  autograd.backward(success_cpu_bad, [good_bad_gradient])
+  autograd.sgd([success_cpu_safe, success_cpu_bad], 0.1, good_options)
+  assert_approx(success_gpu_safe_after, autograd.item(success_cpu_safe), 0.000001)
+  assert_approx(success_gpu_bad_after / autograd.item(success_cpu_bad), 1, 0.000001)
+
+  gpu_safe is autograd.parameter([1], {device: "cuda"})
+  gpu_bad is autograd.parameter([huge_parameter], {device: "cuda"})
+
+  # Fresh device references never see the rejected step. A later successful
+  # momentum step must match them exactly enough to prove that no failed
+  # velocity candidate leaked into either parameter.
+  reference_safe is autograd.parameter([1], {device: "cuda"})
+  reference_bad is autograd.parameter([huge_parameter], {device: "cuda"})
+
+  gpu_safe_before is autograd.item(gpu_safe)
+  gpu_bad_before is autograd.item(gpu_bad)
+
+  # These graphs capture the pre-step parameter versions. If a rejected SGD
+  # call increments either version, their later backward calls must fail.
+  safe_version_probe is autograd.sum(autograd.add(gpu_safe, 0))
+  bad_version_probe is autograd.sum(autograd.add(gpu_bad, 0))
+
+  autograd.backward(gpu_safe, [0.25])
+  autograd.backward(gpu_bad, [huge_gradient])
+  gpu_rejected is false
+  try
+    autograd.sgd([gpu_safe, gpu_bad], 2, failing_options)
+  catch error
+    gpu_rejected is true
+  end
+
+  # This assertion is expected to expose the current bug: the existing CUDA
+  # SGD kernels can commit an Inf candidate without returning an error.
+  assert(gpu_rejected)
+
+  # No parameter in the list may change when any candidate is invalid.
+  assert_eq(autograd.item(gpu_safe), gpu_safe_before)
+  assert_eq(autograd.item(gpu_bad), gpu_bad_before)
+
+  # A transactional rejection must leave both saved graph versions valid.
+  versions_preserved is true
+  try
+    autograd.zero_grad([gpu_safe, gpu_bad])
+    autograd.backward(safe_version_probe)
+    autograd.backward(bad_version_probe)
+  catch error
+    versions_preserved is false
+  end
+  assert(versions_preserved)
+
+  # Exercise a normal CUDA SGD path after the rejection. The main parameters
+  # must match fresh references; this observes otherwise-hidden momentum state.
+  autograd.zero_grad([gpu_safe, gpu_bad, reference_safe, reference_bad])
+  autograd.backward(gpu_safe, [0.5])
+  autograd.backward(gpu_bad, [good_bad_gradient])
+  autograd.backward(reference_safe, [0.5])
+  autograd.backward(reference_bad, [good_bad_gradient])
+  autograd.sgd([gpu_safe, gpu_bad], 0.1, good_options)
+  autograd.sgd([reference_safe, reference_bad], 0.1, good_options)
+
+  gpu_safe_after is autograd.item(gpu_safe)
+  gpu_bad_after is autograd.item(gpu_bad)
+  reference_safe_after is autograd.item(reference_safe)
+  reference_bad_after is autograd.item(reference_bad)
+  assert_approx(gpu_safe_after, reference_safe_after, 0.000001)
+  assert_approx(gpu_bad_after / reference_bad_after, 1, 0.000001)
+
+  # The post-rejection reference update must also equal the independent
+  # successful path above.
+  assert_approx(reference_safe_after, success_gpu_safe_after, 0.000001)
+  assert_approx(reference_bad_after / success_gpu_bad_after, 1, 0.000001)
+else
+  print "36_cuda_sgd_transaction: SKIP ({info.error})"
+end
+
+print "36_cuda_sgd_transaction: PASS"

@@ -1,0 +1,5 @@
+names is ["Sura", "WASM"]
+profile is {name: "Sura", active: true}
+nested is {names: names, profile: profile}
+result is to_str(nested)
+print_no_nl(result)

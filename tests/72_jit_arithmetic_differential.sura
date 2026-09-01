@@ -1,0 +1,203 @@
+# Native emitter coverage for arithmetic, comparison and branching.
+#
+# Every function here is called well past FUNC_LAZY_JIT_THRESHOLD (6), and each
+# body sticks to opcodes the native backend accepts, so the JIT compiles them
+# instead of bailing to the register VM. The assertions pin exact values rather
+# than just "it ran", because a wrong emitter does not crash - it returns a
+# different number and the program keeps going.
+#
+# Run under tools/sura_jit_differential.ps1 so the native results are also
+# compared against the register VM's.
+
+func jit_add(a, b) do
+  return a + b
+end
+
+func jit_sub(a, b) do
+  return a - b
+end
+
+func jit_mul(a, b) do
+  return a * b
+end
+
+func jit_div(a, b) do
+  return a / b
+end
+
+func jit_mod(a, b) do
+  return a % b
+end
+
+func jit_neg(a) do
+  return -a
+end
+
+# Mixed expression: forces register allocation across several temporaries.
+func jit_mixed(a, b, c) do
+  return (a + b) * c - a / b + b % c
+end
+
+# Comparisons feeding a branch. JUMP_IF_FALSE/TRUE is only emitted natively
+# when the preceding op is a CMP_* writing the condition register, so each of
+# these keeps the compare adjacent to the branch.
+func jit_cmp_lt(a, b) do
+  if a < b then
+    return 1
+  end
+  return 0
+end
+
+func jit_cmp_lte(a, b) do
+  if a <= b then
+    return 1
+  end
+  return 0
+end
+
+func jit_cmp_gt(a, b) do
+  if a > b then
+    return 1
+  end
+  return 0
+end
+
+func jit_cmp_gte(a, b) do
+  if a >= b then
+    return 1
+  end
+  return 0
+end
+
+func jit_cmp_eq(a, b) do
+  if a == b then
+    return 1
+  end
+  return 0
+end
+
+func jit_cmp_neq(a, b) do
+  if a != b then
+    return 1
+  end
+  return 0
+end
+
+# Short-circuit boolean logic. Plain if/else only ever emits JUMP_IF_FALSE;
+# `or` is what reaches the JUMP_IF_TRUE emitter, so this file would otherwise
+# leave that branch path untested even though it covers every comparison.
+# (Checked with the engine's [JIT-OPS] report, which lists the opcodes a run
+# actually compiled.)
+func jit_or(a, b) do
+  if a > 10 or b > 10 then
+    return 1
+  end
+  return 0
+end
+
+func jit_and(a, b) do
+  if a > 1 and b > 1 then
+    return 1
+  end
+  return 0
+end
+
+# A counted loop inside the callee, so JUMP backward edges are emitted too.
+func jit_loop_sum(n) do
+  total is 0
+  i is 1
+  while i <= n do
+    total is total + i
+    i is i + 1
+  end
+  return total
+end
+
+# ── Warm the functions past the JIT threshold, checking every result ──
+i is 0
+while i < 40 do
+  assert_eq(jit_add(7, 5), 12)
+  assert_eq(jit_sub(7, 5), 2)
+  assert_eq(jit_mul(7, 5), 35)
+  assert_eq(jit_div(35, 5), 7)
+  assert_eq(jit_mod(17, 5), 2)
+  assert_eq(jit_neg(9), -9)
+
+  # (2+4)*3 - 2/4 + 4%3 = 18 - 0.5 + 1 = 18.5
+  assert_eq(jit_mixed(2, 4, 3), 18.5)
+
+  assert_eq(jit_cmp_lt(1, 2), 1)
+  assert_eq(jit_cmp_lt(2, 1), 0)
+  assert_eq(jit_cmp_lte(2, 2), 1)
+  assert_eq(jit_cmp_lte(3, 2), 0)
+  assert_eq(jit_cmp_gt(2, 1), 1)
+  assert_eq(jit_cmp_gt(1, 2), 0)
+  assert_eq(jit_cmp_gte(2, 2), 1)
+  assert_eq(jit_cmp_gte(1, 2), 0)
+  assert_eq(jit_cmp_eq(4, 4), 1)
+  assert_eq(jit_cmp_eq(4, 5), 0)
+  assert_eq(jit_cmp_neq(4, 5), 1)
+  assert_eq(jit_cmp_neq(4, 4), 0)
+
+  # Both operands false, first true, second true — covers the short-circuit
+  # taken and not-taken edges rather than only one of them.
+  assert_eq(jit_or(0, 0), 0)
+  assert_eq(jit_or(20, 0), 1)
+  assert_eq(jit_or(0, 20), 1)
+  assert_eq(jit_and(5, 5), 1)
+  assert_eq(jit_and(5, 0), 0)
+  assert_eq(jit_and(0, 5), 0)
+
+  assert_eq(jit_loop_sum(10), 55)
+  i is i + 1
+end
+
+# ── Negative and fractional operands, once the bodies are already native ──
+assert_eq(jit_add(-7, -5), -12)
+assert_eq(jit_sub(-7, -5), -2)
+assert_eq(jit_mul(-7, 5), -35)
+assert_eq(jit_mul(-7, -5), 35)
+assert_eq(jit_div(-35, 5), -7)
+assert_eq(jit_neg(-9), 9)
+assert_eq(jit_add(0.5, 0.25), 0.75)
+assert_eq(jit_mul(0.5, 0.5), 0.25)
+assert_eq(jit_div(1, 4), 0.25)
+
+# Comparisons against negatives must not fall for unsigned reasoning.
+assert_eq(jit_cmp_lt(-2, -1), 1)
+assert_eq(jit_cmp_lt(-1, -2), 0)
+assert_eq(jit_cmp_gt(-1, -2), 1)
+assert_eq(jit_cmp_gte(-2, -2), 1)
+
+# Zero boundaries.
+assert_eq(jit_add(0, 0), 0)
+assert_eq(jit_mul(0, 12345), 0)
+assert_eq(jit_neg(0), 0)
+assert_eq(jit_cmp_eq(0, 0), 1)
+assert_eq(jit_loop_sum(1), 1)
+
+# Division by zero must raise [E202] rather than yield an infinity, and it must
+# do so identically once jit_div has been compiled to native code. This is the
+# whole reason DIV cannot use the inline SSE path that ADD/SUB/MUL take, so it
+# is the case most worth pinning.
+div_zero_error is ""
+try
+  ignored is jit_div(1, 0)
+catch e
+  div_zero_error is e
+end
+assert(contains(div_zero_error, "E202"))
+
+# Zero divided by a non-zero number is ordinary, not an error.
+assert_eq(jit_div(0, 5), 0)
+
+# The type contract is also part of DIV's semantics.
+div_type_error is ""
+try
+  ignored2 is jit_div("nope", 2)
+catch e
+  div_type_error is e
+end
+assert(contains(div_type_error, "E200"))
+
+print "72_jit_arithmetic_differential: PASS"

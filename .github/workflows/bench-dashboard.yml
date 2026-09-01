@@ -1,0 +1,750 @@
+﻿name: Benchmark Dashboard
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "*.sura"
+      - "*.cpp"
+      - "*.hpp"
+      - "version.json"
+      - "compatibility.json"
+      - "COMPATIBILITY.md"
+      - "SCOPE.md"
+      - "CONTRIBUTING.md"
+      - "SECURITY.md"
+      - "SECURITY_AUDIT.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/ISSUE_TEMPLATE/feature_request.yml"
+      - ".github/PULL_REQUEST_TEMPLATE.md"
+      - "GUIDE.md"
+      - "Guide/**"
+      - "examples/**"
+      - "examples/README.md"
+      - "reference.html"
+      - "bench_*.py"
+      - "tools/sura_bench_dashboard.ps1"
+      - "tools/sura_bench_dashboard_smoke.ps1"
+      - "tools/sura_bench_dashboard_cli_smoke.ps1"
+      - "tools/sura_ci_coverage_gate.ps1"
+      - "tools/sura_ci_coverage_gate_smoke.ps1"
+      - "tools/sura_project_governance_smoke.ps1"
+      - "tools/sura_security_policy_smoke.ps1"
+      - "tools/sura_security_audit_bundle.ps1"
+      - "tools/sura_security_audit_bundle_smoke.ps1"
+      - "tools/sura_goal_audit.ps1"
+      - "tools/sura_goal_audit_smoke.ps1"
+      - "tools/sura_text_encoding_smoke.ps1"
+      - "tools/sura_guide_syntax_smoke.ps1"
+      - "tools/sura_reference_generate.mjs"
+      - "tools/sura_reference_freshness_smoke.ps1"
+      - "tools/sura_compatibility_api_snapshot.ps1"
+      - "tools/sura_compatibility_gate.ps1"
+      - "tools/sura_compatibility_gate_smoke.ps1"
+      - "tests/compat/**"
+      - "tools/sura_discord_goal_status.ps1"
+      - "tools/sura_discord_goal_status_smoke.ps1"
+      - "tools/sura_target_lowering_audit.ps1"
+      - "tools/sura_target_lowering_audit_smoke.ps1"
+      - "tools/sura_release_evidence_gate.ps1"
+      - "tools/sura_release_evidence_gate_smoke.ps1"
+      - "tools/sura_bench_gate.ps1"
+      - "tools/sura_bench_gate_smoke.ps1"
+      - "tools/sura_native_perf_baseline.ps1"
+      - "tools/sura_native_perf_baseline_smoke.ps1"
+      - "tools/sura_audit_report_smoke.ps1"
+      - "tools/sura_tool_policy_audit_smoke.ps1"
+      - "tools/sura_policy_smoke.ps1"
+      - "tools/sura_tool_approval_smoke.ps1"
+      - "tools/sura_tool_audit_log_smoke.ps1"
+      - "tools/sura_doctor_smoke.ps1"
+      - "tools/sura_quality_smoke.ps1"
+      - "tools/sura_ci_smoke.ps1"
+      - "tools/sura_release_smoke.ps1"
+      - "tools/sura_release_pack_smoke.ps1"
+      - "tools/sura_make_installer.ps1"
+      - "tools/sura_installer_smoke.ps1"
+      - "tools/sura_store_msix.ps1"
+      - "tools/sura_pkg_examples_smoke.ps1"
+      - "tools/sura_version_sync.ps1"
+      - "tools/sura_sign_windows.ps1"
+      - "tools/sura_windows_signature_gate.ps1"
+      - "tools/sura_windows_signature_gate_smoke.ps1"
+      - "tools/sura_pkg_protect_smoke.ps1"
+      - "tools/sura_pkg_run_smoke.ps1"
+      - "tools/sura_pkg_scaffold_smoke.ps1"
+      - "tools/sura_pkg_format_smoke.ps1"
+      - "tools/sura_pkg_check_smoke.ps1"
+      - "tools/sura_pkg_lint_smoke.ps1"
+      - "tools/sura_pkg_profile_smoke.ps1"
+      - "tools/sura_pkg_bench_smoke.ps1"
+      - "tools/sura_pkg_list_smoke.ps1"
+      - "tools/sura_pkg_info_smoke.ps1"
+      - "tools/sura_pkg_docs_smoke.ps1"
+      - "tools/sura_pkg_search_smoke.ps1"
+      - "tools/sura_pkg_tree_smoke.ps1"
+      - "tools/sura_pkg_restore_lock_smoke.ps1"
+      - "tools/sura_pkg_remove_smoke.ps1"
+      - "tools/sura_pkg_version_smoke.ps1"
+      - "tools/sura_clean_smoke.ps1"
+      - "tools/sura_cli_args_smoke.ps1"
+      - "tools/sura_language_policy_smoke.ps1"
+      - "tools/sura_undefined_variable_smoke.ps1"
+      - "tools/sura_utf8_path_smoke.ps1"
+      - "tools/sura_build_contract_smoke.ps1"
+      - "tools/sura_typechecker_hardening_smoke.ps1"
+      - "tools/sura_untrusted_input_smoke.ps1"
+      - "tools/sura_jit_vm_safety_smoke.ps1"
+      - "tools/sura_generic_record_loop_smoke.ps1"
+      - "tools/sura_gc_memory_safety_smoke.ps1"
+      - "tools/sura_gc_stats_smoke.ps1"
+      - "tools/sura_test_process.ps1"
+      - "tools/sura_runtime_soak.ps1"
+      - "tools/sura_check_smoke.ps1"
+      - "tools/sura_engine_format_smoke.ps1"
+      - "tools/sura_engine_lint_smoke.ps1"
+      - "tools/sura_test_runner_smoke.ps1"
+      - "tools/sura_engine_test_smoke.ps1"
+      - "tools/sura_instance_fields_smoke.ps1"
+      - "tools/sura_ast_json_smoke.ps1"
+      - "tools/sura_stdlib_modules_smoke.ps1"
+      - "tools/sura_media_smoke.ps1"
+      - "tools/sura_bad_apple_ascii_smoke.ps1"
+      - "tools/sura_nn_smoke.ps1"
+      - "tools/sura_autograd_smoke.ps1"
+      - "tools/sura_console_smoke.ps1"
+      - "tools/sura_async_smoke.ps1"
+      - "tools/sura_random_smoke.ps1"
+      - "tools/sura_http_server_smoke.ps1"
+      - "tools/sura_agent_smoke.ps1"
+      - "tools/sura_profile_smoke.ps1"
+      - "tools/sura_python_bridge_smoke.ps1"
+      - "tools/sura_to_js.ps1"
+      - "tools/sura_js_target_smoke.ps1"
+      - "tools/sura_to_wasm.ps1"
+      - "tools/sura_wasm_target_smoke.ps1"
+      - "tools/sura_wasm_function_dispatch_smoke.ps1"
+      - "tools/sura_wasm_exception_smoke.ps1"
+      - "tools/sura_wasm_memory_safety_smoke.ps1"
+      - "tools/sura_aot.ps1"
+      - "tools/sura_aot_smoke.ps1"
+      - "tools/sura_jit_mod_smoke.ps1"
+      - "tools/sura_jit_collections_smoke.ps1"
+      - "tools/sura_jit_target_smoke.ps1"
+      - "tools/sura_jit_portable_baseline_smoke.ps1"
+      - "tools/sura_jit_arm64_baseline_smoke.ps1"
+      - "tools/sura_bind_c_smoke.ps1"
+      - "tools/sura_embed_smoke.ps1"
+      - "tools/sura_embed_template_smoke.ps1"
+      - "tools/sura_plugin_smoke.ps1"
+      - "tools/sura_plugin_manifest_audit_smoke.ps1"
+      - "tools/sura_lsp_smoke.js"
+      - "tools/sura_vscode_run_button_smoke.ps1"
+      - "tools/sura_debug_smoke.js"
+      - "tools/sura_debug_locals_smoke.js"
+      - "tools/sura_debug_exception_smoke.js"
+      - "tools/sura_public_signature_smoke.ps1"
+      - "tools/sura_registry_account_smoke.ps1"
+      - "tools/sura_registry_client_smoke.ps1"
+      - "tools/sura_registry_report_smoke.ps1"
+      - "tools/sura_registry_service_smoke.ps1"
+      - "tools/sura_registry_verify_smoke.ps1"
+      - "deploy/registry/**"
+      - "tools/sura_update_smoke.ps1"
+      - "sura-vscode/**"
+      - "run_benchmarks.ps1"
+      - "tests/typechecker_hardening_test.cpp"
+      - "tests/parser_untrusted_input_test.cpp"
+      - "tests/bytecode_validation_test.cpp"
+      - "tests/jit_sysv_baseline_test.cpp"
+      - "tests/jit_portable_baseline.sura"
+      - "tests/jit_arm64_baseline_test.cpp"
+      - "tests/gc_memory_safety_test.cpp"
+      - "tests/runtime_soak_cycle.sura"
+      - ".github/workflows/runtime-soak.yml"
+      - "tests/11_jit_user_step_semantics.sura"
+      - "tests/12_native_nn.sura"
+      - "tests/13_autograd_core.sura"
+      - "tests/14_autograd_gradcheck.sura"
+      - "tests/15_autograd_training.sura"
+      - "tests/52_media_text_frames.sura"
+      - "tests/wasm_exception_propagation.sura"
+      - "tests/wasm_index_safety.sura"
+      - "tests/wasm_index_oob.sura"
+      - "tests/wasm_memory_growth.sura"
+      - "tests/wasm_optional_chain_safety.sura"
+      - "build.bat"
+      - "build_test.bat"
+      - "compile.ps1"
+      - "play.bat"
+      - "Makefile"
+      - ".github/workflows/bench-dashboard.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  benchmark:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run CI coverage gate
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_ci_coverage_gate_smoke.ps1
+
+      - name: Verify project scope and contribution contracts
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_project_governance_smoke.ps1
+
+      - name: Verify security policy and audit-status contract
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_security_policy_smoke.ps1
+
+      - name: Verify external security review handoff generator
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_security_audit_bundle_smoke.ps1 -RepoRoot .
+
+      - name: Run build contract smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_build_contract_smoke.ps1
+
+      - name: Run release evidence gate smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_release_evidence_gate_smoke.ps1
+
+      - name: Run goal audit smoke test
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_text_encoding_smoke.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_guide_syntax_smoke.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_goal_audit_smoke.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_discord_goal_status_smoke.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_target_lowering_audit_smoke.ps1
+
+      - name: Setup MSYS2 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+
+      - name: Build Sura
+        shell: cmd
+        run: build.bat
+
+      - name: Verify published reference matches the runtime API
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_reference_freshness_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Verify release version contract
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_version_sync.ps1 -JsonOut artifacts\version_contract.json
+
+      - name: Audit Windows direct-download signatures
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_windows_signature_gate.ps1 -JsonOut artifacts\windows_signature.json
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_windows_signature_gate_smoke.ps1
+
+      - name: Run typechecker hardening C++ test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_typechecker_hardening_smoke.ps1 -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Run parser and bytecode untrusted-input regression
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_untrusted_input_smoke.ps1 -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Verify JIT target and ABI contract
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_target_smoke.ps1 -Engine .\SuraLanguage.exe -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Verify portable x86-64 and ARM64 baseline source fallback
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_portable_baseline_smoke.ps1 -Engine .\SuraLanguage.exe -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Verify ARM64 baseline encoding and fallback
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_arm64_baseline_smoke.ps1 -Engine .\SuraLanguage.exe -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Verify stable API snapshot generation
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_compatibility_api_snapshot.ps1 -Surapkg .\surapkg.exe -Check
+
+      - name: Verify source, API, bytecode, and ABI compatibility contract
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_compatibility_gate.ps1 -Engine .\SuraLanguage.exe -Surapkg .\surapkg.exe -JsonOut artifacts\compatibility_report.json
+
+      - name: Verify compatibility gate failure detection
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_compatibility_gate_smoke.ps1 -Engine .\SuraLanguage.exe -Surapkg .\surapkg.exe
+
+      - name: Run JIT and VM safety regression
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_vm_safety_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run generic numeric record-loop regression
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_generic_record_loop_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run GC memory-safety regression
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_gc_memory_safety_smoke.ps1 -Cxx C:\msys64\mingw64\bin\g++.exe
+
+      - name: Run GC statistics and allocation-pressure regression
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_gc_stats_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run one complete runtime soak cycle
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_runtime_soak.ps1 -Engine .\SuraLanguage.exe -DurationSeconds 1 -PerRunTimeoutSeconds 60 -JsonOut artifacts\runtime_soak_smoke.json
+
+      - name: Run stable tests
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\run_stable_tests.ps1
+
+      - name: Run bounded BPE tokenizer regression
+        shell: pwsh
+        run: .\SuraLanguage.exe .\tests\70_bpe_tokenizer.sura
+
+      - name: Run bounded ONNX execution regression
+        shell: pwsh
+        run: .\SuraLanguage.exe .\tests\71_onnx_execution.sura
+
+      - name: Run native neural network and autograd regression
+        shell: pwsh
+        run: |
+          .\SuraLanguage.exe --jit .\tests\12_native_nn.sura
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_nn_smoke.ps1 -Engine .\SuraLanguage.exe
+          .\SuraLanguage.exe --jit .\tests\13_autograd_core.sura
+          .\SuraLanguage.exe --jit .\tests\14_autograd_gradcheck.sura
+          .\SuraLanguage.exe --jit .\tests\15_autograd_training.sura
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_autograd_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_distributed_autograd_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run installer smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_installer_smoke.ps1
+
+      - name: Run engine quality smoke tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_check_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_engine_format_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_engine_lint_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_undefined_variable_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_language_policy_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_instance_fields_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_ast_json_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run package test runner smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_test_runner_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run JS target smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_js_target_smoke.ps1
+
+      - name: Run WASM target smoke test
+        shell: pwsh
+        run: |
+          node --version
+          npx --version
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_wasm_target_smoke.ps1
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_wasm_function_dispatch_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_wasm_exception_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_wasm_memory_safety_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run JIT modulo smoke test
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_mod_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_jit_collections_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run AOT smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_aot_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run native performance baseline
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_native_perf_baseline_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_native_perf_baseline.ps1 `
+            -Engine .\SuraLanguage.exe `
+            -JsonOut artifacts\native_perf.json `
+            -SummaryOut artifacts\native_perf.md
+
+      - name: Run C header bindgen smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bind_c_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run native embedding smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_embed_smoke.ps1
+
+      - name: Run native embedding template smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_embed_template_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run plugin policy smoke tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_plugin_smoke.ps1 -Engine .\SuraLanguage.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_plugin_manifest_audit_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run benchmark gate smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bench_gate_smoke.ps1
+
+      - name: Run benchmark dashboard smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bench_dashboard_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run benchmark dashboard CLI smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bench_dashboard_cli_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run tool policy audit smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_tool_policy_audit_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run audit JSON report smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_audit_report_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run tool policy generator smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_policy_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run tool approval smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_tool_approval_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run tool audit log smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_tool_audit_log_smoke.ps1 -Engine .\SuraLanguage.exe -Surapkg .\surapkg.exe
+
+      - name: Run doctor smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_doctor_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package quality smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_quality_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package CI smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_ci_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package release smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_release_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run protected release package smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_release_pack_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run package protect smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_protect_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run package run smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_run_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run package scaffold smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_scaffold_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run installed example gallery smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_examples_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run package toolchain smoke tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_format_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_check_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_lint_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_profile_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_bench_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package inventory and docs smoke tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_list_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_info_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_docs_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_search_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package dependency graph smoke tests
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_tree_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_restore_lock_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_remove_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_pkg_version_smoke.ps1 -Surapkg .\surapkg.exe
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_clean_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run CLI args smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_cli_args_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run engine test runner smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_engine_test_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run namespaced stdlib module smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_stdlib_modules_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run video to text-frame smoke test
+        shell: pwsh
+        run: |
+          .\SuraLanguage.exe .\tests\52_media_text_frames.sura
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_media_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run procedural monochrome animation smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bad_apple_ascii_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run console API smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_console_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run async stdlib smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_async_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run random stdlib smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_random_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run UTF-8 path smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_utf8_path_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run HTTP server smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_http_server_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run agent template smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_agent_smoke.ps1 -Surapkg .\surapkg.exe -Engine .\SuraLanguage.exe
+
+      - name: Run profile smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_profile_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Run Python bridge smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_python_bridge_smoke.ps1 -Engine .\SuraLanguage.exe
+
+      - name: Validate VS Code extension
+        shell: pwsh
+        run: |
+          Push-Location .\sura-vscode
+          npm ci
+          npm run check
+          Pop-Location
+
+      - name: Run LSP smoke test
+        shell: pwsh
+        run: node .\tools\sura_lsp_smoke.js .\SuraLanguage.exe
+
+      - name: Run VS Code run button smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_vscode_run_button_smoke.ps1
+
+      - name: Run debug adapter smoke test
+        shell: pwsh
+        run: node .\tools\sura_debug_smoke.js .\SuraLanguage.exe
+
+      - name: Run debug adapter locals smoke test
+        shell: pwsh
+        run: node .\tools\sura_debug_locals_smoke.js .\SuraLanguage.exe
+
+      - name: Run debug adapter exception smoke test
+        shell: pwsh
+        run: node .\tools\sura_debug_exception_smoke.js .\SuraLanguage.exe
+
+      - name: Run registry client smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_registry_client_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run registry account smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_registry_account_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run registry report smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_registry_report_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run registry service smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_registry_service_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run registry verification smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_registry_verify_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run public signature smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_public_signature_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Run package update smoke test
+        shell: pwsh
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_update_smoke.ps1 -Surapkg .\surapkg.exe
+
+      - name: Fetch previous benchmark history
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $historyUrl = "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/bench_history.json"
+          try {
+            Invoke-WebRequest -Uri $historyUrl -OutFile artifacts\bench_history.json -UseBasicParsing
+            Write-Host "Fetched previous benchmark history from $historyUrl"
+          } catch {
+            Write-Host "No previous benchmark history found at $historyUrl"
+          }
+
+      - name: Generate benchmark dashboard
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bench_dashboard.ps1 `
+            -Engine .\SuraLanguage.exe `
+            -Out artifacts\bench_dashboard.html `
+            -JsonOut artifacts\bench_dashboard.json `
+            -SummaryOut artifacts\bench_summary.md `
+            -ReleaseNotesOut artifacts\bench_release_notes.md `
+            -HistoryIn artifacts\bench_history.json `
+            -HistoryOut artifacts\bench_history.json `
+            -NativePerfIn artifacts\native_perf.json `
+            -HistoryLimit 100
+
+      - name: Generate AI backend benchmark
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_ai_benchmark.ps1 `
+            -Engine .\SuraLanguage.exe `
+            -JsonOut artifacts\ai_benchmark.json `
+            -MarkdownOut artifacts\ai_benchmark.md
+
+      - name: Check benchmark regression gate
+        shell: pwsh
+        run: |
+          $requiredBenchmarks = "bench_fib.sura,bench_ai_schema.sura,bench_rag_vector.sura,bench_tool_routing.sura,bench_policy_gate.sura,bench_guardrail.sura,bench_dependency_resolver.sura,bench_workflow_scheduler.sura,bench_telemetry_window.sura,bench_fraud_scoring.sura,bench_feature_flags.sura,bench_physics.sura,bench_physics_inplace.sura,bench_physics3d.sura,bench_market.sura"
+          $requiredPythonComparisons = "fib(30),AI JSON/schema validation,RAG vector ranking,AI tool policy gate,AI guardrail event scoring,dependency resolver hot loop,automation workflow scheduler,telemetry rolling window,payment fraud scoring,feature flag rollout,game physics Vec2 loop,game physics in-place Vec2 loop,game physics Vec3 loop,market simulation objects"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_bench_gate.ps1 `
+            -Report artifacts\bench_dashboard.json `
+            -History artifacts\bench_history.json `
+            -MaxRegressionPercent 35 `
+            -RequiredBenchmarks $requiredBenchmarks `
+            -RequiredPythonComparisons $requiredPythonComparisons
+
+      - name: Generate goal completion audit
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_target_lowering_audit.ps1 `
+            -RepoRoot . `
+            -JsonOut artifacts\target_lowering_audit.json `
+            -SummaryOut artifacts\target_lowering_audit.md
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_goal_audit.ps1 `
+            -RepoRoot . `
+            -NativePerfJson artifacts\native_perf.json `
+            -JsonOut artifacts\goal_audit.json `
+            -SummaryOut artifacts\goal_audit.md
+
+      - name: Generate external security review handoff
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_security_audit_bundle.ps1 `
+            -RepoRoot . `
+            -Engine .\SuraLanguage.exe `
+            -OutDir artifacts\security-audit-bundle-1.11.1 `
+            -ZipOut artifacts\sura-security-audit-1.11.1.zip `
+            -ReportOut artifacts\security_audit_bundle.json `
+            -SummaryOut artifacts\security_audit_bundle.md `
+            -Force
+
+      - name: Notify Discord goal status
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SURA_DISCORD_WEBHOOK: ${{ secrets.SURA_DISCORD_WEBHOOK }}
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_discord_goal_status.ps1 `
+            -GoalAuditJson artifacts\goal_audit.json `
+            -NativePerfJson artifacts\native_perf.json `
+            -AllowMissing
+
+      - name: Check release evidence gate
+        shell: pwsh
+        run: |
+          $requiredBenchmarks = "bench_fib.sura,bench_ai_schema.sura,bench_rag_vector.sura,bench_tool_routing.sura,bench_policy_gate.sura,bench_guardrail.sura,bench_dependency_resolver.sura,bench_workflow_scheduler.sura,bench_telemetry_window.sura,bench_fraud_scoring.sura,bench_feature_flags.sura,bench_physics.sura,bench_physics_inplace.sura,bench_physics3d.sura,bench_market.sura"
+          $requiredPythonComparisons = "fib(30),AI JSON/schema validation,RAG vector ranking,AI tool policy gate,AI guardrail event scoring,dependency resolver hot loop,automation workflow scheduler,telemetry rolling window,payment fraud scoring,feature flag rollout,game physics Vec2 loop,game physics in-place Vec2 loop,game physics Vec3 loop,market simulation objects"
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\sura_release_evidence_gate.ps1 `
+            -ArtifactsDir artifacts `
+            -JsonOut artifacts\release_evidence.json `
+            -SummaryOut artifacts\release_evidence.md `
+            -RequiredBenchmarks $requiredBenchmarks `
+            -RequiredPythonComparisons $requiredPythonComparisons
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sura-benchmark-dashboard
+          path: |
+            artifacts/bench_dashboard.html
+            artifacts/bench_dashboard.json
+            artifacts/bench_summary.md
+            artifacts/bench_release_notes.md
+            artifacts/bench_history.json
+            artifacts/ci_coverage_gate.json
+            artifacts/version_contract.json
+            artifacts/compatibility_report.json
+            artifacts/windows_signature.json
+            artifacts/native_perf.json
+            artifacts/native_perf.md
+            artifacts/ai_benchmark.json
+            artifacts/ai_benchmark.md
+            artifacts/target_lowering_audit.json
+            artifacts/target_lowering_audit.md
+            artifacts/goal_audit.json
+            artifacts/goal_audit.md
+            artifacts/release_evidence.json
+            artifacts/release_evidence.md
+            artifacts/runtime_soak_smoke.json
+            artifacts/sura-security-audit-1.11.1.zip
+            artifacts/security_audit_bundle.json
+            artifacts/security_audit_bundle.md
+
+      - name: Upload Pages artifact
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: artifacts
+
+  deploy-pages:
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    needs: benchmark
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy benchmark dashboard to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

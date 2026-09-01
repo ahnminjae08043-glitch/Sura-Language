@@ -1,0 +1,5 @@
+func hello() do
+    return 1
+end
+
+print helllo()

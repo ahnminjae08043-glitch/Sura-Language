@@ -1,0 +1,11 @@
+use autograd
+
+path is env_get("SURA_ONNX_FIXTURE", "")
+assert(path != "")
+weights is autograd.load_onnx_weights(path)
+assert_eq(autograd.dtype(weights.external_f32), "float32")
+assert_eq(autograd.shape(weights.external_f32).join(","), "2,2")
+assert_eq(json_stringify(autograd.data(weights.external_f32)), "[[1,2],[3,4]]")
+assert_eq(autograd.dtype(weights.external_f64), "float64")
+assert_eq(json_stringify(autograd.data(weights.external_f64)), "[0.25,-0.5]")
+print "onnx_import_fixture: PASS"

@@ -1,0 +1,438 @@
+# ============================================================
+#  수라 스타블라스터 3D v2.0  — 실시간 그래픽 윈도우 버전
+#  3D 원근 투영 우주 슈팅 게임
+#
+#  조작:
+#    마우스 이동    조준
+#    좌클릭        발사
+#    Q             종료
+# ============================================================
+
+win_init 800 600 "수라 스타블라스터 3D v2.0"
+
+W is 800
+H is 600
+
+CAM_POS    is [0, 0, -5]
+CAM_TARGET is [0, 0, 20]
+CAM_FOV    is 80
+
+# ── 별 (배경) ──────────────────────────────────────────────
+NUM_STARS is 110
+sx is []
+sy is []
+sz is []
+si is 0
+while si < NUM_STARS do
+    push(sx, random(-290, 290))
+    push(sy, random(-210, 210))
+    push(sz, random(5, 290))
+    si is si + 1
+end
+
+# ── 적 함선 (최대 MAX_EI 대) ──────────────────────────────
+MAX_EI is 8
+ex is []
+ey is []
+ez is []
+ehp is []
+ealive is []
+j is 0
+while j < MAX_EI do
+    push(ex, 0)
+    push(ey, 0)
+    push(ez, 200)
+    push(ehp, 1)
+    push(ealive, 0)
+    j is j + 1
+end
+
+# ── 플레이어 상태 ─────────────────────────────────────────
+player is {}
+player["hp"]      is 100
+player["max_hp"]  is 100
+player["score"]   is 0
+player["wave"]    is 1
+player["e_spd"]   is 0.5
+player["fire_cd"] is 0
+player["flash"]   is 0
+
+dmg_flash is 0
+
+# ── 함수 ─────────────────────────────────────────────────
+
+func alive_count() do
+    cnt is 0
+    j is 0
+    while j < MAX_EI do
+        if ealive[j] == 1 then cnt is cnt + 1
+        j is j + 1
+    end
+    return cnt
+end
+
+func reset_enemies() do
+    w is player["wave"]
+    j is 0
+    while j < MAX_EI do
+        ex[j] is random(-195, 195)
+        ey[j] is random(-135, 95)
+        ez[j] is random(120, 200) + w * 30
+        ehp[j] is floor(w / 2) + 1
+        ealive[j] is 1
+        j is j + 1
+    end
+end
+
+func fire(cx, cy) do
+    cam is {position: CAM_POS, target: CAM_TARGET, fov_deg: CAM_FOV}
+
+    best_ei is -1
+    best_d  is 99999
+
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            eproj is camera_project([ex[ei], ey[ei], ez[ei]], cam, W, H)
+            if eproj.visible then
+                dx is eproj.x - cx
+                dy is eproj.y - cy
+                d  is sqrt(dx * dx + dy * dy)
+                if d < best_d then
+                    best_d  is d
+                    best_ei is ei
+                end
+            end
+        end
+        ei is ei + 1
+    end
+
+    if best_ei == -1 then return
+    if best_d > 55 then return
+
+    ehp[best_ei] is ehp[best_ei] - 1
+    if ehp[best_ei] <= 0 then
+        ealive[best_ei] is 0
+        bonus is 100 + player["wave"] * 25
+        player["score"] is player["score"] + bonus
+        player["flash"] is 12
+    else
+        player["flash"] is 5
+    end
+end
+
+reset_enemies()
+
+# ── 타이틀 화면 (3초) ────────────────────────────────────
+
+win_clear 4 4 12
+# 제목 패널
+win_rect 100 170 600 260 20 20 50
+win_rect 108 178 584 244 14 14 35
+# 장식 바
+win_rect 120 200 560 4 80 140 255
+win_rect 120 410 560 4 80 140 255
+# 조준선 아이콘 (중앙)
+win_rect 384 280 32 3 0 210 240
+win_rect 384 280 3 32 0 210 240
+win_rect 349 280 28 3 0 210 240
+win_rect 349 290 3 22 0 210 240
+win_rect 423 280 28 3 0 210 240
+win_rect 423 290 3 22 0 210 240
+win_rect 349 305 28 3 0 210 240
+win_rect 423 305 28 3 0 210 240
+# 별 장식
+win_rect 130 215 4 4 200 200 255
+win_rect 660 215 4 4 200 200 255
+win_rect 130 380 4 4 200 200 255
+win_rect 660 380 4 4 200 200 255
+# 웨이브 바 (로딩 효과)
+win_rect 220 370 360 10 25 25 60
+win_rect 222 372 356 6 60 140 255
+win_update
+sleep 2500
+
+# ── 메인 게임 루프 ────────────────────────────────────────
+
+running is 1
+while running == 1 do
+
+    # 입력
+    mouse_pos mx my
+    mouse_down "left" m_left
+    key_down "q" k_q
+
+    if k_q then break
+
+    # 발사 쿨다운
+    if player["fire_cd"] > 0 then
+        player["fire_cd"] is player["fire_cd"] - 1
+    end
+    if m_left and player["fire_cd"] == 0 then
+        fire(mx, my)
+        player["fire_cd"] is 14
+    end
+
+    # 효과 타이머 감소
+    if player["flash"] > 0 then
+        player["flash"] is player["flash"] - 1
+    end
+    if dmg_flash > 0 then
+        dmg_flash is dmg_flash - 1
+    end
+
+    # 별 이동 (공간 속도감)
+    si is 0
+    while si < NUM_STARS do
+        sz[si] is sz[si] - 0.28
+        if sz[si] < 2 then
+            sz[si] is 290
+            sx[si] is random(-290, 290)
+            sy[si] is random(-210, 210)
+        end
+        si is si + 1
+    end
+
+    # 적 이동 및 충돌
+    prev_hp is player["hp"]
+    spd is player["e_spd"]
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            ez[ei] is ez[ei] - spd
+            if ez[ei] < 3 then
+                dmg is 10 + player["wave"] * 3 + random(0, 9)
+                player["hp"] is player["hp"] - dmg
+                ealive[ei] is 0
+                if player["hp"] < 0 then player["hp"] is 0
+            end
+        end
+        ei is ei + 1
+    end
+    if player["hp"] < prev_hp then dmg_flash is 14
+
+    # HP 체크
+    if player["hp"] <= 0 then
+        running is 0
+        break
+    end
+
+    # 웨이브 클리어 체크
+    if alive_count() == 0 then
+        player["wave"] is player["wave"] + 1
+        player["score"] is player["score"] + 500
+        player["e_spd"] is player["e_spd"] + 0.08
+        player["flash"] is 18
+        reset_enemies()
+    end
+
+    # ── 렌더링 ───────────────────────────────────────────
+
+    cam is {position: CAM_POS, target: CAM_TARGET, fov_deg: CAM_FOV}
+
+    # 배경 (피격 시 빨간 플래시)
+    if dmg_flash > 8 then
+        win_clear 50 5 5
+    elif dmg_flash > 4 then
+        win_clear 25 5 5
+    else
+        win_clear 4 4 12
+    end
+
+    # 1) 별 렌더링
+    si is 0
+    while si < NUM_STARS do
+        proj is camera_project([sx[si], sy[si], sz[si]], cam, W, H)
+        if proj.visible then
+            px is floor(proj.x)
+            py is floor(proj.y)
+            d  is proj.depth
+            if px >= 1 and px < W - 1 and py >= 1 and py < H - 1 then
+                if d > 210 then
+                    win_rect px py 1 1 80 80 125
+                elif d > 130 then
+                    win_rect px py 2 2 135 135 185
+                else
+                    win_rect px py 3 3 205 205 255
+                end
+            end
+        end
+        si is si + 1
+    end
+
+    # 2) 적 함선 렌더링 (거리별 5단계 크기)
+    ei is 0
+    while ei < MAX_EI do
+        if ealive[ei] == 1 then
+            proj is camera_project([ex[ei], ey[ei], ez[ei]], cam, W, H)
+            if proj.visible then
+                px is floor(proj.x)
+                py is floor(proj.y)
+                d  is proj.depth
+
+                if d > 260 then
+                    # 극소 (점)
+                    win_rect px - 2 py - 2 5 5 210 55 55
+
+                elif d > 160 then
+                    # 소형
+                    hs is 8
+                    win_rect px - hs     py - hs     hs * 2 hs * 2 210 55 55
+                    win_rect px - hs * 3 py - 3      hs * 2 6      165 40 40
+                    win_rect px + hs     py - 3      hs * 2 6      165 40 40
+
+                elif d > 85 then
+                    # 중형
+                    hs is 17
+                    win_rect px - hs     py - hs     hs * 2 hs * 2 235 62 62
+                    win_rect px - hs * 3 py - 5      hs * 2 10     185 48 48
+                    win_rect px + hs     py - 5      hs * 2 10     185 48 48
+                    win_rect px - 9      py - hs + 5 18     11     255 205 100
+                    win_rect px - 6      py + hs - 6 12     8      255 145 0
+
+                elif d > 38 then
+                    # 대형
+                    hs is 28
+                    win_rect px - hs     py - hs     hs * 2 hs * 2 248 66 66
+                    win_rect px - hs * 3 py - 7      hs * 2 + 4 14 198 52 52
+                    win_rect px + hs     py - 7      hs * 2 + 4 14 198 52 52
+                    win_rect px - 13     py - hs + 6 26     17    255 218 132
+                    win_rect px - 9      py + hs - 9 18     13    255 165 0
+
+                else
+                    # 극대 — 위험! 글로우 포함
+                    hs is 44
+                    win_rect px - hs - 8 py - hs - 8 hs * 2 + 16 hs * 2 + 16 75 10 10
+                    win_rect px - hs     py - hs     hs * 2       hs * 2      255 72 72
+                    win_rect px - hs * 3 py - 9      hs * 2 + 6   18         208 56 56
+                    win_rect px + hs     py - 9      hs * 2 + 6   18         208 56 56
+                    win_rect px - 15     py - hs + 8 30     23    255 238 172
+                    win_rect px - 11     py + hs - 11 22    17    255 190 32
+                end
+            end
+        end
+        ei is ei + 1
+    end
+
+    # 3) 레이저 빔 (발사 직후)
+    if player["fire_cd"] > 10 then
+        win_rect mx - 1 25 2 my - 30 255 255 90
+        win_rect mx - 2 23 4 8 255 255 200
+    end
+
+    # 4) 조준 십자선 (마우스 위치)
+    crs is 28
+    gap is 8
+    if player["fire_cd"] > 10 then
+        # 발사 — 노란색
+        win_rect mx - crs - gap my - 1  crs 3 255 240 60
+        win_rect mx + gap        my - 1  crs 3 255 240 60
+        win_rect mx - 1  my - crs - gap 3   crs 255 240 60
+        win_rect mx - 1  my + gap        3   crs 255 240 60
+        win_rect mx - 5  my - 5  10 10 255 255 130
+    else
+        # 대기 — 청록색
+        win_rect mx - crs - gap my - 1  crs 2 0 210 240
+        win_rect mx + gap        my - 1  crs 2 0 210 240
+        win_rect mx - 1  my - crs - gap 2   crs 0 210 240
+        win_rect mx - 1  my + gap        2   crs 0 210 240
+        win_rect mx - 3  my - 3  6 6 0 230 255
+    end
+
+    # 5) 히트 링 파동 효과
+    if player["flash"] > 0 then
+        fl is player["flash"]
+        ring is fl * 4 + 12
+        win_rect mx - ring      my - 1  ring - gap 2 255 255 0
+        win_rect mx + gap + 1   my - 1  ring - gap 2 255 255 0
+        win_rect mx - 1  my - ring      2 ring - gap 255 255 0
+        win_rect mx - 1  my + gap + 1   2 ring - gap 255 255 0
+    end
+
+    # 6) 플레이어 함선 (하단 중앙 고정)
+    bx is 390
+    by is 548
+    win_rect bx - 22 by - 32 44 40 70 115 215
+    win_rect bx - 58 by - 9  36 20 52  88 168
+    win_rect bx + 22 by - 9  36 20 52  88 168
+    win_rect bx - 11 by + 8  22 18 0  165 235
+
+    # ── HUD ─────────────────────────────────────────────────
+
+    # HP 바 (상단 왼쪽)
+    win_rect 10 10 204 22 28 28 55
+    hp_w is player["hp"] * 200 / player["max_hp"]
+    if player["hp"] > player["max_hp"] * 2 / 3 then
+        win_rect 12 12 hp_w 18 42 218 82
+    elif player["hp"] > player["max_hp"] / 3 then
+        win_rect 12 12 hp_w 18 228 188 42
+    else
+        win_rect 12 12 hp_w 18 228 52 52
+    end
+
+    # 웨이브 표시 (상단 중앙 — 파란 점)
+    wv is player["wave"]
+    wv_x is W / 2 - wv * 7
+    wi is 0
+    while wi < wv do
+        win_rect floor(wv_x) + wi * 14 10 10 10 80 145 255
+        wi is wi + 1
+    end
+
+    # 적 상태 표시 (상단 오른쪽 — 빨강=생존, 회색=사망)
+    ai is 0
+    while ai < MAX_EI do
+        ax is W - 22 - (MAX_EI - ai) * 14
+        if ealive[ai] == 1 then
+            win_rect ax 10 10 10 225 62 62
+        else
+            win_rect ax 10 10 10 58 58 78
+        end
+        ai is ai + 1
+    end
+
+    # 점수 바 (하단)
+    sc is player["score"]
+    sc_w is sc / 8
+    if sc_w > W - 20 then sc_w is W - 20
+    win_rect 10 H - 12 sc_w 8 100 185 255
+
+    win_update
+    sleep 16
+
+end
+
+# ── 게임 오버 화면 ────────────────────────────────────────
+
+win_clear 2 2 8
+
+# 어두운 패널
+win_rect 150 160 500 280 48 8 8
+win_rect 158 168 484 264 32 5 5
+
+# 파괴된 함선 (회색)
+win_rect 330 295 140 48 88 88 92
+win_rect 275 307 58 20 68 68 72
+win_rect 428 307 58 20 68 68 72
+win_rect 370 318 60 22 50 50 55
+
+# 빈 HP 바
+win_rect 170 240 460 24 38 38 58
+
+# 점수 바
+sc is player["score"]
+sc_bar is sc / 5
+if sc_bar > 450 then sc_bar is 450
+win_rect 172 265 sc_bar 18 80 155 235
+
+# 웨이브 점
+wv is player["wave"]
+wf_x is W / 2 - wv * 8
+wi is 0
+while wi < wv do
+    win_rect floor(wf_x) + wi * 16 380 12 12 80 145 255
+    wi is wi + 1
+end
+
+win_update
+sleep 4000

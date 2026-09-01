@@ -1,0 +1,37 @@
+use tokenizer
+use dataset
+use autograd
+
+# A tiny next-byte training example. The loader streams sample windows with
+# seek reads; this is intentionally a correctness demo, not a large-model run.
+dataset_path is path_join(temp_dir(), "sura-byte-training-" + uuid_v4() + ".suradata")
+tok is tokenizer.byte()
+dataset.pack_text("sura language learns bytes. sura language learns models. sura language learns bytes.", tok, dataset_path, {input: "text", chunk_bytes: 16})
+loader is dataset.open(dataset_path, {batch_size: 4, sequence_length: 8, stride: 4, shuffle: true, seed: 2026})
+
+embedding_weight is autograd.randn([256, 16], {seed: 1, std: 0.02, requires_grad: true, dtype: "float32"})
+head_weight is autograd.randn([16, 256], {seed: 2, std: 0.02, requires_grad: true, dtype: "float32"})
+head_bias is autograd.zeros([256], {requires_grad: true, dtype: "float32"})
+parameters is [embedding_weight, head_weight, head_bias]
+
+step is 0
+while step < 40 do
+  batch is dataset.next(loader)
+  if batch == nil then
+    dataset.reset(loader, step + 1)
+    batch is dataset.next(loader)
+  end
+  autograd.zero_grad(parameters)
+  hidden is autograd.embedding(batch.input_ids, embedding_weight)
+  logits is autograd.linear(hidden, head_weight, head_bias)
+  loss is autograd.cross_entropy_ids(logits, batch.target_ids)
+  autograd.backward(loss)
+  autograd.clip_grad_norm(parameters, 1)
+  autograd.adam(parameters, 0.01)
+  step is step + 1
+end
+
+print(autograd.item(loss))
+autograd.save_safetensors({embedding: embedding_weight, head_weight: head_weight, head_bias: head_bias}, "tiny-byte-model.safetensors")
+dataset.close(loader)
+file_delete(dataset_path)

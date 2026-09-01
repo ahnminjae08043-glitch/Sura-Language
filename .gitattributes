@@ -1,0 +1,11 @@
+# GitHub linguist: 언어 통계는 언어 구현(C++)과 Sura 소스를 대표해야 한다.
+# 검증 도구(PowerShell smokes/gates)와 생성물은 프로젝트 "코드" 집계에서 제외.
+tools/** linguist-vendored
+sura-vscode/** linguist-vendored
+reference.html linguist-generated
+*.ps1 linguist-vendored
+*.bat linguist-vendored
+
+# Sura 소스는 linguist 미등록 언어라 통계에 안 잡히지만, diff에서는
+# 텍스트로 취급되도록 명시한다.
+*.sura linguist-detectable text

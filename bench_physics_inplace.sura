@@ -1,0 +1,27 @@
+// In-place physics loop benchmark for game-style hot updates.
+
+struct Vec2 do
+    x is 0
+    y is 0
+
+    func add_scaled(vel, dt) do
+        self.x is self.x + vel.x * dt
+        self.y is self.y + vel.y * dt
+        return self
+    end
+end
+
+p is Vec2(0, 0)
+v is Vec2(1, 2)
+dt is 0.016
+
+t is clock()
+i is 0
+while i < 100000 do
+    p.add_scaled(v, dt)
+    i is i + 1
+end
+ms is (clock() - t) * 1000
+print "physics inplace 100k x  {ms} ms"
+print "final pos.x:"
+print p.x

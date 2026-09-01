@@ -1,0 +1,243 @@
+use autograd
+
+path is path_join(temp_dir(), "sura-onnx-exec-" + uuid_v4() + ".onnx")
+bad_path is path + ".unsupported"
+truncated_path is path + ".truncated"
+opset_path is path + ".opset"
+identity_path is path + ".identity"
+mutation_path is path + ".mutation"
+typed_path is path + ".typed"
+shape_path is path + ".shape"
+bad_perm_path is path + ".bad-perm"
+bad_axis_path is path + ".bad-axis"
+reshape_path is path + ".reshape"
+reshape_bad_shape_path is path + ".reshape-bad-shape"
+reshape_allowzero_path is path + ".reshape-allowzero"
+reshape_wrong_use_path is path + ".reshape-wrong-use"
+
+# Valid ONNX IR v9/opset 18 graph. It contains FLOAT raw-data initializers
+# and MatMul, Add, Relu, Neg, Sub, Mul, Div, Sigmoid, Tanh, Softmax and Gemm.
+model_bytes is [8,9,18,10,83,117,114,97,32,116,101,115,116,115,58,223,3,10,25,10,1,88,10,1,87,18,1,77,26,6,109,97,116,109,117,108,34,6,77,97,116,77,117,108,10,20,10,1,77,10,1,66,18,1,65,26,4,98,105,97,115,34,3,65,100,100,10,18,10,1,65,18,1,82,26,4,114,101,108,117,34,4,82,101,108,117,10,16,10,1,65,18,1,78,26,3,110,101,103,34,3,78,101,103,10,19,10,1,65,10,1,66,18,1,83,26,3,115,117,98,34,3,83,117,98,10,21,10,1,65,10,3,116,119,111,18,1,85,26,3,109,117,108,34,3,77,117,108,10,21,10,1,85,10,3,116,119,111,18,1,68,26,3,100,105,118,34,3,68,105,118,10,25,10,1,65,18,2,83,71,26,7,115,105,103,109,111,105,100,34,7,83,105,103,109,111,105,100,10,18,10,1,65,18,1,84,26,4,116,97,110,104,34,4,84,97,110,104,10,47,10,1,65,18,2,83,77,26,7,115,111,102,116,109,97,120,34,7,83,111,102,116,109,97,120,42,20,10,4,97,120,105,115,24,255,255,255,255,255,255,255,255,255,1,160,1,2,10,87,10,1,88,10,1,87,10,1,66,18,1,71,26,4,103,101,109,109,34,4,71,101,109,109,42,15,10,5,97,108,112,104,97,21,0,0,0,63,160,1,1,42,14,10,4,98,101,116,97,21,0,0,0,64,160,1,1,42,13,10,6,116,114,97,110,115,65,24,0,160,1,2,42,13,10,6,116,114,97,110,115,66,24,0,160,1,2,18,27,83,117,114,97,32,79,78,78,88,32,101,120,101,99,117,116,105,111,110,32,102,105,120,116,117,114,101,42,27,10,2,2,2,16,1,66,1,87,74,16,0,0,128,63,0,0,0,64,0,0,64,64,0,0,128,64,42,18,10,1,2,16,1,66,1,66,74,8,0,0,128,63,0,0,128,191,42,13,16,1,66,3,116,119,111,74,4,0,0,0,64,90,3,10,1,88,98,3,10,1,82,98,3,10,1,78,98,3,10,1,83,98,3,10,1,68,98,4,10,2,83,71,98,3,10,1,84,98,4,10,2,83,77,98,3,10,1,71,66,2,16,18]
+file_write_bytes(path, model_bytes)
+
+x is autograd.tensor([[-1, 0], [-1, 2]], {dtype: "float32", requires_grad: true})
+w is autograd.tensor([[1, 2], [3, 4]], "float32")
+b is autograd.tensor([1, -1], "float32")
+matmul is autograd.matmul(x, w)
+bias is autograd.add(matmul, b)
+
+outputs is autograd.run_onnx(path, {X: x})
+assert_eq(json_stringify(autograd.data(outputs.R)), json_stringify(autograd.data(autograd.relu(bias))))
+assert_eq(json_stringify(autograd.data(outputs.N)), json_stringify(autograd.data(autograd.neg(bias))))
+assert_eq(json_stringify(autograd.data(outputs.S)), json_stringify(autograd.data(autograd.sub(bias, b))))
+assert_eq(json_stringify(autograd.data(outputs.D)), json_stringify(autograd.data(bias)))
+assert_eq(json_stringify(autograd.data(outputs.SG)), json_stringify(autograd.data(autograd.sigmoid(bias))))
+assert_eq(json_stringify(autograd.data(outputs.T)), json_stringify(autograd.data(autograd.tanh(bias))))
+assert_eq(json_stringify(autograd.data(outputs.SM)), json_stringify(autograd.data(autograd.softmax(bias))))
+expected_gemm is autograd.add(autograd.mul(matmul, 0.5), autograd.mul(b, 2))
+assert_eq(json_stringify(autograd.data(outputs.G)), json_stringify(autograd.data(expected_gemm)))
+
+# The returned output keeps the autograd parent graph alive after execution.
+autograd.backward(autograd.sum(outputs.G))
+assert_eq(type(autograd.grad(x)), "array")
+
+# Transpose accepts a complete ONNX axis permutation, and Flatten keeps the
+# resulting tensor attached to the autograd graph.
+shape_model_bytes is [8,9,18,10,83,117,114,97,32,116,101,115,116,115,58,181,1,10,44,10,1,88,18,1,84,26,9,116,114,97,110,115,112,111,115,101,34,9,84,114,97,110,115,112,111,115,101,42,14,10,4,112,101,114,109,58,3,1,0,2,160,1,7,10,37,10,1,84,18,1,70,26,7,102,108,97,116,116,101,110,34,7,70,108,97,116,116,101,110,42,11,10,4,97,120,105,115,24,2,160,1,2,18,23,83,117,114,97,32,79,78,78,88,32,115,104,97,112,101,32,102,105,120,116,117,114,101,90,23,10,1,88,18,18,10,16,8,1,18,12,10,2,8,2,10,2,8,3,10,2,8,4,98,23,10,1,84,18,18,10,16,8,1,18,12,10,2,8,3,10,2,8,2,10,2,8,4,98,19,10,1,70,18,14,10,12,8,1,18,8,10,2,8,6,10,2,8,4,66,2,16,18]
+file_write_bytes(shape_path, shape_model_bytes)
+shape_input is autograd.tensor([[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]], {dtype: "float32", requires_grad: true})
+shape_outputs is autograd.run_onnx(shape_path, {X: shape_input})
+expected_transpose is autograd.transpose(shape_input, 0, 1)
+expected_flatten is autograd.reshape(expected_transpose, [6, 4])
+assert_eq(json_stringify(autograd.shape(shape_outputs.T)), "[3,2,4]")
+assert_eq(json_stringify(autograd.shape(shape_outputs.F)), "[6,4]")
+assert_eq(json_stringify(autograd.data(shape_outputs.T)), json_stringify(autograd.data(expected_transpose)))
+assert_eq(json_stringify(autograd.data(shape_outputs.F)), json_stringify(autograd.data(expected_flatten)))
+autograd.backward(autograd.sum(shape_outputs.F))
+assert_eq(type(autograd.grad(shape_input)), "array")
+
+bad_perm_bytes is shape_model_bytes.slice(0, shape_model_bytes.len())
+bad_perm_bytes[58] is 1
+file_write_bytes(bad_perm_path, bad_perm_bytes)
+bad_perm_rejected is false
+try
+  autograd.run_onnx(bad_perm_path, {X: shape_input})
+catch error
+  bad_perm_rejected is true
+end
+assert(bad_perm_rejected)
+
+bad_axis_bytes is shape_model_bytes.slice(0, shape_model_bytes.len())
+bad_axis_bytes[98] is 4
+file_write_bytes(bad_axis_path, bad_axis_bytes)
+bad_axis_rejected is false
+try
+  autograd.run_onnx(bad_axis_path, {X: shape_input})
+catch error
+  bad_axis_rejected is true
+end
+assert(bad_axis_rejected)
+
+# Reshape accepts a bounded raw-data INT64 shape initializer. A 0 copies the
+# matching input dimension when allowzero=0, and -1 infers the remaining size.
+reshape_model_bytes is [8,9,18,10,83,117,114,97,32,116,101,115,116,115,58,177,1,10,49,10,1,88,10,5,115,104,97,112,101,18,1,89,26,7,114,101,115,104,97,112,101,34,7,82,101,115,104,97,112,101,42,16,10,9,97,108,108,111,119,122,101,114,111,24,0,160,1,2,18,25,83,117,114,97,32,79,78,78,88,32,114,101,115,104,97,112,101,32,102,105,120,116,117,114,101,42,30,10,1,2,16,7,66,5,115,104,97,112,101,74,16,0,0,0,0,0,0,0,0,255,255,255,255,255,255,255,255,90,23,10,1,88,18,18,10,16,8,1,18,12,10,2,8,2,10,2,8,3,10,2,8,4,90,19,10,5,115,104,97,112,101,18,10,10,8,8,7,18,4,10,2,8,2,98,19,10,1,89,18,14,10,12,8,1,18,8,10,2,8,2,10,2,8,12,66,2,16,18]
+file_write_bytes(reshape_path, reshape_model_bytes)
+reshape_input is autograd.tensor([[[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]], [[13, 14, 15, 16], [17, 18, 19, 20], [21, 22, 23, 24]]], {dtype: "float32", requires_grad: true})
+reshape_outputs is autograd.run_onnx(reshape_path, {X: reshape_input})
+expected_reshape is autograd.reshape(reshape_input, [2, 12])
+assert_eq(json_stringify(autograd.shape(reshape_outputs.Y)), "[2,12]")
+assert_eq(json_stringify(autograd.data(reshape_outputs.Y)), json_stringify(autograd.data(expected_reshape)))
+autograd.backward(autograd.sum(reshape_outputs.Y))
+assert_eq(type(autograd.grad(reshape_input)), "array")
+
+# The weights-only loader remains float-only; INT64 is an executor-internal
+# shape constant and is never exposed as a Sura floating Tensor.
+integer_weight_rejected is false
+try
+  autograd.load_onnx_weights(reshape_path)
+catch error
+  integer_weight_rejected is true
+end
+assert(integer_weight_rejected)
+
+reshape_bad_shape_bytes is reshape_model_bytes.slice(0, reshape_model_bytes.len())
+for i in 111 to 118 do
+  reshape_bad_shape_bytes[i] is 255
+end
+file_write_bytes(reshape_bad_shape_path, reshape_bad_shape_bytes)
+reshape_bad_shape_rejected is false
+try
+  autograd.run_onnx(reshape_bad_shape_path, {X: reshape_input})
+catch error
+  reshape_bad_shape_rejected is true
+end
+assert(reshape_bad_shape_rejected)
+
+reshape_allowzero_bytes is reshape_model_bytes.slice(0, reshape_model_bytes.len())
+reshape_allowzero_bytes[64] is 1
+file_write_bytes(reshape_allowzero_path, reshape_allowzero_bytes)
+reshape_allowzero_rejected is false
+try
+  autograd.run_onnx(reshape_allowzero_path, {X: reshape_input})
+catch error
+  reshape_allowzero_rejected is true
+end
+assert(reshape_allowzero_rejected)
+
+reshape_wrong_use_bytes is reshape_model_bytes.slice(0, reshape_model_bytes.len())
+reshape_wrong_use_bytes[43] is 65
+file_write_bytes(reshape_wrong_use_path, reshape_wrong_use_bytes)
+reshape_wrong_use_rejected is false
+try
+  autograd.run_onnx(reshape_wrong_use_path, {X: reshape_input})
+catch error
+  reshape_wrong_use_rejected is true
+end
+assert(reshape_wrong_use_rejected)
+
+missing_rejected is false
+try
+  autograd.run_onnx(path, {})
+catch error
+  missing_rejected is true
+end
+assert(missing_rejected)
+
+unexpected_rejected is false
+try
+  autograd.run_onnx(path, {X: x, typo: x})
+catch error
+  unexpected_rejected is true
+end
+assert(unexpected_rejected)
+
+# Existing Sura ONNX weight exports are executable Identity graphs.
+autograd.save_onnx_weights({weight: w}, identity_path)
+identity_outputs is autograd_run_onnx(identity_path, {})
+assert_eq(json_stringify(autograd.data(identity_outputs["weight__sura_output"])), json_stringify(autograd.data(w)))
+
+# Declared ONNX dtype/static-shape metadata is enforced when present.
+typed_bytes is [8,9,58,86,10,26,10,1,88,18,1,89,26,8,105,100,101,110,116,105,116,121,34,8,73,100,101,110,116,105,116,121,18,14,116,121,112,101,100,32,105,100,101,110,116,105,116,121,90,19,10,1,88,18,14,10,12,8,1,18,8,10,2,8,2,10,2,8,2,98,19,10,1,89,18,14,10,12,8,1,18,8,10,2,8,2,10,2,8,2,66,2,16,18]
+file_write_bytes(typed_path, typed_bytes)
+typed_outputs is autograd.run_onnx(typed_path, {X: x})
+assert_eq(json_stringify(autograd.data(typed_outputs.Y)), json_stringify(autograd.data(x)))
+
+typed_dtype_rejected is false
+try
+  autograd.run_onnx(typed_path, {X: autograd.tensor([[-1, 0], [-1, 2]])})
+catch error
+  typed_dtype_rejected is true
+end
+assert(typed_dtype_rejected)
+
+typed_shape_rejected is false
+try
+  autograd.run_onnx(typed_path, {X: autograd.tensor([1, 2], "float32")})
+catch error
+  typed_shape_rejected is true
+end
+assert(typed_shape_rejected)
+
+bad_bytes is [8,9,18,10,83,117,114,97,32,116,101,115,116,115,58,69,10,28,10,1,88,18,1,89,26,11,117,110,115,117,112,112,111,114,116,101,100,34,7,77,121,115,116,101,114,121,18,27,83,117,114,97,32,79,78,78,88,32,101,120,101,99,117,116,105,111,110,32,102,105,120,116,117,114,101,90,3,10,1,88,98,3,10,1,89,66,2,16,18]
+file_write_bytes(bad_path, bad_bytes)
+unsupported_rejected is false
+try
+  autograd.run_onnx(bad_path, {X: x})
+catch error
+  unsupported_rejected is true
+end
+assert(unsupported_rejected)
+
+truncated_bytes is model_bytes.slice(0, model_bytes.len() - 1)
+file_write_bytes(truncated_path, truncated_bytes)
+truncated_rejected is false
+try
+  autograd.run_onnx(truncated_path, {X: x})
+catch error
+  truncated_rejected is true
+end
+assert(truncated_rejected)
+
+opset_bytes is file_read_bytes(path)
+opset_bytes[opset_bytes.len() - 1] is 19
+file_write_bytes(opset_path, opset_bytes)
+opset_rejected is false
+try
+  autograd.run_onnx(opset_path, {X: x})
+catch error
+  opset_rejected is true
+end
+assert(opset_rejected)
+
+# Fixed-seed byte mutations must either execute or fail through a Sura error;
+# malformed protobuf must never crash the runtime or escape the bounded reader.
+mutations_completed is 0
+for i in 0 to 255 do
+  mutated is file_read_bytes(path)
+  index is (i * 131 + 17) % mutated.len()
+  mask is ((i * 29) % 255) + 1
+  mutated[index] is mutated[index] ^ mask
+  file_write_bytes(mutation_path, mutated)
+  try
+    autograd.run_onnx(mutation_path, {X: x})
+  catch error
+  end
+  mutations_completed is mutations_completed + 1
+end
+assert_eq(mutations_completed, 256)
+
+file_delete(path)
+file_delete(bad_path)
+file_delete(truncated_path)
+file_delete(opset_path)
+file_delete(identity_path)
+file_delete(mutation_path)
+file_delete(typed_path)
+file_delete(shape_path)
+file_delete(bad_perm_path)
+file_delete(bad_axis_path)
+file_delete(reshape_path)
+file_delete(reshape_bad_shape_path)
+file_delete(reshape_allowzero_path)
+file_delete(reshape_wrong_use_path)
+print "71_onnx_execution: PASS"

@@ -1,0 +1,40 @@
+name: Package proposal
+description: Propose a reusable Sura package or a local-registry example.
+title: "[Package] "
+labels: [package]
+body:
+  - type: input
+    id: identity
+    attributes:
+      label: Package name and version
+      placeholder: example@0.1.0
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Purpose and public API
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Test and dry-run evidence
+      description: Include `surapkg test`, `quality --json`, and `publish --dry-run --json` results.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and platform requirements
+    validations:
+      required: true
+  - type: checkboxes
+    id: files
+    attributes:
+      label: Package files
+      options:
+        - label: Source and tests are included.
+          required: true
+        - label: README, license, and `sura.pkg.json` are included.
+          required: true

@@ -1,0 +1,19 @@
+fallback_name is (nil ?? {name: "Fallback"}).name
+existing_name is ({name: "Ada"} ?? {name: "bad"}).name
+
+func choose_value_collection(flag) do
+  if flag then
+    return ["zero", "one"]
+  end
+  return {name: "bad"}
+end
+
+value_collection is choose_value_collection(true)
+
+assert_eq(type(fallback_name), "string")
+assert_eq(fallback_name, "Fallback")
+assert_eq(existing_name, "Ada")
+assert_eq(type(value_collection), "array")
+assert_eq(type(value_collection[1]), "string")
+assert_eq(to_str(value_collection[1]), "one")
+print fallback_name

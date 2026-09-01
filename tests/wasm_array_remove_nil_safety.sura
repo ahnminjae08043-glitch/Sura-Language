@@ -1,0 +1,10 @@
+values is [0, 5]
+removed_zero is values.remove(0)
+removed_missing is values.remove(9)
+
+assert_eq(removed_zero, 0)
+assert_eq(type(removed_zero), "number")
+assert_eq(removed_missing, nil)
+assert_eq(type(removed_missing), "nil")
+assert_eq(length(values), 1)
+print "{removed_zero} {removed_missing} {length(values)}"
