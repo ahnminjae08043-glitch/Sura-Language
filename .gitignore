@@ -39,6 +39,9 @@ sura.pkg.json
 # package artifact; keep it tracked despite the global ignore above.
 !tests/compat/api_fixture/sura.pkg.json
 sura_walk_*/
+# Model files the AI examples write into the working directory when run.
+xor-model.json
+tiny-byte-model.safetensors
 __pycache__/
 .pytest_cache/
 node_modules/
