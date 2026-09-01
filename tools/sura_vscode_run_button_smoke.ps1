@@ -305,7 +305,10 @@ if ($ecosystem -notmatch "Editor title Run menu" -or
     $ecosystem -notmatch "sura\.showRunCodeLens") {
     throw "Guide/ECOSYSTEM.md should document current VS Code run/debug/completion behavior"
 }
-if ($reference -notmatch "Sura Language 1\.11\.0" -or
+# The release version lives in version.json; hardcoding it here meant the
+# check silently drifted to an old release and then failed on every run.
+$referenceVersion = ([System.IO.File]::ReadAllText((Join-Path $root "version.json"), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).version
+if ($reference -notmatch ("Sura Language " + [regex]::Escape($referenceVersion)) -or
     $reference -notmatch "VS Code extension" -or
     $reference -notmatch "--lsp" -or
     $reference -notmatch "semantic tokens" -or

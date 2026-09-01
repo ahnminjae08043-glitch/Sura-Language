@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "Sura Language",
+			"path": "."
+		},
+		{
+			"name": "Sura VS Code Extension Source",
+			"path": "sura-vscode"
+		}
+	],
+	"settings": {}
+}
