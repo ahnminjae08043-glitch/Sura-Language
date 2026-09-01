@@ -5389,12 +5389,14 @@ int main(int argc, char** argv) {
         "$exe = Join-Path $outDir $exeName\n"
         "$compileLog = Join-Path $outDir \"compile.log\"\n"
         "$extraArgs = @()\n"
+        "if ($IsWindows -or $env:OS -eq \"Windows_NT\") { $extraArgs += \"-lgdi32\" }\n"
         "if ($IsLinux) { $extraArgs += \"-ldl\" }\n"
         "$oldPreference = $ErrorActionPreference\n"
         "$ErrorActionPreference = \"Continue\"\n"
         "& $CxxPath -std=c++17 -O2 -I $SuraRoot `\n"
         "    (Join-Path $PSScriptRoot \"host/main.cpp\") `\n"
         "    (Join-Path $SuraRoot \"sura_ffi.cpp\") `\n"
+        "    (Join-Path $SuraRoot \"platform.cpp\") `\n"
         "    (Join-Path $SuraRoot \"gc.cpp\") `\n"
         "    -o $exe @extraArgs > $compileLog 2>&1\n"
         "$code = $LASTEXITCODE\n"
@@ -5438,9 +5440,13 @@ int main(int argc, char** argv) {
         "add_executable(" + project_name + "_host\n"
         "    host/main.cpp\n"
         "    \"${SURA_ROOT}/sura_ffi.cpp\"\n"
+        "    \"${SURA_ROOT}/platform.cpp\"\n"
         "    \"${SURA_ROOT}/gc.cpp\"\n"
         ")\n\n"
         "target_include_directories(" + project_name + "_host PRIVATE \"${SURA_ROOT}\")\n"
+        "if(WIN32)\n"
+        "    target_link_libraries(" + project_name + "_host PRIVATE gdi32)\n"
+        "endif()\n"
         "if(UNIX AND NOT APPLE)\n"
         "    target_link_libraries(" + project_name + "_host PRIVATE dl)\n"
         "endif()\n");
@@ -5466,7 +5472,7 @@ int main(int argc, char** argv) {
         "cmake --build build-cmake --config Release\n"
         ".\\build-cmake\\" + project_name + "_host.exe scripts\\tick.sura\n"
         "```\n\n"
-        "With multi-config generators, the executable may be under `build-cmake\\Release`. The PowerShell build script auto-detects `c++`, `g++`, or `clang++`, uses `.exe` on Windows and an extensionless host executable on Linux/macOS, and adds `-ldl` on Linux when needed. Ship `sura_ffi.hpp`, `sura_ffi.cpp`, `gc.cpp`, and the Sura runtime files according to your host application's build system.\n");
+        "With multi-config generators, the executable may be under `build-cmake\\Release`. The PowerShell build script auto-detects `c++`, `g++`, or `clang++`, uses `.exe` on Windows and an extensionless host executable on Linux/macOS, and adds `-ldl` on Linux when needed. Ship `sura_ffi.hpp`, `sura_ffi.cpp`, `platform.cpp`, `gc.cpp`, and the Sura runtime files according to your host application's build system.\n");
 
     std::vector<std::pair<fs::path, std::string>> generated_files = {
         {root / kManifest, "manifest"},
