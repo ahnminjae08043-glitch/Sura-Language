@@ -68,28 +68,28 @@ func mul_add_seven(a, b, c, d, e, f, g) do
   return a * b + c + d + e + f + g
 end
 
-func call_dynamic_eight(flag, a, b, c, d, e, f, g, h) do
+func call_dynamic_eight(flag, a, b, c, d, e, f, g, h) -> number do
   handler is flag ? sum_eight : mul_add_eight
   return handler(a, b, c, d, e, f, g, h)
 end
 
-func call_dynamic_nine(flag, a, b, c, d, e, f, g, h, i) do
+func call_dynamic_nine(flag, a, b, c, d, e, f, g, h, i) -> number do
   handler is flag ? sum_nine : mul_add_nine
   return handler(a, b, c, d, e, f, g, h, i)
 end
 
-func call_dynamic_twelve(flag, a, b, c, d, e, f, g, h, i, j, k, l) do
+func call_dynamic_twelve(flag, a, b, c, d, e, f, g, h, i, j, k, l) -> number do
   handler is flag ? sum_twelve : mul_add_twelve
   return handler(a, b, c, d, e, f, g, h, i, j, k, l)
 end
 
 
-func call_dynamic_six(flag, a, b, c, d, e, f) do
+func call_dynamic_six(flag, a, b, c, d, e, f) -> number do
   handler is flag ? sum_six : mul_add_six
   return handler(a, b, c, d, e, f)
 end
 
-func call_dynamic_seven(flag, a, b, c, d, e, f, g) do
+func call_dynamic_seven(flag, a, b, c, d, e, f, g) -> number do
   handler is flag ? sum_seven : mul_add_seven
   return handler(a, b, c, d, e, f, g)
 end

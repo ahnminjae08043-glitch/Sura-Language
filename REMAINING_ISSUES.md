@@ -128,6 +128,36 @@ fix is to make return-ABI classification deterministic (context-free, no
 query-order cache effects) and document the host-facing export contract;
 test-side unwrapping cannot be written safely while the ABI can flip.
 
+### Update 2026-09-01: boundary contract largely repaired; one seam remains
+
+Landed in `tools/sura_to_wasm.ps1` and verified by smokes:
+
+- Promoted function expressions are pinned to the tagged-Value return ABI at
+  promotion time (previously a bool capture emitted raw in one module and
+  tagged in another, depending on classification state).
+- Direct calls to promoted lifts unwrap at the enclosing function's return
+  boundary per the promoted body's static kind (string via `value_to_string`,
+  num via payload, bool via `is_truthy`).
+- Indirect function-value dispatch returns unwrap using the enclosing
+  function's other known return kinds, or the single common source kind of
+  the dispatch candidates.
+- An explicit `-> number|string|bool` annotation now pins the raw ABI and
+  overrides flow-propagated value inference (but not the escaping rule);
+  `sura_wasm_function_dispatch_smoke` passes with annotated fixtures, making
+  that contract deterministic across platforms for annotated functions.
+- `__sura_value_index` boxes typed raw-array elements by the element tag in
+  the Value metadata instead of always as numbers.
+
+Still failing: `sura_wasm_memory_safety_smoke` case `captured_inline_return`
+(array-returning captured closure). Root seam: the fixed-index hint system
+treats function results as raw arrays with raw cells, but
+`Convert-WasmAstValueExpr`'s ARRAY_LIT arm always builds a tagged dynamic
+array with boxed cells (`sura_to_wasm.ps1` ~line 17466), so a payload unwrap
+exposes boxed cells to raw readers. The honest fix is to teach the ARRAY_LIT
+Value arm to emit typed raw-cell arrays when every element shares one raw
+kind, or to route fixed-index consumers through tagged reads; both touch the
+representation globally and need their own verified pass.
+
 Release exit criteria:
 
 1. Separate the OS/browser work into reviewable commits or a dedicated branch.

@@ -3496,6 +3496,29 @@ function Test-WasmAstRawF64Type {
     return ([string]$TypeNode.kind -in @("FLOAT", "DOUBLE"))
 }
 
+function Get-WasmAstAnnotatedRawReturnKind {
+    param($FnNode)
+
+    # An explicit non-f64 scalar return annotation pins the function to the
+    # raw ABI regardless of what value-preserving analysis would infer from
+    # the body. Annotations are context-free, so this also makes the ABI
+    # classification deterministic for annotated functions.
+    if ($null -eq $FnNode -or -not ($FnNode.PSObject.Properties.Name -contains "return_type")) { return "" }
+    $typeNode = $FnNode.return_type
+    if ($null -eq $typeNode -or
+        -not ($typeNode.PSObject.Properties.Name -contains "present") -or
+        -not [bool]$typeNode.present) {
+        return ""
+    }
+    if (Test-WasmAstRawF64Type $typeNode) { return "" }
+    $sourceName = if ($typeNode.PSObject.Properties.Name -contains "source_name") { [string]$typeNode.source_name } else { "" }
+    $kindName = if ($typeNode.PSObject.Properties.Name -contains "kind") { [string]$typeNode.kind } else { "" }
+    if ($sourceName -in @("number", "num") -or $kindName -eq "NUMBER") { return "num" }
+    if ($sourceName -eq "string" -or $kindName -eq "STRING") { return "string" }
+    if ($sourceName -eq "bool" -or $kindName -eq "BOOL") { return "bool" }
+    return ""
+}
+
 function Register-WasmAstRawF64ExportFunctions {
     param($Root)
 
@@ -4690,6 +4713,13 @@ function Add-WasmAstFunctionExprPromotion {
             WasmFuncExprPromotion = $true
             WasmFuncExprDisplayName = (Get-WasmAstFuncExprDisplayName $FuncExpr)
         }) | Out-Null
+        # Promoted function expressions are dispatch candidates: pin every one
+        # of them to the tagged-Value return ABI at promotion time. Without
+        # this, the body's return conversion depends on classification state
+        # that varies between fixtures (a bool capture emitted raw in one
+        # module and tagged in another), which makes the boundary unwrap at
+        # direct call sites impossible to get right.
+        $script:wasmForcedValueReturnFunctions[$liftName] = $true
     }
     Add-WasmAstNestedFunctionExprPromotions -Node ($promotedExpr.body) -Functions $Functions -TopLevel $false -ScopeName $DisplayName -CaptureExprs (Copy-WasmAstCaptureMap $CaptureExprs)
     return $true
@@ -12074,6 +12104,14 @@ function Test-WasmAstFunctionReturnValuePreserving {
     param([string]$Name, [hashtable]$Seen = @{})
 
     if ([string]::IsNullOrWhiteSpace($Name) -or -not $script:wasmAstFunctionDefs.ContainsKey($Name)) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace((Get-WasmAstAnnotatedRawReturnKind $script:wasmAstFunctionDefs[$Name].Node)) -and
+        -not ($null -ne $script:wasmEscapingFunctionValueNames -and $script:wasmEscapingFunctionValueNames.ContainsKey($Name))) {
+        # An explicit scalar return annotation pins the raw ABI. It overrides
+        # flow-propagated value-return inference, but not the escaping rule: a
+        # function used as a value must keep the dispatcher's tagged ABI.
+        $script:wasmFunctionReturnValuePreservingCache[$Name] = $false
+        return $false
+    }
     if ($script:wasmForcedValueReturnFunctions.ContainsKey($Name)) { return $true }
     if ($script:wasmRawF64ExportFunctions.ContainsKey($Name)) { return $true }
     if ($script:wasmFunctionReturnValuePreservingCache.ContainsKey($Name)) {
@@ -15620,14 +15658,16 @@ function Get-WasmAstPromotedLiftCallRawUnwrap {
     }
     if ($null -eq $returnValue) { return "" }
     switch (Get-WasmAstStaticValueType $returnValue) {
-        # The promoted body wraps string and numeric returns into tagged
-        # Values (string_or_nil / value_add), so those need unwrapping at the
-        # raw boundary. Bool-returning promoted bodies already emit a raw 0/1
-        # (is_truthy is applied inside the body) and must pass through as-is.
+        # Promoted bodies are pinned to the tagged-Value return ABI at
+        # promotion time, so every raw kind unwraps here at the boundary.
         # value_to_string is the identity for string-tagged Values.
         "string" { return "call `$__sura_value_to_string" }
+        "bool"   { return "call `$__sura_value_is_truthy" }
         # Exact for the i32-tagged numbers these specialized captures produce.
         "num"    { return "call `$__sura_value_payload" }
+        # The payload of an array/dict Value is the raw container pointer.
+        "array"  { return "call `$__sura_value_payload" }
+        "dict"   { return "call `$__sura_value_payload" }
         default  { return "" }
     }
 }
@@ -19807,6 +19847,12 @@ function Add-WasmAstStmt {
                     # caller's view: the single known kind among the enclosing
                     # function's other return statements.
                     $externalKind = Get-WasmAstStaticValueType ($Node.value)
+                    if (($externalKind -eq "value" -or [string]::IsNullOrWhiteSpace($externalKind)) -and
+                        -not [string]::IsNullOrWhiteSpace([string]$script:wasmCurrentFunctionName) -and
+                        $script:wasmAstFunctionDefs.ContainsKey([string]$script:wasmCurrentFunctionName)) {
+                        $annotatedKind = Get-WasmAstAnnotatedRawReturnKind $script:wasmAstFunctionDefs[[string]$script:wasmCurrentFunctionName].Node
+                        if (-not [string]::IsNullOrWhiteSpace($annotatedKind)) { $externalKind = $annotatedKind }
+                    }
                     if ([string]::IsNullOrWhiteSpace($externalKind) -and
                         -not [string]::IsNullOrWhiteSpace([string]$script:wasmCurrentFunctionName) -and
                         $script:wasmAstFunctionDefs.ContainsKey([string]$script:wasmCurrentFunctionName)) {
@@ -21823,6 +21869,30 @@ function Add-WasmValueRuntime {
     $Wat.Add("      local.get `$payload")
     $Wat.Add("      local.get `$idx")
     $Wat.Add("      call `$__sura_array_get_checked")
+    $Wat.Add("      local.set `$raw")
+    # A tag-4 typed raw array carries its element tag in the Value metadata
+    # word. Box the raw cell according to that tag; unconditionally boxing as
+    # a number turned string elements into number Values holding the string
+    # pointer, which broke equality and stringification after ?? fallbacks.
+    $Wat.Add("      local.get `$receiver")
+    $Wat.Add("      call `$__sura_value_meta")
+    $Wat.Add("      i32.const 3")
+    $Wat.Add("      i32.eq")
+    $Wat.Add("      if")
+    $Wat.Add("        local.get `$raw")
+    $Wat.Add("        call `$__sura_value_string_or_nil")
+    $Wat.Add("        return")
+    $Wat.Add("      end")
+    $Wat.Add("      local.get `$receiver")
+    $Wat.Add("      call `$__sura_value_meta")
+    $Wat.Add("      i32.const 2")
+    $Wat.Add("      i32.eq")
+    $Wat.Add("      if")
+    $Wat.Add("        local.get `$raw")
+    $Wat.Add("        call `$__sura_value_bool")
+    $Wat.Add("        return")
+    $Wat.Add("      end")
+    $Wat.Add("      local.get `$raw")
     $Wat.Add("      call `$__sura_value_num")
     $Wat.Add("      return")
     $Wat.Add("    end")
