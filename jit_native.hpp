@@ -304,19 +304,13 @@ static_assert((int)JitOp::NOP < 64,
 // caller can treat it as an unambiguous "re-run this call in the VM" signal.
 inline constexpr uint64_t SURA_JIT_DEOPT_SENTINEL = 0xFFFC000000000000ULL;
 
-// Linux x86-64 starts with a deliberately small, exception-free System V
-// tier. It emits no helper calls, so C++ exceptions never need to unwind
-// through dynamically generated code without registered DWARF CFI. The
-// second revision adds branches (whole-body loops) and NaN-box entry
-// guards on numeric parameters: a non-number argument returns a deopt
-// sentinel and the call falls back to the register VM for that call.
-class SysVBaselineCompiler {
-    const JitChunk& chunk;
-    size_t entry_ip;
-    size_t end_ip;
-    uint32_t frame_regs;
-    uint32_t guarded_params;
-
+// Shared whole-body verification for the baseline native tiers. The baseline
+// emitters translate one bytecode instruction at a time and never merge
+// control flow, so everything that needs whole-body reasoning lives here:
+// opcode support, operand ranges, jump targets, per-point register kinds, and
+// the provably-nonzero-divisor rule. An emitter may assume every reachable
+// instruction of an accepted body is encodable and type-proven.
+class BaselineBodyAnalysis {
     // What a register is proven to hold at one program point. Real bytecode
     // reuses scratch registers across kinds (a comparison result, then an
     // arithmetic result), so kinds are tracked per instruction with a forward
@@ -331,35 +325,32 @@ class SysVBaselineCompiler {
         return a == b ? a : RegKind::Conflict;
     }
 
-    static int32_t off_r(uint16_t reg) {
-        return static_cast<int32_t>(static_cast<uint32_t>(reg) * 8U);
-    }
-    static int32_t off_c(int index) {
-        return static_cast<int32_t>(static_cast<uint32_t>(index) * 8U);
-    }
-
 public:
-    static constexpr uint64_t kDeoptSentinel = SURA_JIT_DEOPT_SENTINEL;
+    bool ok = false;
+    // Per body instruction: 1 when control can reach it. Emitters skip
+    // unreachable instructions (typically the compiler's trailing
+    // RETURN_NONE sentinel after an explicit return), which nothing can
+    // branch to, so skipping them keeps the generated code identical to the
+    // straight-line tier for bodies without branches.
+    std::vector<uint8_t> reached;
 
-    // guarded_param_regs: registers 0..n-1 hold caller arguments that the
-    // prologue verifies are NaN-boxed numbers, deopting otherwise. Methods
-    // and hand-built test chunks pass 0 and get the unguarded behavior.
-    SysVBaselineCompiler(const JitChunk& source, size_t begin, size_t end,
-                         uint32_t registers, uint32_t guarded_param_regs = 0)
-        : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
-          guarded_params(guarded_param_regs) {}
-
-    std::vector<uint8_t> compile_bytes() const {
-        if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
-            frame_regs > std::numeric_limits<uint16_t>::max() ||
-            guarded_params > frame_regs) {
-            return {};
+    BaselineBodyAnalysis(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+                         uint32_t frame_regs, uint32_t guarded_params,
+                         uint32_t reg_index_limit, int const_index_limit) {
+        if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
+            frame_regs == 0 || guarded_params > frame_regs) {
+            return;
         }
-
         const size_t body_len = end_ip - entry_ip;
         const size_t nregs = frame_regs;
+        reached.assign(body_len, 0);
         auto valid_reg = [&](uint16_t reg) {
-            return static_cast<uint32_t>(reg) < frame_regs;
+            return static_cast<uint32_t>(reg) < frame_regs &&
+                   static_cast<uint32_t>(reg) <= reg_index_limit;
+        };
+        auto valid_const = [&](int index) {
+            return index >= 0 && index <= const_index_limit &&
+                   static_cast<size_t>(index) < chunk.constants.size();
         };
         auto valid_target = [&](int target) {
             return target >= 0 && static_cast<size_t>(target) >= entry_ip &&
@@ -378,8 +369,7 @@ public:
                 case JitOp::NOP:
                     break;
                 case JitOp::LOAD_CONST: {
-                    if (!valid_reg(inst.a) || inst.operand < 0 ||
-                        static_cast<size_t>(inst.operand) >= chunk.constants.size()) return {};
+                    if (!valid_reg(inst.a) || !valid_const(inst.operand)) return;
                     const Value& c = chunk.constants[static_cast<size_t>(inst.operand)];
                     wrote_anything[inst.a] = 1;
                     if (!(c.is_num() && c.as_num() != 0.0)) wrote_nonzero_const[inst.a] = 0;
@@ -387,13 +377,13 @@ public:
                 }
                 case JitOp::LOAD_NIL:
                 case JitOp::LOAD_BOOL:
-                    if (!valid_reg(inst.a)) return {};
+                    if (!valid_reg(inst.a)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
                     break;
                 case JitOp::MOVE:
                 case JitOp::NEG:
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b)) return {};
+                    if (!valid_reg(inst.a) || !valid_reg(inst.b)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
                     break;
@@ -407,25 +397,25 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c)) return {};
+                    if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c)) return;
                     wrote_anything[inst.a] = 1;
                     wrote_nonzero_const[inst.a] = 0;
                     break;
                 case JitOp::JUMP:
-                    if (!valid_target(inst.operand)) return {};
+                    if (!valid_target(inst.operand)) return;
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    if (!valid_target(inst.operand) || !valid_reg(inst.a)) return {};
+                    if (!valid_target(inst.operand) || !valid_reg(inst.a)) return;
                     break;
                 case JitOp::RETURN_VAL:
-                    if (!valid_reg(inst.a)) return {};
+                    if (!valid_reg(inst.a)) return;
                     break;
                 case JitOp::RETURN_NONE:
                 case JitOp::HALT:
                     break;
                 default:
-                    return {};
+                    return;
             }
         }
 
@@ -436,7 +426,6 @@ public:
         // kinds weaken toward Conflict, so the iteration is monotone over a
         // finite lattice and terminates.
         std::vector<RegKind> in_state(body_len * nregs, RegKind::Conflict);
-        std::vector<uint8_t> reached(body_len, 0);
         auto state_at = [&](size_t ip) { return &in_state[(ip - entry_ip) * nregs]; };
         for (uint32_t p = 0; p < guarded_params; ++p) state_at(entry_ip)[p] = RegKind::Num;
         reached[0] = 1;
@@ -511,7 +500,7 @@ public:
 
         // ── Pass 3: every interpreting read must see the kind it needs. ──
         // MOVE and RETURN_VAL copy raw bits and need no proof; unreachable
-        // instructions are emitted but never execute, so they are exempt too.
+        // instructions are never emitted, so they are exempt too.
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!reached[ip - entry_ip]) continue;
             const JitInst& inst = chunk.code[ip];
@@ -520,14 +509,14 @@ public:
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return {};
+                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
                     break;
                 case JitOp::DIV:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return {};
-                    if (!(wrote_anything[inst.c] && wrote_nonzero_const[inst.c])) return {};
+                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
+                    if (!(wrote_anything[inst.c] && wrote_nonzero_const[inst.c])) return;
                     break;
                 case JitOp::NEG:
-                    if (in[inst.b] != RegKind::Num) return {};
+                    if (in[inst.b] != RegKind::Num) return;
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -535,16 +524,74 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return {};
+                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    if (in[inst.a] != RegKind::Bool) return {};
+                    if (in[inst.a] != RegKind::Bool) return;
                     break;
                 default:
                     break;
             }
         }
+        ok = true;
+    }
+
+    // True when execution can fall off the end of the body: the last
+    // reachable instruction does not unconditionally leave the function.
+    bool falls_off_end(const JitChunk& chunk, size_t entry_ip, size_t end_ip) const {
+        for (size_t ip = end_ip; ip > entry_ip; --ip) {
+            if (!reached[ip - 1 - entry_ip]) continue;
+            const JitOp last = chunk.code[ip - 1].op;
+            return last != JitOp::JUMP && last != JitOp::RETURN_VAL &&
+                   last != JitOp::RETURN_NONE && last != JitOp::HALT;
+        }
+        return true;
+    }
+};
+
+// Linux x86-64 starts with a deliberately small, exception-free System V
+// tier. It emits no helper calls, so C++ exceptions never need to unwind
+// through dynamically generated code without registered DWARF CFI. The
+// second revision adds branches (whole-body loops) and NaN-box entry
+// guards on numeric parameters: a non-number argument returns a deopt
+// sentinel and the call falls back to the register VM for that call.
+class SysVBaselineCompiler {
+    const JitChunk& chunk;
+    size_t entry_ip;
+    size_t end_ip;
+    uint32_t frame_regs;
+    uint32_t guarded_params;
+
+    static int32_t off_r(uint16_t reg) {
+        return static_cast<int32_t>(static_cast<uint32_t>(reg) * 8U);
+    }
+    static int32_t off_c(int index) {
+        return static_cast<int32_t>(static_cast<uint32_t>(index) * 8U);
+    }
+
+public:
+    static constexpr uint64_t kDeoptSentinel = SURA_JIT_DEOPT_SENTINEL;
+
+    // guarded_param_regs: registers 0..n-1 hold caller arguments that the
+    // prologue verifies are NaN-boxed numbers, deopting otherwise. Methods
+    // and hand-built test chunks pass 0 and get the unguarded behavior.
+    SysVBaselineCompiler(const JitChunk& source, size_t begin, size_t end,
+                         uint32_t registers, uint32_t guarded_param_regs = 0)
+        : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
+          guarded_params(guarded_param_regs) {}
+
+    std::vector<uint8_t> compile_bytes() const {
+        if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
+            frame_regs > std::numeric_limits<uint16_t>::max()) {
+            return {};
+        }
+        const size_t body_len = end_ip - entry_ip;
+        BaselineBodyAnalysis analysis(
+            chunk, entry_ip, end_ip, frame_regs, guarded_params,
+            std::numeric_limits<uint16_t>::max(),
+            std::numeric_limits<int32_t>::max() / 8);
+        if (!analysis.ok) return {};
 
         // ── Emit. ──
         std::vector<uint8_t> code;
@@ -576,6 +623,7 @@ public:
         std::vector<JumpFixup> jump_fixups;
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            if (!analysis.reached[ip - entry_ip]) continue;
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
             switch (inst.op) {
@@ -685,9 +733,12 @@ public:
             }
         }
 
-        // Fall-through end of body.
-        em.mov_ri64(XR::RAX, NBNIL);
-        emit_return();
+        // Fall-through end of body: only needed when the last reachable
+        // instruction does not unconditionally leave the function.
+        if (analysis.falls_off_end(chunk, entry_ip, end_ip)) {
+            em.mov_ri64(XR::RAX, NBNIL);
+            emit_return();
+        }
 
         // Deopt tail shared by every entry guard.
         if (!deopt_fixups.empty()) {
@@ -704,23 +755,25 @@ public:
 };
 
 // ARM64 uses the common three-register entry shape on Windows, Linux, and
-// macOS: x0=vm, x1=R, x2=consts, x0=result. This first tier deliberately has
-// no stack frame and emits no helper calls. As with the System V baseline,
-// only straight-line arithmetic whose inputs are proven numeric is accepted;
-// unsupported bytecode stays in the register VM.
+// macOS: x0=vm, x1=R, x2=consts, x0=result. This tier deliberately has no
+// stack frame and emits no helper calls. The second revision mirrors the
+// System V baseline: whole-body branches (loops) are encoded with patched
+// B/B.cond displacements, and guarded numeric parameters return the shared
+// deopt sentinel when a caller passes a non-number.
 class Arm64BaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
     size_t end_ip;
     uint32_t frame_regs;
-
-    enum class RegisterKind : uint8_t { Unknown, Numeric, Other };
+    uint32_t guarded_params;
 
     class Emitter {
         std::vector<uint8_t>& code;
 
     public:
         explicit Emitter(std::vector<uint8_t>& output) : code(output) {}
+
+        size_t pos() const { return code.size(); }
 
         void word(uint32_t instruction) {
             code.push_back(static_cast<uint8_t>(instruction & 0xffU));
@@ -768,6 +821,12 @@ class Arm64BaselineCompiler {
             word(0x9A800000U | (when_false << 16) | (condition << 12) |
                  (when_true << 5) | target);
         }
+        void and_xx(unsigned target, unsigned left, unsigned right) {
+            word(0x8A000000U | (right << 16) | (left << 5) | target);
+        }
+        void cmp_xx(unsigned left, unsigned right) {
+            word(0xEB00001FU | (right << 16) | (left << 5));
+        }
         void mov_imm64(unsigned target, uint64_t value) {
             word(0xD2800000U |
                  (static_cast<uint32_t>(value & 0xffffU) << 5) | target);
@@ -777,14 +836,51 @@ class Arm64BaselineCompiler {
                 word(0xF2800000U | (half << 21) | (part << 5) | target);
             }
         }
+        // Branches are emitted with a zero displacement and patched once
+        // every instruction offset is known. A64 displacements are relative
+        // to the branch instruction itself, in words.
+        size_t b_placeholder() {
+            const size_t at = code.size();
+            word(0x14000000U);
+            return at;
+        }
+        size_t b_cond_placeholder(unsigned condition) {
+            const size_t at = code.size();
+            word(0x54000000U | condition);
+            return at;
+        }
+        bool patch_branch(size_t at, size_t target) {
+            const int64_t delta = (static_cast<int64_t>(target) -
+                                   static_cast<int64_t>(at)) / 4;
+            uint32_t inst = static_cast<uint32_t>(code[at]) |
+                            (static_cast<uint32_t>(code[at + 1]) << 8) |
+                            (static_cast<uint32_t>(code[at + 2]) << 16) |
+                            (static_cast<uint32_t>(code[at + 3]) << 24);
+            if ((inst & 0xFF000000U) == 0x54000000U) {
+                if (delta < -(1 << 18) || delta >= (1 << 18)) return false;
+                inst |= (static_cast<uint32_t>(delta) & 0x7FFFFU) << 5;
+            } else {
+                if (delta < -(1 << 25) || delta >= (1 << 25)) return false;
+                inst |= static_cast<uint32_t>(delta) & 0x03FFFFFFU;
+            }
+            code[at]     = static_cast<uint8_t>(inst & 0xffU);
+            code[at + 1] = static_cast<uint8_t>((inst >> 8) & 0xffU);
+            code[at + 2] = static_cast<uint8_t>((inst >> 16) & 0xffU);
+            code[at + 3] = static_cast<uint8_t>((inst >> 24) & 0xffU);
+            return true;
+        }
         void bti_c() { word(0xD503245FU); }
         void ret() { word(0xD65F03C0U); }
     };
 
 public:
+    // guarded_param_regs: registers 0..n-1 hold caller arguments that the
+    // prologue verifies are NaN-boxed numbers, deopting otherwise. Methods
+    // and hand-built test chunks pass 0 and get the unguarded behavior.
     Arm64BaselineCompiler(const JitChunk& source, size_t begin, size_t end,
-                          uint32_t registers)
-        : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers) {}
+                          uint32_t registers, uint32_t guarded_param_regs = 0)
+        : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
+          guarded_params(guarded_param_regs) {}
 
     std::vector<uint8_t> compile_bytes() const {
         // AArch64 unsigned load/store immediates are 12-bit values scaled by
@@ -793,84 +889,59 @@ public:
             frame_regs > 4096U) {
             return {};
         }
+        const size_t body_len = end_ip - entry_ip;
+        BaselineBodyAnalysis analysis(chunk, entry_ip, end_ip, frame_regs,
+                                      guarded_params, 4095U, 4095);
+        if (!analysis.ok) return {};
 
         std::vector<uint8_t> code;
         Emitter em(code);
         // BTI is a HINT-space no-op on implementations without FEAT_BTI and
         // a valid indirect-call landing pad when branch protection is active.
         em.bti_c();
-        std::vector<RegisterKind> kinds(frame_regs, RegisterKind::Unknown);
-        std::vector<uint8_t> definitely_nonzero(frame_regs, 0);
-        bool returned = false;
 
-        auto valid_reg = [&](uint16_t reg) {
-            return static_cast<uint32_t>(reg) < frame_regs && reg <= 4095U;
-        };
-        auto valid_constant = [&](int index) {
-            return index >= 0 && index <= 4095 &&
-                   static_cast<size_t>(index) < chunk.constants.size();
-        };
-        auto load_register_x9 = [&](uint16_t reg) {
-            em.ldr_x(9, 1, reg);
-        };
-        auto store_register_x9 = [&](uint16_t reg) {
-            em.str_x(9, 1, reg);
-        };
+        // Entry guards: (bits & NBQNAN) == NBQNAN means "not a number";
+        // branch to the shared deopt tail that returns the sentinel.
+        std::vector<size_t> deopt_branches;
+        for (uint32_t p = 0; p < guarded_params; ++p) {
+            em.ldr_x(9, 1, static_cast<uint16_t>(p));
+            em.mov_imm64(10, NBQNAN);
+            em.and_xx(9, 9, 10);
+            em.cmp_xx(9, 10);
+            deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+        }
+
+        std::vector<size_t> ip_off(body_len, 0);
+        struct BranchFixup { size_t at; size_t target_ip; };
+        std::vector<BranchFixup> branch_fixups;
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            if (!analysis.reached[ip - entry_ip]) continue;
+            ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
-            if (returned) {
-                // Same unreachable-sentinel tolerance as the System V
-                // baseline: the compiler's trailing RETURN_NONE/HALT after an
-                // explicit return can never execute because JUMP is rejected.
-                if (inst.op != JitOp::NOP &&
-                    inst.op != JitOp::RETURN_NONE &&
-                    inst.op != JitOp::HALT) return {};
-                continue;
-            }
-
             switch (inst.op) {
                 case JitOp::NOP:
                     break;
                 case JitOp::LOAD_CONST:
-                    if (!valid_reg(inst.a) || !valid_constant(inst.operand)) return {};
                     em.ldr_x(9, 2, static_cast<uint16_t>(inst.operand));
-                    store_register_x9(inst.a);
-                    kinds[inst.a] = chunk.constants[static_cast<size_t>(inst.operand)].is_num()
-                        ? RegisterKind::Numeric : RegisterKind::Other;
-                    definitely_nonzero[inst.a] =
-                        kinds[inst.a] == RegisterKind::Numeric &&
-                        chunk.constants[static_cast<size_t>(inst.operand)].as_num() != 0.0;
+                    em.str_x(9, 1, inst.a);
                     break;
                 case JitOp::LOAD_NIL:
-                    if (!valid_reg(inst.a)) return {};
                     em.mov_imm64(9, NBNIL);
-                    store_register_x9(inst.a);
-                    kinds[inst.a] = RegisterKind::Other;
-                    definitely_nonzero[inst.a] = 0;
+                    em.str_x(9, 1, inst.a);
                     break;
                 case JitOp::LOAD_BOOL:
-                    if (!valid_reg(inst.a)) return {};
                     em.mov_imm64(9, inst.operand ? NBTRUE : NBFALSE);
-                    store_register_x9(inst.a);
-                    kinds[inst.a] = RegisterKind::Other;
-                    definitely_nonzero[inst.a] = 0;
+                    em.str_x(9, 1, inst.a);
                     break;
                 case JitOp::MOVE:
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b)) return {};
-                    load_register_x9(inst.b);
-                    store_register_x9(inst.a);
-                    kinds[inst.a] = kinds[inst.b];
-                    definitely_nonzero[inst.a] = definitely_nonzero[inst.b];
+                    em.ldr_x(9, 1, inst.b);
+                    em.str_x(9, 1, inst.a);
                     break;
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c) ||
-                        kinds[inst.b] != RegisterKind::Numeric ||
-                        kinds[inst.c] != RegisterKind::Numeric ||
-                        (inst.op == JitOp::DIV && !definitely_nonzero[inst.c])) return {};
                     em.ldr_d(0, 1, inst.b);
                     em.ldr_d(1, 1, inst.c);
                     if (inst.op == JitOp::ADD) {
@@ -883,24 +954,11 @@ public:
                         em.fdiv_d(0, 0, 1);
                     }
                     em.str_d(0, 1, inst.a);
-                    kinds[inst.a] = RegisterKind::Numeric;
-                    if (inst.op == JitOp::MUL) {
-                        definitely_nonzero[inst.a] =
-                            definitely_nonzero[inst.b] && definitely_nonzero[inst.c];
-                    } else if (inst.op == JitOp::DIV) {
-                        definitely_nonzero[inst.a] = definitely_nonzero[inst.b];
-                    } else {
-                        definitely_nonzero[inst.a] = 0;
-                    }
                     break;
                 case JitOp::NEG:
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b) ||
-                        kinds[inst.b] != RegisterKind::Numeric) return {};
                     em.ldr_d(0, 1, inst.b);
                     em.fneg_d(0, 0);
                     em.str_d(0, 1, inst.a);
-                    kinds[inst.a] = RegisterKind::Numeric;
-                    definitely_nonzero[inst.a] = definitely_nonzero[inst.b];
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -908,14 +966,14 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
-                    if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c) ||
-                        kinds[inst.b] != RegisterKind::Numeric ||
-                        kinds[inst.c] != RegisterKind::Numeric) return {};
                     em.ldr_d(0, 1, inst.b);
                     em.ldr_d(1, 1, inst.c);
                     em.fcmp_d(0, 1);
                     em.mov_imm64(10, NBTRUE);
                     em.mov_imm64(11, NBFALSE);
+                    // Conditions are chosen so an unordered comparison (any
+                    // NaN operand) selects false for the ordering operators
+                    // and true only for CMP_NEQ, matching the interpreter.
                     unsigned condition = 0;
                     switch (inst.op) {
                         case JitOp::CMP_EQ:  condition = 0; break;  // EQ
@@ -927,31 +985,53 @@ public:
                         default: return {};
                     }
                     em.csel_x(9, 10, 11, condition);
-                    store_register_x9(inst.a);
-                    kinds[inst.a] = RegisterKind::Other;
-                    definitely_nonzero[inst.a] = 0;
+                    em.str_x(9, 1, inst.a);
                     break;
                 }
+                case JitOp::JUMP:
+                    branch_fixups.push_back({em.b_placeholder(),
+                                             static_cast<size_t>(inst.operand)});
+                    break;
+                case JitOp::JUMP_IF_FALSE:
+                case JitOp::JUMP_IF_TRUE:
+                    em.ldr_x(9, 1, inst.a);
+                    em.mov_imm64(10, inst.op == JitOp::JUMP_IF_FALSE ? NBFALSE : NBTRUE);
+                    em.cmp_xx(9, 10);
+                    branch_fixups.push_back({em.b_cond_placeholder(0),  // EQ
+                                             static_cast<size_t>(inst.operand)});
+                    break;
                 case JitOp::RETURN_VAL:
-                    if (!valid_reg(inst.a)) return {};
                     em.ldr_x(0, 1, inst.a);
                     em.ret();
-                    returned = true;
                     break;
                 case JitOp::RETURN_NONE:
                 case JitOp::HALT:
                     em.mov_imm64(0, NBNIL);
                     em.ret();
-                    returned = true;
                     break;
                 default:
                     return {};
             }
         }
 
-        if (!returned) {
+        // Fall-through end of body: only needed when the last reachable
+        // instruction does not unconditionally leave the function.
+        if (analysis.falls_off_end(chunk, entry_ip, end_ip)) {
             em.mov_imm64(0, NBNIL);
             em.ret();
+        }
+
+        // Deopt tail shared by every entry guard.
+        if (!deopt_branches.empty()) {
+            const size_t deopt_at = em.pos();
+            em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
+            em.ret();
+            for (size_t at : deopt_branches) {
+                if (!em.patch_branch(at, deopt_at)) return {};
+            }
+        }
+        for (const BranchFixup& fx : branch_fixups) {
+            if (!em.patch_branch(fx.at, ip_off[fx.target_ip - entry_ip])) return {};
         }
         return code;
     }
@@ -1600,7 +1680,12 @@ public:
 
 #if SURA_JIT_ARM64_BASELINE
         try {
-            Arm64BaselineCompiler baseline(chunk, entry_ip, end_ip, native_frame_regs);
+            // Methods keep 0 guards: their register 0 is the receiver, not a
+            // numeric argument, so guarding would deopt every invocation.
+            const uint32_t guarded = callable_is_method
+                ? 0U : static_cast<uint32_t>(callable_param_count);
+            Arm64BaselineCompiler baseline(chunk, entry_ip, end_ip,
+                                           native_frame_regs, guarded);
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
             auto nf = std::make_unique<NativeFunc>();

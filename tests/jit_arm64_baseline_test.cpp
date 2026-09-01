@@ -276,12 +276,109 @@ int main() {
                     oversized_constant.max_regs).compile_bytes().empty(),
                 "constant offsets outside the scaled-immediate range must fall back");
 
+        // ── v2: guarded numeric parameters ──
+        // With entry guards the dynamic-add shape becomes compileable: the
+        // prologue verifies both arguments are NaN-boxed numbers and branches
+        // to a shared tail returning the deopt sentinel otherwise.
+        JitChunk guarded_add;
+        guarded_add.max_regs = 3;
+        guarded_add.code.emplace_back(JitOp::ADD, 2, 0, 1);
+        guarded_add.code.emplace_back(JitOp::RETURN_VAL, 2);
+        std::vector<uint8_t> guarded_bytes = Arm64BaselineCompiler(
+            guarded_add, 0, guarded_add.code.size(), guarded_add.max_regs,
+            2).compile_bytes();
+        require(guarded_bytes.size() == 112,
+                "ARM64 guarded add emitted an unexpected instruction count");
+        require(read_word(guarded_bytes, 4) == 0xF9400029U,
+                "ARM64 entry guard did not load parameter 0 into x9");
+        require(read_word(guarded_bytes, 24) == 0x8A0A0129U,
+                "ARM64 entry guard did not emit and x9, x9, x10");
+        require(read_word(guarded_bytes, 28) == 0xEB0A013FU,
+                "ARM64 entry guard did not emit cmp x9, x10");
+        require(read_word(guarded_bytes, 32) == 0x540001E0U,
+                "first ARM64 guard branch has the wrong deopt displacement");
+        require(read_word(guarded_bytes, 64) == 0x540000E0U,
+                "second ARM64 guard branch has the wrong deopt displacement");
+        require(read_word(guarded_bytes, guarded_bytes.size() - 4) == 0xD65F03C0U,
+                "ARM64 guarded output does not end in ret");
+#if SURA_JIT_ARM64_BASELINE
+        {
+            ExecCode guarded_code = ExecCode::from_bytes(guarded_bytes);
+            auto guarded_function = reinterpret_cast<SuraNativeFn>(guarded_code.ptr);
+            std::vector<Value> registers(guarded_add.max_regs, Value::nil());
+            registers[0] = Value(20.0);
+            registers[1] = Value(22.0);
+            Value sum = Value::from_bits(guarded_function(
+                nullptr, registers.data(), nullptr));
+            require(sum.is_num() && std::fabs(sum.as_num() - 42.0) < 1e-12,
+                    "ARM64 guarded add returned the wrong sum");
+            registers[0] = Value(true);
+            require(guarded_function(nullptr, registers.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "ARM64 non-numeric argument must return the deopt sentinel");
+        }
+#endif
+
+        // ── v2: whole-body loop (sum 1..n via JUMP / JUMP_IF_FALSE) ──
+        JitChunk loop;
+        loop.max_regs = 5;
+        loop.constants.emplace_back(0.0);
+        loop.constants.emplace_back(1.0);
+        loop.code.emplace_back(JitOp::LOAD_CONST, 1, 0, 0, 0);      // acc = 0
+        loop.code.emplace_back(JitOp::LOAD_CONST, 2, 0, 0, 1);      // one = 1
+        loop.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 0);      // zero = 0
+        loop.code.emplace_back(JitOp::CMP_GT, 3, 0, 4);             // n > 0 ?
+        loop.code.emplace_back(JitOp::JUMP_IF_FALSE, 3, 0, 0, 8);
+        loop.code.emplace_back(JitOp::ADD, 1, 1, 0);                // acc += n
+        loop.code.emplace_back(JitOp::SUB, 0, 0, 2);                // n -= 1
+        loop.code.emplace_back(JitOp::JUMP, 0, 0, 0, 3);
+        loop.code.emplace_back(JitOp::RETURN_VAL, 1);
+        std::vector<uint8_t> loop_bytes = Arm64BaselineCompiler(
+            loop, 0, loop.code.size(), loop.max_regs, 1).compile_bytes();
+        require(loop_bytes.size() == 204,
+                "ARM64 guarded loop emitted an unexpected instruction count");
+        require(read_word(loop_bytes, 136) == 0x54000140U,
+                "ARM64 loop exit branch has the wrong forward displacement");
+        require(read_word(loop_bytes, 172) == 0x17FFFFE4U,
+                "ARM64 loop backedge has the wrong backward displacement");
+#if SURA_JIT_ARM64_BASELINE
+        {
+            ExecCode loop_code = ExecCode::from_bytes(loop_bytes);
+            auto loop_function = reinterpret_cast<SuraNativeFn>(loop_code.ptr);
+            std::vector<Value> registers(loop.max_regs, Value::nil());
+            registers[0] = Value(100.0);
+            Value total = Value::from_bits(loop_function(
+                nullptr, registers.data(), loop.constants.data()));
+            require(total.is_num() && std::fabs(total.as_num() - 5050.0) < 1e-12,
+                    "ARM64 loop sum 1..100 must be 5050");
+            registers[0] = Value(false);
+            require(loop_function(nullptr, registers.data(),
+                                  loop.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "ARM64 loop entry guard must deopt on a non-number");
+        }
+#endif
+
+        // A jump that escapes the body must be rejected outright.
+        JitChunk bad_jump;
+        bad_jump.max_regs = 2;
+        bad_jump.constants.emplace_back(1.0);
+        bad_jump.code.emplace_back(JitOp::LOAD_CONST, 0, 0, 0, 0);
+        bad_jump.code.emplace_back(JitOp::JUMP, 0, 0, 0, 9);
+        bad_jump.code.emplace_back(JitOp::RETURN_VAL, 0);
+        require(Arm64BaselineCompiler(
+                    bad_jump, 0, bad_jump.code.size(),
+                    bad_jump.max_regs).compile_bytes().empty(),
+                "out-of-body jump target must fall back to the register VM");
+
 #if SURA_JIT_ARM64_BASELINE
         // The smoke gate distinguishes real ARM64 runs by the literal phrase
         // "native execution"; keep it in this branch's summary.
-        std::cout << "jit arm64 baseline: PASS (native execution of division/comparisons and guarded fallbacks)\n";
+        std::cout << "jit arm64 baseline: PASS (native execution of division/comparisons, "
+                     "parameter guards, loops, and guarded fallbacks)\n";
 #else
-        std::cout << "jit arm64 baseline: PASS (division/comparison encoder and guarded fallbacks)\n";
+        std::cout << "jit arm64 baseline: PASS (division/comparison encoder, parameter "
+                     "guards, loops, and guarded fallbacks)\n";
 #endif
         return 0;
     } catch (const std::exception& error) {
