@@ -15,7 +15,8 @@ if ([string]::IsNullOrWhiteSpace($Engine)) {
 }
 $enginePath = (Resolve-Path -LiteralPath $Engine).Path
 if ([string]::IsNullOrWhiteSpace($Cxx)) {
-    $Cxx = if ($env:OS -eq "Windows_NT") { "C:\msys64\mingw64\bin\g++.exe" } else { "c++" }
+    # SURA_CXX wins: CI installs MSYS2 under the runner temp directory.
+    $Cxx = if ($env:SURA_CXX) { $env:SURA_CXX } elseif ($env:OS -eq "Windows_NT") { if (Test-Path -LiteralPath "C:\msys64\mingw64\bin\g++.exe") { "C:\msys64\mingw64\bin\g++.exe" } else { "g++" } } else { "c++" }
 }
 
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar)

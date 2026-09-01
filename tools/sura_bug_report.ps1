@@ -136,7 +136,7 @@ $lines.Add("| Logical CPUs | $([System.Environment]::ProcessorCount) |")
 $lines.Add("| PowerShell | $($PSVersionTable.PSVersion) |")
 
 $cxx = $env:SURA_CXX
-if (-not $cxx) { $cxx = "C:\msys64\mingw64\bin\g++.exe" }
+if (-not $cxx) { $cxx = if ($env:SURA_CXX) { $env:SURA_CXX } else { if (Test-Path -LiteralPath "C:\msys64\mingw64\bin\g++.exe") { "C:\msys64\mingw64\bin\g++.exe" } else { "g++" } } }
 $cxxVer = ""
 if (Test-Path -LiteralPath $cxx) {
     $cxxVer = (Run-Capture $cxx @("--version")) -split "`n" | Select-Object -First 1

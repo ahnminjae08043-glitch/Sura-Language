@@ -9,7 +9,9 @@ if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction Sile
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$Cxx = if ($Cxx) { $Cxx } elseif ($IsWindows -or $env:OS -eq "Windows_NT") { "C:\msys64\mingw64\bin\g++.exe" } else { "c++" }
+# SURA_CXX wins: CI installs MSYS2 under the runner temp directory, so a
+# hardcoded C:\msys64 path is absent there. Fall back to PATH, not a guess.
+$Cxx = if ($Cxx) { $Cxx } elseif ($env:SURA_CXX) { $env:SURA_CXX } elseif ($IsWindows -or $env:OS -eq "Windows_NT") { if (Test-Path -LiteralPath "C:\msys64\mingw64\bin\g++.exe") { "C:\msys64\mingw64\bin\g++.exe" } else { "g++" } } else { "c++" }
 $enginePath = (Resolve-Path -LiteralPath (Join-Path $root $Engine)).Path
 $sourcePath = Join-Path $root "tests\media_fake_ffmpeg.cpp"
 $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("sura media & argv " + [guid]::NewGuid().ToString("N"))

@@ -8,7 +8,8 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($Compiler)) {
     if ($env:SURA_CXX) { $Compiler = $env:SURA_CXX }
-    else { $Compiler = "C:\msys64\mingw64\bin\g++.exe" }
+    elseif ($env:SURA_CXX) { $Compiler = $env:SURA_CXX }
+    else { $Compiler = if (Test-Path -LiteralPath "C:\msys64\mingw64\bin\g++.exe") { "C:\msys64\mingw64\bin\g++.exe" } else { "g++" } }
 }
 $compilerPath = (Resolve-Path -LiteralPath $Compiler).Path
 $source = (Resolve-Path -LiteralPath (Join-Path $root "tests/cuda_cublas_backend_test.cpp")).Path
