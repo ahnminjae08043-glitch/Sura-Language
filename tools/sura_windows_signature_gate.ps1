@@ -11,15 +11,22 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $root = (Resolve-Path -LiteralPath $RepoRoot).Path
 $version = [string](([System.IO.File]::ReadAllText((Join-Path $root "version.json"), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).version)
 
+# The published installer and its release manifest live with the website, in
+# its own repository. When this tree does not carry them there is nothing to
+# audit beyond the executables built here, so they are included only when
+# present. An explicitly passed -ReleaseManifest is still required to exist.
+$manifestRequired = -not [string]::IsNullOrWhiteSpace($ReleaseManifest)
 if ($Files.Count -eq 0) {
     $Files = @(
         (Join-Path $root "SuraLanguage.exe"),
-        (Join-Path $root "surapkg.exe"),
-        (Join-Path $root "sura_presentation/public/downloads/SuraLanguageSetup-$version.exe")
+        (Join-Path $root "surapkg.exe")
     )
+    $installer = Join-Path $root "sura_presentation/public/downloads/SuraLanguageSetup-$version.exe"
+    if (Test-Path -LiteralPath $installer -PathType Leaf) { $Files += $installer }
 }
-if ([string]::IsNullOrWhiteSpace($ReleaseManifest)) {
-    $ReleaseManifest = Join-Path $root "sura_presentation/public/downloads/release-$version.json"
+if (-not $manifestRequired) {
+    $defaultManifest = Join-Path $root "sura_presentation/public/downloads/release-$version.json"
+    if (Test-Path -LiteralPath $defaultManifest -PathType Leaf) { $ReleaseManifest = $defaultManifest }
 }
 
 $results = @()
@@ -57,7 +64,11 @@ foreach ($file in $Files) {
 $validCount = @($results | Where-Object { $_.valid }).Count
 $unsignedCount = @($results | Where-Object { -not $_.signed }).Count
 $manifestSigning = ""
-if (Test-Path -LiteralPath $ReleaseManifest -PathType Leaf) {
+if ([string]::IsNullOrWhiteSpace($ReleaseManifest)) {
+    # No published manifest in this tree: the executable audit above stands on
+    # its own, and the release pipeline checks the manifest where it lives.
+    $manifestSigning = "none"
+} elseif (Test-Path -LiteralPath $ReleaseManifest -PathType Leaf) {
     $manifest = [System.IO.File]::ReadAllText($ReleaseManifest, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
     if ([string]$manifest.version -ne $version) {
         $failures += "release manifest version does not match version.json: $ReleaseManifest"

@@ -15,9 +15,12 @@ try {
     & $powershell -NoProfile -ExecutionPolicy Bypass -File $gatePath -RepoRoot $root -JsonOut $reportPath | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "informational Windows signature gate failed" }
     $report = [System.IO.File]::ReadAllText($reportPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+    # Two executables are always audited (engine, package manager); the
+    # published installer is added only when this tree carries the website's
+    # download directory, so the floor is two rather than three.
     if ($report.schema -ne "sura.windows.signature.report.v1" -or
         $report.status -ne "pass" -or
-        @($report.files).Count -lt 3 -or
+        @($report.files).Count -lt 2 -or
         [int]$report.valid_count + [int]$report.unsigned_count -gt @($report.files).Count) {
         $report | ConvertTo-Json -Depth 7
         throw "unexpected Windows signature report"
