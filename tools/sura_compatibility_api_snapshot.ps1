@@ -21,6 +21,66 @@ function Read-Utf8([string]$Path) {
     return [System.IO.File]::ReadAllText($Path, [System.Text.Encoding]::UTF8)
 }
 
+# ConvertTo-Json indents differently in Windows PowerShell 5.1 and PowerShell 7
+# (four spaces and a doubled space after the colon, versus two and one), so a
+# snapshot written by one shell never compares equal under the other. The
+# snapshot is a fixed, shallow shape, so it is written here explicitly: two
+# space indents, one space after the colon, LF endings.
+function ConvertTo-JsonString([string]$Value) {
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    foreach ($ch in $Value.ToCharArray()) {
+        switch ($ch) {
+            '"'  { [void]$builder.Append('\"');  continue }
+            '\' { [void]$builder.Append('\\'); continue }
+            "`b" { [void]$builder.Append('\b');  continue }
+            "`f" { [void]$builder.Append('\f');  continue }
+            "`n" { [void]$builder.Append('\n');  continue }
+            "`r" { [void]$builder.Append('\r');  continue }
+            "`t" { [void]$builder.Append('\t');  continue }
+            default {
+                if ([int]$ch -lt 0x20) {
+                    [void]$builder.Append(("\u{0:x4}" -f [int]$ch))
+                } else {
+                    [void]$builder.Append($ch)
+                }
+            }
+        }
+    }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Format-StableApiSnapshot($Snapshot) {
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add("{")
+    $lines.Add("  " + (ConvertTo-JsonString "schema") + ": " + (ConvertTo-JsonString ([string]$Snapshot.schema)) + ",")
+    $lines.Add("  " + (ConvertTo-JsonString "series") + ": " + (ConvertTo-JsonString ([string]$Snapshot.series)) + ",")
+    $lines.Add("  " + (ConvertTo-JsonString "baseline_version") + ": " + (ConvertTo-JsonString ([string]$Snapshot.baseline_version)) + ",")
+    $lines.Add("  " + (ConvertTo-JsonString "modules") + ": [")
+    $modules = @($Snapshot.modules)
+    for ($m = 0; $m -lt $modules.Count; $m++) {
+        $module = $modules[$m]
+        $lines.Add("    {")
+        $lines.Add("      " + (ConvertTo-JsonString "name") + ": " + (ConvertTo-JsonString ([string]$module.name)) + ",")
+        $lines.Add("      " + (ConvertTo-JsonString "symbols") + ": [")
+        $symbols = @($module.symbols)
+        for ($i = 0; $i -lt $symbols.Count; $i++) {
+            $symbol = $symbols[$i]
+            $lines.Add("        {")
+            $lines.Add("          " + (ConvertTo-JsonString "kind") + ": " + (ConvertTo-JsonString ([string]$symbol.kind)) + ",")
+            $lines.Add("          " + (ConvertTo-JsonString "name") + ": " + (ConvertTo-JsonString ([string]$symbol.name)) + ",")
+            $lines.Add("          " + (ConvertTo-JsonString "signature") + ": " + (ConvertTo-JsonString ([string]$symbol.signature)))
+            $lines.Add("        }" + $(if ($i -lt $symbols.Count - 1) { "," } else { "" }))
+        }
+        $lines.Add("      ]")
+        $lines.Add("    }" + $(if ($m -lt $modules.Count - 1) { "," } else { "" }))
+    }
+    $lines.Add("  ]")
+    $lines.Add("}")
+    return ($lines -join "`n") + "`n"
+}
+
 function Resolve-Tool([string]$ExplicitPath, [string]$WindowsName, [string]$UnixName) {
     if (-not [string]::IsNullOrWhiteSpace($ExplicitPath)) {
         return (Resolve-Path -LiteralPath $ExplicitPath).Path
@@ -105,11 +165,12 @@ try {
         baseline_version = [string]$contract.source.guarantee_starts_at
         modules = @($moduleRecords | ForEach-Object { $_ })
     }
-    $json = ($snapshot | ConvertTo-Json -Depth 10) + "`n"
+    $json = Format-StableApiSnapshot $snapshot
     $encoding = [System.Text.UTF8Encoding]::new($false)
 
     if ($Check) {
-        $existing = Read-Utf8 $outPath
+        # Git may hand back CRLF on Windows; the contract is the content.
+        $existing = (Read-Utf8 $outPath) -replace "`r`n", "`n"
         if ($existing -ne $json) {
             throw "stable API snapshot is not canonical or does not match generated docs: $outPath"
         }
