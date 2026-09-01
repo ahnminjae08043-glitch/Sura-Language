@@ -29,7 +29,9 @@ jobs:
         include:
           - name: Windows x64
             os: windows-latest
-            cxx: C:\msys64\mingw64\bin\g++.exe
+            # Windows builds through build.bat, which discovers the compiler
+            # itself (SURA_CXX, then MSYS2, then PATH); cxx is Unix-only.
+            cxx: ""
             engine: .\SuraLanguage.exe
           - name: Ubuntu x64
             os: ubuntu-latest
@@ -58,6 +60,17 @@ jobs:
           update: true
           install: >-
             mingw-w64-x86_64-gcc
+
+      # setup-msys2 installs under the runner temp directory, not C:\msys64,
+      # so build.bat has to be told where g++ actually landed.
+      - name: Resolve MinGW g++ path
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cxx="$(cygpath -w "$(command -v g++)")"
+          "$cxx" --version | head -1
+          echo "SURA_CXX=$cxx" >> "$GITHUB_ENV"
 
       - name: Build Sura on Windows
         if: runner.os == 'Windows'

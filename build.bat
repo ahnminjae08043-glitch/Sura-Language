@@ -47,11 +47,31 @@ echo             Do not use for benchmarking, release, or any timing measurement
 exit /b 2
 
 :build_mode_ready
+rem Compiler discovery, most specific first. SURA_CXX is the explicit override
+rem CI uses; the MSYS2 default path covers the documented local setup; and the
+rem PATH lookup covers machines where MinGW lives elsewhere (GitHub runners
+rem install MSYS2 under the runner temp directory, not C:\msys64).
 if defined SURA_CXX (
     set "CXX=%SURA_CXX%"
-) else (
-    set "CXX=C:\msys64\mingw64\bin\g++.exe"
+    goto compiler_ready
 )
+if exist "C:\msys64\mingw64\bin\g++.exe" (
+    set "CXX=C:\msys64\mingw64\bin\g++.exe"
+    goto compiler_ready
+)
+for %%G in (g++.exe) do set "CXX=%%~$PATH:G"
+if not defined CXX (
+    echo No C++ compiler found. Install MSYS2 MinGW-w64 g++ or set SURA_CXX
+    echo to the full path of a g++ executable.
+    exit /b 3
+)
+if "%CXX%"=="" (
+    echo No C++ compiler found. Install MSYS2 MinGW-w64 g++ or set SURA_CXX
+    echo to the full path of a g++ executable.
+    exit /b 3
+)
+
+:compiler_ready
 
 echo Sura build mode: %BUILD_MODE%
 echo C++ compiler: %CXX%
