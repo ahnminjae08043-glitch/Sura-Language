@@ -10,7 +10,7 @@ $OutputEncoding = $utf8NoBom
 
 $EnginePath = (Resolve-Path -LiteralPath $Engine).Path
 $root = Split-Path -Parent $PSScriptRoot
-$script = Join-Path $root "dungeon3d.sura"
+$script = Join-Path $root "examples/games/dungeon3d.sura"
 
 $output = & $EnginePath $script -- --smoke 2>&1
 $code = $LASTEXITCODE

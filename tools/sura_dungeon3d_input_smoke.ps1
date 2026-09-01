@@ -1,6 +1,6 @@
 param(
     [string]$Engine = ".\SuraLanguage.exe",
-    [string]$Script = ".\dungeon3d.sura"
+    [string]$Script = ".\examples/games/dungeon3d.sura"
 )
 
 $ErrorActionPreference = "Stop"
