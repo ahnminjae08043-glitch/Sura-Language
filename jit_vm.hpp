@@ -181,6 +181,7 @@ class JitVM {
         NativeFunc* native = nullptr;   // non-owning; owned by native_funcs
         int32_t     warm   = 0;
         bool        failed = false;
+        uint8_t     deopts = 0;         // entry-guard failures since compile
     };
     std::vector<JitFuncSlot> jit_slots;
 
@@ -243,6 +244,21 @@ class JitVM {
         slot.failed = true;
         jit_failed.insert(fidx);   // keep the legacy set in sync for reporting
         return nullptr;
+    }
+
+    // A guarded native body handed back SURA_JIT_DEOPT_SENTINEL: the call is
+    // re-run in the interpreter by the caller; here we only count the miss.
+    // A function whose arguments are persistently non-numeric would pay the
+    // guard on every call, so after a few misses the slot is demoted for good.
+    static constexpr uint8_t NATIVE_DEOPT_DEMOTE_LIMIT = 8;
+    void note_native_deopt(int fidx) {
+        if (fidx < 0 || (size_t)fidx >= jit_slots.size()) return;
+        JitFuncSlot& slot = jit_slots[(size_t)fidx];
+        if (slot.native && ++slot.deopts >= NATIVE_DEOPT_DEMOTE_LIMIT) {
+            slot.native = nullptr;   // native_funcs still owns the code
+            slot.failed = true;
+            jit_failed.insert(fidx);
+        }
     }
 
     // Resolve the native body for fidx. Once a function has settled into either
@@ -3773,9 +3789,17 @@ _reenter:
 
                     if (native) {
                         uint64_t bits = native->fn(this, NR, chunk.constants.data());
-                        R[a] = Value::from_bits(bits);
-                        stack_top = new_base; // release the callee's frame regs
-                    } else {
+                        if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
+                            // Entry guard rejected an argument. The frame regs
+                            // are still bound, so re-run the call in the VM.
+                            note_native_deopt(closure->func_idx);
+                            native = nullptr;
+                        } else {
+                            R[a] = Value::from_bits(bits);
+                            stack_top = new_base; // release the callee's frame regs
+                        }
+                    }
+                    if (!native) {
                         // ── Iterative call: write directly to frame_pool slot ──
                         _SAVE_IP();
                         { CallFrame& nf = push_frame(inst.line);
@@ -4336,6 +4360,18 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
                                    static_cast<size_t>(std::max(0, ins->operand)));
                 SuraNativeFn fast_fn = reinterpret_cast<SuraNativeFn>(ins->ic_native_fn);
                 uint64_t bits = fast_fn(this, NR, chunk.constants.data());
+                if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
+                    // Entry guard rejected an argument. Drop this site's IC and
+                    // finish the call in the VM with the already-bound frame.
+                    note_native_deopt(cl->func_idx);
+                    ins->ic_native_fn = nullptr;
+                    CallFrame cf;
+                    cf.reg_base = base; cf.reg_count = cnt; cf.closure = cl;
+                    cf.chunk = &chunk; cf.method = nullptr;
+                    cf.ip = fi.entry_ip; cf.end_ip = fi.end_ip;
+                    cf.ret_reg = (uint16_t)-1; cf.in_try = false;
+                    return execute_frame(cf).raw_bits();
+                }
                 stack_top = base;
                 return bits;
             }
@@ -4483,8 +4519,15 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
             ins->ic_native_frame_regs = callee_native->frame_regs;
             ins->ic_method    = nullptr;
             uint64_t bits = callee_native->fn(this, NR, chunk.constants.data());
-            stack_top = base;
-            return bits;
+            if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
+                // Entry guard rejected an argument: undo the IC we just set
+                // and fall through to the interpreter with the bound frame.
+                note_native_deopt(cl->func_idx);
+                ins->ic_native_fn = nullptr;
+            } else {
+                stack_top = base;
+                return bits;
+            }
         }
         // Otherwise fall back to the interpreter.
         CallFrame cf;

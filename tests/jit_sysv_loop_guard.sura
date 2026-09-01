@@ -1,0 +1,44 @@
+# System V baseline v2: 루프 함수 컴파일 + 매개변수 가드 디옵트 검증.
+# JIT 모드에서는 loop_sum이 워밍업 후 네이티브로 컴파일되고(x86-64),
+# 숫자가 아닌 인자는 진입 가드가 디옵트 센티널을 돌려 레지스터 VM으로
+# 되돌아간다. VM 모드/미지원 타깃에서도 완전히 같은 결과여야 한다.
+
+func loop_sum(n) do
+    acc is 0
+    i is 1
+    while i <= n do
+        acc is acc + i
+        i is i + 1
+    end
+    return acc
+end
+
+# 워밍업: 컴파일 문턱을 확실히 넘길 만큼 반복 호출.
+total is 0
+for k in 1 to 600 do
+    total is total + loop_sum(100)
+end
+assert_eq(total, 3030000)
+
+# 가드 디옵트: 네이티브 코드가 있어도 숫자가 아닌 인자는 VM과 동일하게
+# [E200] 순서 비교 타입 오류로 이어져야 한다.
+deopt_caught is false
+try
+    bad is loop_sum("숫자 아님")
+catch e
+    deopt_caught is true
+end
+assert(deopt_caught)
+
+# 디옵트를 여러 번 겪어 슬롯이 강등된 뒤에도 숫자 호출은 계속 정확하다.
+for k in 1 to 12 do
+    try
+        bad is loop_sum("또 숫자 아님")
+    catch e
+        deopt_caught is true
+    end
+end
+assert_eq(loop_sum(1000), 500500)
+assert_eq(loop_sum(0), 0)
+
+print("jit_sysv_loop_guard: PASS")

@@ -524,7 +524,14 @@ assert(file_delete(async_http_file))
 missing_status is async_status(-999999)
 assert(not missing_status.known)
 assert(not missing_status.ready)
-slow_task is async_cmd("cmd /c ping -n 2 127.0.0.1 > nul && echo slow-timeout")
+# 느린 작업은 OS별로 명령이 다르다: Windows는 cmd/ping, 그 외는 sh/sleep.
+func slow_echo_cmd(msg) do
+    if os_name() == "windows" then
+        return "cmd /c ping -n 2 127.0.0.1 > nul && echo " + msg
+    end
+    return "sleep 1 && echo " + msg
+end
+slow_task is async_cmd(slow_echo_cmd("slow-timeout"))
 slow_status is async_status(slow_task)
 assert_eq(slow_status.id, slow_task)
 assert(slow_status.known)
@@ -548,14 +555,14 @@ cleanup_count is async_cleanup()
 assert(cleanup_count >= 2)
 assert(not async_status(cleanup_a).known)
 assert(not async_status(cleanup_b).known)
-any_slow is async_cmd("cmd /c ping -n 2 127.0.0.1 > nul && echo any-slow")
+any_slow is async_cmd(slow_echo_cmd("any-slow"))
 any_fast is async_cmd("echo any-fast")
 first_done is async_any([any_slow, any_fast], 5000, "missing")
 assert_eq(first_done.index, 1)
 assert_eq(first_done.output.trim(), "any-fast")
 assert_eq(await_any([any_slow], 5000, "missing").output.trim(), "any-slow")
-all_slow_a is async_cmd("cmd /c ping -n 2 127.0.0.1 > nul && echo all-a")
-all_slow_b is async_cmd("cmd /c ping -n 2 127.0.0.1 > nul && echo all-b")
+all_slow_a is async_cmd(slow_echo_cmd("all-a"))
+all_slow_b is async_cmd(slow_echo_cmd("all-b"))
 assert_eq(async_all_timeout([all_slow_a, all_slow_b], 1, "waiting"), "waiting")
 all_done is await_all_timeout([all_slow_a, all_slow_b], 5000, ["missing"])
 assert_eq(all_done[0].trim(), "all-a")

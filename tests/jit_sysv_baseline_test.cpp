@@ -134,7 +134,90 @@ int main() {
         require(helper_compiler.compile_bytes().empty(),
                 "helper-calling bytecode must not enter the exception-free baseline");
 
-        std::cout << "jit sysv baseline: PASS (division, six comparisons, NaN semantics, and guarded fallbacks)\n";
+        // ── v2: guarded numeric parameters ──
+        // With entry guards the dynamic-add shape becomes compileable: the
+        // prologue verifies both arguments are NaN-boxed numbers and deopts
+        // (returns the sentinel) when the caller passes anything else.
+        JitChunk guarded_add;
+        guarded_add.max_regs = 3;
+        guarded_add.code.emplace_back(JitOp::ADD, 2, 0, 1);
+        guarded_add.code.emplace_back(JitOp::RETURN_VAL, 2);
+        std::vector<uint8_t> guarded_bytes = SysVBaselineCompiler(
+            guarded_add, 0, guarded_add.code.size(), guarded_add.max_regs,
+            2).compile_bytes();
+        require(!guarded_bytes.empty(),
+                "guarded numeric parameters should make dynamic add compileable");
+        ExecCode guarded_code = ExecCode::from_bytes(guarded_bytes);
+        auto guarded_function = reinterpret_cast<SysVNativeTestFn>(guarded_code.ptr);
+        {
+            std::vector<Value> regs(guarded_add.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            regs[1] = Value(22.0);
+            Value sum = Value::from_bits(
+                guarded_function(nullptr, regs.data(), nullptr));
+            require(sum.is_num() && std::fabs(sum.as_num() - 42.0) < 1e-12,
+                    "guarded add returned the wrong sum for numeric arguments");
+        }
+        {
+            std::vector<Value> regs(guarded_add.max_regs, Value::nil());
+            regs[0] = Value(true);
+            regs[1] = Value(22.0);
+            const uint64_t bits =
+                guarded_function(nullptr, regs.data(), nullptr);
+            require(bits == SURA_JIT_DEOPT_SENTINEL,
+                    "non-numeric argument must return the deopt sentinel");
+        }
+
+        // ── v2: whole-body loop (sum 1..n via JUMP / JUMP_IF_FALSE) ──
+        JitChunk loop;
+        loop.max_regs = 5;
+        loop.constants.emplace_back(0.0);
+        loop.constants.emplace_back(1.0);
+        loop.code.emplace_back(JitOp::LOAD_CONST, 1, 0, 0, 0);      // acc = 0
+        loop.code.emplace_back(JitOp::LOAD_CONST, 2, 0, 0, 1);      // one = 1
+        loop.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 0);      // zero = 0
+        loop.code.emplace_back(JitOp::CMP_GT, 3, 0, 4);             // n > 0 ?
+        loop.code.emplace_back(JitOp::JUMP_IF_FALSE, 3, 0, 0, 8);
+        loop.code.emplace_back(JitOp::ADD, 1, 1, 0);                // acc += n
+        loop.code.emplace_back(JitOp::SUB, 0, 0, 2);                // n -= 1
+        loop.code.emplace_back(JitOp::JUMP, 0, 0, 0, 3);
+        loop.code.emplace_back(JitOp::RETURN_VAL, 1);
+        std::vector<uint8_t> loop_bytes = SysVBaselineCompiler(
+            loop, 0, loop.code.size(), loop.max_regs, 1).compile_bytes();
+        require(!loop_bytes.empty(), "guarded whole-body loop was rejected");
+        ExecCode loop_code = ExecCode::from_bytes(loop_bytes);
+        auto loop_function = reinterpret_cast<SysVNativeTestFn>(loop_code.ptr);
+        {
+            std::vector<Value> regs(loop.max_regs, Value::nil());
+            regs[0] = Value(100.0);
+            Value total = Value::from_bits(
+                loop_function(nullptr, regs.data(), loop.constants.data()));
+            require(total.is_num() && std::fabs(total.as_num() - 5050.0) < 1e-12,
+                    "loop sum 1..100 must be 5050");
+        }
+        {
+            std::vector<Value> regs(loop.max_regs, Value::nil());
+            regs[0] = Value(false);
+            const uint64_t bits =
+                loop_function(nullptr, regs.data(), loop.constants.data());
+            require(bits == SURA_JIT_DEOPT_SENTINEL,
+                    "loop entry guard must deopt on a non-numeric argument");
+        }
+
+        // A jump that escapes the body must be rejected outright.
+        JitChunk bad_jump;
+        bad_jump.max_regs = 2;
+        bad_jump.constants.emplace_back(1.0);
+        bad_jump.code.emplace_back(JitOp::LOAD_CONST, 0, 0, 0, 0);
+        bad_jump.code.emplace_back(JitOp::JUMP, 0, 0, 0, 9);
+        bad_jump.code.emplace_back(JitOp::RETURN_VAL, 0);
+        require(SysVBaselineCompiler(
+                    bad_jump, 0, bad_jump.code.size(),
+                    bad_jump.max_regs).compile_bytes().empty(),
+                "out-of-body jump target must fall back to the register VM");
+
+        std::cout << "jit sysv baseline: PASS (division, six comparisons, NaN semantics, "
+                     "guarded fallbacks, parameter guards, and loops)\n";
 #else
         std::cout << "jit sysv baseline: PASS (non-x86-64 compile-only target)\n";
 #endif
