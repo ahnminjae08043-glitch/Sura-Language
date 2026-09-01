@@ -1,0 +1,76 @@
+# 생성자를 선언하지 않은 클래스도 인스턴스 생성 시 인라인 캐시를 쓴다.
+# 캐시가 클래스 포인터만 기억하므로, 매 호출이 새 인스턴스를 만드는지와
+# 캐시된 클래스와 캐시되지 않은 클래스가 섞여도 각자 정확한지를 고정한다.
+
+class Empty do
+end
+
+class WithCtor do
+  func init(v) do
+    self.v is v
+  end
+end
+
+class Greeter do
+  func greet() do
+    return "hi"
+  end
+end
+
+# 1) 루프에서 만든 인스턴스들이 서로 독립이어야 한다 (캐시가 객체를 재사용하면 안 됨)
+objs is []
+i is 0
+while i < 20 do
+  o is Empty()
+  o.n is i
+  objs.push(o)
+  i is i + 1
+end
+j is 0
+while j < 20 do
+  assert_eq(objs[j].n, j)
+  j is j + 1
+end
+
+# 2) 캐시가 더워진 뒤에도 계속 새 인스턴스여야 한다
+k is 0
+while k < 500 do
+  t is Empty()
+  t.k is k
+  if t.k != k then throw "instance reuse detected"
+  k is k + 1
+end
+
+# 3) 같은 호출 지점에서 생성자 유무가 섞여도 정확해야 한다
+func make(which) do
+  if which == 0 then return Empty()
+  return WithCtor(7)
+end
+m is 0
+while m < 100 do
+  e is make(0)
+  w is make(1)
+  assert_eq(w.v, 7)
+  m is m + 1
+end
+
+# 4) 메서드는 여전히 동작
+g is Greeter()
+n is 0
+while n < 100 do
+  assert_eq(g.greet(), "hi")
+  n is n + 1
+end
+
+# 5) 캐시된 클래스와 캐시되지 않은 클래스가 섞여도 각자의 메서드/필드를 가진다
+mixed is 0
+while mixed < 200 do
+  ee is Empty()
+  gg is Greeter()
+  ww is WithCtor(mixed)
+  assert_eq(gg.greet(), "hi")
+  assert_eq(ww.v, mixed)
+  mixed is mixed + 1
+end
+
+print("74_constructorless_class_ic: PASS")
