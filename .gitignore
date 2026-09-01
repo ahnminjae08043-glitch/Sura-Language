@@ -56,3 +56,6 @@ sura_presentation/.git/
 .env.*
 !.env.example
 .claude/settings.local.json
+
+# Local website working copy is not part of the language-core repository.
+sura_presentation/
