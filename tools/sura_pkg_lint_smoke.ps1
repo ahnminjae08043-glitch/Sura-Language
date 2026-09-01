@@ -105,6 +105,31 @@ print(safe_headers)
         throw "expected --fail-on-warning to fail"
     }
 
+    # Line endings must not change what the linter sees. Rules that match a
+    # whole line stopped firing on CRLF files once, which hid three of the five
+    # findings above from anyone editing on Windows.
+    $crlf = Join-Path $temp "crlf_pkg"
+    $warnSource = [System.IO.File]::ReadAllText((Join-Path $warn "src/warn_pkg.sura"), [System.Text.Encoding]::UTF8)
+    Write-Text (Join-Path $crlf "sura.pkg.json") @"
+{
+  "name": "crlf_pkg",
+  "version": "1.0.0",
+  "main": "src/crlf_pkg.sura",
+  "dependencies": {}
+}
+"@
+    $lfSource = $warnSource -replace "`r`n", "`n"
+    Write-Text (Join-Path $crlf "src/crlf_pkg.sura") ($lfSource -replace "`n", "`r`n")
+    $crlfResult = Run-Pkg -PkgArgs @("lint", $crlf)
+    Write-Text (Join-Path $crlf "src/crlf_pkg.sura") $lfSource
+    $lfResult = Run-Pkg -PkgArgs @("lint", $crlf)
+    if ($crlfResult.Output -notmatch '0 error\(s\), 5 warning\(s\)' -or
+        $lfResult.Output -notmatch '0 error\(s\), 5 warning\(s\)') {
+        Write-Output $crlfResult.Output
+        Write-Output $lfResult.Output
+        throw "lint findings must not depend on CRLF versus LF line endings"
+    }
+
     $legacy = Join-Path $temp "legacy_pkg"
     Write-Text (Join-Path $legacy "sura.pkg.json") @"
 {

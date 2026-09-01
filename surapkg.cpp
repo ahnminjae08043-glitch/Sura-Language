@@ -6542,6 +6542,11 @@ static std::vector<PackageInfoSymbol> collect_local_info_symbols(const std::vect
         int block_depth = 0;
         while (std::getline(lines, line)) {
             ++line_no;
+            // getline keeps the carriage return of a CRLF file. Rules that
+            // match a whole line (assignments, for one) then never fire, so a
+            // file saved on Windows would silently lose findings that the same
+            // file with LF endings reports.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::smatch m;
             std::string trimmed = trim_copy(line);
             if (std::regex_search(line, m, decl_re)) {
@@ -9466,6 +9471,7 @@ static int audit_package_findings(const fs::path& root,
         std::string line;
         int line_no = 1;
         while (std::getline(lines, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::smatch manifest_plugin_match;
             bool policy_plugin_line = std::regex_search(line, policy_plugin_re);
             if (std::regex_search(line, raw_plugin_load_re)) {
@@ -9883,6 +9889,11 @@ static LintReport lint_package_sources(const fs::path& root, bool verbose) {
         };
         while (std::getline(lines, line)) {
             ++line_no;
+            // getline keeps the carriage return of a CRLF file. Rules that
+            // match a whole line (assignments, for one) then never fire, so a
+            // file saved on Windows would silently lose findings that the same
+            // file with LF endings reports.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             if (std::regex_search(line, block_close)) {
                 --depth;
                 if (depth < 0) {
@@ -10381,6 +10392,7 @@ static int run_policy_command(const std::string& source, const fs::path& json_re
         std::istringstream lines(read_all(file));
         std::string line;
         while (std::getline(lines, line)) {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::smatch match;
             bool policy_line = line.find("tool_spec") != std::string::npos ||
                                line.find("tool.spec") != std::string::npos ||
@@ -10794,6 +10806,11 @@ static bool generate_package_docs(const fs::path& root,
         int block_depth = 0;
         while (std::getline(lines, line)) {
             ++line_no;
+            // getline keeps the carriage return of a CRLF file. Rules that
+            // match a whole line (assignments, for one) then never fire, so a
+            // file saved on Windows would silently lose findings that the same
+            // file with LF endings reports.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::smatch m;
             std::error_code ec;
             fs::path display = fs::relative(file, root, ec);
@@ -12873,6 +12890,11 @@ static std::vector<ProtectLeakProbe> protect_build_leak_probes(const fs::path& r
         int line_no = 0;
         while (std::getline(lines, line)) {
             ++line_no;
+            // getline keeps the carriage return of a CRLF file. Rules that
+            // match a whole line (assignments, for one) then never fire, so a
+            // file saved on Windows would silently lose findings that the same
+            // file with LF endings reports.
+            if (!line.empty() && line.back() == '\r') line.pop_back();
             std::string trimmed = trim_ascii_ws(line);
             if (trimmed.empty() || trimmed.rfind("//", 0) == 0 || trimmed.rfind("#", 0) == 0) continue;
             protect_add_probe(probes, "source-line", source_name + ":" + std::to_string(line_no),
