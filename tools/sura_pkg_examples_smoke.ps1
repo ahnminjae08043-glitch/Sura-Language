@@ -62,7 +62,11 @@ try {
     }
 
     $ids = @($list.examples | ForEach-Object { [string]$_.id })
-    $sortedIds = @($ids | Sort-Object)
+    # surapkg sorts ids byte-wise (std::string operator<); Sort-Object is
+    # culture-collated and on Linux/macOS ICU orders "games_2d" before
+    # "games/x", so the contract check must compare ordinally.
+    $sortedIds = [string[]]$ids.Clone()
+    [System.Array]::Sort($sortedIds, [System.StringComparer]::Ordinal)
     if (($ids -join "`n") -ne ($sortedIds -join "`n") -or @($ids | Select-Object -Unique).Count -ne $ids.Count) {
         throw "example ids must be unique and sorted"
     }
