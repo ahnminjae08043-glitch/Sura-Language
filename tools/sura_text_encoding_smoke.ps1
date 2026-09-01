@@ -84,6 +84,27 @@ foreach ($rel in $files) {
     }
 }
 
+# Windows PowerShell 5.1 reads a BOM-less script in the machine's ANSI
+# codepage, so a .ps1 holding Hangul or any other non-ASCII text is decoded
+# into mojibake and can fail to even parse (a broken quote pair takes the rest
+# of the file with it). Requiring the BOM keeps such scripts runnable under
+# both 5.1 and PowerShell 7, on any codepage.
+$scriptFiles = @(Get-ChildItem -LiteralPath (Join-Path $root "tools") -File -Filter *.ps1) +
+               @(Get-ChildItem -LiteralPath $root -File -Filter *.ps1)
+foreach ($script in ($scriptFiles | Sort-Object FullName)) {
+    $bytes = [System.IO.File]::ReadAllBytes($script.FullName)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    if ($hasBom) { continue }
+    try { $text = $utf8Strict.GetString($bytes) } catch {
+        $failures.Add((Split-Path -Leaf $script.FullName) + ": invalid UTF-8 bytes") | Out-Null
+        continue
+    }
+    if ($text.ToCharArray() | Where-Object { [int][char]$_ -gt 127 } | Select-Object -First 1) {
+        $relative = $script.FullName.Substring($root.Length).TrimStart('\', '/')
+        $failures.Add("${relative}: non-ASCII PowerShell script needs a UTF-8 BOM") | Out-Null
+    }
+}
+
 if ($failures.Count -gt 0) {
     $failures | ForEach-Object { Write-Host $_ }
     throw "text encoding smoke found likely mojibake"

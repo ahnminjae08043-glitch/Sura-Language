@@ -1,4 +1,4 @@
-$content = Get-Content -Path "jit_compiler.hpp" -Raw -Encoding UTF8
+﻿$content = Get-Content -Path "jit_compiler.hpp" -Raw -Encoding UTF8
 $content = $content -replace "\buint8_t\b", "uint16_t"
 $content = $content -replace "next_reg >= 255", "next_reg >= 65535"
 $content = $content -replace "최대 255개", "최대 65535개"

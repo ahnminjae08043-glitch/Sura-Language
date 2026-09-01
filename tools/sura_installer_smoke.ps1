@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),
     [string]$Maker = (Join-Path $PSScriptRoot "sura_make_installer.ps1"),
     [string]$Version = ""

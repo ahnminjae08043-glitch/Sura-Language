@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Collect a shareable bug report: versions, hashes, target, and an optional
     minimal reproduction.

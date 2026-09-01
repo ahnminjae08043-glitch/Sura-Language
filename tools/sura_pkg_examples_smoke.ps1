@@ -70,14 +70,12 @@ try {
     if (($ids -join "`n") -ne ($sortedIds -join "`n") -or @($ids | Select-Object -Unique).Count -ne $ids.Count) {
         throw "example ids must be unique and sorted"
     }
-    foreach ($requiredId in @("starter/01_hello", "algorithms/word_frequency", "ai_ml/linear_regression", "games_2d/pong", "video_to_text")) {
+    foreach ($requiredId in @("starter/01_hello", "algorithms/word_frequency", "ai_ml/linear_regression", "games_2d/pong", "bad_apple_ascii")) {
         if ($ids -notcontains $requiredId) { throw "example gallery is missing $requiredId" }
     }
     $pong = $list.examples | Where-Object { $_.id -eq "games_2d/pong" } | Select-Object -First 1
-    $video = $list.examples | Where-Object { $_.id -eq "video_to_text" } | Select-Object -First 1
     $cuda = $list.examples | Where-Object { $_.id -eq "cuda_language_model_training" } | Select-Object -First 1
     if (-not ($pong.requirements -contains "windows-graphics") -or
-        -not ($video.requirements -contains "ffmpeg") -or
         -not ($cuda.requirements -contains "cuda")) {
         throw "example optional-requirement detection was incomplete"
     }

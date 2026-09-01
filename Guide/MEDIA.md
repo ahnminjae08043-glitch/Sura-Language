@@ -85,13 +85,6 @@ sura examples/bad_apple_ascii.sura --smoke
 
 두 번째 명령은 4개 장면을 빠르게 한 프레임씩 렌더링하는 검증 모드입니다. VM/JIT 회귀는 `tools/sura_bad_apple_ascii_smoke.ps1`로 실행합니다.
 
-사용 권한이 있는 원본 영상의 프레임 순서를 그대로 문자화하려면 영상 자체를 저장소 밖에서 준비하고 다음 전용 wrapper를 사용합니다. 저장소에는 원본 영상이나 음악이 포함되지 않습니다.
-
-```powershell
-sura examples/bad_apple_from_video.sura -- "C:\path\to\authorized-video.mp4"
-sura examples/bad_apple_from_video.sura -- "C:\path\to\authorized-video.mp4" --preview
-sura examples/bad_apple_from_video.sura -- "C:\path\to\authorized-video.mp4" --convert-only
-sura examples/bad_apple_from_video.sura -- "C:\path\to\authorized-video.mp4" --ffmpeg "C:\path\to\ffmpeg.exe"
-```
-
-이 wrapper는 96열, 30fps, 흑백 2단계 ramp로 최대 7000개 프레임을 변환합니다. 이는 소스에서 파생된 문자 표현이며 원본 픽셀·음향 자체와 동일한 복제본은 아닙니다.
+사용 권한이 있는 영상을 직접 문자화하려면 위의 `media.ascii_frames`
+API를 그대로 쓰면 됩니다. 영상 파일과 FFmpeg가 있어야만 동작하는 예제는
+저장소에 두지 않습니다 — 받아서 바로 실행할 수 없기 때문입니다.
