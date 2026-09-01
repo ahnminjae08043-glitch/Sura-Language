@@ -15594,6 +15594,44 @@ function Get-WasmAstDirectFunctionValueCallLiftName {
     return ""
 }
 
+function Get-WasmAstPromotedLiftCallRawUnwrap {
+    param([string]$TargetName)
+
+    # A promoted function expression always returns through the tagged-Value
+    # ABI (the dispatcher requires it). When a direct call to it is emitted in
+    # the raw-i32 expression context, the tagged result must be unwrapped to
+    # the raw kind the surrounding code assumes, or a string-typed capture
+    # flows a Value handle into raw string concatenation and traps.
+    if ([string]::IsNullOrWhiteSpace($TargetName) -or
+        -not $TargetName.StartsWith("__sura_func_expr_") -or
+        -not $script:wasmAstFunctionDefs.ContainsKey($TargetName)) {
+        return ""
+    }
+    $promoted = $script:wasmAstFunctionDefs[$TargetName].Node
+    if ($null -eq $promoted -or [string]$promoted.node -ne "FUNC_EXPR" -or
+        $null -eq $promoted.body -or [string]$promoted.body.node -ne "SuraBlock") {
+        return ""
+    }
+    $returnValue = $null
+    foreach ($stmt in @(As-WasmAstArray ($promoted.body.body))) {
+        if ($null -ne $stmt -and [string]$stmt.node -eq "RETURN" -and $null -ne $stmt.value) {
+            $returnValue = $stmt.value
+        }
+    }
+    if ($null -eq $returnValue) { return "" }
+    switch (Get-WasmAstStaticValueType $returnValue) {
+        # The promoted body wraps string and numeric returns into tagged
+        # Values (string_or_nil / value_add), so those need unwrapping at the
+        # raw boundary. Bool-returning promoted bodies already emit a raw 0/1
+        # (is_truthy is applied inside the body) and must pass through as-is.
+        # value_to_string is the identity for string-tagged Values.
+        "string" { return "call `$__sura_value_to_string" }
+        # Exact for the i32-tagged numbers these specialized captures produce.
+        "num"    { return "call `$__sura_value_payload" }
+        default  { return "" }
+    }
+}
+
 function Convert-WasmAstFunctionValueCalleeIdExpr {
     param([string]$Name)
 
@@ -19733,8 +19771,86 @@ function Add-WasmAstStmt {
             }
         }
         "RETURN" {
+            # Inside this function a direct call to a locally promoted function
+            # expression consistently flows as a tagged Value. Callers of the
+            # ENCLOSING named function, however, classify its return without
+            # these local lift hints and emit against the raw kind reported by
+            # static inference. The function boundary is therefore the one
+            # place the tagged result must be unwrapped back to raw.
+            $rawKindLiftUnwrap = ""
+            if ($null -ne $Node.value -and [string]$Node.value.node -eq "CALL" -and
+                $null -ne $env:SURA_WASM_RETURN_DIAG) {
+                $diagName = [string]$Node.value.name
+                $diagCands = if ($script:wasmCurrentLocalFunctionLiftCandidates.ContainsKey($diagName)) { @($script:wasmCurrentLocalFunctionLiftCandidates[$diagName]) -join "," } else { "<none>" }
+                $diagKinds = @()
+                if ($script:wasmCurrentLocalFunctionLiftCandidates.ContainsKey($diagName)) {
+                    foreach ($c in @($script:wasmCurrentLocalFunctionLiftCandidates[$diagName])) {
+                        $fc = [pscustomobject]@{ node = "CALL"; name = [string]$c; args = @(As-WasmAstArray ($Node.value.args)) }
+                        $diagKinds += (Get-WasmAstFunctionCallTypeHint $fc (Get-WasmAstCurrentValueTypeScopeHints))
+                    }
+                }
+                [Console]::Error.WriteLine("[ret-diag] fn=$($script:wasmCurrentFunctionName) call=$diagName returnsValue=$($script:wasmCurrentFunctionReturnsValue) hint=$($script:wasmCurrentLocalFunctionLiftHints.ContainsKey($diagName)) indirect=$(Test-WasmAstIndirectFunctionValueCall ($Node.value)) static=$(Get-WasmAstStaticValueType ($Node.value)) cands=$diagCands kinds=$($diagKinds -join ','))")
+            }
+            if ($null -ne $Node.value -and -not $script:wasmCurrentFunctionReturnsValue -and
+                [string]$Node.value.node -eq "CALL") {
+                $returnCallName = [string]$Node.value.name
+                if (-not [string]::IsNullOrWhiteSpace($returnCallName) -and
+                    $script:wasmCurrentLocalFunctionLiftHints.ContainsKey($returnCallName)) {
+                    $rawKindLiftUnwrap = Get-WasmAstPromotedLiftCallRawUnwrap ([string]$script:wasmCurrentLocalFunctionLiftHints[$returnCallName])
+                }
+                if ([string]::IsNullOrWhiteSpace($rawKindLiftUnwrap) -and
+                    (Test-WasmAstIndirectFunctionValueCall ($Node.value))) {
+                    # The indirect function-value dispatcher normalizes every
+                    # result to a tagged Value; unwrap to the raw kind callers
+                    # of the enclosing function assume when it is known. The
+                    # dispatched call itself has no static type, so mirror the
+                    # caller's view: the single known kind among the enclosing
+                    # function's other return statements.
+                    $externalKind = Get-WasmAstStaticValueType ($Node.value)
+                    if ([string]::IsNullOrWhiteSpace($externalKind) -and
+                        -not [string]::IsNullOrWhiteSpace([string]$script:wasmCurrentFunctionName) -and
+                        $script:wasmAstFunctionDefs.ContainsKey([string]$script:wasmCurrentFunctionName)) {
+                        $enclosingNode = $script:wasmAstFunctionDefs[[string]$script:wasmCurrentFunctionName].Node
+                        if ($null -ne $enclosingNode -and $null -ne $enclosingNode.body) {
+                            $knownKinds = @(@(Get-WasmAstReturnValueTypesFromBody ($enclosingNode.body)) |
+                                Where-Object { $_ -in @("string", "num", "bool") } | Sort-Object -Unique)
+                            if ($knownKinds.Count -eq 1) { $externalKind = [string]$knownKinds[0] }
+                        }
+                    }
+                    if ([string]::IsNullOrWhiteSpace($externalKind) -and
+                        $script:wasmCurrentLocalFunctionLiftCandidates.ContainsKey($returnCallName)) {
+                        # Last resort: the single source kind every reachable
+                        # dispatch candidate returns (before the dispatcher's
+                        # tagged normalization).
+                        $candidateKinds = New-Object System.Collections.Generic.List[string]
+                        foreach ($candidate in @($script:wasmCurrentLocalFunctionLiftCandidates[$returnCallName])) {
+                            if ([string]::IsNullOrWhiteSpace([string]$candidate) -or
+                                -not $script:wasmAstFunctionDefs.ContainsKey([string]$candidate)) { continue }
+                            $candidateCall = [pscustomobject]@{
+                                node = "CALL"
+                                name = [string]$candidate
+                                args = @(As-WasmAstArray ($Node.value.args))
+                            }
+                            $candidateKinds.Add((Get-WasmAstFunctionCallTypeHint $candidateCall (Get-WasmAstCurrentValueTypeScopeHints))) | Out-Null
+                        }
+                        $uniqueKinds = @($candidateKinds | Where-Object { $_ -in @("string", "num", "bool") } | Sort-Object -Unique)
+                        if ($candidateKinds.Count -gt 0 -and $uniqueKinds.Count -eq 1 -and
+                            @($candidateKinds | Sort-Object -Unique).Count -eq 1) {
+                            $externalKind = [string]$uniqueKinds[0]
+                        }
+                    }
+                    switch ($externalKind) {
+                        "string" { $rawKindLiftUnwrap = "call `$__sura_value_to_string" }
+                        "bool"   { $rawKindLiftUnwrap = "call `$__sura_value_is_truthy" }
+                        "num"    { $rawKindLiftUnwrap = "call `$__sura_value_payload" }
+                        default  { }
+                    }
+                }
+            }
             if ($null -eq $Node.value) {
                 $Out.Add("${Indent}i32.const 0")
+            } elseif (-not [string]::IsNullOrWhiteSpace($rawKindLiftUnwrap)) {
+                Add-Code $Out (@(Convert-WasmAstExpr ($Node.value)) + @($rawKindLiftUnwrap)) $Indent
             } elseif ($script:wasmCurrentFunctionReturnsValue -or (Test-WasmAstValuePreservingExprCandidate ($Node.value))) {
                 Add-Code $Out @(Convert-WasmAstValueExpr ($Node.value)) $Indent
             } else {

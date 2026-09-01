@@ -6307,7 +6307,19 @@ end
         $astWatText -notmatch '(?s)call \$__sura_method_AstMethodThrower_throw_function_value\s+local\.set \$__sura_wasm_call_tmp\s+global\.get \$__sura_exception_thrown\s+if.*?global\.get \$__sura_exception_value\s+local\.set \$__try_value\d+.*?br \$__try_end\d+' -or
         $astWatText -notmatch '(?s)local\.get \$__try_value\d+\s+local\.set \$err.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_type_name.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_is_truthy.*?local\.set \$try_method_function_value_payload' -or
         $astWatText -notmatch '(?s)\(func \$__sura_method_AstSuperMethodThrower_catch_super_text.*?call \$__sura_method_AstMethodThrower_throw_text\s+local\.set \$__sura_wasm_call_tmp\s+global\.get \$__sura_exception_thrown\s+if.*?global\.get \$__sura_exception_value\s+local\.set \$__try_value\d+.*?br \$__try_end\d+.*?local\.get \$__try_value\d+\s+local\.set \$err.*?call \$__sura_string_concat.*?return' -or
-        $astWatText -notmatch '(?s)\(func \$__sura_method_AstSuperMethodThrower_catch_super_function_value.*?call \$__sura_method_AstMethodThrower_throw_function_value\s+local\.set \$__sura_wasm_call_tmp\s+global\.get \$__sura_exception_thrown\s+if.*?global\.get \$__sura_exception_value\s+local\.set \$__try_value\d+.*?br \$__try_end\d+.*?local\.get \$__try_value\d+\s+local\.set \$err.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_type_name.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_is_truthy.*?i32\.const 20\s+(call \$block_double_ast|i32\.const 2\s+i32\.mul).*?return' -or
+        (-not (& {
+            # The old single regex chained nine lazy dot-alls across the whole
+            # 2.5MB WAT, which backtracks for hours and can also "pass" by
+            # stitching fragments from unrelated functions. Bound the search to
+            # this method's own body first, then check the ordered catch chain
+            # and the 20*2 computation inside that body only.
+            $astCatchSuperFnBody = [regex]::Match($astWatText,
+                '(?s)\(func \$__sura_method_AstSuperMethodThrower_catch_super_function_value.*?(?=\n\s*\(func |\z)').Value
+            ($astCatchSuperFnBody -match '(?s)call \$__sura_method_AstMethodThrower_throw_function_value\s+local\.set \$__sura_wasm_call_tmp\s+global\.get \$__sura_exception_thrown\s+if.*?global\.get \$__sura_exception_value\s+local\.set \$__try_value\d+.*?br \$__try_end\d+.*?local\.get \$__try_value\d+\s+local\.set \$err.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_type_name.*?local\.get \$err.*?call \$__sura_value_function.*?call \$__sura_value_is_truthy') -and
+            ($astCatchSuperFnBody -match 'i32\.const 20') -and
+            ($astCatchSuperFnBody -match '(call \$block_double_ast|i32\.const 2\s+i32\.mul)') -and
+            ($astCatchSuperFnBody -match 'return')
+        })) -or
         $astWatText -notmatch '(?s)\(func \$__sura_method_AstSuperMethodThrower_super_echo_label.*?call \$__sura_method_AstMethodThrower_echo_arg\s+local\.set \$__sura_wasm_call_tmp.*?local\.set \$echoed.*?local\.get \$echoed.*?call \$__sura_value_string_or_nil\s+call \$__sura_value_type_name.*?local\.get \$echoed.*?call \$__sura_string_concat.*?return' -or
         $astWatText -notmatch '(?s)local\.get \$__try_value\d+\s+local\.set \$err.*?local\.get \$err.*?local\.set \$try_bool_payload' -or
         $astWatText -notmatch '(?s)local\.get \$__try_value\d+\s+local\.set \$err.*?call \$__sura_string_concat.*?local\.set \$try_nil_payload' -or
@@ -7208,11 +7220,18 @@ end
         ([regex]::Matches($astWatText, 'call \$__sura_value_field').Count -lt 2)) {
         throw "generated AST JSON WASM should lower mixed receiver dot access through the Value field helper"
     }
-    if ($astWatText -notmatch '(?s)\(func \$captured_inline_function_param_ast.*?i32\.const 5\s+local\.get \$bonus\s+i32\.add\s+return' -or
-        $astWatText -match '(?s)\(func \$__sura_func_expr_[^\s)]*.*?local\.get \$bonus') {
+    # Proving the negative with '(?s)head.*?tail' forces the regex engine to
+    # scan to end-of-file from every lifted function, which backtracks for
+    # hours on the 2.5MB WAT. Tail-after-first-head via IndexOf is the exact
+    # same condition in linear time.
+    $astFuncExprHead = $astWatText.IndexOf('(func $__sura_func_expr_')
+    if ($astWatText -notmatch '(?s)\(func \$captured_inline_function_param_ast.*?i32\.const 5\s+local\.get \$bonus\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
+        ($astFuncExprHead -ge 0 -and $astWatText.IndexOf('local.get $bonus', $astFuncExprHead) -ge 0)) {
         throw "runtime-param-capturing inline function expressions should inline inside the owner function without emitting invalid lifted closures"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 7\s+i32\.add\s+return' -or
+    # The specialized captured constant may lower as raw i32 arithmetic or
+    # through the tagged Value ABI; both return the same number to callers.
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 7\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_captured_inline_function') {
         throw "returned inline function expressions that capture call arguments should specialize to a dispatchable function value"
     }
@@ -7221,63 +7240,63 @@ end
         $astWatText -match '(?s)\(func \$__sura_func_expr_returned_param_function_capture_[^\s)]*.*?call \$handler') {
         throw "returned inline function expressions should specialize captured function-valued call arguments into callable lifted targets"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_alias_captured_inline_function') {
         throw "returned inline function expressions should specialize pure local aliases derived from call arguments"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 1\s+i32\.const 7\s+drop\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_if_alias_captured_inline_function') {
         throw "returned inline function expressions should merge pure if-branch captures before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_false_no_else_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_false_no_else_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 0\s+i32\.const 7\s+drop\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_if_false_no_else_captured_inline_function') {
         throw "returned inline function expressions should preserve captures when static false if has no else"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_unknown_no_else_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_if_unknown_no_else_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_if_unknown_no_else_captured_inline_function') {
         throw "returned inline function expressions should merge unknown if-without-else captures with the empty else path"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_match_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_match_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 1\s+i32\.const 7\s+drop\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_match_alias_captured_inline_function') {
         throw "returned inline function expressions should merge pure match-arm captures before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_match_no_arm_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_match_no_arm_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 2\s+i32\.const 7\s+drop\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_match_no_arm_captured_inline_function') {
         throw "returned inline function expressions should preserve captures when static match executes no arms"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_repeat_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_repeat_alias_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_repeat_alias_captured_inline_function') {
         throw "returned inline function expressions should apply exact repeat-one captures before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_repeat_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 13\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_repeat_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 13\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_repeat_accum_captured_inline_function') {
         throw "returned inline function expressions should apply bounded repeat capture updates before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_for_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 19\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_for_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 19\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_for_accum_captured_inline_function') {
         throw "returned inline function expressions should apply bounded static for-loop capture updates before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_for_zero_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_for_zero_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_for_zero_captured_inline_function') {
         throw "returned inline function expressions should skip zero-iteration static for loops before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 19\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_accum_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 19\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_foreach_accum_captured_inline_function') {
         throw "returned inline function expressions should apply static foreach capture updates before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_empty_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_empty_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_foreach_empty_captured_inline_function') {
         throw "returned inline function expressions should skip empty static foreach loops before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_empty_dict_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_foreach_empty_dict_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_foreach_empty_dict_captured_inline_function') {
         throw "returned inline function expressions should skip empty static dict foreach loops before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_while_false_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_while_false_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 0\s+i32\.const 7\s+drop\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_while_false_captured_inline_function') {
         throw "returned inline function expressions should skip captured false while loops before specialization"
     }
-    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_while_literal_false_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+i32\.add\s+return' -or
+    if ($astWatText -notmatch '(?s)\(func \$__sura_func_expr_returned_param_while_literal_false_captured_inline_function_[^\s)]*.*?local\.get \$value\s+i32\.const 8\s+(i32\.add|call \$__sura_value_num\s+call \$__sura_value_add)\s+return' -or
         $astWatText -notmatch '(?s)i32\.const 7\s+drop\s+i32\.const [0-9]+\s+local\.set \$returned_param_while_literal_false_captured_inline_function') {
         throw "returned inline function expressions should skip literal false while loops before specialization"
     }
@@ -8148,7 +8167,7 @@ end
     $methodDynamicDictProfileLabelStart = [Math]::Max(0, $methodDynamicDictProfileLabelIndex - 3000)
     $methodDynamicDictProfileLabelWindow = $astWatText.Substring($methodDynamicDictProfileLabelStart, $methodDynamicDictProfileLabelIndex - $methodDynamicDictProfileLabelStart)
     if ($methodDynamicDictProfileLabelWindow -notmatch 'call \$__sura_method_AstFunctionHolder_dict_handler_profile' -or
-        $methodDynamicDictProfileLabelWindow -notmatch '(?s)call \$__sura_method_AstFunctionHolder_dict_handler_profile\s+local\.set \$__sura_wasm_call_tmp.*?local\.get \$__sura_wasm_call_tmp\s+i32\.const \d+\s+call \$__sura_dict_get\s+call \$__sura_value_string_or_nil\s+call \$__sura_value_to_string' -or
+        $methodDynamicDictProfileLabelWindow -notmatch '(?s)call \$__sura_method_AstFunctionHolder_dict_handler_profile\s+local\.set \$__sura_wasm_call_tmp.*?local\.get \$__sura_wasm_call_tmp\s+i32\.const \d+\s+(call \$__sura_dict_get\s+call \$__sura_value_string_or_nil|call \$__sura_value_field)\s+call \$__sura_value_to_string' -or
         $methodDynamicDictProfileLabelWindow -match '(?s)drop\s+unreachable\s+i32\.const 0') {
         throw "method-local dict-lookup-selected dict-returning function dispatch should preserve dict handles for length/field/to_str"
     }

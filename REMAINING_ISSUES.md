@@ -106,6 +106,28 @@ Criterion 2 is met on this branch. Remaining for release: run the same
 verification in CI (criterion 3) and publish the provenance manifest
 (criteria 4–6).
 
+## P1: WASM export ABI classification is context/order dependent
+
+Verified 2026-09-01 while unblocking the cross-platform CI lane. The WASM
+target has two return-kind systems: static kind inference (raw i32/string
+handles) and value-preserving classification (tagged Value ABI). The
+value-preserving verdict for a named function depends on which context asks
+first (local lift hints are visible inside the function but not to callers,
+and the result is cached), so identical source shapes can classify
+differently — observed with `captured_inline_function_if_merge_ast` (cached
+raw) versus `control_flow_function_alias_ast` (cached tagged).
+
+The function-boundary unwrap added to `tools/sura_to_wasm.ps1` restores the
+raw contract for direct promoted-lift and known-kind indirect returns, which
+makes `sura_wasm_target_smoke` and `sura_wasm_exception_smoke` pass end to
+end. Still failing, and pre-existing (verified against the unpatched
+transpiler): `sura_wasm_function_dispatch_smoke` and
+`sura_wasm_memory_safety_smoke` — their fixtures export functions the
+classifier marks tagged while the JS harness expects raw numbers. The real
+fix is to make return-ABI classification deterministic (context-free, no
+query-order cache effects) and document the host-facing export contract;
+test-side unwrapping cannot be written safely while the ABI can flip.
+
 Release exit criteria:
 
 1. Separate the OS/browser work into reviewable commits or a dedicated branch.
