@@ -71,6 +71,11 @@ jobs:
           cxx="$(cygpath -w "$(command -v g++)")"
           "$cxx" --version | head -1
           echo "SURA_CXX=$cxx" >> "$GITHUB_ENV"
+          # Test binaries the smokes compile link against this toolchain's
+          # runtime DLLs (libstdc++-6, libgcc_s_seh-1, libwinpthread-1). The
+          # MSYS2 bin directory is not on the Windows PATH, so without this
+          # they start and immediately die with STATUS_ENTRYPOINT_NOT_FOUND.
+          cygpath -w "$(dirname "$(command -v g++)")" >> "$GITHUB_PATH"
 
       - name: Build Sura on Windows
         if: runner.os == 'Windows'
