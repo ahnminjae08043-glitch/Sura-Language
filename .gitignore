@@ -62,3 +62,12 @@ sura_presentation/.git/
 
 # Local website working copy is not part of the language-core repository.
 sura_presentation/
+
+# 비교 벤치마크의 빌드 산출물 (소스만 추적한다)
+benchmarks/cross_language/bench_cpp*
+benchmarks/cross_language/bench_rs*
+benchmarks/cross_language/bench_go*
+benchmarks/cross_language/*.class
+benchmarks/cross_language/*.pdb
+benchmarks/cross_language/csharp/bin/
+benchmarks/cross_language/csharp/obj/

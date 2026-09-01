@@ -1,0 +1,210 @@
+# 8개 분야 벤치마크 — 다른 언어판과 동일한 작업을 수행한다.
+# 각 항목은 워밍업 후 여러 번 실행해 최저값을 보고한다.
+
+use array
+use string
+
+REPS is 5
+
+func report(name, ms) do
+  print("{name}={ms}")
+end
+
+# 1) 재귀 호출
+func fib(n) do
+  if n <= 1 then
+    return n
+  end
+  return fib(n - 1) + fib(n - 2)
+end
+
+# 2) 수치 루프
+func numeric_loop(n) do
+  acc is 0
+  i is 1
+  while i <= n do
+    acc is acc + (i * 3 - 1) / 2
+    i is i + 1
+  end
+  return acc
+end
+
+# 3) 배열 생성 + 합
+func array_work(n) do
+  a is []
+  i is 0
+  while i < n do
+    a.push(i * 0.5)
+    i is i + 1
+  end
+  total is 0
+  j is 0
+  while j < n do
+    total is total + a[j]
+    j is j + 1
+  end
+  return total
+end
+
+# 4) 문자열 조립 (조각을 모아 한 번에 결합)
+func string_work(n) do
+  parts is []
+  i is 0
+  while i < n do
+    parts.push("item")
+    i is i + 1
+  end
+  joined is string.join(parts, ",")
+  return string.len(joined)
+end
+
+# 5) 딕셔너리 삽입/조회
+func dict_work(n) do
+  counts is {}
+  i is 0
+  while i < n do
+    k is "k" + (i % 50000)
+    if counts.has(k) then
+      counts[k] is counts[k] + 1
+    else
+      counts[k] is 1
+    end
+    i is i + 1
+  end
+  return counts.keys().len()
+end
+
+# 6) 정렬
+func sort_work(n) do
+  a is []
+  seed is 12345
+  i is 0
+  while i < n do
+    seed is (seed * 1103515245 + 12345) % 2147483648
+    a.push(seed % 1000000)
+    i is i + 1
+  end
+  sorted is array.sort(a)
+  return sorted[0] + sorted[n - 1]
+end
+
+# 7) 객체 필드 접근
+class Point do
+  func init(x, y) do
+    self.x is x
+    self.y is y
+  end
+end
+
+func object_work(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, i + 1)
+    p.x is p.x + 1
+    total is total + p.x + p.y
+    i is i + 1
+  end
+  return total
+end
+
+# 8) 행렬곱 (모든 언어 동일한 3중 루프)
+func matmul_work(n) do
+  a is []
+  b is []
+  i is 0
+  while i < n do
+    ra is []
+    rb is []
+    j is 0
+    while j < n do
+      idx is i * n + j
+      ra.push((idx % 7) * 0.5)
+      rb.push((idx % 5) * 0.25)
+      j is j + 1
+    end
+    a.push(ra)
+    b.push(rb)
+    i is i + 1
+  end
+  c is []
+  r is 0
+  while r < n do
+    row is []
+    q is 0
+    while q < n do
+      row.push(0)
+      q is q + 1
+    end
+    c.push(row)
+    r is r + 1
+  end
+  r is 0
+  while r < n do
+    k is 0
+    while k < n do
+      av is a[r][k]
+      brow is b[k]
+      crow is c[r]
+      q is 0
+      while q < n do
+        crow[q] is crow[q] + av * brow[q]
+        q is q + 1
+      end
+      k is k + 1
+    end
+    r is r + 1
+  end
+  return c[0][0]
+end
+
+sink is 0
+
+func measure(name, which, n) do
+  global sink
+  best is 0
+  k is 0
+  while k < REPS do
+    t0 is clock()
+    v is 0
+    size is n + k
+    if which == 1 then v is fib(size)
+    if which == 2 then v is numeric_loop(size)
+    if which == 3 then v is array_work(size)
+    if which == 4 then v is string_work(size)
+    if which == 5 then v is dict_work(size)
+    if which == 6 then v is sort_work(size)
+    if which == 7 then v is object_work(size)
+    if which == 8 then v is matmul_work(size)
+    dt is (clock() - t0) * 1000
+    sink is sink + v
+    if k == 0 then best is dt
+    if dt < best then best is dt
+    k is k + 1
+  end
+  report(name, best)
+end
+
+# 워밍업 — JIT가 각 함수를 뜨겁게 인식하도록
+w is 0
+while w < 60 do
+  j1 is fib(12)
+  j2 is numeric_loop(200)
+  j3 is array_work(200)
+  j4 is string_work(200)
+  j5 is dict_work(200)
+  j6 is sort_work(200)
+  j7 is object_work(200)
+  j8 is matmul_work(12)
+  w is w + 1
+end
+
+measure("fib", 1, 30)
+measure("numeric", 2, 3000000)
+measure("array", 3, 1000000)
+measure("string", 4, 200000)
+measure("dict", 5, 200000)
+measure("sort", 6, 300000)
+measure("object", 7, 500000)
+measure("matmul", 8, 256)
+print("checksum={sink}")

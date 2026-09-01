@@ -9,3 +9,7 @@ reference.html linguist-generated
 # Sura 소스는 linguist 미등록 언어라 통계에 안 잡히지만, diff에서는
 # 텍스트로 취급되도록 명시한다.
 *.sura linguist-detectable text
+
+# 비교 벤치마크는 감사용 자료다. 일곱 개 언어로 같은 프로그램을 두므로
+# 저장소 대표 언어 집계에 넣으면 통계가 왜곡된다.
+benchmarks/cross_language/** linguist-vendored
