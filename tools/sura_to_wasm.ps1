@@ -23,6 +23,7 @@ $script:wasmArrayLiteralArities = @{}
 $script:wasmDictLiteralArities = @{}
 $script:wasmCurrentFunctionName = ""
 $script:wasmCurrentFunctionReturnsValue = $false
+$script:wasmEmitTypedUniformArrayLiterals = $false
 $script:wasmKnownValueTypeInferenceStack = @{}
 $script:wasmKnownValueTypeInferenceDepth = 0
 $script:wasmKnownValueTypeInferenceMaxDepth = 24
@@ -17464,6 +17465,37 @@ function Convert-WasmAstValueExpr {
         return @(Convert-WasmAstRawExprToValue -RawCode @(Convert-WasmAstStringExpr $Node) -TypeName "string")
     }
     if ([string]$Node.node -eq "ARRAY_LIT") {
+        # Inside a promoted function-expression body only: when every element
+        # shares one raw scalar kind, keep the cells raw and record the
+        # element tag in the Value metadata. Fixed-index hint consumers read
+        # closure-returned arrays as raw cells after the boundary unwrap, and
+        # the tagged side reads tag-4 arrays through the element-tag-aware
+        # helpers. Ordinary code keeps the boxed dynamic form so the existing
+        # dynamic-array lowering evidence stays byte-compatible.
+        $arrayElements = @(As-WasmAstArray ($Node.elements))
+        $uniformKind = ""
+        if ($script:wasmEmitTypedUniformArrayLiterals -and $arrayElements.Count -gt 0) {
+            $uniformKind = Get-WasmAstStaticValueType ($arrayElements[0])
+            if ($uniformKind -in @("num", "string", "bool")) {
+                foreach ($item in $arrayElements) {
+                    if ((Get-WasmAstStaticValueType $item) -ne $uniformKind) { $uniformKind = ""; break }
+                }
+            } else {
+                $uniformKind = ""
+            }
+        }
+        if (-not [string]::IsNullOrWhiteSpace($uniformKind)) {
+            $rawCodes = New-Object System.Collections.Generic.List[object]
+            foreach ($item in $arrayElements) {
+                if ($uniformKind -eq "string") {
+                    $rawCodes.Add([string[]]@(Convert-WasmAstStringExpr $item)) | Out-Null
+                } else {
+                    $rawCodes.Add([string[]]@(Convert-WasmAstExpr $item)) | Out-Null
+                }
+            }
+            $elementTag = switch ($uniformKind) { "num" { 1 } "bool" { 2 } "string" { 3 } }
+            return @(Convert-WasmAstRawExprToValue -RawCode @(New-WasmArrayLiteralExprCode -ArgCodes @($rawCodes.ToArray())) -TypeName "array" -ArrayElementTag $elementTag)
+        }
         $argCodes = New-Object System.Collections.Generic.List[object]
         foreach ($item in @(As-WasmAstArray ($Node.elements))) {
             $argCodes.Add([string[]]@(Convert-WasmAstValueExpr $item)) | Out-Null
@@ -22553,7 +22585,10 @@ function Add-WasmValueRuntime {
     $Wat.Add("    if")
     $Wat.Add("      local.get `$receiver")
     $Wat.Add("      local.get `$needle")
-    $Wat.Add("      local.get `$element_tag")
+    # A tag-4 receiver carries its element tag in the Value metadata; the
+    # caller's static guess can be stale for arrays produced elsewhere.
+    $Wat.Add("      local.get `$receiver")
+    $Wat.Add("      call `$__sura_value_meta")
     $Wat.Add("      call `$__sura_value_raw_array_contains_typed")
     $Wat.Add("      call `$__sura_value_bool")
     $Wat.Add("      return")
@@ -32344,6 +32379,8 @@ foreach ($fn in $functions) {
     $previousFunctionName = $script:wasmCurrentFunctionName
     $previousFunctionReturnsValue = $script:wasmCurrentFunctionReturnsValue
     $previousGlobalDecls = $script:wasmCurrentGlobalDecls
+    $previousEmitTypedUniformArrayLiterals = $script:wasmEmitTypedUniformArrayLiterals
+    $script:wasmEmitTypedUniformArrayLiterals = ($fn.PSObject.Properties.Name -contains "WasmFuncExprPromotion" -and [bool]$fn.WasmFuncExprPromotion)
     $script:wasmCurrentFunctionName = [string]$fn.Name
     $script:wasmCurrentFunctionParamTypeHints = Get-WasmAstObservedFunctionParamTypeHints ([string]$fn.Name)
     $script:wasmCurrentLocalValueTypeHints = @{}
@@ -32395,6 +32432,7 @@ foreach ($fn in $functions) {
         $script:wasmDictKeyOrderHints = $previousDictKeyOrderHints
         $script:wasmCurrentFunctionName = $previousFunctionName
         $script:wasmCurrentFunctionReturnsValue = $previousFunctionReturnsValue
+        $script:wasmEmitTypedUniformArrayLiterals = $previousEmitTypedUniformArrayLiterals
         $script:wasmCurrentGlobalDecls = $previousGlobalDecls
     }
     $bodyOut.Add("    i32.const 0")

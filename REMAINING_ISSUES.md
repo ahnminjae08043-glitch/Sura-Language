@@ -148,15 +148,16 @@ Landed in `tools/sura_to_wasm.ps1` and verified by smokes:
 - `__sura_value_index` boxes typed raw-array elements by the element tag in
   the Value metadata instead of always as numbers.
 
-Still failing: `sura_wasm_memory_safety_smoke` case `captured_inline_return`
-(array-returning captured closure). Root seam: the fixed-index hint system
-treats function results as raw arrays with raw cells, but
-`Convert-WasmAstValueExpr`'s ARRAY_LIT arm always builds a tagged dynamic
-array with boxed cells (`sura_to_wasm.ps1` ~line 17466), so a payload unwrap
-exposes boxed cells to raw readers. The honest fix is to teach the ARRAY_LIT
-Value arm to emit typed raw-cell arrays when every element shares one raw
-kind, or to route fixed-index consumers through tagged reads; both touch the
-representation globally and need their own verified pass.
+Resolved 2026-09-01, second pass: inside promoted function-expression bodies
+only, uniform scalar ARRAY_LIT literals now lower as typed raw-cell arrays
+(element tag in Value metadata), so the boundary payload unwrap hands raw
+cells to fixed-index consumers; ordinary code keeps the boxed dynamic form
+so existing dynamic-array lowering evidence stays byte-compatible. The `in`
+operator's tag-4 branch now reads the element tag from the receiver's own
+metadata instead of trusting the call site's static guess. With these, all
+five scripts of the CI "JS and WASM target smokes" step pass locally:
+wasm_target (1,300+ checks), js_target, function_dispatch, exception, and
+memory_safety.
 
 Release exit criteria:
 

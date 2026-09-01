@@ -1678,8 +1678,8 @@ print(to_str(read_score()) + read_banner() + to_str(read_numbers()[1]) + items[1
         $watText -notmatch 'local\.set \$bit_score' -or
         $watText -notmatch 'local\.set \$shift_score' -or
         $watText -notmatch 'local\.set \$not_score' -or
-        $watText -notmatch '(?s)call \$__sura_value_dynamic_array\s+call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_array_not' -or
-        $watText -notmatch '(?s)call \$__sura_value_dynamic_array\s+call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_empty_array_not' -or
+        $watText -notmatch '(?s)call \$__sura_value_(dynamic_array|array_typed).{0,120}?call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_array_not' -or
+        $watText -notmatch '(?s)call \$__sura_value_(dynamic_array|array_typed).{0,120}?call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_empty_array_not' -or
         $watText -notmatch '(?s)call \$__sura_value_dynamic_dict\s+call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_dict_not' -or
         $watText -notmatch '(?s)call \$__sura_value_dynamic_dict\s+call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_empty_dict_not' -or
         $watText -notmatch '(?s)i32\.const \d+.*?call \$__sura_value_function.*?call \$__sura_value_is_truthy\s+i32\.eqz\s+local\.set \$unary_function_not') {
