@@ -115,7 +115,8 @@ try {
             Run-Checked "agent docs" { & $SurapkgPath docs docs_site } "generated docs" | Out-Null
             $docs = Get-Content -Raw -Encoding UTF8 -Path ".\docs_site\index.html"
             if ($docs -notmatch "API Reference" -or
-                $docs -notmatch "Search API" -or
+                $docs -notmatch "Search Docs" -or
+                $docs -notmatch "Search Index" -or
                 $docs -notmatch "search-index\.json" -or
                 $docs -notmatch "func validate_input\(goal, max_steps\) do" -or
                 $docs -notmatch "src/smart_agent\.sura:" -or
