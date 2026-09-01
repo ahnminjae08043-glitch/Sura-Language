@@ -109,6 +109,64 @@ class JitCompiler {
     std::vector<LoopCtx> loop_stack;
 
         // Internal JIT bookkeeping.
+    // A binary operand that can be handed to the operation without running
+    // any user code first: a local variable, which already occupies a
+    // register, or a literal, which only needs a constant load. Because
+    // neither can call a function or assign a variable, the order in which
+    // the two sides are materialized is unobservable - which is what makes
+    // it safe to read a variable's own register instead of copying it.
+    bool is_direct_operand(const Expr* e) const {
+        if (e == nullptr) return false;
+        switch (e->kind) {
+            case NK::NUM_LIT:
+            case NK::STR_LIT:
+            case NK::BOOL_LIT:
+            case NK::NIL_LIT:
+                return true;
+            case NK::IDENT: {
+                const std::string& name = static_cast<const Ident*>(e)->name;
+                if (current_env->is_declared_global(name)) return false;
+                return current_env->resolve_local(name) != -1;
+            }
+            default:
+                return false;
+        }
+    }
+
+    // Only for expressions is_direct_operand() accepted. Returns the register
+    // to read; allocates a scratch and loads it only for a literal.
+    uint16_t materialize_direct_operand(const Expr* e, int ln, int& scratch_count) {
+        if (e->kind == NK::IDENT) {
+            const int local = current_env->resolve_local(
+                static_cast<const Ident*>(e)->name);
+            return static_cast<uint16_t>(local);
+        }
+        uint16_t reg = alloc_reg();
+        ++scratch_count;
+        compile_expr(e, reg);
+        return reg;
+    }
+
+    static JitOp plain_binary_op(const std::string& op) {
+        if (op == "+") return JitOp::ADD;
+        if (op == "-") return JitOp::SUB;
+        if (op == "*") return JitOp::MUL;
+        if (op == "/") return JitOp::DIV;
+        if (op == "%") return JitOp::MOD;
+        if (op == "==") return JitOp::CMP_EQ;
+        if (op == "!=") return JitOp::CMP_NEQ;
+        if (op == ">") return JitOp::CMP_GT;
+        if (op == "<") return JitOp::CMP_LT;
+        if (op == ">=") return JitOp::CMP_GTE;
+        if (op == "<=") return JitOp::CMP_LTE;
+        if (op == "&") return JitOp::BIT_AND;
+        if (op == "|") return JitOp::BIT_OR;
+        if (op == "^") return JitOp::BIT_XOR;
+        if (op == "<<") return JitOp::LSHIFT;
+        if (op == ">>") return JitOp::RSHIFT;
+        return JitOp::NOP;
+    }
+
     void emit_load_var(const std::string& name, uint16_t target, int ln, bool allow_missing = false) {
         if (current_env->is_declared_global(name)) {
             int glob = chunk.add_global(name);
@@ -353,6 +411,27 @@ public:
         }
         case NK::BIN_OP: {
             auto* b = static_cast<const BinOp*>(e);
+
+            // `x op y` with both sides already in hand: emit the operation
+            // reading their registers directly. The general lowering below
+            // copies each operand into a fresh scratch first, which costs two
+            // MOVEs per operation - in a counting loop that was two thirds of
+            // the emitted instructions. Checked before anything is emitted so
+            // a shape that does not qualify falls through untouched.
+            const JitOp direct_op = plain_binary_op(b->op);
+            if (direct_op != JitOp::NOP &&
+                is_direct_operand(b->left.get()) &&
+                is_direct_operand(b->right.get())) {
+                int scratch_count = 0;
+                uint16_t dl = materialize_direct_operand(b->left.get(), ln, scratch_count);
+                uint16_t dr = materialize_direct_operand(b->right.get(), ln, scratch_count);
+                // Operands are read before the destination is written, so the
+                // destination may safely alias either of them.
+                chunk.emit(direct_op, target, dl, dr, 0, -1, ln);
+                current_env->next_reg -= scratch_count;
+                break;
+            }
+
             uint16_t l_reg = alloc_reg();
             compile_expr(b->left.get(), l_reg);
 

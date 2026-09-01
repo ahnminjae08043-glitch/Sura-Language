@@ -1,0 +1,83 @@
+# 이항 연산의 직접 피연산자 경로가 의미를 바꾸지 않는지 고정한다.
+# 양쪽이 지역 변수나 리터럴이면 컴파일러가 피연산자를 스크래치로 복사하지
+# 않고 변수 레지스터를 그대로 읽는다. 그래서 (1) 대상이 피연산자와 겹쳐도
+# 되고, (2) 오른쪽에 부작용이 있으면 그 경로를 쓰면 안 되며(평가 순서가
+# 관측된다), (3) 전역/배열/딕트 피연산자는 대상이 아니다.
+
+# 직접 피연산자 경로가 의미를 바꾸지 않는지 확인한다.
+
+# 1) 대상 레지스터가 피연산자와 겹치는 경우
+x is 5
+x is x + x
+assert_eq(x, 10)
+y is 3
+y is y - y
+assert_eq(y, 0)
+z is 4
+z is z * z
+assert_eq(z, 16)
+
+# 2) 부작용 있는 오른쪽 피연산자는 기존 경로로 가야 하고 순서가 보존돼야 한다
+counter is 0
+func bump() do
+  global counter
+  counter is counter + 1
+  return counter
+end
+counter is 0
+a is 10
+r is a + bump()
+assert_eq(r, 11)
+assert_eq(counter, 1)
+
+# 3) 왼쪽 변수를 오른쪽 호출이 바꾸는 경우 — 왼쪽은 호출 이전 값이어야 한다
+v is 100
+func change_v() do
+  global v
+  v is 1
+  return 0
+end
+res is v + change_v()
+assert_eq(res, 100)
+assert_eq(v, 1)
+
+# 4) 문자열 결합과 비교
+s is "ab"
+t is "cd"
+assert_eq(s + t, "abcd")
+assert(s != t)
+
+# 5) 리터럴 조합
+n is 7
+assert_eq(n % 4, 3)
+assert_eq(n / 2, 3.5)
+assert_eq(n * 2 - 1, 13)
+assert(n >= 7)
+assert(n <= 7)
+
+# 6) 비트 연산
+b1 is 12
+b2 is 10
+assert_eq(b1 & b2, 8)
+assert_eq(b1 | b2, 14)
+assert_eq(b1 ^ b2, 6)
+assert_eq(b1 << 1, 24)
+assert_eq(b1 >> 2, 3)
+
+# 7) 배열/딕트 요소는 직접 경로 대상이 아니어야 하며 정확해야 한다
+arr is [1, 2, 3]
+assert_eq(arr[0] + arr[2], 4)
+d is {k: 5}
+assert_eq(d["k"] * 2, 10)
+
+# 8) 전역 변수 경로
+g_total is 0
+func add_global(v) do
+  global g_total
+  g_total is g_total + v
+  return g_total
+end
+assert_eq(add_global(5), 5)
+assert_eq(add_global(7), 12)
+
+print("73_direct_operand_lowering: PASS")

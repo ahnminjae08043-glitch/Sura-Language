@@ -325,6 +325,11 @@ class BaselineBodyAnalysis {
         return a == b ? a : RegKind::Conflict;
     }
 
+private:
+    std::vector<RegKind> kinds_;
+    size_t entry_ip_ = 0;
+    size_t nregs_ = 0;
+
 public:
     bool ok = false;
     // Per body instruction: 1 when control can reach it. Emitters skip
@@ -339,10 +344,16 @@ public:
     // deopt sentinel and the interpreter's exact [E202] error.
     std::vector<uint8_t> div_zero_guard;
 
+    // require_provable_div=false lets a caller that has its own checked
+    // division helper reuse the kind analysis without the divisor rule
+    // rejecting the whole body. The full Win64 tier does exactly that: it
+    // always routes DIV through sura_jit_checked_div, so the [E202] contract
+    // does not depend on anything proven here.
     BaselineBodyAnalysis(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
                          uint32_t frame_regs, uint32_t guarded_params,
                          uint32_t reg_index_limit, int const_index_limit,
-                         bool allow_runtime_deopt) {
+                         bool allow_runtime_deopt,
+                         bool require_provable_div = true) {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
             frame_regs == 0 || guarded_params > frame_regs ||
             (guarded_params > 0 && !allow_runtime_deopt)) {
@@ -437,7 +448,10 @@ public:
         // parameters numeric and everything else unknown. Merges of unequal
         // kinds weaken toward Conflict, so the iteration is monotone over a
         // finite lattice and terminates.
-        std::vector<RegKind> in_state(body_len * nregs, RegKind::Conflict);
+        entry_ip_ = entry_ip;
+        nregs_ = nregs;
+        kinds_.assign(body_len * nregs, RegKind::Conflict);
+        std::vector<RegKind>& in_state = kinds_;
         auto state_at = [&](size_t ip) { return &in_state[(ip - entry_ip) * nregs]; };
         for (uint32_t p = 0; p < guarded_params; ++p) state_at(entry_ip)[p] = RegKind::Num;
         reached[0] = 1;
@@ -535,6 +549,7 @@ public:
                         // runtime guard would deopt on every execution. Reject
                         // instead of emitting code that never survives.
                         if (wrote_anything[inst.c] && wrote_only_const[inst.c]) return;
+                        if (!require_provable_div) break;
                         if (!allow_runtime_deopt) return;
                         div_zero_guard[ip - entry_ip] = 1;
                     }
@@ -559,6 +574,17 @@ public:
             }
         }
         ok = true;
+    }
+
+    // True when `reg` provably holds a number just before `ip` executes.
+    // Only meaningful when ok is set; a false answer means "not proven",
+    // never "proven otherwise", so a caller may only use it to remove work.
+    bool proven_num(size_t ip, uint16_t reg) const {
+        if (!ok || ip < entry_ip_) return false;
+        const size_t row = ip - entry_ip_;
+        if (row >= reached.size() || !reached[row]) return false;
+        if (static_cast<size_t>(reg) >= nregs_) return false;
+        return kinds_[row * nregs_ + reg] == RegKind::Num;
     }
 
     // True when execution can fall off the end of the body: the last
@@ -1491,6 +1517,9 @@ class NativeCompiler {
     std::vector<std::unique_ptr<JitInst>> inline_inst_storage;
     std::vector<std::unique_ptr<JitStrictCountedLoop>> strict_loop_storage;
     std::vector<size_t>* active_scalar_guard_jumps = nullptr;
+    // Numeric proof for the general body, used to drop per-operation type
+    // guards. Null whenever the proof does not apply.
+    std::unique_ptr<BaselineBodyAnalysis> numeric_proof;
     std::vector<JitStrictCountedLoop> strict_counted_loops;
 
     struct ScalarValue {
@@ -1758,6 +1787,25 @@ public:
 
         ip_to_native.assign(chunk.code.size() + 1, SIZE_MAX);
         compute_definitely_initialized_globals();
+
+        // Whole-body numeric proof, used below to drop per-operation type
+        // guards. Parameters are deliberately not assumed numeric (0 guarded
+        // registers): this tier has no entry guard to enforce that, so only
+        // values this body itself produced from constants and arithmetic
+        // count as proven. DIV keeps its checked helper, so the analysis is
+        // told not to reject a body over an unprovable divisor.
+        try {
+            auto proof = std::make_unique<BaselineBodyAnalysis>(
+                chunk, entry_ip, end_ip, native_frame_regs,
+                /*guarded_params=*/0u,
+                std::numeric_limits<uint16_t>::max(),
+                std::numeric_limits<int32_t>::max() / 8,
+                /*allow_runtime_deopt=*/false,
+                /*require_provable_div=*/false);
+            if (proof->ok) numeric_proof = std::move(proof);
+        } catch (...) {
+            numeric_proof.reset();
+        }
 
         // ── Prologue ──────────────────────────────────────
         // Save non-volatile regs we use (Win64: RBX, R12-R15 are callee-saved).
@@ -2812,6 +2860,21 @@ private:
     // Value::is_num() is false exactly when the upper 32-bit word contains
     // the complete 0x7ffc NaN-box tag. Testing that word avoids materializing
     // a 64-bit mask and shortens every guarded numeric operation.
+    // A guard exists to catch a non-number reaching an arithmetic operation.
+    // When the whole-body dataflow already proves both operands numeric at
+    // this point, the guard can only ever fall through, so emitting it costs
+    // two loads, two compares and two branches per operation for nothing.
+    //
+    // Only valid on the general body: the scalar-plan path rewrites register
+    // numbers, so its instructions do not line up with the analysed stream.
+    bool operands_proven_numeric(const JitInst& inst, size_t ip,
+                                 const JitInst* runtime_inst) const {
+        if (runtime_inst != nullptr || used_scalar_plan) return false;
+        if (!numeric_proof) return false;
+        return numeric_proof->proven_num(ip, inst.b) &&
+               numeric_proof->proven_num(ip, inst.c);
+    }
+
     size_t emit_non_number_jump(int32_t value_offset) {
         static constexpr uint32_t TAG32 = 0x7ffc0000U;
         em.mov_r32_mem(XR::RAX, XR::RBX, value_offset + 4);
@@ -2868,7 +2931,8 @@ private:
             }
 
             case O::ADD: case O::SUB: case O::MUL: {
-                if (inst.ic_numeric_fast) {
+                if (inst.ic_numeric_fast ||
+                    operands_proven_numeric(inst, ip, runtime_inst)) {
                     em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
                     if (inst.op == O::ADD) em.addsd_x_mem(XR::XMM0, XR::RBX, oc);
                     else if (inst.op == O::SUB) em.subsd_x_mem(XR::XMM0, XR::RBX, oc);
