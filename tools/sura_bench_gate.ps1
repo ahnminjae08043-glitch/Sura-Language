@@ -6,7 +6,8 @@ param(
     [double]$MinPythonFasterBy = 0.0,
     [string[]]$RequiredBenchmarks = @(),
     [string[]]$RequiredPythonComparisons = @(),
-    [switch]$RequireBaseline
+    [switch]$RequireBaseline,
+    [switch]$IgnoreRunnerSpeed
 )
 
 $ErrorActionPreference = "Stop"
@@ -150,30 +151,55 @@ if (-not $baseline) {
 }
 
 $baselineBenches = Build-Map $baseline.benchmarks "benchmark"
+$baselinePy = Build-Map $baseline.python_comparisons "label"
+
+# Hosted runners differ in speed by tens of percent from job to job. The
+# CPython reference runs on the same machine in the same job, so the median
+# ratio of the current to the baseline Python timings measures the runner, not
+# the engine; the baseline is scaled by it before a regression is judged.
+$speedRatios = New-Object System.Collections.Generic.List[double]
+foreach ($label in $currentPy.Keys) {
+    if (-not $baselinePy.ContainsKey($label)) { continue }
+    $pyNow = Number-Or-Null (Get-Field $currentPy[$label] "python_ms")
+    $pyThen = Number-Or-Null (Get-Field $baselinePy[$label] "python_ms")
+    if ($null -ne $pyNow -and $null -ne $pyThen -and $pyNow -gt 0 -and $pyThen -gt 0) {
+        $speedRatios.Add($pyNow / $pyThen)
+    }
+}
+$speedFactor = 1.0
+if (-not $IgnoreRunnerSpeed -and $speedRatios.Count -ge 3) {
+    $sorted = @($speedRatios | Sort-Object)
+    $mid = [int][math]::Floor($sorted.Count / 2)
+    $median = if ($sorted.Count % 2 -eq 1) { $sorted[$mid] } else { ($sorted[$mid - 1] + $sorted[$mid]) / 2.0 }
+    $speedFactor = [math]::Min([math]::Max($median, 0.5), 2.0)
+    Write-Host ("[info] runner speed factor {0:N2}x (median of {1} CPython reference ratios); baseline timings scaled accordingly" -f
+        $speedFactor, $sorted.Count)
+}
 
 foreach ($name in $currentBenches.Keys) {
     if (-not $baselineBenches.ContainsKey($name)) { continue }
     $now = Number-Or-Null (Get-Field $currentBenches[$name] "jit_ms")
     $then = Number-Or-Null (Get-Field $baselineBenches[$name] "jit_ms")
     if ($null -ne $now -and $null -ne $then -and $then -gt 0) {
-        $regression = (($now - $then) / $then) * 100.0
+        $expected = $then * $speedFactor
+        $regression = (($now - $expected) / $expected) * 100.0
         if ($regression -gt $MaxRegressionPercent) {
-            $failures.Add(("$name JIT regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms)" -f
-                $regression, $then, $now))
+            $failures.Add(("$name JIT regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
+                $regression, $then, $now, $speedFactor))
         }
     }
 }
 
-$baselinePy = Build-Map $baseline.python_comparisons "label"
 foreach ($label in $currentPy.Keys) {
     if ($baselinePy.ContainsKey($label)) {
         $now = Number-Or-Null (Get-Field $currentPy[$label] "sura_jit_ms")
         $then = Number-Or-Null (Get-Field $baselinePy[$label] "sura_jit_ms")
         if ($null -ne $now -and $null -ne $then -and $then -gt 0) {
-            $regression = (($now - $then) / $then) * 100.0
+            $expected = $then * $speedFactor
+            $regression = (($now - $expected) / $expected) * 100.0
             if ($regression -gt $MaxRegressionPercent) {
-                $failures.Add(("$label Sura-vs-Python JIT run regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms)" -f
-                    $regression, $then, $now))
+                $failures.Add(("$label Sura-vs-Python JIT run regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
+                    $regression, $then, $now, $speedFactor))
             }
         }
     }

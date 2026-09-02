@@ -37,6 +37,7 @@ try {
     $historyPath = Join-Path $temp "bench_history.json"
     $okPath = Join-Path $temp "bench_ok.json"
     $badPath = Join-Path $temp "bench_bad.json"
+    $slowRunnerPath = Join-Path $temp "bench_slow_runner.json"
     $newContractPath = Join-Path $temp "bench_new_contract.json"
     $noHistoryPath = Join-Path $temp "missing_history.json"
 
@@ -50,9 +51,26 @@ try {
         {"benchmark": "bench_jit.sura", "jit_ms": 100.0, "speedup": 2.0}
       ],
       "python_comparisons": [
-        {"label": "AI agent task scoring", "sura_jit_ms": 20.0, "sura_faster_by": 4.0}
+        {"label": "AI agent task scoring", "python_ms": 80.0, "sura_jit_ms": 20.0, "sura_faster_by": 4.0},
+        {"label": "RAG vector ranking", "python_ms": 200.0, "sura_jit_ms": 40.0, "sura_faster_by": 5.0},
+        {"label": "fib(30)", "python_ms": 100.0, "sura_jit_ms": 25.0, "sura_faster_by": 4.0}
       ]
     }
+  ]
+}
+"@
+
+    # Every timing, CPython included, is 1.5x slower: a slow runner, not a regression.
+    Write-JsonText $slowRunnerPath @"
+{
+  "generated_utc": "2026-01-05T00:00:00Z",
+  "benchmarks": [
+    {"benchmark": "bench_jit.sura", "jit_ms": 150.0, "speedup": 2.0}
+  ],
+  "python_comparisons": [
+    {"label": "AI agent task scoring", "python_ms": 120.0, "sura_jit_ms": 30.0, "sura_faster_by": 4.0},
+    {"label": "RAG vector ranking", "python_ms": 300.0, "sura_jit_ms": 60.0, "sura_faster_by": 5.0},
+    {"label": "fib(30)", "python_ms": 150.0, "sura_jit_ms": 37.5, "sura_faster_by": 4.0}
   ]
 }
 "@
@@ -104,6 +122,18 @@ try {
     if ($bad.Code -eq 0 -or $bad.Output -notmatch "regressed") {
         Write-Output $bad.Output
         throw "expected regressed benchmark gate to fail"
+    }
+
+    $slowRunner = Run-Gate $slowRunnerPath $historyPath
+    if ($slowRunner.Code -ne 0 -or $slowRunner.Output -notmatch "runner speed factor 1[.,]50x") {
+        Write-Output $slowRunner.Output
+        throw "expected a uniformly slower runner to pass the normalized regression gate"
+    }
+
+    $slowRunnerRaw = Run-Gate $slowRunnerPath $historyPath -ExtraArgs @("-IgnoreRunnerSpeed")
+    if ($slowRunnerRaw.Code -eq 0 -or $slowRunnerRaw.Output -notmatch "regressed") {
+        Write-Output $slowRunnerRaw.Output
+        throw "expected -IgnoreRunnerSpeed to judge raw timings"
     }
 
     $newContract = Run-Gate $newContractPath $historyPath
