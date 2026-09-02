@@ -85,10 +85,13 @@ Sura는 `major.minor.patch` 형식을 사용한다.
 - 네이티브 JIT: Win64 x86-64는 기존 부분 컴파일러를 사용하고, Linux
   x86-64는 상수·이동·정적으로 숫자임이 증명된 `+`, `-`, `*`, 단항
   `-`, 비교 6종, 0이 아닌 제수로 증명된 `/`와 반환을 처리하는
-  helper/예외 없는 System V baseline을 사용한다. little-endian
-  Windows·Linux·macOS ARM64도 같은 범위의 AAPCS64 baseline을 사용한다.
-  0이거나 정적으로 확인할 수 없는 제수, 동적 비교를 포함한 그 밖의
-  bytecode와 macOS x86-64는 register VM에서 실행한다.
+  helper/예외 없는 System V baseline을 사용한다. Linux x86-64 baseline은
+  여기에 가드된 전역 읽기(함수 바인딩은 아이덴티티, 숫자는 태그 검사)와
+  순수 숫자 함수 사이의 네이티브 직접 호출을 더하며, 가드 실패나 재귀
+  깊이 예산 소진은 register VM으로 되돌아가 같은 오류를 낸다. little-endian
+  Windows·Linux·macOS ARM64는 전역·호출을 제외한 같은 범위의 AAPCS64
+  baseline을 사용한다. 0이거나 정적으로 확인할 수 없는 제수, 동적 비교를
+  포함한 그 밖의 bytecode와 macOS x86-64는 register VM에서 실행한다.
 - CUDA: 호환 NVIDIA 드라이버와 구현된 resident 연산만 지원
 - 미디어: FFmpeg가 설치되었거나 명시적으로 지정된 환경에서 지원
 - Windows 설치와 Microsoft Store 패키지: Windows x64 배포 경로

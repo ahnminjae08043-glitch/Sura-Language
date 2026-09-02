@@ -349,6 +349,29 @@ public:
     // ── Indirect call: call rax  (FF /2, opcode FF D0) ─────
     void call_rax() { emit8(0xFF); emit8(0xD0); }
 
+    // ── Direct call: call rel32 (E8 cd). Returns the disp position so the
+    // caller can patch_rel32() it once the target offset is known - the
+    // baseline tier uses this for self-recursive direct calls. ──
+    size_t call_rel32_placeholder() {
+        emit8(0xE8); size_t p = pos(); emit32(0); return p;
+    }
+
+    // ── mov qword [base + disp32], imm32 (sign-extended)  (REX.W C7 /0) ──
+    void mov_mem_imm32(int base, int32_t disp, int32_t imm) {
+        rex(true, 0, 0, base);
+        emit8(0xC7);
+        mem_disp32(0, base, disp);
+        emit32((uint32_t)imm);
+    }
+
+    // ── add qword [base + disp32], imm8 (sign-extended)  (REX.W 83 /0 ib) ──
+    void add_mem_imm8(int base, int32_t disp, int8_t imm) {
+        rex(true, 0, 0, base);
+        emit8(0x83);
+        mem_disp32(0, base, disp);
+        emit8((uint8_t)imm);
+    }
+
     // ── Store reg into [rsp + disp8] (for 5th+ Win64 args) ──
     // REX.W 89 /r  mod=01 reg=src rm=100 SIB=00 100 100 disp8
     void mov_rsp_disp8_r(int8_t disp, int src) {

@@ -1,0 +1,112 @@
+# System V baseline v3: 전역 로드 + 네이티브 간 직접 호출 검증.
+# x86-64 System V 타깃(리눅스)에서는 fib 같은 순수 재귀 함수가 LOAD_GLOBAL과
+# CALL_FUNC까지 네이티브로 컴파일되고, 호출은 인터프리터를 거치지 않는
+# 네이티브 간 직접 호출로 이어진다. 전역 재대입은 아이덴티티/숫자 태그
+# 가드가 잡아 디옵트하고, 깊은 재귀는 프레임 예산이 인터프리터의 [E500]으로
+# 되돌린다. VM 모드/다른 타깃에서도 결과가 완전히 같아야 한다.
+
+func fib(n) do
+    if n <= 1 then
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+# 워밍업 후 정확성: 재귀 결과는 어느 티어에서도 동일하다.
+total is 0
+for k in 1 to 200 do
+    total is total + fib(12)
+end
+assert_eq(total, 28800)
+assert_eq(fib(20), 6765)
+assert_eq(fib(0), 0)
+assert_eq(fib(1), 1)
+
+# 숫자가 아닌 인자는 진입 가드가 디옵트해 VM과 같은 [E200] 오류가 된다.
+bad_arg_caught is false
+try
+    bad is fib("숫자 아님")
+catch e
+    bad_arg_caught is true
+end
+assert(bad_arg_caught)
+assert_eq(fib(15), 610)
+
+# 다른 함수를 직접 호출하는 경우: 호출자와 피호출자가 각각 컴파일된다.
+func square(x) do
+    return x * x
+end
+
+func sum_squares(n) do
+    acc is 0
+    i is 1
+    while i <= n do
+        acc is acc + square(i)
+        i is i + 1
+    end
+    return acc
+end
+
+checksum is 0
+for k in 1 to 300 do
+    checksum is checksum + sum_squares(20)
+end
+assert_eq(checksum, 861000)
+
+# 전역 함수 재대입: 아이덴티티 가드가 옛 클로저를 더 이상 인정하지 않아야
+# 하므로 호출자는 새 바인딩을 그대로 따라간다.
+func cube(x) do
+    return x * x * x
+end
+square is cube
+assert_eq(sum_squares(3), 36)
+assert_eq(sum_squares(20), 44100)
+
+# 숫자 전역: 값이 바뀌어도 숫자면 가드를 통과해 새 값을 읽고, 숫자가 아니면
+# 디옵트해 VM과 같은 타입 오류가 난다.
+RATE is 3
+func scale(n) do
+    return n * RATE
+end
+scaled is 0
+for k in 1 to 300 do
+    scaled is scaled + scale(k)
+end
+assert_eq(scaled, 135450)
+RATE is 5
+assert_eq(scale(7), 35)
+RATE is "비율"
+rate_error_caught is false
+try
+    bad is scale(7)
+catch e
+    rate_error_caught is true
+end
+assert(rate_error_caught)
+RATE is 2
+assert_eq(scale(21), 42)
+
+# 깊은 재귀: 네이티브 프레임 예산이 다하면 인터프리터로 되돌아가고,
+# 인터프리터의 프레임 한도가 [E500] 스택 오버플로우를 그대로 던진다.
+func depth(n) do
+    if n <= 0 then
+        return 0
+    end
+    return depth(n - 1) + 1
+end
+warm is 0
+for k in 1 to 300 do
+    warm is warm + depth(50)
+end
+assert_eq(warm, 15000)
+assert_eq(depth(300), 300)
+overflow_error is ""
+try
+    bad is depth(100000)
+catch e
+    overflow_error is e
+end
+assert(overflow_error != "")
+assert_eq(depth(40), 40)
+
+print("jit_sysv_direct_call: PASS")

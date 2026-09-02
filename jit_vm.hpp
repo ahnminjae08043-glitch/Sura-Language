@@ -185,6 +185,69 @@ class JitVM {
     };
     std::vector<JitFuncSlot> jit_slots;
 
+    // ── Baseline direct-call linkage ──────────────────────
+    // Nested native-to-native calls still allowed before the interpreter's
+    // frame limit would be exceeded. Set at every interpreter-to-native
+    // entry; the generated call sequence decrements it around each direct
+    // call and deopts when it would go negative, so the interpreter raises
+    // its own [E500] instead of the machine stack overflowing.
+    int64_t native_depth_budget = 0;
+    // Objects that generated code compares against by raw bits (see
+    // BaselineLinkContext::pin_value). Held for the life of the VM, like the
+    // code itself: an address reused by a later allocation would otherwise
+    // satisfy an identity guard for the old object.
+    std::vector<Value> native_pinned;
+    // Function indices whose on-demand compile is in progress: a callee that
+    // (transitively) calls back into a body being compiled is refused, which
+    // is what keeps mutual recursion out of the direct-call tier.
+    std::unordered_set<int> native_compiling;
+
+    struct DirectCallLink final : BaselineLinkContext {
+        JitVM* vm = nullptr;
+        const JitChunk* chunk = nullptr;
+        bool global_value(int idx, uint64_t& bits) const override;
+        int32_t globals_vector_offset() const override;
+        int32_t depth_budget_offset() const override;
+        bool resolve_callee(int fidx, BaselineCalleeInfo& out) override;
+        void pin_value(uint64_t bits) override;
+    } direct_link;
+
+    // Compile func_table[fidx] now, regardless of warmth. Shared by the
+    // warm-up path and by on-demand callee compiles from the link context.
+    NativeFunc* compile_function_native(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+        {
+            JitFuncSlot& slot = jit_slot(fidx);
+            if (slot.native) return slot.native;
+            if (slot.failed) return nullptr;
+        }
+        // A cycle leaves the slot untouched: the outer compile decides.
+        if (!native_compiling.insert(fidx).second) return nullptr;
+        NativeFunc* raw = nullptr;
+        try {
+            NativeCompiler nc(chunk, fi);
+            direct_link.vm = this;
+            direct_link.chunk = &chunk;
+            nc.set_baseline_link(&direct_link, fidx);
+            auto compiled = nc.compile();
+            if (compiled) {
+                raw = compiled.get();
+                native_funcs.emplace(fidx, std::move(compiled));
+            }
+        } catch (...) {
+            raw = nullptr;
+        }
+        native_compiling.erase(fidx);
+        // Re-fetch: a nested callee compile may have grown jit_slots.
+        JitFuncSlot& slot = jit_slot(fidx);
+        if (raw) {
+            slot.native = raw;
+            return raw;
+        }
+        slot.failed = true;
+        jit_failed.insert(fidx);   // keep the legacy set in sync for reporting
+        return nullptr;
+    }
+
     // The top-level main chunk is compiled into a local NativeFunc that is
     // never stored in native_funcs, so its opcode mask has to be captured
     // separately or emitter coverage silently omits everything that only
@@ -229,21 +292,7 @@ class JitVM {
         if (slot.native) return slot.native;
         if (slot.failed) return nullptr;
         if (++slot.warm < FUNC_LAZY_JIT_THRESHOLD) return nullptr;
-        try {
-            NativeCompiler nc(chunk, fi);
-            auto compiled = nc.compile();
-            if (compiled) {
-                NativeFunc* raw = compiled.get();
-                native_funcs.emplace(fidx, std::move(compiled));
-                slot.native = raw;
-                return raw;
-            }
-        } catch (...) {
-            // fall through to the failure bookkeeping below
-        }
-        slot.failed = true;
-        jit_failed.insert(fidx);   // keep the legacy set in sync for reporting
-        return nullptr;
+        return compile_function_native(chunk, fi, fidx);
     }
 
     // A guarded native body handed back SURA_JIT_DEOPT_SENTINEL: the call is
@@ -2493,8 +2542,8 @@ private:
         GCMarkBatch mark_batch;
 
         for (auto& v : globals) v.mark_value();
-        
-        
+        for (auto& v : native_pinned) v.mark_value();
+
         for (auto* uv : open_upvalues) {
             gc_mark_object(uv);
         }
@@ -3801,6 +3850,8 @@ _reenter:
                     if (jit_enabled) native = resolve_native(chunk, fi, closure->func_idx);
 
                     if (native) {
+                        native_depth_budget = static_cast<int64_t>(FRAME_CAPACITY) - 1 -
+                                              static_cast<int64_t>(frame_top);
                         uint64_t bits = native->fn(this, NR, chunk.constants.data());
                         if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
                             // A guard rejected this call. Guards can fire after
@@ -4377,6 +4428,8 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
                 bind_function_args(chunk, fi, NR, &R[ins->c],
                                    static_cast<size_t>(std::max(0, ins->operand)));
                 SuraNativeFn fast_fn = reinterpret_cast<SuraNativeFn>(ins->ic_native_fn);
+                native_depth_budget = static_cast<int64_t>(FRAME_CAPACITY) - 1 -
+                                      static_cast<int64_t>(frame_top);
                 uint64_t bits = fast_fn(this, NR, chunk.constants.data());
                 if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
                     // A guard rejected this call. Drop this site's IC, rebind
@@ -4560,6 +4613,8 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
             ins->ic_native_fn = (void*)callee_native->fn;
             ins->ic_native_frame_regs = callee_native->frame_regs;
             ins->ic_method    = nullptr;
+            native_depth_budget = static_cast<int64_t>(FRAME_CAPACITY) - 1 -
+                                  static_cast<int64_t>(frame_top);
             uint64_t bits = callee_native->fn(this, NR, chunk.constants.data());
             if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
                 // A guard rejected this call: undo the IC we just set, rebind
@@ -5117,6 +5172,63 @@ inline void JitVM::jit_print(Value* R, const JitInst* ins, int newline) {
     for (int i = 0; i < n; ++i) out += R[ins->a + i].to_str();
     if (newline) std::cout << out << "\n";
     else         std::cout << out;
+}
+
+// ── Baseline direct-call link context ─────────────────────────────
+inline bool JitVM::DirectCallLink::global_value(int idx, uint64_t& bits) const {
+    if (!vm || idx < 0 || static_cast<size_t>(idx) >= vm->globals.size()) return false;
+    if (static_cast<size_t>(idx) >= vm->global_initialized.size() ||
+        !vm->global_initialized[static_cast<size_t>(idx)]) {
+        return false;
+    }
+    bits = vm->globals[static_cast<size_t>(idx)].raw_bits();
+    return true;
+}
+
+inline int32_t JitVM::DirectCallLink::globals_vector_offset() const {
+    if (!vm) return -1;
+    // Generated code reads the vector's begin pointer at a fixed vm-relative
+    // offset. Verify the assumption that the pointer is the vector's first
+    // word instead of trusting the standard library's layout; a mismatch
+    // simply disables LOAD_GLOBAL in the baseline tier.
+    Value* begin = nullptr;
+    static_assert(sizeof(begin) <= sizeof(vm->globals), "vector smaller than a pointer");
+    std::memcpy(&begin, &vm->globals, sizeof(begin));
+    if (begin != vm->globals.data()) return -1;
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->globals) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline int32_t JitVM::DirectCallLink::depth_budget_offset() const {
+    if (!vm) return -1;
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->native_depth_budget) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline bool JitVM::DirectCallLink::resolve_callee(int fidx, BaselineCalleeInfo& out) {
+    if (!vm || !chunk || fidx < 0 || static_cast<size_t>(fidx) >= chunk->func_table.size()) return false;
+    NativeFunc* nf = vm->compile_function_native(*chunk, chunk->func_table[static_cast<size_t>(fidx)], fidx);
+    if (!nf || !nf->baseline_direct_callable || !nf->code.ptr) return false;
+    out.guarded_entry   = nf->code.ptr;
+    out.unguarded_entry = nf->code.ptr + nf->baseline_unguarded_entry;
+    out.frame_regs      = nf->frame_regs;
+    out.params          = nf->baseline_params;
+    out.return_kind     = nf->baseline_return_kind;
+    out.return_fidx     = nf->baseline_return_fidx;
+    return true;
+}
+
+inline void JitVM::DirectCallLink::pin_value(uint64_t bits) {
+    if (!vm) return;
+    const Value v = Value::from_bits(bits);
+    if (!v.is_obj()) return;
+    for (const Value& pinned : vm->native_pinned)
+        if (pinned.raw_bits() == bits) return;
+    vm->native_pinned.push_back(v);
 }
 
 // ── C-linkage trampolines bakeable into emitted native code ───────

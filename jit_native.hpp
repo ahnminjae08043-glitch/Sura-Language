@@ -294,6 +294,15 @@ struct NativeFunc {
     // differential lane needs - a suite can be green while most emitters were
     // never reached. JitOp has 56 members, so one word is enough.
     uint64_t     emitted_ops = 0;
+    // Baseline direct-call linkage (BaselineLinkContext::resolve_callee).
+    // A body is directly callable when it was compiled with entry guards on
+    // exactly its parameters, binds no argument-count register, and fits the
+    // machine-stack frame limit. The offsets index `code`.
+    bool         baseline_direct_callable = false;
+    uint32_t     baseline_params = 0;
+    size_t       baseline_unguarded_entry = 0;
+    uint8_t      baseline_return_kind = 0;
+    int32_t      baseline_return_fidx = -1;
 };
 static_assert((int)JitOp::NOP < 64,
               "NativeFunc::emitted_ops is a 64-bit mask; JitOp outgrew it");
@@ -304,6 +313,49 @@ static_assert((int)JitOp::NOP < 64,
 // caller can treat it as an unambiguous "re-run this call in the VM" signal.
 inline constexpr uint64_t SURA_JIT_DEOPT_SENTINEL = 0xFFFC000000000000ULL;
 
+// Direct-call linkage for the baseline native tiers.
+//
+// A baseline body is pure: it never allocates, never throws, and never
+// re-enters the interpreter. That is what makes a native-to-native call
+// safe without unwind metadata, and it is also why the call target has to be
+// pinned at compile time - there is no helper to consult at run time. The
+// link context is the compiler's window into the VM: what a global currently
+// holds (so LOAD_GLOBAL can become a guarded constant), where the globals
+// vector and the recursion budget live, and the native body of a callee
+// (compiled on demand). Everything it answers is verified again at run time
+// by a guard whose failure path is the shared deopt sentinel.
+struct BaselineCalleeInfo {
+    const uint8_t* guarded_entry   = nullptr; // code start: entry guards, then body
+    const uint8_t* unguarded_entry = nullptr; // past the guards; every argument must be a proven number
+    uint32_t       frame_regs      = 0;       // machine-stack frame the callee expects, in Values
+    uint32_t       params          = 0;
+    uint8_t        return_kind     = 0;       // BaselineBodyAnalysis::Kind
+    int32_t        return_fidx     = -1;
+};
+
+class BaselineLinkContext {
+public:
+    virtual ~BaselineLinkContext() = default;
+    // Current value of global slot `idx` when the slot exists and has been
+    // written. False for anything the interpreter would refuse or treat as
+    // nil, so a body never compiles against a value that is not really there.
+    virtual bool global_value(int idx, uint64_t& bits) const = 0;
+    // Byte offset from the vm pointer to the `Value*` that begins the globals
+    // vector, or -1 when the VM cannot vouch for that layout.
+    virtual int32_t globals_vector_offset() const = 0;
+    // Byte offset from the vm pointer to the signed 64-bit count of nested
+    // native calls still allowed before the interpreter's frame limit.
+    virtual int32_t depth_budget_offset() const = 0;
+    // Native body of func_table[fidx], compiling it first if necessary. False
+    // when it cannot be entered directly: unsupported body, executable
+    // defaults, a frame too large for the machine stack, or a cycle.
+    virtual bool resolve_callee(int fidx, BaselineCalleeInfo& out) = 0;
+    // Keep the object behind `bits` alive for as long as generated code may
+    // compare against it. An identity guard compares raw bits, so an address
+    // reused by a later allocation would otherwise pass for the old object.
+    virtual void pin_value(uint64_t bits) = 0;
+};
+
 // Shared whole-body verification for the baseline native tiers. The baseline
 // emitters translate one bytecode instruction at a time and never merge
 // control flow, so everything that needs whole-body reasoning lives here:
@@ -311,24 +363,80 @@ inline constexpr uint64_t SURA_JIT_DEOPT_SENTINEL = 0xFFFC000000000000ULL;
 // the provably-nonzero-divisor rule. An emitter may assume every reachable
 // instruction of an accepted body is encodable and type-proven.
 class BaselineBodyAnalysis {
+public:
     // What a register is proven to hold at one program point. Real bytecode
     // reuses scratch registers across kinds (a comparison result, then an
     // arithmetic result), so kinds are tracked per instruction with a forward
     // dataflow pass instead of one kind per register for the whole body.
-    // Conflict means "unknown contents": it is still legal to copy or return
-    // such bits (the interpreter would move the same 64 bits), but any
-    // operation that interprets them (arithmetic, comparison, branch
-    // condition) refuses to compile.
-    enum class RegKind : uint8_t { Num, Bool, Other, Conflict };
+    // Closure carries the function index the register is proven to name (a
+    // LOAD_GLOBAL whose identity guard passed). Conflict means "unknown
+    // contents": it is still legal to copy or return such bits (the
+    // interpreter would move the same 64 bits), but any operation that
+    // interprets them (arithmetic, comparison, branch condition, call)
+    // refuses to compile.
+    enum Kind : uint8_t { Num, Bool, Other, Closure, Conflict };
+    struct RegKind {
+        Kind    k    = Conflict;
+        int32_t fidx = -1;
+        bool operator==(const RegKind& o) const { return k == o.k && fidx == o.fidx; }
+        bool operator!=(const RegKind& o) const { return !(*this == o); }
+    };
+    static constexpr RegKind kNum{Num, -1};
+    static constexpr RegKind kBool{Bool, -1};
+    static constexpr RegKind kOther{Other, -1};
+    static constexpr RegKind kConflict{Conflict, -1};
 
     static RegKind merge_kind(RegKind a, RegKind b) {
-        return a == b ? a : RegKind::Conflict;
+        return a == b ? a : kConflict;
     }
+
+    // Per LOAD_GLOBAL: the run-time check that makes the compile-time value
+    // trustworthy. Identity compares the slot's raw bits against the closure
+    // seen at compile time; NumTag only checks the NaN-box number tag, which
+    // is all a numeric global needs.
+    struct GlobalGuard {
+        enum Mode : uint8_t { None, Identity, NumTag };
+        Mode     mode  = None;
+        int32_t  index = -1;
+        uint64_t bits  = 0;
+        int32_t  fidx  = -1;
+    };
+    // Per CALL_FUNC: how to reach the callee. `self` is a recursive call
+    // into the body being compiled; otherwise `callee` is a compiled body
+    // resolved through the link context. `args_num` means every argument is
+    // a proven number, so the callee's entry guards can be skipped.
+    struct DirectCall {
+        bool valid    = false;
+        bool self     = false;
+        bool args_num = false;
+        int32_t fidx  = -1;
+        BaselineCalleeInfo callee;
+    };
+
+    // Largest callee frame (in Values) a direct call may place on the
+    // machine stack. With the interpreter's 512-frame limit this bounds the
+    // native stack a recursion can consume to well under 1 MB.
+    static constexpr uint32_t kMaxDirectCalleeRegs = 64;
 
 private:
     std::vector<RegKind> kinds_;
     size_t entry_ip_ = 0;
     size_t nregs_ = 0;
+    BaselineLinkContext* link_ = nullptr;
+    int self_fidx_ = -1;
+    bool self_callable_ = false;
+    std::vector<std::pair<int, std::pair<bool, BaselineCalleeInfo>>> callee_memo_;
+
+    const BaselineCalleeInfo* callee(int fidx) {
+        for (auto& entry : callee_memo_)
+            if (entry.first == fidx) return entry.second.first ? &entry.second.second : nullptr;
+        BaselineCalleeInfo info;
+        bool okc = link_ && link_->resolve_callee(fidx, info) &&
+                   info.guarded_entry && info.unguarded_entry &&
+                   info.frame_regs > 0 && info.frame_regs <= kMaxDirectCalleeRegs;
+        callee_memo_.push_back({fidx, {okc, info}});
+        return okc ? &callee_memo_.back().second.second : nullptr;
+    }
 
 public:
     bool ok = false;
@@ -343,26 +451,75 @@ public:
     // set when the caller allows deopt, since the guard's escape route is the
     // deopt sentinel and the interpreter's exact [E202] error.
     std::vector<uint8_t> div_zero_guard;
+    // Per body instruction: guard for a LOAD_GLOBAL / target of a CALL_FUNC.
+    // Only filled for reachable instructions of those opcodes.
+    std::vector<GlobalGuard> global_guard;
+    std::vector<DirectCall>  direct_call;
+    // Kind of every value the body can return: the merge over reachable
+    // RETURN_VAL operands, with RETURN_NONE, HALT and falling off the end
+    // contributing nil (Other). A recursive body assumes its own calls return
+    // Num and is only accepted with that kind if the assumption proves itself.
+    RegKind return_kind = kOther;
+    // True when the body reads VM state (globals, the recursion budget) and
+    // therefore needs the vm pointer at run time.
+    bool uses_vm = false;
 
     // require_provable_div=false lets a caller that has its own checked
     // division helper reuse the kind analysis without the divisor rule
     // rejecting the whole body. The full Win64 tier does exactly that: it
     // always routes DIV through sura_jit_checked_div, so the [E202] contract
     // does not depend on anything proven here.
+    // link/self_fidx/self_callable enable LOAD_GLOBAL and CALL_FUNC: without
+    // a link context both opcodes are refused as before. self_callable says
+    // the body being compiled may be its own direct callee (exact argument
+    // count, no argument-count register, small frame).
     BaselineBodyAnalysis(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
                          uint32_t frame_regs, uint32_t guarded_params,
                          uint32_t reg_index_limit, int const_index_limit,
                          bool allow_runtime_deopt,
-                         bool require_provable_div = true) {
+                         bool require_provable_div = true,
+                         BaselineLinkContext* link = nullptr,
+                         int self_fidx = -1,
+                         bool self_callable = false)
+        : link_(link), self_fidx_(self_fidx), self_callable_(self_callable) {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
             frame_regs == 0 || guarded_params > frame_regs ||
             (guarded_params > 0 && !allow_runtime_deopt)) {
             return;
         }
+        // A recursive body is first analysed under the assumption that its
+        // own calls return numbers. If every return then proves numeric the
+        // assumption is inductively justified (a call either returns through
+        // one of those returns or deopts, and the sentinel never lands in a
+        // register). Otherwise fall back to "unknown", which is always sound.
+        bool saw_self_call = false;
+        run(chunk, entry_ip, end_ip, frame_regs, guarded_params, reg_index_limit,
+            const_index_limit, allow_runtime_deopt, require_provable_div,
+            kNum, saw_self_call);
+        if (ok && saw_self_call && return_kind != kNum) {
+            ok = false;
+            run(chunk, entry_ip, end_ip, frame_regs, guarded_params, reg_index_limit,
+                const_index_limit, allow_runtime_deopt, require_provable_div,
+                kConflict, saw_self_call);
+        }
+    }
+
+private:
+    void run(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+             uint32_t frame_regs, uint32_t guarded_params,
+             uint32_t reg_index_limit, int const_index_limit,
+             bool allow_runtime_deopt, bool require_provable_div,
+             RegKind self_return_hypothesis, bool& saw_self_call) {
         const size_t body_len = end_ip - entry_ip;
         const size_t nregs = frame_regs;
         reached.assign(body_len, 0);
         div_zero_guard.assign(body_len, 0);
+        global_guard.assign(body_len, GlobalGuard{});
+        direct_call.assign(body_len, DirectCall{});
+        return_kind = kOther;
+        uses_vm = false;
+        saw_self_call = false;
+        bool any_return = false;
         auto valid_reg = [&](uint16_t reg) {
             return static_cast<uint32_t>(reg) < frame_regs &&
                    static_cast<uint32_t>(reg) <= reg_index_limit;
@@ -375,6 +532,11 @@ public:
             return target >= 0 && static_cast<size_t>(target) >= entry_ip &&
                    static_cast<size_t>(target) < end_ip;
         };
+        // Both linked opcodes escape through the deopt sentinel, and both
+        // need VM state the link context has vouched for.
+        const bool linked = link_ != nullptr && allow_runtime_deopt &&
+                            link_->globals_vector_offset() >= 0 &&
+                            link_->depth_budget_offset() >= 0;
 
         // ── Pass 1: opcode support, operand ranges, and jump targets. ──
         // For division the divisor must be provably nonzero on every path:
@@ -383,6 +545,11 @@ public:
         std::vector<uint8_t> wrote_nonzero_const(nregs, 1);
         std::vector<uint8_t> wrote_only_const(nregs, 1);
         std::vector<uint8_t> wrote_anything(nregs, 0);
+        auto wrote_dynamic = [&](uint16_t reg) {
+            wrote_anything[reg] = 1;
+            wrote_nonzero_const[reg] = 0;
+            wrote_only_const[reg] = 0;
+        };
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
             switch (inst.op) {
@@ -398,16 +565,12 @@ public:
                 case JitOp::LOAD_NIL:
                 case JitOp::LOAD_BOOL:
                     if (!valid_reg(inst.a)) return;
-                    wrote_anything[inst.a] = 1;
-                    wrote_nonzero_const[inst.a] = 0;
-                    wrote_only_const[inst.a] = 0;
+                    wrote_dynamic(inst.a);
                     break;
                 case JitOp::MOVE:
                 case JitOp::NEG:
                     if (!valid_reg(inst.a) || !valid_reg(inst.b)) return;
-                    wrote_anything[inst.a] = 1;
-                    wrote_nonzero_const[inst.a] = 0;
-                    wrote_only_const[inst.a] = 0;
+                    wrote_dynamic(inst.a);
                     break;
                 case JitOp::ADD:
                 case JitOp::SUB:
@@ -420,9 +583,7 @@ public:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
                     if (!valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c)) return;
-                    wrote_anything[inst.a] = 1;
-                    wrote_nonzero_const[inst.a] = 0;
-                    wrote_only_const[inst.a] = 0;
+                    wrote_dynamic(inst.a);
                     break;
                 case JitOp::JUMP:
                     if (!valid_target(inst.operand)) return;
@@ -437,6 +598,41 @@ public:
                 case JitOp::RETURN_NONE:
                 case JitOp::HALT:
                     break;
+                case JitOp::LOAD_GLOBAL: {
+                    // The slot's current value decides what the body may
+                    // assume; the emitted guard re-checks it on every
+                    // execution. Anything but a closure of this chunk or a
+                    // number is refused: nothing downstream could use it.
+                    if (!linked || !valid_reg(inst.a)) return;
+                    uint64_t bits = 0;
+                    if (!link_->global_value(inst.operand, bits)) return;
+                    const Value v = Value::from_bits(bits);
+                    GlobalGuard& g = global_guard[ip - entry_ip];
+                    g.index = inst.operand;
+                    g.bits = bits;
+                    if (v.is_closure()) {
+                        const int fidx = v.as_closure()->func_idx;
+                        if (fidx < 0 || static_cast<size_t>(fidx) >= chunk.func_table.size()) return;
+                        g.mode = GlobalGuard::Identity;
+                        g.fidx = fidx;
+                    } else if (v.is_num()) {
+                        g.mode = GlobalGuard::NumTag;
+                    } else {
+                        return;
+                    }
+                    wrote_dynamic(inst.a);
+                    break;
+                }
+                case JitOp::CALL_FUNC: {
+                    if (!linked || !valid_reg(inst.a) || !valid_reg(inst.b)) return;
+                    if (inst.operand < 0 || inst.operand > 0xFFFF) return;
+                    const uint32_t argc = static_cast<uint32_t>(inst.operand);
+                    if (static_cast<uint32_t>(inst.c) + argc > frame_regs) return;
+                    for (uint32_t i = 0; i < argc; ++i)
+                        if (!valid_reg(static_cast<uint16_t>(inst.c + i))) return;
+                    wrote_dynamic(inst.a);
+                    break;
+                }
                 default:
                     return;
             }
@@ -450,11 +646,23 @@ public:
         // finite lattice and terminates.
         entry_ip_ = entry_ip;
         nregs_ = nregs;
-        kinds_.assign(body_len * nregs, RegKind::Conflict);
+        kinds_.assign(body_len * nregs, kConflict);
         std::vector<RegKind>& in_state = kinds_;
         auto state_at = [&](size_t ip) { return &in_state[(ip - entry_ip) * nregs]; };
-        for (uint32_t p = 0; p < guarded_params; ++p) state_at(entry_ip)[p] = RegKind::Num;
+        for (uint32_t p = 0; p < guarded_params; ++p) state_at(entry_ip)[p] = kNum;
         reached[0] = 1;
+
+        // What a call returns, given what the function register holds. A
+        // callee resolved through the link is compiled (and its return kind
+        // known) before the answer is used; anything else is unknown, and
+        // pass 3 then refuses the call.
+        auto call_result = [&](RegKind fn) -> RegKind {
+            if (fn.k != Closure) return kConflict;
+            if (fn.fidx == self_fidx_) return self_callable_ ? self_return_hypothesis : kConflict;
+            const BaselineCalleeInfo* ci = callee(fn.fidx);
+            if (!ci) return kConflict;
+            return RegKind{static_cast<Kind>(ci->return_kind), ci->return_fidx};
+        };
 
         std::vector<RegKind> out(nregs);
         auto transfer = [&](size_t ip, RegKind* state) {
@@ -463,17 +671,17 @@ public:
                 case JitOp::LOAD_CONST:
                     state[inst.a] =
                         chunk.constants[static_cast<size_t>(inst.operand)].is_num()
-                            ? RegKind::Num : RegKind::Other;
+                            ? kNum : kOther;
                     break;
-                case JitOp::LOAD_NIL:  state[inst.a] = RegKind::Other; break;
-                case JitOp::LOAD_BOOL: state[inst.a] = RegKind::Bool;  break;
+                case JitOp::LOAD_NIL:  state[inst.a] = kOther; break;
+                case JitOp::LOAD_BOOL: state[inst.a] = kBool;  break;
                 case JitOp::MOVE:      state[inst.a] = state[inst.b];  break;
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
                 case JitOp::NEG:
-                    state[inst.a] = RegKind::Num;
+                    state[inst.a] = kNum;
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -481,7 +689,16 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
-                    state[inst.a] = RegKind::Bool;
+                    state[inst.a] = kBool;
+                    break;
+                case JitOp::LOAD_GLOBAL: {
+                    const GlobalGuard& g = global_guard[ip - entry_ip];
+                    state[inst.a] = g.mode == GlobalGuard::Identity
+                        ? RegKind{Closure, g.fidx} : kNum;
+                    break;
+                }
+                case JitOp::CALL_FUNC:
+                    state[inst.a] = call_result(state[inst.b]);
                     break;
                 default:
                     break;
@@ -535,10 +752,10 @@ public:
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
                     break;
                 case JitOp::DIV:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
                     // A divisor proven to be a nonzero constant needs no check.
                     // Otherwise the emitter tests it at run time: division by
                     // zero must raise [E202], not yield an infinity, and only
@@ -555,7 +772,7 @@ public:
                     }
                     break;
                 case JitOp::NEG:
-                    if (in[inst.b] != RegKind::Num) return;
+                    if (in[inst.b] != kNum) return;
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -563,19 +780,65 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
-                    if (in[inst.b] != RegKind::Num || in[inst.c] != RegKind::Num) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    if (in[inst.a] != RegKind::Bool) return;
+                    if (in[inst.a] != kBool) return;
+                    break;
+                case JitOp::LOAD_GLOBAL:
+                    uses_vm = true;
+                    break;
+                case JitOp::CALL_FUNC: {
+                    // The function register must name one specific body, and
+                    // the call must bind exactly its parameters: the
+                    // interpreter fills missing arguments from defaults and
+                    // records the argument count, neither of which a direct
+                    // call reproduces.
+                    const RegKind fn = in[inst.b];
+                    if (fn.k != Closure) return;
+                    const uint32_t argc = static_cast<uint32_t>(inst.operand);
+                    DirectCall& dc = direct_call[ip - entry_ip];
+                    if (fn.fidx == self_fidx_) {
+                        if (!self_callable_) return;
+                        if (static_cast<size_t>(fn.fidx) >= chunk.func_table.size()) return;
+                        if (chunk.func_table[static_cast<size_t>(fn.fidx)].params.size() != argc) return;
+                        if (frame_regs > kMaxDirectCalleeRegs) return;
+                        dc.self = true;
+                        saw_self_call = true;
+                    } else {
+                        const BaselineCalleeInfo* ci = callee(fn.fidx);
+                        if (!ci || ci->params != argc) return;
+                        dc.callee = *ci;
+                    }
+                    dc.valid = true;
+                    dc.fidx = fn.fidx;
+                    dc.args_num = true;
+                    for (uint32_t i = 0; i < argc; ++i)
+                        if (in[inst.c + i] != kNum) dc.args_num = false;
+                    uses_vm = true;
+                    break;
+                }
+                case JitOp::RETURN_VAL:
+                    return_kind = any_return ? merge_kind(return_kind, in[inst.a]) : in[inst.a];
+                    any_return = true;
+                    break;
+                case JitOp::RETURN_NONE:
+                case JitOp::HALT:
+                    return_kind = any_return ? merge_kind(return_kind, kOther) : kOther;
+                    any_return = true;
                     break;
                 default:
                     break;
             }
         }
+        if (falls_off_end(chunk, entry_ip, end_ip)) {
+            return_kind = any_return ? merge_kind(return_kind, kOther) : kOther;
+        }
         ok = true;
     }
 
+public:
     // True when `reg` provably holds a number just before `ip` executes.
     // Only meaningful when ok is set; a false answer means "not proven",
     // never "proven otherwise", so a caller may only use it to remove work.
@@ -584,7 +847,7 @@ public:
         const size_t row = ip - entry_ip_;
         if (row >= reached.size() || !reached[row]) return false;
         if (static_cast<size_t>(reg) >= nregs_) return false;
-        return kinds_[row * nregs_ + reg] == RegKind::Num;
+        return kinds_[row * nregs_ + reg] == kNum;
     }
 
     // True when execution can fall off the end of the body: the last
@@ -605,7 +868,13 @@ public:
 // through dynamically generated code without registered DWARF CFI. The
 // second revision adds branches (whole-body loops) and NaN-box entry
 // guards on numeric parameters: a non-number argument returns a deopt
-// sentinel and the call falls back to the register VM for that call.
+// sentinel and the call falls back to the register VM for that call. The
+// third revision links pure bodies to each other: LOAD_GLOBAL of a closure
+// or number becomes a guarded constant, and CALL_FUNC to such a closure
+// becomes a native-to-native call whose callee frame lives on the machine
+// stack. Callee bodies are pure, so no frame is ever visible to the GC or to
+// exception unwinding, and a guard failure anywhere in the call tree simply
+// propagates the sentinel up to the interpreter's call site.
 class SysVBaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
@@ -613,6 +882,9 @@ class SysVBaselineCompiler {
     uint32_t frame_regs;
     uint32_t guarded_params;
     bool deopt_allowed;
+    BaselineLinkContext* link = nullptr;
+    int self_fidx = -1;
+    bool self_callable = false;
 
     static int32_t off_r(uint16_t reg) {
         return static_cast<int32_t>(static_cast<uint32_t>(reg) * 8U);
@@ -623,6 +895,10 @@ class SysVBaselineCompiler {
 
 public:
     static constexpr uint64_t kDeoptSentinel = SURA_JIT_DEOPT_SENTINEL;
+
+    // Filled by compile_bytes() for the direct-call linkage of this body.
+    size_t unguarded_entry_offset = 0;   // byte offset past the entry guards
+    BaselineBodyAnalysis::RegKind return_kind = BaselineBodyAnalysis::kOther;
 
     // guarded_param_regs: registers 0..n-1 hold caller arguments that the
     // prologue verifies are NaN-boxed numbers, deopting otherwise.
@@ -636,7 +912,16 @@ public:
         : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
           guarded_params(guarded_param_regs), deopt_allowed(allow_deopt) {}
 
-    std::vector<uint8_t> compile_bytes() const {
+    // Enable LOAD_GLOBAL and CALL_FUNC through a link context. `fidx` is this
+    // body's own index in func_table (-1 when unknown), and `callable` says
+    // the body may be entered by a direct call with exactly its parameters.
+    void set_link(BaselineLinkContext* ctx, int fidx, bool callable) {
+        link = ctx;
+        self_fidx = fidx;
+        self_callable = callable;
+    }
+
+    std::vector<uint8_t> compile_bytes() {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
             frame_regs > std::numeric_limits<uint16_t>::max()) {
             return {};
@@ -645,37 +930,54 @@ public:
         BaselineBodyAnalysis analysis(
             chunk, entry_ip, end_ip, frame_regs, guarded_params,
             std::numeric_limits<uint16_t>::max(),
-            std::numeric_limits<int32_t>::max() / 8, deopt_allowed);
+            std::numeric_limits<int32_t>::max() / 8, deopt_allowed,
+            /*require_provable_div=*/true, link, self_fidx, self_callable);
         if (!analysis.ok) return {};
+        return_kind = analysis.return_kind;
+        const bool needs_vm = analysis.uses_vm;
+        const int32_t globals_off = needs_vm ? link->globals_vector_offset() : 0;
+        const int32_t budget_off = needs_vm ? link->depth_budget_offset() : 0;
 
         // ── Emit. ──
         std::vector<uint8_t> code;
         X64Emitter em(code);
+
+        // Entry guards come before the prologue so a direct caller that has
+        // already proven its arguments numeric can enter past them. They
+        // read R through RSI and escape to a tail that has nothing to pop.
+        // Every guarded parameter must be a NaN-boxed number
+        // ((bits & NBQNAN) != NBQNAN); otherwise branch to the deopt tail.
+        std::vector<size_t> entry_deopt_fixups;
+        for (uint32_t p = 0; p < guarded_params; ++p) {
+            em.mov_r_mem(XR::RAX, XR::RSI, off_r(static_cast<uint16_t>(p)));
+            em.mov_ri64(XR::RCX, NBQNAN);
+            em.and_rr(XR::RAX, XR::RCX);
+            em.cmp_rr(XR::RAX, XR::RCX);
+            entry_deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+        }
+
+        unguarded_entry_offset = em.pos();
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
+        if (needs_vm) em.push_r(XR::R13);
         em.mov_rr(XR::RBX, XR::RSI);
         em.mov_rr(XR::R12, XR::RDX);
+        if (needs_vm) em.mov_rr(XR::R13, XR::RDI);
 
         auto emit_return = [&]() {
+            if (needs_vm) em.pop_r(XR::R13);
             em.pop_r(XR::R12);
             em.pop_r(XR::RBX);
             em.ret();
         };
 
-        // Entry guards: every guarded parameter must be a NaN-boxed number
-        // ((bits & NBQNAN) != NBQNAN); otherwise branch to the deopt tail.
         std::vector<size_t> deopt_fixups;
-        for (uint32_t p = 0; p < guarded_params; ++p) {
-            em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(p)));
-            em.mov_ri64(XR::RCX, NBQNAN);
-            em.and_rr(XR::RAX, XR::RCX);
-            em.cmp_rr(XR::RAX, XR::RCX);
-            deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
-        }
-
         std::vector<size_t> ip_off(body_len, 0);
         struct JumpFixup { size_t disp_pos; size_t target_ip; };
         std::vector<JumpFixup> jump_fixups;
+        // Self-recursive calls: (disp position, enter past the guards)
+        struct SelfCallFixup { size_t disp_pos; bool unguarded; };
+        std::vector<SelfCallFixup> self_call_fixups;
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
@@ -795,6 +1097,75 @@ public:
                     em.mov_ri64(XR::RAX, NBNIL);
                     emit_return();
                     break;
+                case JitOp::LOAD_GLOBAL: {
+                    // Read the slot through the vector's begin pointer on
+                    // every execution: the vector reallocates as globals are
+                    // added, so only the vm-relative location is stable.
+                    const auto& g = analysis.global_guard[ip - entry_ip];
+                    em.mov_r_mem(XR::RAX, XR::R13, globals_off);
+                    em.mov_r_mem(XR::RAX, XR::RAX, off_c(g.index));
+                    if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
+                        em.mov_ri64(XR::RCX, g.bits);
+                        em.cmp_rr(XR::RAX, XR::RCX);
+                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::NE));
+                        link->pin_value(g.bits);
+                    } else {
+                        em.mov_rr(XR::RCX, XR::RAX);
+                        em.mov_ri64(XR::RDX, NBQNAN);
+                        em.and_rr(XR::RCX, XR::RDX);
+                        em.cmp_rr(XR::RCX, XR::RDX);
+                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                    }
+                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    break;
+                }
+                case JitOp::CALL_FUNC: {
+                    const auto& dc = analysis.direct_call[ip - entry_ip];
+                    if (!dc.valid) return {};
+                    const uint32_t argc = static_cast<uint32_t>(inst.operand);
+                    const uint32_t callee_regs = dc.self ? frame_regs : dc.callee.frame_regs;
+                    const int32_t frame_bytes =
+                        static_cast<int32_t>((callee_regs * 8U + 15U) & ~15U);
+                    // The interpreter refuses the call that would exceed its
+                    // frame limit; the budget mirrors that limit so a deep
+                    // recursion deopts before the machine stack is at risk
+                    // and the interpreter raises its own [E500].
+                    em.mov_r_mem(XR::RAX, XR::R13, budget_off);
+                    em.sub_r_imm32(XR::RAX, 1);
+                    deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::S));
+                    em.mov_mem_r(XR::R13, budget_off, XR::RAX);
+                    // Callee frame: arguments in registers 0..argc-1, the
+                    // rest zero like alloc_frame_regs' Value(0.0) fill.
+                    em.sub_r_imm32(XR::RSP, frame_bytes);
+                    for (uint32_t i = 0; i < argc; ++i) {
+                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + i)));
+                        em.mov_mem_r(XR::RSP, static_cast<int32_t>(i * 8U), XR::RAX);
+                    }
+                    for (uint32_t r = argc; r < callee_regs; ++r) {
+                        em.mov_mem_imm32(XR::RSP, static_cast<int32_t>(r * 8U), 0);
+                    }
+                    em.mov_rr(XR::RDI, XR::R13);
+                    em.mov_rr(XR::RSI, XR::RSP);
+                    em.mov_rr(XR::RDX, XR::R12);
+                    if (dc.self) {
+                        self_call_fixups.push_back({em.call_rel32_placeholder(), dc.args_num});
+                    } else {
+                        const uint8_t* target = dc.args_num ? dc.callee.unguarded_entry
+                                                            : dc.callee.guarded_entry;
+                        em.mov_ri64(XR::RAX, static_cast<uint64_t>(
+                            reinterpret_cast<uintptr_t>(target)));
+                        em.call_rax();
+                    }
+                    em.add_r_imm32(XR::RSP, frame_bytes);
+                    em.add_mem_imm8(XR::R13, budget_off, 1);
+                    // A guard that failed anywhere below hands back the
+                    // sentinel; propagate it rather than storing it.
+                    em.mov_ri64(XR::RCX, kDeoptSentinel);
+                    em.cmp_rr(XR::RAX, XR::RCX);
+                    deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    break;
+                }
                 default:
                     return {};
             }
@@ -807,15 +1178,27 @@ public:
             emit_return();
         }
 
-        // Deopt tail shared by the entry guards and the zero-divisor checks.
+        // Deopt tail shared by the zero-divisor checks, global guards and
+        // call budget/propagation checks: restore the callee-saved
+        // registers and hand back the sentinel.
         if (!deopt_fixups.empty()) {
             const size_t deopt_off = em.pos();
             em.mov_ri64(XR::RAX, kDeoptSentinel);
             emit_return();
             for (size_t disp : deopt_fixups) em.patch_rel32(disp, deopt_off);
         }
+        // Entry-guard tail: nothing has been pushed yet.
+        if (!entry_deopt_fixups.empty()) {
+            const size_t deopt_off = em.pos();
+            em.mov_ri64(XR::RAX, kDeoptSentinel);
+            em.ret();
+            for (size_t disp : entry_deopt_fixups) em.patch_rel32(disp, deopt_off);
+        }
         for (const JumpFixup& fx : jump_fixups) {
             em.patch_rel32(fx.disp_pos, ip_off[fx.target_ip - entry_ip]);
+        }
+        for (const SelfCallFixup& fx : self_call_fixups) {
+            em.patch_rel32(fx.disp_pos, fx.unguarded ? unguarded_entry_offset : 0);
         }
         return code;
     }
@@ -1521,6 +1904,10 @@ class NativeCompiler {
     // guards. Null whenever the proof does not apply.
     std::unique_ptr<BaselineBodyAnalysis> numeric_proof;
     std::vector<JitStrictCountedLoop> strict_counted_loops;
+    // Direct-call linkage for the baseline tiers; null keeps LOAD_GLOBAL and
+    // CALL_FUNC out of those tiers. Set by the VM for function bodies only.
+    BaselineLinkContext* baseline_link = nullptr;
+    int                  baseline_self_fidx = -1;
 
     struct ScalarValue {
         bool is_virtual_record = false;
@@ -1597,6 +1984,11 @@ public:
     // Other bail paths (target unsupported, bad ip range, unresolvable jump)
     // leave this false, so a false here means "did not compile, but not
     // because of an unsupported opcode".
+    void set_baseline_link(BaselineLinkContext* link, int self_fidx) {
+        baseline_link = link;
+        baseline_self_fidx = self_fidx;
+    }
+
     bool     did_bail_on_opcode() const { return bailed; }
     JitOp    bailed_opcode() const      { return bail_op; }
     size_t   bailed_ip() const          { return bail_ip; }
@@ -1750,12 +2142,27 @@ public:
                 ? static_cast<uint32_t>(callable_param_count) : 0U;
             SysVBaselineCompiler baseline(chunk, entry_ip, end_ip,
                                           native_frame_regs, guarded, deoptable);
+            // A body can be a direct callee only when a direct call binds
+            // exactly what the interpreter would: every parameter, guarded,
+            // and no hidden argument-count register.
+            const bool direct_callable =
+                deoptable && baseline_link != nullptr &&
+                jit_default_arg_count_reg(chunk, entry_ip, 0, callable_param_count) < 0 &&
+                native_frame_regs <= BaselineBodyAnalysis::kMaxDirectCalleeRegs;
+            if (baseline_link) {
+                baseline.set_link(baseline_link, baseline_self_fidx, direct_callable);
+            }
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
             auto nf = std::make_unique<NativeFunc>();
             nf->code = ExecCode::from_bytes(baseline_code);
             nf->fn = reinterpret_cast<SuraNativeFn>(nf->code.ptr);
             nf->frame_regs = native_frame_regs;
+            nf->baseline_direct_callable = direct_callable;
+            nf->baseline_params = static_cast<uint32_t>(callable_param_count);
+            nf->baseline_unguarded_entry = baseline.unguarded_entry_offset;
+            nf->baseline_return_kind = static_cast<uint8_t>(baseline.return_kind.k);
+            nf->baseline_return_fidx = baseline.return_kind.fidx;
             for (size_t ip = entry_ip; ip < end_ip; ++ip)
                 nf->emitted_ops |= 1ULL << static_cast<int>(chunk.code[ip].op);
             return nf;

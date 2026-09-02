@@ -31,7 +31,7 @@ surapkg test
 ## 현재 플랫폼 경계
 
 - 기본 VM: Windows, Linux, macOS 빌드 경로
-- 네이티브 JIT: Win64 x86-64 부분 컴파일, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline. 두 baseline은 상수·이동·숫자로 증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종과 0이 아닌 제수로 증명된 `/`를 처리하며, 그 밖의 bytecode는 register VM으로 fallback
+- 네이티브 JIT: Win64 x86-64 부분 컴파일, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline. 두 baseline은 상수·이동·숫자로 증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종과 0이 아닌 제수로 증명된 `/`를 처리하고, Linux x86-64는 여기에 가드된 전역 읽기와 순수 숫자 함수 사이의 네이티브 직접 호출(재귀 포함)을 더한다. 그 밖의 bytecode는 register VM으로 fallback
 - JavaScript·WebAssembly: 별도 변환 타깃이며 네이티브 런타임 전체와 동일하지 않음
 - FFmpeg, CUDA, Python, Node.js: 해당 기능을 사용할 때만 필요한 선택 의존성
 

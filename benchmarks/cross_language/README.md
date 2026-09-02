@@ -86,40 +86,49 @@ measured" rather than as a time.
 ## The same benchmark on Linux
 
 The numbers above are from Windows x64, where the JIT is complete. On Linux and
-on ARM64 the native tier is a **baseline** that only compiles straight-line and
-looping numeric code: it refuses function calls, array indexing and field
-access. In this suite that means one of the ten functions gets native code
-instead of all ten, and the rest run interpreted.
+on ARM64 the native tier is a **baseline** that compiles numeric code only. On
+Linux x86-64 it handles loops, guarded global reads and native-to-native calls
+between pure numeric functions (so recursive `fib` runs entirely as native
+code), but it still refuses array indexing, strings, dictionaries and field
+access. In this suite that means two of the ten functions get native code
+instead of all ten, and the rest run interpreted. ARM64 does not have the
+call support yet, so only the numeric loop reaches native code there.
 
 Same machine, Ubuntu under WSL2, ms:
 
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.7 | 15.6 | 0.3 | 5.0 |
-| **Sura JIT** | 82.8 | 10.5 | 63.0 | 10.5 | 79.0 | 33.5 | 109.1 | 648.0 |
-| Sura VM | 86.6 | 85.3 | 64.7 | 10.9 | 84.5 | 34.1 | 120.7 | 802.4 |
-| Python 3.14 | 68.0 | 112.5 | 59.4 | 4.2 | 23.2 | 76.6 | 46.6 | 507.5 |
+| C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
+| **Sura JIT** | 9.3 | 10.5 | 59.0 | 9.9 | 77.0 | 31.7 | 108.4 | 560.8 |
+| Sura VM | 78.0 | 79.8 | 65.7 | 10.0 | 79.0 | 31.6 | 107.0 | 556.3 |
+| Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
 So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
   about twice as fast as CPython by geometric mean.
-- **On Linux and ARM64** only the numeric loop reaches native code. Overall Sura
-  lands within about 10% of CPython — sometimes ahead, sometimes behind.
+- **On Linux x86-64** the numeric loop and the recursive `fib` reach native
+  code. Overall Sura is about 1.25x faster than CPython by geometric mean —
+  well ahead on calls and arithmetic, behind on strings, dictionaries and
+  objects, which still run interpreted.
+- **On ARM64** only the numeric loop reaches native code, and Sura lands within
+  about 10% of CPython overall.
 
 What holds on both platforms is where the native tier or a native library
 actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| numeric loop vs CPython | 12x faster | 11x faster |
+| `fib(30)` vs CPython | 3.7x faster | 6.4x faster |
+| numeric loop vs CPython | 12x faster | 10x faster |
 | sort vs CPython | 3.2x faster | 2.3x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
-Closing the Linux gap means teaching the baseline tier the opcodes it currently
-refuses, which is the largest open item in the project.
+Closing the rest of the Linux gap means teaching the baseline tier the array,
+string, dictionary and field opcodes it currently refuses, which is the largest
+open item in the project.
 
 ### How to read this
 
