@@ -746,6 +746,11 @@ jobs:
             artifacts/security_audit_bundle.json
             artifacts/security_audit_bundle.md
 
+      - name: Point the Pages site root at the dashboard
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        shell: pwsh
+        run: Copy-Item artifacts/bench_dashboard.html artifacts/index.html
+
       - name: Upload Pages artifact
         if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
         uses: actions/upload-pages-artifact@v3
