@@ -44,7 +44,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #elif defined(__aarch64__) || defined(_M_ARM64)
         #if SURA_JIT_ARM64_BASELINE
             return {"windows", "arm64", "windows-arm64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter compiles constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions inline, and routes array, string, dictionary, field, in, for-in, print and call operations through VM helpers; unsupported bytecode falls back to the register VM"};
         #else
             return {"windows", "arm64", "windows-arm64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};
@@ -57,7 +57,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #if defined(__aarch64__) || defined(__arm64__)
         #if SURA_JIT_ARM64_BASELINE
             return {"macos", "arm64", "aapcs64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter compiles constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions inline, and routes array, string, dictionary, field, in, for-in, print and call operations through VM helpers; unsupported bytecode falls back to the register VM"};
         #else
             return {"macos", "arm64", "aapcs64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};
@@ -73,14 +73,14 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #if defined(__aarch64__)
         #if SURA_JIT_ARM64_BASELINE
             return {"linux", "arm64", "aapcs64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter compiles constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions inline, and routes array, string, dictionary, field, in, for-in, print and call operations through VM helpers; unsupported bytecode falls back to the register VM"};
         #else
             return {"linux", "arm64", "aapcs64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};
         #endif
     #elif defined(__x86_64__)
         return {"linux", "x86-64", "sysv-x86-64", "x64-sysv-baseline", true,
-                "register-vm", "exception-free straight-line System V baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, and division by a proven nonzero divisor; unsupported bytecode falls back to the register VM"};
+                "register-vm", "exception-free System V baseline emitter compiles constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions inline, and routes array, string, dictionary, field, in, for-in, print and call operations through VM helpers; unsupported bytecode falls back to the register VM"};
     #else
         return {"linux", "unknown", "sysv", "none", false,
                 "register-vm", "no native emitter for this Linux architecture"};

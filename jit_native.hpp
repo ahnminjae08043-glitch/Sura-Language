@@ -125,6 +125,26 @@ extern "C" void     sura_jit_dict_keys(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" int      sura_jit_foreach_next(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" void     sura_jit_print(JitVM* vm, struct Value* R, const JitInst* ins, int newline);
 extern "C" uint64_t sura_jit_add(uint64_t a, uint64_t b);  // Phase 10 safe ADD
+// Baseline-tier helpers (jit_vm.hpp, SURA_BL_HELPER): one instruction of
+// interpreter semantics each, with every throw parked in the VM and turned
+// into SURA_JIT_DEOPT_SENTINEL so nothing unwinds through baseline code.
+extern "C" uint64_t sura_bl_arith(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_truthy(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_load_global(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_store_global(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_make_array(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_make_dict(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_index_get(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_index_set(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_dot_get(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_dot_set(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_op_in(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_dict_keys(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_foreach_next(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_print(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_call(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_method_call(JitVM* vm, Value* R, const JitInst* ins);
+extern "C" uint64_t sura_bl_call_builtin(JitVM* vm, Value* R, const JitInst* ins);
 
 // Checked arithmetic slow paths. Native code guards the overwhelmingly common
 // numeric cases inline and reaches these helpers only for a semantic error or
@@ -303,6 +323,16 @@ struct NativeFunc {
     size_t       baseline_unguarded_entry = 0;
     uint8_t      baseline_return_kind = 0;
     int32_t      baseline_return_fidx = -1;
+    // Bit p set: parameter p enters through a number guard. A clear bit is a
+    // parameter the VM has seen a non-numeric argument for: it enters
+    // unguarded and the body treats it as unknown. Parameters past bit 63
+    // are always guarded.
+    uint64_t     baseline_guard_mask = ~0ULL;
+    // True when a direct call to this body must place the callee frame on
+    // the VM value stack (BaselineBodyAnalysis::vm_frame): the body, or a
+    // body it calls directly, may run a helper and so may trigger the
+    // collector while the frame is live.
+    bool         baseline_vm_frame = false;
 };
 static_assert((int)JitOp::NOP < 64,
               "NativeFunc::emitted_ops is a 64-bit mask; JitOp outgrew it");
@@ -315,22 +345,32 @@ inline constexpr uint64_t SURA_JIT_DEOPT_SENTINEL = 0xFFFC000000000000ULL;
 
 // Direct-call linkage for the baseline native tiers.
 //
-// A baseline body is pure: it never allocates, never throws, and never
-// re-enters the interpreter. That is what makes a native-to-native call
-// safe without unwind metadata, and it is also why the call target has to be
-// pinned at compile time - there is no helper to consult at run time. The
-// link context is the compiler's window into the VM: what a global currently
-// holds (so LOAD_GLOBAL can become a guarded constant), where the globals
-// vector and the recursion budget live, and the native body of a callee
+// A baseline body carries no unwind metadata, so nothing may throw through
+// it. Numeric work is inlined; everything else goes through a helper that
+// runs the interpreter's semantics for that one instruction and, if that
+// throws, parks the exception in the VM and returns the deopt sentinel.
+// The body then records the instruction to resume at and returns the
+// sentinel itself; the interpreter picks the frame up from there and
+// rethrows, so the error, its line and its stack trace are exactly the
+// interpreted ones. Callee frames of native-to-native calls live on the
+// VM's value stack, where the collector sees them while a helper allocates.
+// Only a pure body (no store, print or generic call - see
+// BaselineBodyAnalysis::pure) may be a direct callee: when a call into it
+// deopts, the caller's interpreter re-runs the whole call, which must not
+// repeat an effect. The link context is the compiler's window into the VM:
+// what a global currently holds (so LOAD_GLOBAL can become a guarded
+// constant), where the VM's slots live, and the native body of a callee
 // (compiled on demand). Everything it answers is verified again at run time
-// by a guard whose failure path is the shared deopt sentinel.
+// by a guard whose failure path is the deopt sentinel.
 struct BaselineCalleeInfo {
     const uint8_t* guarded_entry   = nullptr; // code start: entry guards, then body
-    const uint8_t* unguarded_entry = nullptr; // past the guards; every argument must be a proven number
-    uint32_t       frame_regs      = 0;       // machine-stack frame the callee expects, in Values
+    const uint8_t* unguarded_entry = nullptr; // past the guards; every guarded argument must be a proven number
+    uint32_t       frame_regs      = 0;       // value-stack frame the callee expects, in Values
     uint32_t       params          = 0;
+    uint64_t       guard_mask      = ~0ULL;   // NativeFunc::baseline_guard_mask
     uint8_t        return_kind     = 0;       // BaselineBodyAnalysis::Kind
     int32_t        return_fidx     = -1;
+    bool           vm_frame        = false;   // NativeFunc::baseline_vm_frame
 };
 
 class BaselineLinkContext {
@@ -346,6 +386,21 @@ public:
     // Byte offset from the vm pointer to the signed 64-bit count of nested
     // native calls still allowed before the interpreter's frame limit.
     virtual int32_t depth_budget_offset() const = 0;
+    // Byte offset of the signed 64-bit slot a body writes the bytecode index
+    // of the instruction it stopped at before returning the sentinel.
+    virtual int32_t resume_ip_offset() const = 0;
+    // Byte offset of the 64-bit flag that says a helper parked an exception
+    // to be rethrown at the resume point. A caller that propagates a direct
+    // callee's sentinel clears it: the re-run call raises its own.
+    virtual int32_t exc_valid_offset() const = 0;
+    // Byte offset of the `Value*` that begins the VM's value stack, and of
+    // the size_t count of Values in use on it. Direct calls place the
+    // callee's frame at the top and pop it on return.
+    virtual int32_t value_stack_data_offset() const = 0;
+    virtual int32_t stack_top_offset() const = 0;
+    // Total Values the value stack holds; a frame that would exceed it deopts
+    // so the interpreter raises its own overflow error. 0 when unknown.
+    virtual int64_t stack_capacity() const = 0;
     // Native body of func_table[fidx], compiling it first if necessary. False
     // when it cannot be entered directly: unsupported body, executable
     // defaults, a frame too large for the machine stack, or a cycle.
@@ -393,9 +448,12 @@ public:
     // Per LOAD_GLOBAL: the run-time check that makes the compile-time value
     // trustworthy. Identity compares the slot's raw bits against the closure
     // seen at compile time; NumTag only checks the NaN-box number tag, which
-    // is all a numeric global needs.
+    // is all a numeric global needs. Raw reads a written slot of any other
+    // kind with no check (its contents are unknown to the analysis), and
+    // Helper asks the interpreter's helper for a slot that is not written
+    // yet, since only it knows whether that is an error.
     struct GlobalGuard {
-        enum Mode : uint8_t { None, Identity, NumTag };
+        enum Mode : uint8_t { None, Identity, NumTag, Raw, Helper };
         Mode     mode  = None;
         int32_t  index = -1;
         uint64_t bits  = 0;
@@ -414,9 +472,15 @@ public:
     };
 
     // Largest callee frame (in Values) a direct call may place on the
-    // machine stack. With the interpreter's 512-frame limit this bounds the
-    // native stack a recursion can consume to well under 1 MB.
+    // value stack. With the interpreter's 512-frame limit this bounds what
+    // a native recursion can consume to a quarter of the stack.
     static constexpr uint32_t kMaxDirectCalleeRegs = 64;
+
+    // Whether parameter `p` is entry-guarded under `mask`
+    // (NativeFunc::baseline_guard_mask).
+    static bool guarded_bit(uint64_t mask, uint32_t p) {
+        return p >= 64U || ((mask >> p) & 1ULL) != 0;
+    }
 
 private:
     std::vector<RegKind> kinds_;
@@ -425,6 +489,8 @@ private:
     BaselineLinkContext* link_ = nullptr;
     int self_fidx_ = -1;
     bool self_callable_ = false;
+    uint64_t guard_mask_ = ~0ULL;
+    bool allow_helpers_ = false;
     std::vector<std::pair<int, std::pair<bool, BaselineCalleeInfo>>> callee_memo_;
 
     const BaselineCalleeInfo* callee(int fidx) {
@@ -460,9 +526,26 @@ public:
     // contributing nil (Other). A recursive body assumes its own calls return
     // Num and is only accepted with that kind if the assumption proves itself.
     RegKind return_kind = kOther;
-    // True when the body reads VM state (globals, the recursion budget) and
-    // therefore needs the vm pointer at run time.
+    // True when the body reads VM state (globals, the recursion budget) or
+    // calls a helper, and therefore needs the vm pointer at run time.
     bool uses_vm = false;
+    // Per body instruction: 1 when the emitter must route the instruction
+    // through its interpreter helper - operands not proven numeric, or an
+    // opcode the baseline never inlines. Only set when helpers are allowed.
+    std::vector<uint8_t> dynamic;
+    // True when no reachable instruction has an effect outside the body's
+    // own registers and fresh allocations. Only a pure body may be a direct
+    // callee (see BaselineCalleeInfo): a deopt inside a direct call re-runs
+    // the whole call in the interpreter, which must not repeat a print, a
+    // store or a call to unknown code.
+    bool pure = true;
+    // True when the body may run a helper, directly or through a direct
+    // callee. Only such a body needs its frame on the VM value stack when
+    // it is a direct callee: helpers are the only place the collector runs
+    // from native code, so a frame that can never reach one is invisible
+    // to it anyway and stays on the machine stack, where a call costs no
+    // value-stack bookkeeping. Self-calls consult the body's own flag.
+    bool vm_frame = false;
 
     // require_provable_div=false lets a caller that has its own checked
     // division helper reuse the kind analysis without the divisor rule
@@ -473,6 +556,12 @@ public:
     // a link context both opcodes are refused as before. self_callable says
     // the body being compiled may be its own direct callee (exact argument
     // count, no argument-count register, small frame).
+    // guard_mask: which of the guarded parameters are actually guarded
+    // (guarded_bit); the others are unknown at entry.
+    // allow_helpers: let instructions the baseline cannot inline (arrays,
+    // strings, dictionaries, unproven arithmetic, prints, generic calls)
+    // compile as helper calls that may deopt with a resume point. Needs a
+    // link context that vouches for the resume and value-stack slots.
     BaselineBodyAnalysis(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
                          uint32_t frame_regs, uint32_t guarded_params,
                          uint32_t reg_index_limit, int const_index_limit,
@@ -480,8 +569,11 @@ public:
                          bool require_provable_div = true,
                          BaselineLinkContext* link = nullptr,
                          int self_fidx = -1,
-                         bool self_callable = false)
-        : link_(link), self_fidx_(self_fidx), self_callable_(self_callable) {
+                         bool self_callable = false,
+                         uint64_t guard_mask = ~0ULL,
+                         bool allow_helpers = false)
+        : link_(link), self_fidx_(self_fidx), self_callable_(self_callable),
+          guard_mask_(guard_mask), allow_helpers_(allow_helpers) {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
             frame_regs == 0 || guarded_params > frame_regs ||
             (guarded_params > 0 && !allow_runtime_deopt)) {
@@ -502,6 +594,15 @@ public:
                 const_index_limit, allow_runtime_deopt, require_provable_div,
                 kConflict, saw_self_call);
         }
+        // An impure body cannot be a direct callee, not even its own: its
+        // recursive calls go through the generic call helper instead.
+        if (ok && saw_self_call && !pure && self_callable_) {
+            ok = false;
+            self_callable_ = false;
+            run(chunk, entry_ip, end_ip, frame_regs, guarded_params, reg_index_limit,
+                const_index_limit, allow_runtime_deopt, require_provable_div,
+                kConflict, saw_self_call);
+        }
     }
 
 private:
@@ -516,6 +617,8 @@ private:
         div_zero_guard.assign(body_len, 0);
         global_guard.assign(body_len, GlobalGuard{});
         direct_call.assign(body_len, DirectCall{});
+        dynamic.assign(body_len, 0);
+        pure = true;
         return_kind = kOther;
         uses_vm = false;
         saw_self_call = false;
@@ -532,11 +635,19 @@ private:
             return target >= 0 && static_cast<size_t>(target) >= entry_ip &&
                    static_cast<size_t>(target) < end_ip;
         };
-        // Both linked opcodes escape through the deopt sentinel, and both
-        // need VM state the link context has vouched for.
+        // Linked opcodes escape through the deopt sentinel, and need VM
+        // state the link context has vouched for: the globals vector and
+        // budget for guards and calls, the resume/exception slots and the
+        // value stack for helper calls and value-stack callee frames.
         const bool linked = link_ != nullptr && allow_runtime_deopt &&
                             link_->globals_vector_offset() >= 0 &&
-                            link_->depth_budget_offset() >= 0;
+                            link_->depth_budget_offset() >= 0 &&
+                            link_->resume_ip_offset() >= 0 &&
+                            link_->exc_valid_offset() >= 0 &&
+                            link_->value_stack_data_offset() >= 0 &&
+                            link_->stack_top_offset() >= 0 &&
+                            link_->stack_capacity() > 0;
+        const bool helpers_ok = linked && allow_helpers_;
 
         // ── Pass 1: opcode support, operand ranges, and jump targets. ──
         // For division the divisor must be provably nonzero on every path:
@@ -549,6 +660,14 @@ private:
             wrote_anything[reg] = 1;
             wrote_nonzero_const[reg] = 0;
             wrote_only_const[reg] = 0;
+        };
+        // `count` consecutive registers from `first`, all in range.
+        auto valid_run = [&](uint32_t first, int count) {
+            if (count < 0 || count > 0xFFFF) return false;
+            if (first + static_cast<uint32_t>(count) > frame_regs) return false;
+            for (int i = 0; i < count; ++i)
+                if (!valid_reg(static_cast<uint16_t>(first + static_cast<uint32_t>(i)))) return false;
+            return true;
         };
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
@@ -569,6 +688,7 @@ private:
                     break;
                 case JitOp::MOVE:
                 case JitOp::NEG:
+                case JitOp::LOGICAL_NOT:
                     if (!valid_reg(inst.a) || !valid_reg(inst.b)) return;
                     wrote_dynamic(inst.a);
                     break;
@@ -576,6 +696,7 @@ private:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                case JitOp::MOD:
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
                 case JitOp::CMP_LT:
@@ -601,38 +722,88 @@ private:
                 case JitOp::LOAD_GLOBAL: {
                     // The slot's current value decides what the body may
                     // assume; the emitted guard re-checks it on every
-                    // execution. Anything but a closure of this chunk or a
-                    // number is refused: nothing downstream could use it.
+                    // execution. A closure of this chunk or a number gets a
+                    // guard the analysis can build on; any other written
+                    // value is read as it is (a written slot stays written,
+                    // so the read cannot become an error later); a slot not
+                    // written yet is left to the helper, which raises the
+                    // interpreter's undefined-variable error or resolves a
+                    // class or stdlib name.
                     if (!linked || !valid_reg(inst.a)) return;
                     uint64_t bits = 0;
-                    if (!link_->global_value(inst.operand, bits)) return;
-                    const Value v = Value::from_bits(bits);
                     GlobalGuard& g = global_guard[ip - entry_ip];
                     g.index = inst.operand;
-                    g.bits = bits;
-                    if (v.is_closure()) {
-                        const int fidx = v.as_closure()->func_idx;
-                        if (fidx < 0 || static_cast<size_t>(fidx) >= chunk.func_table.size()) return;
-                        g.mode = GlobalGuard::Identity;
-                        g.fidx = fidx;
-                    } else if (v.is_num()) {
-                        g.mode = GlobalGuard::NumTag;
+                    if (!link_->global_value(inst.operand, bits)) {
+                        if (!helpers_ok) return;
+                        g.mode = GlobalGuard::Helper;
                     } else {
-                        return;
+                        const Value v = Value::from_bits(bits);
+                        g.bits = bits;
+                        if (v.is_closure()) {
+                            const int fidx = v.as_closure()->func_idx;
+                            if (fidx < 0 || static_cast<size_t>(fidx) >= chunk.func_table.size()) return;
+                            g.mode = GlobalGuard::Identity;
+                            g.fidx = fidx;
+                        } else if (v.is_num()) {
+                            g.mode = GlobalGuard::NumTag;
+                        } else {
+                            if (!helpers_ok) return;
+                            g.mode = GlobalGuard::Raw;
+                        }
                     }
                     wrote_dynamic(inst.a);
                     break;
                 }
+                case JitOp::STORE_GLOBAL:
+                    if (!helpers_ok || !valid_reg(inst.a)) return;
+                    break;
                 case JitOp::CALL_FUNC: {
                     if (!linked || !valid_reg(inst.a) || !valid_reg(inst.b)) return;
                     if (inst.operand < 0 || inst.operand > 0xFFFF) return;
-                    const uint32_t argc = static_cast<uint32_t>(inst.operand);
-                    if (static_cast<uint32_t>(inst.c) + argc > frame_regs) return;
-                    for (uint32_t i = 0; i < argc; ++i)
-                        if (!valid_reg(static_cast<uint16_t>(inst.c + i))) return;
+                    if (!valid_run(inst.c, inst.operand)) return;
                     wrote_dynamic(inst.a);
                     break;
                 }
+                case JitOp::MAKE_ARRAY:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_run(inst.b, inst.operand)) return;
+                    wrote_dynamic(inst.a);
+                    break;
+                case JitOp::MAKE_DICT:
+                    if (!helpers_ok || !valid_reg(inst.a) || inst.operand < 0 ||
+                        inst.operand > 0x7FFF || !valid_run(inst.b, inst.operand * 2)) return;
+                    wrote_dynamic(inst.a);
+                    break;
+                case JitOp::INDEX_GET:
+                case JitOp::INDEX_SET:
+                case JitOp::OP_IN:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_reg(inst.b) || !valid_reg(inst.c)) return;
+                    if (inst.op != JitOp::INDEX_SET) wrote_dynamic(inst.a);
+                    break;
+                case JitOp::DOT_GET:
+                case JitOp::DOT_SET:
+                case JitOp::DICT_KEYS:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_reg(inst.b)) return;
+                    if (inst.op != JitOp::DOT_SET) wrote_dynamic(inst.a);
+                    break;
+                case JitOp::FOREACH_NEXT:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_reg(inst.b) ||
+                        !valid_reg(inst.c) || !valid_target(inst.operand)) return;
+                    wrote_dynamic(inst.a);
+                    wrote_dynamic(inst.b);
+                    break;
+                case JitOp::PRINT:
+                case JitOp::PRINT_NO_NL:
+                    if (!helpers_ok || !valid_run(inst.a, inst.operand)) return;
+                    break;
+                case JitOp::CALL_BUILTIN:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_run(inst.b, inst.operand)) return;
+                    wrote_dynamic(inst.a);
+                    break;
+                case JitOp::METHOD_CALL:
+                    if (!helpers_ok || !valid_reg(inst.a) || !valid_reg(inst.b) ||
+                        !valid_run(static_cast<uint32_t>(inst.b) + 1U, inst.operand)) return;
+                    wrote_dynamic(inst.a);
+                    break;
                 default:
                     return;
             }
@@ -649,13 +820,15 @@ private:
         kinds_.assign(body_len * nregs, kConflict);
         std::vector<RegKind>& in_state = kinds_;
         auto state_at = [&](size_t ip) { return &in_state[(ip - entry_ip) * nregs]; };
-        for (uint32_t p = 0; p < guarded_params; ++p) state_at(entry_ip)[p] = kNum;
+        for (uint32_t p = 0; p < guarded_params; ++p)
+            if (guarded_bit(guard_mask_, p)) state_at(entry_ip)[p] = kNum;
         reached[0] = 1;
 
         // What a call returns, given what the function register holds. A
         // callee resolved through the link is compiled (and its return kind
         // known) before the answer is used; anything else is unknown, and
-        // pass 3 then refuses the call.
+        // pass 3 then routes the call through the generic helper (or
+        // refuses it when helpers are not allowed).
         auto call_result = [&](RegKind fn) -> RegKind {
             if (fn.k != Closure) return kConflict;
             if (fn.fidx == self_fidx_) return self_callable_ ? self_return_hypothesis : kConflict;
@@ -677,10 +850,18 @@ private:
                 case JitOp::LOAD_BOOL: state[inst.a] = kBool;  break;
                 case JitOp::MOVE:      state[inst.a] = state[inst.b];  break;
                 case JitOp::ADD:
+                    // Two numbers add to a number; anything else is the
+                    // helper's business (string concatenation, or an error).
+                    state[inst.a] = (state[inst.b] == kNum && state[inst.c] == kNum)
+                        ? kNum : kConflict;
+                    break;
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                case JitOp::MOD:
                 case JitOp::NEG:
+                    // Inlined on proven numbers; the helper throws on
+                    // anything else, so a number is all that can come back.
                     state[inst.a] = kNum;
                     break;
                 case JitOp::CMP_EQ:
@@ -689,16 +870,36 @@ private:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
+                case JitOp::LOGICAL_NOT:
                     state[inst.a] = kBool;
                     break;
                 case JitOp::LOAD_GLOBAL: {
                     const GlobalGuard& g = global_guard[ip - entry_ip];
-                    state[inst.a] = g.mode == GlobalGuard::Identity
-                        ? RegKind{Closure, g.fidx} : kNum;
+                    state[inst.a] = g.mode == GlobalGuard::Identity ? RegKind{Closure, g.fidx}
+                                  : g.mode == GlobalGuard::NumTag   ? kNum
+                                  : kConflict;
                     break;
                 }
                 case JitOp::CALL_FUNC:
                     state[inst.a] = call_result(state[inst.b]);
+                    break;
+                case JitOp::MAKE_ARRAY:
+                case JitOp::MAKE_DICT:
+                case JitOp::DICT_KEYS:
+                    state[inst.a] = kOther;
+                    break;
+                case JitOp::INDEX_GET:
+                case JitOp::DOT_GET:
+                case JitOp::OP_IN:
+                case JitOp::CALL_BUILTIN:
+                case JitOp::METHOD_CALL:
+                    state[inst.a] = kConflict;
+                    break;
+                case JitOp::FOREACH_NEXT:
+                    // Continuing: the element and the advanced index. The
+                    // exit edge leaves both registers as they were.
+                    state[inst.a] = kConflict;
+                    state[inst.b] = kNum;
                     break;
                 default:
                     break;
@@ -738,12 +939,23 @@ private:
                     inst.op == JitOp::JUMP_IF_TRUE) {
                     flow_into(static_cast<size_t>(inst.operand), out.data(), changed);
                 }
+                if (inst.op == JitOp::FOREACH_NEXT) {
+                    flow_into(static_cast<size_t>(inst.operand), in, changed);
+                }
             }
         }
 
-        // ── Pass 3: every interpreting read must see the kind it needs. ──
-        // MOVE and RETURN_VAL copy raw bits and need no proof; unreachable
-        // instructions are never emitted, so they are exempt too.
+        // ── Pass 3: every interpreting read must see the kind it needs, ──
+        // or the instruction goes to its helper. MOVE and RETURN_VAL copy raw
+        // bits and need no proof; unreachable instructions are never emitted,
+        // so they are exempt too.
+        auto to_helper = [&](size_t ip) -> bool {
+            if (!helpers_ok) return false;
+            dynamic[ip - entry_ip] = 1;
+            uses_vm = true;
+            vm_frame = true;
+            return true;
+        };
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!reached[ip - entry_ip]) continue;
             const JitInst& inst = chunk.code[ip];
@@ -752,10 +964,15 @@ private:
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
-                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) {
+                        if (!to_helper(ip)) return;
+                    }
                     break;
                 case JitOp::DIV:
-                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) {
+                        if (!to_helper(ip)) return;
+                        break;
+                    }
                     // A divisor proven to be a nonzero constant needs no check.
                     // Otherwise the emitter tests it at run time: division by
                     // zero must raise [E202], not yield an infinity, and only
@@ -763,16 +980,29 @@ private:
                     if (!(wrote_anything[inst.c] && wrote_nonzero_const[inst.c])) {
                         // A divisor written only by constants is fully known
                         // here: if it is not provably nonzero it is zero, so a
-                        // runtime guard would deopt on every execution. Reject
-                        // instead of emitting code that never survives.
-                        if (wrote_anything[inst.c] && wrote_only_const[inst.c]) return;
+                        // runtime guard would deopt on every execution. Let
+                        // the helper raise the error instead, or reject.
+                        if (wrote_anything[inst.c] && wrote_only_const[inst.c]) {
+                            if (!to_helper(ip)) return;
+                            break;
+                        }
                         if (!require_provable_div) break;
                         if (!allow_runtime_deopt) return;
                         div_zero_guard[ip - entry_ip] = 1;
                     }
                     break;
+                case JitOp::MOD:
+                    if (!to_helper(ip)) return;
+                    break;
                 case JitOp::NEG:
-                    if (in[inst.b] != kNum) return;
+                    if (in[inst.b] != kNum) {
+                        if (!to_helper(ip)) return;
+                    }
+                    break;
+                case JitOp::LOGICAL_NOT:
+                    if (in[inst.b] != kBool) {
+                        if (!to_helper(ip)) return;
+                    }
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -780,45 +1010,88 @@ private:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE:
-                    if (in[inst.b] != kNum || in[inst.c] != kNum) return;
+                    if (in[inst.b] != kNum || in[inst.c] != kNum) {
+                        if (!to_helper(ip)) return;
+                    }
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    if (in[inst.a] != kBool) return;
+                    if (in[inst.a] != kBool) {
+                        if (!to_helper(ip)) return;
+                    }
                     break;
                 case JitOp::LOAD_GLOBAL:
                     uses_vm = true;
+                    if (global_guard[ip - entry_ip].mode == GlobalGuard::Helper) {
+                        if (!to_helper(ip)) return;
+                    }
                     break;
                 case JitOp::CALL_FUNC: {
-                    // The function register must name one specific body, and
-                    // the call must bind exactly its parameters: the
-                    // interpreter fills missing arguments from defaults and
-                    // records the argument count, neither of which a direct
-                    // call reproduces.
+                    // A direct call needs the function register to name one
+                    // specific compiled body and the call to bind exactly its
+                    // parameters: the interpreter fills missing arguments
+                    // from defaults and records the argument count, neither
+                    // of which a direct call reproduces. Every other call
+                    // (unknown closure, constructor, stdlib function) goes
+                    // through the dispatcher and makes the body impure.
                     const RegKind fn = in[inst.b];
-                    if (fn.k != Closure) return;
                     const uint32_t argc = static_cast<uint32_t>(inst.operand);
                     DirectCall& dc = direct_call[ip - entry_ip];
-                    if (fn.fidx == self_fidx_) {
-                        if (!self_callable_) return;
-                        if (static_cast<size_t>(fn.fidx) >= chunk.func_table.size()) return;
-                        if (chunk.func_table[static_cast<size_t>(fn.fidx)].params.size() != argc) return;
-                        if (frame_regs > kMaxDirectCalleeRegs) return;
-                        dc.self = true;
-                        saw_self_call = true;
-                    } else {
+                    uint64_t callee_mask = ~0ULL;
+                    bool direct = false;
+                    if (fn.k == Closure && fn.fidx == self_fidx_) {
+                        if (self_callable_ &&
+                            static_cast<size_t>(fn.fidx) < chunk.func_table.size() &&
+                            chunk.func_table[static_cast<size_t>(fn.fidx)].params.size() == argc &&
+                            frame_regs <= kMaxDirectCalleeRegs) {
+                            dc.self = true;
+                            saw_self_call = true;
+                            callee_mask = guard_mask_;
+                            direct = true;
+                        }
+                    } else if (fn.k == Closure) {
                         const BaselineCalleeInfo* ci = callee(fn.fidx);
-                        if (!ci || ci->params != argc) return;
-                        dc.callee = *ci;
+                        if (ci && ci->params == argc) {
+                            dc.callee = *ci;
+                            callee_mask = ci->guard_mask;
+                            if (ci->vm_frame) vm_frame = true;
+                            direct = true;
+                        }
+                    }
+                    if (!direct) {
+                        pure = false;
+                        if (!to_helper(ip)) return;
+                        break;
                     }
                     dc.valid = true;
                     dc.fidx = fn.fidx;
+                    // The callee's unguarded entry may be taken when every
+                    // argument its guards would check is a proven number.
                     dc.args_num = true;
                     for (uint32_t i = 0; i < argc; ++i)
-                        if (in[inst.c + i] != kNum) dc.args_num = false;
+                        if (guarded_bit(callee_mask, i) && in[inst.c + i] != kNum) dc.args_num = false;
                     uses_vm = true;
                     break;
                 }
+                case JitOp::STORE_GLOBAL:
+                case JitOp::INDEX_SET:
+                case JitOp::DOT_SET:
+                case JitOp::PRINT:
+                case JitOp::PRINT_NO_NL:
+                case JitOp::CALL_BUILTIN:
+                case JitOp::METHOD_CALL:
+                    pure = false;
+                    if (!to_helper(ip)) return;
+                    break;
+                case JitOp::MAKE_ARRAY:
+                case JitOp::MAKE_DICT:
+                case JitOp::INDEX_GET:
+                case JitOp::DOT_GET:
+                case JitOp::OP_IN:
+                case JitOp::DICT_KEYS:
+                case JitOp::FOREACH_NEXT:
+                    if (!to_helper(ip)) return;
+                    break;
                 case JitOp::RETURN_VAL:
                     return_kind = any_return ? merge_kind(return_kind, in[inst.a]) : in[inst.a];
                     any_return = true;
@@ -893,6 +1166,8 @@ class SysVBaselineCompiler {
     BaselineLinkContext* link = nullptr;
     int self_fidx = -1;
     bool self_callable = false;
+    uint64_t guard_mask = ~0ULL;
+    bool allow_helpers = false;
     X64BaselineAbi abi = X64BaselineAbi::SysV;
 
     // Argument registers of the convention in use: (vm, R, consts).
@@ -913,9 +1188,12 @@ public:
     // Filled by compile_bytes() for the direct-call linkage of this body.
     size_t unguarded_entry_offset = 0;   // byte offset past the entry guards
     BaselineBodyAnalysis::RegKind return_kind = BaselineBodyAnalysis::kOther;
+    bool pure = true;                    // BaselineBodyAnalysis::pure
+    bool vm_frame = false;               // BaselineBodyAnalysis::vm_frame
 
     // guarded_param_regs: registers 0..n-1 hold caller arguments that the
-    // prologue verifies are NaN-boxed numbers, deopting otherwise.
+    // prologue verifies are NaN-boxed numbers, deopting otherwise (except
+    // the parameters the guard mask leaves unguarded).
     // allow_deopt: the caller re-runs a sentinel-returning call in the VM with
     // freshly bound arguments. Only the closure call sites do that, so the
     // top-level chunk (which cannot be replayed) and methods pass false and
@@ -940,6 +1218,11 @@ public:
     // same convention.
     void set_abi(X64BaselineAbi a) { abi = a; }
 
+    // See BaselineBodyAnalysis: which guarded parameters are checked, and
+    // whether non-numeric instructions may compile as helper calls.
+    void set_guard_mask(uint64_t mask) { guard_mask = mask; }
+    void set_allow_helpers(bool allow) { allow_helpers = allow; }
+
     std::vector<uint8_t> compile_bytes() {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
             frame_regs > std::numeric_limits<uint16_t>::max()) {
@@ -950,12 +1233,20 @@ public:
             chunk, entry_ip, end_ip, frame_regs, guarded_params,
             std::numeric_limits<uint16_t>::max(),
             std::numeric_limits<int32_t>::max() / 8, deopt_allowed,
-            /*require_provable_div=*/true, link, self_fidx, self_callable);
+            /*require_provable_div=*/true, link, self_fidx, self_callable,
+            guard_mask, allow_helpers);
         if (!analysis.ok) return {};
         return_kind = analysis.return_kind;
+        pure = analysis.pure;
+        vm_frame = analysis.vm_frame;
         const bool needs_vm = analysis.uses_vm;
         const int32_t globals_off = needs_vm ? link->globals_vector_offset() : 0;
         const int32_t budget_off = needs_vm ? link->depth_budget_offset() : 0;
+        const int32_t resume_off = needs_vm ? link->resume_ip_offset() : 0;
+        const int32_t exc_off = needs_vm ? link->exc_valid_offset() : 0;
+        const int32_t vs_off = needs_vm ? link->value_stack_data_offset() : 0;
+        const int32_t top_off = needs_vm ? link->stack_top_offset() : 0;
+        const uint64_t capacity = needs_vm ? static_cast<uint64_t>(link->stack_capacity()) : 0;
 
         // ── Emit. ──
         std::vector<uint8_t> code;
@@ -971,6 +1262,7 @@ public:
         // the deopt tail.
         std::vector<size_t> entry_deopt_fixups;
         for (uint32_t p = 0; p < guarded_params; ++p) {
+            if (!BaselineBodyAnalysis::guarded_bit(guard_mask, p)) continue;
             em.mov_r_mem(XR::RAX, arg_regs(), off_r(static_cast<uint16_t>(p)));
             em.mov_ri64(XR::R10, NBQNAN);
             em.and_rr(XR::RAX, XR::R10);
@@ -993,7 +1285,44 @@ public:
             em.ret();
         };
 
+        // Deopt sites. A leaf body (no vm pointer) shares one tail that
+        // hands back the sentinel; the interpreter re-runs the whole call.
+        // A body with the vm pointer may have side effects, so each site
+        // records the instruction to resume at (and whether a parked
+        // exception belongs to it) before returning the sentinel.
         std::vector<size_t> deopt_fixups;
+        struct DeoptSite { size_t disp_pos; size_t ip; bool discard_exc; };
+        std::vector<DeoptSite> deopt_sites;
+        auto deopt_here = [&](uint8_t cc, size_t ip, bool discard_exc) {
+            if (needs_vm) {
+                deopt_sites.push_back({em.jcc_rel32_placeholder(cc), ip, discard_exc});
+            } else {
+                deopt_fixups.push_back(em.jcc_rel32_placeholder(cc));
+            }
+        };
+        // Call an interpreter helper for the instruction at `ip`. The
+        // helper returns the sentinel when it parked an exception; the body
+        // then resumes at `ip`, where the interpreter rethrows it. RSP is
+        // 16-byte aligned here (return address plus three pushes), and the
+        // Win64 convention wants 32 bytes of shadow space below it.
+        auto emit_helper = [&](uint64_t (*fn)(JitVM*, Value*, const JitInst*), size_t ip) {
+            em.mov_rr(arg_vm(), XR::R13);
+            em.mov_rr(arg_regs(), XR::RBX);
+            em.mov_ri64(arg_consts(), static_cast<uint64_t>(
+                reinterpret_cast<uintptr_t>(&chunk.code[ip])));
+            if (abi == X64BaselineAbi::Win64) em.sub_rsp_imm8(32);
+            em.mov_ri64(XR::RAX, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(fn)));
+            em.call_rax();
+            if (abi == X64BaselineAbi::Win64) em.add_rsp_imm8(32);
+            em.mov_ri64(XR::RCX, kDeoptSentinel);
+            em.cmp_rr(XR::RAX, XR::RCX);
+            deopt_here(CC::E, ip, false);
+        };
+        auto helper_store = [&](uint64_t (*fn)(JitVM*, Value*, const JitInst*), size_t ip,
+                                uint16_t dst) {
+            emit_helper(fn, ip);
+            em.mov_mem_r(XR::RBX, off_r(dst), XR::RAX);
+        };
         std::vector<size_t> ip_off(body_len, 0);
         struct JumpFixup { size_t disp_pos; size_t target_ip; };
         std::vector<JumpFixup> jump_fixups;
@@ -1005,6 +1334,7 @@ public:
             if (!analysis.reached[ip - entry_ip]) continue;
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
+            const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
             switch (inst.op) {
                 case JitOp::NOP:
                     break;
@@ -1028,6 +1358,12 @@ public:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                    if (dyn) {
+                        // Not proven numeric (string concatenation, an
+                        // error, or a division by a constant zero).
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     if (analysis.div_zero_guard[ip - entry_ip]) {
                         // Division by zero must raise [E202]; the interpreter
                         // owns that error, so deopt instead of dividing.
@@ -1038,7 +1374,7 @@ public:
                         em.mov_ri64(XR::RCX, 0x7FFFFFFFFFFFFFFFULL);
                         em.and_rr(XR::RAX, XR::RCX);
                         em.cmp_r_imm32(XR::RAX, 0);
-                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                        deopt_here(CC::E, ip, false);
                     }
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
                     if (inst.op == JitOp::ADD) {
@@ -1052,9 +1388,27 @@ public:
                     }
                     em.movsd_mem_x(XR::RBX, off_r(inst.a), XR::XMM0);
                     break;
+                case JitOp::MOD:
+                    helper_store(&sura_bl_arith, ip, inst.a);
+                    break;
                 case JitOp::NEG:
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.b));
                     em.mov_ri64(XR::RCX, 0x8000000000000000ULL);
+                    em.xor_rr(XR::RAX, XR::RCX);
+                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    break;
+                case JitOp::LOGICAL_NOT:
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
+                    // A proven Bool toggles between NBFALSE and NBTRUE.
+                    em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.b));
+                    em.mov_ri64(XR::RCX, NBFALSE ^ NBTRUE);
                     em.xor_rr(XR::RAX, XR::RCX);
                     em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
                     break;
@@ -1064,6 +1418,10 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
                     em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
                     em.mov_ri64(XR::RAX, NBFALSE);
@@ -1104,7 +1462,13 @@ public:
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.a));
+                    if (dyn) {
+                        // Not a proven Bool: the helper applies the
+                        // interpreter's truthiness and hands back a Bool.
+                        emit_helper(&sura_bl_truthy, ip);
+                    } else {
+                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.a));
+                    }
                     em.mov_ri64(XR::RCX, inst.op == JitOp::JUMP_IF_FALSE ? NBFALSE : NBTRUE);
                     em.cmp_rr(XR::RAX, XR::RCX);
                     jump_fixups.push_back({em.jcc_rel32_placeholder(CC::E),
@@ -1124,50 +1488,171 @@ public:
                     // every execution: the vector reallocates as globals are
                     // added, so only the vm-relative location is stable.
                     const auto& g = analysis.global_guard[ip - entry_ip];
+                    if (g.mode == BaselineBodyAnalysis::GlobalGuard::Helper) {
+                        helper_store(&sura_bl_load_global, ip, inst.a);
+                        break;
+                    }
                     em.mov_r_mem(XR::RAX, XR::R13, globals_off);
                     em.mov_r_mem(XR::RAX, XR::RAX, off_c(g.index));
                     if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
                         em.mov_ri64(XR::RCX, g.bits);
                         em.cmp_rr(XR::RAX, XR::RCX);
-                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::NE));
+                        deopt_here(CC::NE, ip, false);
                         link->pin_value(g.bits);
-                    } else {
+                    } else if (g.mode == BaselineBodyAnalysis::GlobalGuard::NumTag) {
                         em.mov_rr(XR::RCX, XR::RAX);
                         em.mov_ri64(XR::RDX, NBQNAN);
                         em.and_rr(XR::RCX, XR::RDX);
                         em.cmp_rr(XR::RCX, XR::RDX);
-                        deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                        deopt_here(CC::E, ip, false);
                     }
                     em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
                     break;
                 }
+                case JitOp::STORE_GLOBAL:
+                    emit_helper(&sura_bl_store_global, ip);
+                    break;
+                case JitOp::MAKE_ARRAY:
+                    helper_store(&sura_bl_make_array, ip, inst.a);
+                    break;
+                case JitOp::MAKE_DICT:
+                    helper_store(&sura_bl_make_dict, ip, inst.a);
+                    break;
+                case JitOp::INDEX_GET:
+                    helper_store(&sura_bl_index_get, ip, inst.a);
+                    break;
+                case JitOp::INDEX_SET:
+                    emit_helper(&sura_bl_index_set, ip);
+                    break;
+                case JitOp::DOT_GET:
+                    helper_store(&sura_bl_dot_get, ip, inst.a);
+                    break;
+                case JitOp::DOT_SET:
+                    emit_helper(&sura_bl_dot_set, ip);
+                    break;
+                case JitOp::OP_IN:
+                    emit_helper(&sura_bl_op_in, ip);
+                    break;
+                case JitOp::DICT_KEYS:
+                    emit_helper(&sura_bl_dict_keys, ip);
+                    break;
+                case JitOp::FOREACH_NEXT:
+                    // The helper writes the element and index registers and
+                    // returns 0 when the collection is exhausted (or is not
+                    // iterable), which is the interpreter's exit edge.
+                    emit_helper(&sura_bl_foreach_next, ip);
+                    em.cmp_r_imm32(XR::RAX, 0);
+                    jump_fixups.push_back({em.jcc_rel32_placeholder(CC::E),
+                                           static_cast<size_t>(inst.operand)});
+                    break;
+                case JitOp::PRINT:
+                case JitOp::PRINT_NO_NL:
+                    emit_helper(&sura_bl_print, ip);
+                    break;
+                case JitOp::CALL_BUILTIN:
+                    helper_store(&sura_bl_call_builtin, ip, inst.a);
+                    break;
+                case JitOp::METHOD_CALL:
+                    helper_store(&sura_bl_method_call, ip, inst.a);
+                    break;
                 case JitOp::CALL_FUNC: {
                     const auto& dc = analysis.direct_call[ip - entry_ip];
-                    if (!dc.valid) return {};
+                    if (!dc.valid) {
+                        // Unknown closure, constructor or stdlib function:
+                        // the interpreter's dispatcher runs the call.
+                        helper_store(&sura_bl_call, ip, inst.a);
+                        break;
+                    }
                     const uint32_t argc = static_cast<uint32_t>(inst.operand);
                     const uint32_t callee_regs = dc.self ? frame_regs : dc.callee.frame_regs;
-                    const int32_t frame_bytes =
-                        static_cast<int32_t>((callee_regs * 8U + 15U) & ~15U);
+                    const bool callee_vm_frame = dc.self ? analysis.vm_frame : dc.callee.vm_frame;
+                    if (!callee_vm_frame) {
+                        // The callee can never reach a helper, so no
+                        // collector runs while its frame is live: the frame
+                        // goes on the machine stack, where a call costs
+                        // only the budget bookkeeping. The 16-byte rounding
+                        // keeps the ABI alignment for the call.
+                        const int32_t frame_bytes =
+                            static_cast<int32_t>((callee_regs * 8U + 15U) & ~15U);
+                        // The interpreter refuses the call that would exceed
+                        // its frame limit; the budget mirrors that limit so
+                        // a deep recursion deopts before the machine stack
+                        // is at risk and the interpreter raises its own
+                        // [E500].
+                        em.mov_r_mem(XR::RAX, XR::R13, budget_off);
+                        em.sub_r_imm32(XR::RAX, 1);
+                        deopt_here(CC::S, ip, false);
+                        em.mov_mem_r(XR::R13, budget_off, XR::RAX);
+                        // Callee frame: arguments in registers 0..argc-1,
+                        // the rest zero like alloc_frame_regs' Value(0.0)
+                        // fill.
+                        em.sub_r_imm32(XR::RSP, frame_bytes);
+                        for (uint32_t i = 0; i < argc; ++i) {
+                            em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + i)));
+                            em.mov_mem_r(XR::RSP, static_cast<int32_t>(i * 8U), XR::RAX);
+                        }
+                        for (uint32_t r = argc; r < callee_regs; ++r) {
+                            em.mov_mem_imm32(XR::RSP, static_cast<int32_t>(r * 8U), 0);
+                        }
+                        em.mov_rr(arg_vm(), XR::R13);
+                        em.mov_rr(arg_regs(), XR::RSP);
+                        em.mov_rr(arg_consts(), XR::R12);
+                        if (dc.self) {
+                            self_call_fixups.push_back({em.call_rel32_placeholder(), dc.args_num});
+                        } else {
+                            const uint8_t* target = dc.args_num ? dc.callee.unguarded_entry
+                                                                : dc.callee.guarded_entry;
+                            em.mov_ri64(XR::RAX, static_cast<uint64_t>(
+                                reinterpret_cast<uintptr_t>(target)));
+                            em.call_rax();
+                        }
+                        em.add_r_imm32(XR::RSP, frame_bytes);
+                        em.add_mem_imm8(XR::R13, budget_off, 1);
+                        // A guard that failed anywhere below hands back the
+                        // sentinel; propagate it rather than storing it.
+                        em.mov_ri64(XR::RCX, kDeoptSentinel);
+                        em.cmp_rr(XR::RAX, XR::RCX);
+                        deopt_here(CC::E, ip, true);
+                        em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                        break;
+                    }
+                    // Callee frame on the VM's value stack, above every live
+                    // frame, so the collector sees the callee's registers
+                    // while its helpers allocate. A frame that would
+                    // overflow the stack deopts before anything is touched
+                    // and the interpreter raises its own error.
+                    em.mov_r_mem(XR::RAX, XR::R13, top_off);
+                    em.mov_rr(XR::RCX, XR::RAX);
+                    em.add_r_imm32(XR::RCX, static_cast<int32_t>(callee_regs));
+                    em.mov_ri64(XR::RDX, capacity);
+                    em.cmp_rr(XR::RCX, XR::RDX);
+                    deopt_here(CC::A, ip, false);
                     // The interpreter refuses the call that would exceed its
                     // frame limit; the budget mirrors that limit so a deep
                     // recursion deopts before the machine stack is at risk
-                    // and the interpreter raises its own [E500].
-                    em.mov_r_mem(XR::RAX, XR::R13, budget_off);
-                    em.sub_r_imm32(XR::RAX, 1);
-                    deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::S));
-                    em.mov_mem_r(XR::R13, budget_off, XR::RAX);
-                    // Callee frame: arguments in registers 0..argc-1, the
-                    // rest zero like alloc_frame_regs' Value(0.0) fill.
-                    em.sub_r_imm32(XR::RSP, frame_bytes);
+                    // and the interpreter raises its own [E500]. Checked
+                    // after the capacity so every deopt above leaves the
+                    // budget as it found it.
+                    em.mov_r_mem(XR::RDX, XR::R13, budget_off);
+                    em.sub_r_imm32(XR::RDX, 1);
+                    deopt_here(CC::S, ip, false);
+                    em.mov_mem_r(XR::R13, budget_off, XR::RDX);
+                    // Bump the top, then fill: arguments in registers
+                    // 0..argc-1, the rest zero like alloc_frame_regs'
+                    // Value(0.0) fill.
+                    em.mov_mem_r(XR::R13, top_off, XR::RCX);
+                    em.mov_r_mem(XR::R10, XR::R13, vs_off);
+                    em.shl_r_imm8(XR::RAX, 3);
+                    em.add_rr(XR::R10, XR::RAX);
                     for (uint32_t i = 0; i < argc; ++i) {
                         em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + i)));
-                        em.mov_mem_r(XR::RSP, static_cast<int32_t>(i * 8U), XR::RAX);
+                        em.mov_mem_r(XR::R10, static_cast<int32_t>(i * 8U), XR::RAX);
                     }
                     for (uint32_t r = argc; r < callee_regs; ++r) {
-                        em.mov_mem_imm32(XR::RSP, static_cast<int32_t>(r * 8U), 0);
+                        em.mov_mem_imm32(XR::R10, static_cast<int32_t>(r * 8U), 0);
                     }
                     em.mov_rr(arg_vm(), XR::R13);
-                    em.mov_rr(arg_regs(), XR::RSP);
+                    em.mov_rr(arg_regs(), XR::R10);
                     em.mov_rr(arg_consts(), XR::R12);
                     if (dc.self) {
                         self_call_fixups.push_back({em.call_rel32_placeholder(), dc.args_num});
@@ -1178,13 +1663,18 @@ public:
                             reinterpret_cast<uintptr_t>(target)));
                         em.call_rax();
                     }
-                    em.add_r_imm32(XR::RSP, frame_bytes);
+                    em.mov_r_mem(XR::RCX, XR::R13, top_off);
+                    em.sub_r_imm32(XR::RCX, static_cast<int32_t>(callee_regs));
+                    em.mov_mem_r(XR::R13, top_off, XR::RCX);
                     em.add_mem_imm8(XR::R13, budget_off, 1);
                     // A guard that failed anywhere below hands back the
-                    // sentinel; propagate it rather than storing it.
+                    // sentinel; propagate it rather than storing it. The
+                    // callee is pure, so the interpreter re-runs the call
+                    // from this instruction; an exception it parked belongs
+                    // to that re-run, not to this frame.
                     em.mov_ri64(XR::RCX, kDeoptSentinel);
                     em.cmp_rr(XR::RAX, XR::RCX);
-                    deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                    deopt_here(CC::E, ip, true);
                     em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
                     break;
                 }
@@ -1200,14 +1690,23 @@ public:
             emit_return();
         }
 
-        // Deopt tail shared by the zero-divisor checks, global guards and
-        // call budget/propagation checks: restore the callee-saved
-        // registers and hand back the sentinel.
+        // Deopt tail shared by a leaf body's zero-divisor checks: restore
+        // the callee-saved registers and hand back the sentinel.
         if (!deopt_fixups.empty()) {
             const size_t deopt_off = em.pos();
             em.mov_ri64(XR::RAX, kDeoptSentinel);
             emit_return();
             for (size_t disp : deopt_fixups) em.patch_rel32(disp, deopt_off);
+        }
+        // Per-site deopt stubs of a vm body: record the resume point, drop
+        // a parked exception that belongs to a re-run call, then return
+        // the sentinel through the same epilogue.
+        for (const DeoptSite& site : deopt_sites) {
+            em.patch_rel32(site.disp_pos, em.pos());
+            em.mov_mem_imm32(XR::R13, resume_off, static_cast<int32_t>(site.ip));
+            if (site.discard_exc) em.mov_mem_imm32(XR::R13, exc_off, 0);
+            em.mov_ri64(XR::RAX, kDeoptSentinel);
+            emit_return();
         }
         // Entry-guard tail: nothing has been pushed yet.
         if (!entry_deopt_fixups.empty()) {
@@ -1227,11 +1726,12 @@ public:
 };
 
 // ARM64 uses the common three-register entry shape on Windows, Linux, and
-// macOS: x0=vm, x1=R, x2=consts, x0=result. This tier deliberately has no
-// stack frame and emits no helper calls. The second revision mirrors the
-// System V baseline: whole-body branches (loops) are encoded with patched
-// B/B.cond displacements, and guarded numeric parameters return the shared
-// deopt sentinel when a caller passes a non-number.
+// macOS: x0=vm, x1=R, x2=consts, x0=result. A leaf body has no stack frame
+// and makes no calls; a body that needs the vm pointer keeps a small frame
+// and calls the same helpers as the x86-64 baseline. The second revision
+// mirrors the System V baseline: whole-body branches (loops) are encoded
+// with patched B/B.cond displacements, and guarded numeric parameters
+// return the shared deopt sentinel when a caller passes a non-number.
 class Arm64BaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
@@ -1242,6 +1742,8 @@ class Arm64BaselineCompiler {
     BaselineLinkContext* link = nullptr;
     int self_fidx = -1;
     bool self_callable = false;
+    uint64_t guard_mask = ~0ULL;
+    bool allow_helpers = false;
 
     class Emitter {
         std::vector<uint8_t>& code;
@@ -1357,6 +1859,13 @@ class Arm64BaselineCompiler {
             word(0x91000000U | (static_cast<uint32_t>(imm12) << 10) |
                  (source << 5) | target);
         }
+        // ADD Xd, Xn, Xm, LSL #shift (shifted-register form).
+        void add_lsl(unsigned target, unsigned source, unsigned index, unsigned shift) {
+            word(0x8B000000U | (index << 16) | (shift << 10) | (source << 5) | target);
+        }
+        void eor_xx(unsigned target, unsigned a, unsigned b) {
+            word(0xCA000000U | (b << 16) | (a << 5) | target);
+        }
         void sub_imm(unsigned target, unsigned source, uint16_t imm12) {
             word(0xD1000000U | (static_cast<uint32_t>(imm12) << 10) |
                  (source << 5) | target);
@@ -1410,6 +1919,8 @@ public:
     size_t unguarded_entry_offset = 0;
     // Static kind of the value this body returns (see BaselineBodyAnalysis).
     BaselineBodyAnalysis::RegKind return_kind = BaselineBodyAnalysis::kOther;
+    bool pure = true;  // BaselineBodyAnalysis::pure
+    bool vm_frame = false;  // BaselineBodyAnalysis::vm_frame
 
     // Same contract as SysVBaselineCompiler::set_link: the context resolves
     // globals and callees; `callable` says whether this body itself may be
@@ -1419,6 +1930,8 @@ public:
         self_fidx = fidx;
         self_callable = callable;
     }
+    void set_guard_mask(uint64_t mask) { guard_mask = mask; }
+    void set_allow_helpers(bool allow) { allow_helpers = allow; }
 
     std::vector<uint8_t> compile_bytes() {
         // AArch64 unsigned load/store immediates are 12-bit values scaled by
@@ -1432,9 +1945,12 @@ public:
                                       guarded_params, 4095U, 4095,
                                       deopt_allowed,
                                       /*require_provable_div=*/true,
-                                      link, self_fidx, self_callable);
+                                      link, self_fidx, self_callable,
+                                      guard_mask, allow_helpers);
         if (!analysis.ok) return {};
         return_kind = analysis.return_kind;
+        pure = analysis.pure;
+        vm_frame = analysis.vm_frame;
 
         // A body that reads globals or calls needs the VM pointer and must
         // survive calls, so it keeps R, the constants and the VM in the
@@ -1447,6 +1963,11 @@ public:
         const unsigned VM = 21U;
         const int32_t globals_off = needs_vm ? link->globals_vector_offset() : 0;
         const int32_t budget_off = needs_vm ? link->depth_budget_offset() : 0;
+        const int32_t resume_off = needs_vm ? link->resume_ip_offset() : 0;
+        const int32_t exc_off = needs_vm ? link->exc_valid_offset() : 0;
+        const int32_t vs_off = needs_vm ? link->value_stack_data_offset() : 0;
+        const int32_t top_off = needs_vm ? link->stack_top_offset() : 0;
+        const uint64_t capacity = needs_vm ? static_cast<uint64_t>(link->stack_capacity()) : 0;
 
         std::vector<uint8_t> code;
         Emitter em(code);
@@ -1459,6 +1980,7 @@ public:
         // prologue, so their tail has nothing to unwind.
         std::vector<size_t> entry_deopt_branches;
         for (uint32_t p = 0; p < guarded_params; ++p) {
+            if (!BaselineBodyAnalysis::guarded_bit(guard_mask, p)) continue;
             em.ldr_x(9, 1, static_cast<uint16_t>(p));
             em.mov_imm64(10, NBQNAN);
             em.and_xx(9, 9, 10);
@@ -1506,7 +2028,36 @@ public:
             em.str_x_reg(source, VM, 10);
         };
 
+        // Deopt sites: a leaf body shares one tail; a framed body records
+        // the resume point per site (see SysVBaselineCompiler).
         std::vector<size_t> deopt_branches;
+        struct DeoptSite { size_t at; size_t ip; bool discard_exc; };
+        std::vector<DeoptSite> deopt_sites;
+        auto deopt_here = [&](unsigned condition, size_t ip, bool discard_exc) {
+            if (needs_vm) {
+                deopt_sites.push_back({em.b_cond_placeholder(condition), ip, discard_exc});
+            } else {
+                deopt_branches.push_back(em.b_cond_placeholder(condition));
+            }
+        };
+        // Call an interpreter helper for the instruction at `ip`: x0=vm,
+        // x1=R, x2=&instruction. The sentinel in x0 means it parked an
+        // exception; resume at `ip` so the interpreter rethrows it.
+        auto emit_helper = [&](uint64_t (*fn)(JitVM*, Value*, const JitInst*), size_t ip) {
+            em.mov_xx(0, VM);
+            em.mov_xx(1, R);
+            em.mov_imm64(2, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&chunk.code[ip])));
+            em.mov_imm64(9, static_cast<uint64_t>(reinterpret_cast<uintptr_t>(fn)));
+            em.blr(9);
+            em.mov_imm64(10, SURA_JIT_DEOPT_SENTINEL);
+            em.cmp_xx(0, 10);
+            deopt_here(0, ip, false);  // EQ
+        };
+        auto helper_store = [&](uint64_t (*fn)(JitVM*, Value*, const JitInst*), size_t ip,
+                                uint16_t dst) {
+            emit_helper(fn, ip);
+            em.str_x(0, R, dst);
+        };
         std::vector<size_t> ip_off(body_len, 0);
         struct BranchFixup { size_t at; size_t target_ip; };
         std::vector<BranchFixup> branch_fixups;
@@ -1517,6 +2068,7 @@ public:
             if (!analysis.reached[ip - entry_ip]) continue;
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
+            const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
             switch (inst.op) {
                 case JitOp::NOP:
                     break;
@@ -1540,6 +2092,10 @@ public:
                 case JitOp::SUB:
                 case JitOp::MUL:
                 case JitOp::DIV:
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     if (analysis.div_zero_guard[ip - entry_ip]) {
                         // Same contract as the System V tier: clear the sign
                         // bit so -0.0 counts as zero, then deopt so the
@@ -1548,7 +2104,7 @@ public:
                         em.mov_imm64(10, 0x7FFFFFFFFFFFFFFFULL);
                         em.and_xx(9, 9, 10);
                         em.cmp_xx(9, 31);  // xzr
-                        deopt_branches.push_back(em.b_cond_placeholder(0));
+                        deopt_here(0, ip, false);  // EQ
                     }
                     em.ldr_d(0, R, inst.b);
                     em.ldr_d(1, R, inst.c);
@@ -1563,10 +2119,28 @@ public:
                     }
                     em.str_d(0, R, inst.a);
                     break;
+                case JitOp::MOD:
+                    helper_store(&sura_bl_arith, ip, inst.a);
+                    break;
                 case JitOp::NEG:
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     em.ldr_d(0, R, inst.b);
                     em.fneg_d(0, 0);
                     em.str_d(0, R, inst.a);
+                    break;
+                case JitOp::LOGICAL_NOT:
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
+                    // A proven Bool toggles between NBFALSE and NBTRUE.
+                    em.ldr_x(9, R, inst.b);
+                    em.mov_imm64(10, NBFALSE ^ NBTRUE);
+                    em.eor_xx(9, 9, 10);
+                    em.str_x(9, R, inst.a);
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -1574,6 +2148,10 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
+                    if (dyn) {
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        break;
+                    }
                     em.ldr_d(0, R, inst.b);
                     em.ldr_d(1, R, inst.c);
                     em.fcmp_d(0, 1);
@@ -1602,7 +2180,12 @@ public:
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    em.ldr_x(9, R, inst.a);
+                    if (dyn) {
+                        emit_helper(&sura_bl_truthy, ip);
+                        em.mov_xx(9, 0);
+                    } else {
+                        em.ldr_x(9, R, inst.a);
+                    }
                     em.mov_imm64(10, inst.op == JitOp::JUMP_IF_FALSE ? NBFALSE : NBTRUE);
                     em.cmp_xx(9, 10);
                     branch_fixups.push_back({em.b_cond_placeholder(0),  // EQ
@@ -1622,6 +2205,10 @@ public:
                     // every execution: the vector reallocates as globals are
                     // added, so only the vm-relative location is stable.
                     const auto& g = analysis.global_guard[ip - entry_ip];
+                    if (g.mode == BaselineBodyAnalysis::GlobalGuard::Helper) {
+                        helper_store(&sura_bl_load_global, ip, inst.a);
+                        break;
+                    }
                     load_vm_slot(9, globals_off);
                     if (g.index < 4096) {
                         em.ldr_x(9, 9, static_cast<uint16_t>(g.index));
@@ -1632,44 +2219,138 @@ public:
                     if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
                         em.mov_imm64(10, g.bits);
                         em.cmp_xx(9, 10);
-                        deopt_branches.push_back(em.b_cond_placeholder(1));  // NE
+                        deopt_here(1, ip, false);  // NE
                         link->pin_value(g.bits);
-                    } else {
+                    } else if (g.mode == BaselineBodyAnalysis::GlobalGuard::NumTag) {
                         em.mov_imm64(10, NBQNAN);
                         em.and_xx(11, 9, 10);
                         em.cmp_xx(11, 10);
-                        deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+                        deopt_here(0, ip, false);  // EQ
                     }
                     em.str_x(9, R, inst.a);
                     break;
                 }
+                case JitOp::STORE_GLOBAL:
+                    emit_helper(&sura_bl_store_global, ip);
+                    break;
+                case JitOp::MAKE_ARRAY:
+                    helper_store(&sura_bl_make_array, ip, inst.a);
+                    break;
+                case JitOp::MAKE_DICT:
+                    helper_store(&sura_bl_make_dict, ip, inst.a);
+                    break;
+                case JitOp::INDEX_GET:
+                    helper_store(&sura_bl_index_get, ip, inst.a);
+                    break;
+                case JitOp::INDEX_SET:
+                    emit_helper(&sura_bl_index_set, ip);
+                    break;
+                case JitOp::DOT_GET:
+                    helper_store(&sura_bl_dot_get, ip, inst.a);
+                    break;
+                case JitOp::DOT_SET:
+                    emit_helper(&sura_bl_dot_set, ip);
+                    break;
+                case JitOp::OP_IN:
+                    emit_helper(&sura_bl_op_in, ip);
+                    break;
+                case JitOp::DICT_KEYS:
+                    emit_helper(&sura_bl_dict_keys, ip);
+                    break;
+                case JitOp::FOREACH_NEXT:
+                    // 0 from the helper is the interpreter's exit edge.
+                    emit_helper(&sura_bl_foreach_next, ip);
+                    em.cmp_xx(0, 31);  // xzr
+                    branch_fixups.push_back({em.b_cond_placeholder(0),  // EQ
+                                             static_cast<size_t>(inst.operand)});
+                    break;
+                case JitOp::PRINT:
+                case JitOp::PRINT_NO_NL:
+                    emit_helper(&sura_bl_print, ip);
+                    break;
+                case JitOp::CALL_BUILTIN:
+                    helper_store(&sura_bl_call_builtin, ip, inst.a);
+                    break;
+                case JitOp::METHOD_CALL:
+                    helper_store(&sura_bl_method_call, ip, inst.a);
+                    break;
                 case JitOp::CALL_FUNC: {
                     const auto& dc = analysis.direct_call[ip - entry_ip];
-                    if (!dc.valid) return {};
+                    if (!dc.valid) {
+                        helper_store(&sura_bl_call, ip, inst.a);
+                        break;
+                    }
                     const uint32_t argc = static_cast<uint32_t>(inst.operand);
                     const uint32_t callee_regs = dc.self ? frame_regs : dc.callee.frame_regs;
-                    const uint16_t frame_bytes =
-                        static_cast<uint16_t>((callee_regs * 8U + 15U) & ~15U);
+                    const bool callee_vm_frame = dc.self ? analysis.vm_frame : dc.callee.vm_frame;
+                    if (!callee_vm_frame) {
+                        // Helper-free callee (see the x86-64 tier): its
+                        // frame lives on the machine stack, 16-byte rounded
+                        // for the AAPCS64 sp alignment rule.
+                        const uint16_t frame_bytes =
+                            static_cast<uint16_t>((callee_regs * 8U + 15U) & ~15U);
+                        load_vm_slot(9, budget_off);
+                        em.subs_imm(9, 9, 1);
+                        deopt_here(4, ip, false);  // MI
+                        store_vm_slot(9, budget_off);
+                        em.sub_imm(31, 31, frame_bytes);
+                        for (uint32_t i = 0; i < argc; ++i) {
+                            em.ldr_x(9, R, static_cast<uint16_t>(inst.c + i));
+                            em.str_x(9, 31, static_cast<uint16_t>(i));
+                        }
+                        for (uint32_t r = argc; r < callee_regs; ++r) {
+                            em.str_x(31, 31, static_cast<uint16_t>(r));  // xzr
+                        }
+                        em.mov_xx(0, VM);
+                        em.add_imm(1, 31, 0);  // mov x1, sp
+                        em.mov_xx(2, K);
+                        if (dc.self) {
+                            self_call_fixups.push_back({em.bl_placeholder(), dc.args_num});
+                        } else {
+                            em.mov_imm64(9, static_cast<uint64_t>(
+                                reinterpret_cast<uintptr_t>(dc.callee.guarded_entry)));
+                            em.blr(9);
+                        }
+                        em.add_imm(31, 31, frame_bytes);
+                        load_vm_slot(9, budget_off);
+                        em.add_imm(9, 9, 1);
+                        store_vm_slot(9, budget_off);
+                        em.mov_imm64(10, SURA_JIT_DEOPT_SENTINEL);
+                        em.cmp_xx(0, 10);
+                        deopt_here(0, ip, true);  // EQ
+                        em.str_x(0, R, inst.a);
+                        break;
+                    }
+                    // Callee frame on the VM's value stack (see the x86-64
+                    // tier): x9 = old top, x12 = new top, x11 = frame base.
+                    // x10 stays free for load/store_vm_slot's scratch use.
+                    // The capacity check comes first so a deopt here leaves
+                    // the budget untouched.
+                    load_vm_slot(9, top_off);
+                    em.add_imm(12, 9, static_cast<uint16_t>(callee_regs));
+                    em.mov_imm64(11, capacity);
+                    em.cmp_xx(12, 11);
+                    deopt_here(8, ip, false);  // HI
                     // The interpreter refuses the call that would exceed its
                     // frame limit; the budget mirrors that limit so a deep
                     // recursion deopts before the machine stack is at risk
                     // and the interpreter raises its own [E500].
-                    load_vm_slot(9, budget_off);
-                    em.subs_imm(9, 9, 1);
-                    deopt_branches.push_back(em.b_cond_placeholder(4));  // MI
-                    store_vm_slot(9, budget_off);
-                    // Callee frame: arguments in registers 0..argc-1, the
-                    // rest zero like alloc_frame_regs' Value(0.0) fill.
-                    em.sub_imm(31, 31, frame_bytes);
+                    load_vm_slot(11, budget_off);
+                    em.subs_imm(11, 11, 1);
+                    deopt_here(4, ip, false);  // MI
+                    store_vm_slot(11, budget_off);
+                    store_vm_slot(12, top_off);
+                    load_vm_slot(11, vs_off);
+                    em.add_lsl(11, 11, 9, 3);
                     for (uint32_t i = 0; i < argc; ++i) {
                         em.ldr_x(9, R, static_cast<uint16_t>(inst.c + i));
-                        em.str_x(9, 31, static_cast<uint16_t>(i));
+                        em.str_x(9, 11, static_cast<uint16_t>(i));
                     }
                     for (uint32_t r = argc; r < callee_regs; ++r) {
-                        em.str_x(31, 31, static_cast<uint16_t>(r));  // xzr
+                        em.str_x(31, 11, static_cast<uint16_t>(r));  // xzr
                     }
                     em.mov_xx(0, VM);
-                    em.add_imm(1, 31, 0);  // mov x1, sp
+                    em.mov_xx(1, 11);
                     em.mov_xx(2, K);
                     if (dc.self) {
                         // BL is a direct branch, so it may skip the guards
@@ -1683,15 +2364,19 @@ public:
                             reinterpret_cast<uintptr_t>(dc.callee.guarded_entry)));
                         em.blr(9);
                     }
-                    em.add_imm(31, 31, frame_bytes);
+                    load_vm_slot(9, top_off);
+                    em.sub_imm(9, 9, static_cast<uint16_t>(callee_regs));
+                    store_vm_slot(9, top_off);
                     load_vm_slot(9, budget_off);
                     em.add_imm(9, 9, 1);
                     store_vm_slot(9, budget_off);
                     // A guard that failed anywhere below hands back the
-                    // sentinel; propagate it rather than storing it.
+                    // sentinel; propagate it rather than storing it. The
+                    // pure callee is re-run by the interpreter, so an
+                    // exception it parked is not this frame's to rethrow.
                     em.mov_imm64(10, SURA_JIT_DEOPT_SENTINEL);
                     em.cmp_xx(0, 10);
-                    deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+                    deopt_here(0, ip, true);  // EQ
                     em.str_x(0, R, inst.a);
                     break;
                 }
@@ -1715,9 +2400,8 @@ public:
                                   entry_deopt_branches.end());
             entry_deopt_branches.clear();
         }
-        // Deopt tail shared by the zero-divisor checks, global guards and
-        // call budget/propagation checks: unwind the frame, if any, and
-        // hand back the sentinel.
+        // Deopt tail shared by a leaf body's zero-divisor checks: hand back
+        // the sentinel.
         if (!deopt_branches.empty()) {
             const size_t deopt_at = em.pos();
             em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
@@ -1725,6 +2409,17 @@ public:
             for (size_t at : deopt_branches) {
                 if (!em.patch_branch(at, deopt_at)) return {};
             }
+        }
+        // Per-site deopt stubs of a framed body: record the resume point,
+        // drop a parked exception that belongs to a re-run call, unwind
+        // and return the sentinel.
+        for (const DeoptSite& site : deopt_sites) {
+            if (!em.patch_branch(site.at, em.pos())) return {};
+            em.mov_imm64(9, static_cast<uint64_t>(site.ip));
+            store_vm_slot(9, resume_off);
+            if (site.discard_exc) store_vm_slot(31, exc_off);  // xzr
+            em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
+            emit_return();
         }
         // Entry-guard tail of a framed body: nothing has been pushed yet.
         if (!entry_deopt_branches.empty()) {
@@ -2153,6 +2848,8 @@ class NativeCompiler {
     // CALL_FUNC out of those tiers. Set by the VM for function bodies only.
     BaselineLinkContext* baseline_link = nullptr;
     int                  baseline_self_fidx = -1;
+    // NativeFunc::baseline_guard_mask for the body being compiled.
+    uint64_t             baseline_guard_mask_ = ~0ULL;
 
     struct ScalarValue {
         bool is_virtual_record = false;
@@ -2233,6 +2930,9 @@ public:
         baseline_link = link;
         baseline_self_fidx = self_fidx;
     }
+    // Parameters the VM has seen non-numeric arguments for enter the
+    // baseline unguarded (bit clear); see NativeFunc::baseline_guard_mask.
+    void set_baseline_guard_mask(uint64_t mask) { baseline_guard_mask_ = mask; }
 
     bool     did_bail_on_opcode() const { return bailed; }
     JitOp    bailed_opcode() const      { return bail_op; }
@@ -2404,6 +3104,15 @@ public:
                 native_frame_regs <= BaselineBodyAnalysis::kMaxDirectCalleeRegs;
             if (baseline_link) {
                 baseline.set_link(baseline_link, baseline_self_fidx, direct_callable);
+                baseline.set_guard_mask(baseline_guard_mask_);
+#if SURA_JIT_X64_WIN64_BASELINE_FIRST
+                // The full tier below already compiles arrays, strings and
+                // dictionaries with its own helpers; the baseline keeps to
+                // the bodies it beats that tier on.
+                baseline.set_allow_helpers(false);
+#else
+                baseline.set_allow_helpers(true);
+#endif
             }
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
 #if SURA_JIT_X64_WIN64_BASELINE_FIRST
@@ -2415,7 +3124,9 @@ public:
             nf->code = ExecCode::from_bytes(baseline_code);
             nf->fn = reinterpret_cast<SuraNativeFn>(nf->code.ptr);
             nf->frame_regs = native_frame_regs;
-            nf->baseline_direct_callable = direct_callable;
+            nf->baseline_direct_callable = direct_callable && baseline.pure;
+            nf->baseline_vm_frame = baseline.vm_frame;
+            nf->baseline_guard_mask = baseline_guard_mask_;
             nf->baseline_params = static_cast<uint32_t>(callable_param_count);
             nf->baseline_unguarded_entry = baseline.unguarded_entry_offset;
             nf->baseline_return_kind = static_cast<uint8_t>(baseline.return_kind.k);
@@ -2445,6 +3156,8 @@ public:
                 native_frame_regs <= BaselineBodyAnalysis::kMaxDirectCalleeRegs;
             if (baseline_link) {
                 baseline.set_link(baseline_link, baseline_self_fidx, direct_callable);
+                baseline.set_guard_mask(baseline_guard_mask_);
+                baseline.set_allow_helpers(true);
             }
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
@@ -2452,7 +3165,9 @@ public:
             nf->code = ExecCode::from_bytes(baseline_code);
             nf->fn = reinterpret_cast<SuraNativeFn>(nf->code.ptr);
             nf->frame_regs = native_frame_regs;
-            nf->baseline_direct_callable = direct_callable;
+            nf->baseline_direct_callable = direct_callable && baseline.pure;
+            nf->baseline_vm_frame = baseline.vm_frame;
+            nf->baseline_guard_mask = baseline_guard_mask_;
             nf->baseline_params = static_cast<uint32_t>(callable_param_count);
             nf->baseline_unguarded_entry = baseline.unguarded_entry_offset;
             nf->baseline_return_kind = static_cast<uint8_t>(baseline.return_kind.k);

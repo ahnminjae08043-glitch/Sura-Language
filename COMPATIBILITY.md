@@ -84,14 +84,18 @@ Sura는 `major.minor.patch` 형식을 사용한다.
 
 - 네이티브 JIT: x86-64(Windows·Linux)는 상수·이동·정적으로 숫자임이
   증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종, 0이 아닌 제수로 증명된 `/`와
-  반환을 처리하는 helper/예외 없는 baseline을 사용한다(Linux는 System V,
-  Windows는 Win64 호출 규약). 이 baseline은 여기에 가드된 전역
+  반환을 인라인으로 처리하는 예외 없는 baseline을 사용한다(Linux는
+  System V, Windows는 Win64 호출 규약). 이 baseline은 여기에 가드된 전역
   읽기(함수 바인딩은 아이덴티티, 숫자는 태그 검사)와 순수 숫자 함수
   사이의 네이티브 직접 호출을 더하며, 가드 실패나 재귀 깊이 예산 소진은
-  register VM으로 되돌아가 같은 오류를 낸다. Win64 x86-64는 baseline이
-  거부한 함수를 기존 부분 컴파일러로 넘긴다. little-endian
-  Windows·Linux·macOS ARM64는 가드된 전역 읽기와 직접 호출까지 같은
-  범위를 갖는 AAPCS64 baseline을 사용한다. 0이거나 정적으로 확인할 수 없는 제수, 동적 비교를
+  register VM으로 되돌아가 같은 오류를 낸다. Linux x86-64와
+  little-endian Windows·Linux·macOS ARM64(AAPCS64 baseline)는 배열·
+  문자열·딕셔너리 생성과 인덱싱, 필드 읽기·쓰기, `in`, `for ... in`,
+  전역 쓰기, 출력, 일반 호출·메서드 호출·내장 호출 같은 동적 연산도
+  register VM과 같은 helper를 호출해 처리하고, helper가 예외를 던지면
+  그 명령에서 register VM으로 되돌아가 같은 오류를 낸다. Win64 x86-64는
+  순수 숫자 함수만 baseline으로 먼저 보내고 나머지 함수는 기존 부분
+  컴파일러로 넘긴다. 0이거나 정적으로 확인할 수 없는 제수, 동적 비교를
   포함한 그 밖의 bytecode와 macOS x86-64는 register VM에서 실행한다.
 - CUDA: 호환 NVIDIA 드라이버와 구현된 resident 연산만 지원
 - 미디어: FFmpeg가 설치되었거나 명시적으로 지정된 환경에서 지원

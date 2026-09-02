@@ -31,7 +31,7 @@ surapkg test
 ## 현재 플랫폼 경계
 
 - 기본 VM: Windows, Linux, macOS 빌드 경로
-- 네이티브 JIT: Win64 x86-64 부분 컴파일, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline. 두 baseline은 상수·이동·숫자로 증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종과 0이 아닌 제수로 증명된 `/`를 처리하고, 두 baseline 모두 여기에 가드된 전역 읽기와 순수 숫자 함수 사이의 네이티브 직접 호출(재귀 포함)을 더하고, Windows x64는 baseline이 거부한 함수를 기존 전체 컴파일러로 넘긴다. 그 밖의 bytecode는 register VM으로 fallback
+- 네이티브 JIT: Win64 x86-64 부분 컴파일, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline. 두 baseline은 상수·이동·숫자로 증명된 `+`, `-`, `*`, 단항 `-`, 비교 6종과 0이 아닌 제수로 증명된 `/`를 인라인으로 처리하고, 가드된 전역 읽기와 순수 숫자 함수 사이의 네이티브 직접 호출(재귀 포함)을 더하며, 배열·문자열·딕셔너리·필드 접근·`in`·`for ... in`·일반 호출과 메서드 호출 같은 동적 연산은 VM helper를 호출해 같은 함수 안에서 이어 간다(helper가 던진 예외는 그 명령에서 register VM으로 되돌아가 같은 오류를 낸다). Windows x64는 순수 숫자 함수만 baseline으로 먼저 보내고, 나머지는 기존 전체 컴파일러로 넘긴다. 그 밖의 bytecode는 register VM으로 fallback
 - JavaScript·WebAssembly: 별도 변환 타깃이며 네이티브 런타임 전체와 동일하지 않음
 - FFmpeg, CUDA, Python, Node.js: 해당 기능을 사용할 때만 필요한 선택 의존성
 

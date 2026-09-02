@@ -69,6 +69,30 @@ try {
         throw "unsupported target did not use register-VM fallback"
     }
 
+    # Baseline v3/v4 behaviour on the real engine: direct native-to-native
+    # calls on the VM value stack, and array/string/dict ops through the VM
+    # helpers. Both files run under --jit and under the register VM so the
+    # two tiers are checked against the same expectations.
+    foreach ($case in @(
+        @{ File = "tests/jit_sysv_direct_call.sura"; Marker = "jit_sysv_direct_call: PASS" },
+        @{ File = "tests/jit_baseline_helpers.sura"; Marker = "jit_baseline_helpers: PASS" }
+    )) {
+        $caseSource = Join-Path $root $case.File
+        foreach ($mode in @("--jit", "")) {
+            $modeArgs = @()
+            if ($mode -ne "") { $modeArgs += $mode }
+            $caseOutput = & $enginePath @modeArgs $caseSource 2>&1 | ForEach-Object { "$_" }
+            $caseCode = $LASTEXITCODE
+            $caseText = $caseOutput -join "`n"
+            if ($caseCode -ne 0 -or $caseText -notmatch [regex]::Escape($case.Marker)) {
+                $caseOutput | Write-Host
+                $label = if ($mode -ne "") { "jit" } else { "vm" }
+                throw "$($case.File) failed under $label (exit=$caseCode)"
+            }
+        }
+        Write-Host "$($case.File): PASS (jit, vm)"
+    }
+
     Write-Host "sura_jit_portable_baseline_smoke: PASS ($($info.os), $($info.architecture), $($info.backend))"
 } finally {
     $resolvedTemp = [System.IO.Path]::GetFullPath($temp)

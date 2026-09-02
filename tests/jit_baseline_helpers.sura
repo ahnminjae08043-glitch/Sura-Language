@@ -1,0 +1,253 @@
+# baseline v4: 배열·문자열·딕셔너리를 다루는 함수도 예외 없는 baseline
+# 네이티브 티어에서 컴파일된다. 숫자 연산은 인라인으로 남고, 컬렉션 연산은
+# 명령어 하나마다 VM 헬퍼(sura_bl_*)를 부른다. 헬퍼가 던진 예외는 디옵트
+# 센티널로 돌아와 인터프리터가 같은 줄 번호로 다시 던지고, 예외를 던지지
+# 않는 헬퍼(print, 전역 저장)는 재실행되지 않는다. 어느 티어에서도 결과는
+# VM 모드와 완전히 같아야 한다.
+
+# ── 배열 ──
+func sum_array(xs) do
+    total is 0
+    for v in xs do
+        total is total + v
+    end
+    return total
+end
+
+func build_squares(n) do
+    out is []
+    i is 1
+    while i <= n do
+        out.push(i * i)
+        i is i + 1
+    end
+    return out
+end
+
+func index_math(xs, i) do
+    return xs[i] * 2 + xs[0]
+end
+
+func set_slot(xs, i, v) do
+    xs[i] is v
+    return xs[i]
+end
+
+nums is [3, 1, 4, 1, 5, 9, 2, 6]
+acc is 0
+for k in 1 to 300 do
+    acc is acc + sum_array(nums)
+end
+assert_eq(acc, 9300)
+
+sq_total is 0
+for k in 1 to 300 do
+    sq is build_squares(10)
+    sq_total is sq_total + sq[9]
+end
+assert_eq(sq_total, 30000)
+assert_eq(length(build_squares(4)), 4)
+assert_eq(sum_array(build_squares(10)), 385)
+
+im is 0
+for k in 1 to 300 do
+    im is im + index_math(nums, 5)
+end
+assert_eq(im, 6300)
+
+slot is [0, 0, 0]
+for k in 1 to 300 do
+    set_slot(slot, 1, k)
+end
+assert_eq(slot[1], 300)
+assert_eq(set_slot(slot, 2, 7), 7)
+assert_eq(to_str(slot), to_str([0, 300, 7]))
+
+# 범위를 벗어난 인덱스: 헬퍼가 던진 오류가 try/catch로 잡힌다.
+range_caught is false
+try
+    bad is index_math(nums, 99)
+catch e
+    range_caught is true
+end
+assert(range_caught)
+assert_eq(index_math(nums, 1), 5)
+
+# ── 문자열 ──
+func greet(name) do
+    return "안녕, " + name + "!"
+end
+
+func count_words(text) do
+    parts is split(text, " ")
+    return length(parts)
+end
+
+func shout(text) do
+    return upper(text) + "!"
+end
+
+one_greet is length(greet("수라"))
+greet_len is 0
+for k in 1 to 300 do
+    greet_len is greet_len + length(greet("수라"))
+end
+assert_eq(greet_len, one_greet * 300)
+assert_eq(greet("세계"), "안녕, 세계!")
+
+wc is 0
+for k in 1 to 300 do
+    wc is wc + count_words("하나 둘 셋 넷")
+end
+assert_eq(wc, 1200)
+assert_eq(shout("go"), "GO!")
+
+# 숫자 인자로 문자열 함수를 부르면 VM과 같은 타입 오류가 난다.
+str_caught is false
+try
+    bad is shout(12)
+catch e
+    str_caught is true
+end
+assert(str_caught)
+assert_eq(shout("ok"), "OK!")
+
+# ── 딕셔너리 ──
+func tally(words) do
+    counts is {}
+    for w in words do
+        if w in counts then
+            counts[w] is counts[w] + 1
+        else
+            counts[w] is 1
+        end
+    end
+    return counts
+end
+
+func dict_total(d) do
+    total is 0
+    for k, v in d do
+        total is total + v
+    end
+    return total
+end
+
+func key_count(d) do
+    return length(d.keys())
+end
+
+func field_sum(p) do
+    return p.x + p.y
+end
+
+func field_set(p, v) do
+    p.x is v
+    return p.x
+end
+
+func field_diff(p) do
+    return p.x - p.y
+end
+
+words is ["a", "b", "a", "c", "b", "a"]
+tally_total is 0
+for k in 1 to 300 do
+    t is tally(words)
+    tally_total is tally_total + t["a"]
+end
+assert_eq(tally_total, 900)
+t3 is tally(words)
+assert_eq(t3["a"], 3)
+assert_eq(t3["b"], 2)
+assert_eq(t3["c"], 1)
+assert_eq(length(t3), 3)
+
+dt is 0
+for k in 1 to 300 do
+    dt is dt + dict_total({"x": 1, "y": 2, "z": 3})
+end
+assert_eq(dt, 1800)
+assert_eq(key_count({"p": 1, "q": 2}), 2)
+
+pt is {"x": 1, "y": 2}
+fs is 0
+for k in 1 to 300 do
+    fs is fs + field_sum(pt)
+end
+assert_eq(fs, 900)
+for k in 1 to 300 do
+    field_set(pt, k)
+end
+assert_eq(pt.x, 300)
+assert_eq(field_sum(pt), 302)
+
+# 없는 필드는 nil이고, nil 뺄셈은 헬퍼가 던진 [E200]으로 잡힌다. 이후
+# 호출은 정상이어야 한다.
+fd is 0
+for k in 1 to 300 do
+    fd is fd + field_diff(pt)
+end
+assert_eq(fd, 89400)
+field_caught is false
+try
+    bad is field_diff({"x": 1})
+catch e
+    field_caught is true
+end
+assert(field_caught)
+assert_eq(field_diff(pt), 298)
+assert_eq(field_sum(pt), 302)
+
+# ── 전역 저장 + print: 디옵트로 재실행되면 안 되는 부수효과 ──
+counter is 0
+func bump(n) do
+    global counter
+    counter is counter + n
+    return counter
+end
+for k in 1 to 300 do
+    bump(1)
+end
+assert_eq(counter, 300)
+
+# 전역 저장 뒤에 오류가 나면 저장은 정확히 한 번만 반영되어야 한다.
+func bump_then_fail(xs) do
+    global counter
+    counter is counter + 1
+    return xs[99]
+end
+for k in 1 to 300 do
+    try
+        bump_then_fail(nums)
+    catch e
+        e_seen is e
+    end
+end
+assert_eq(counter, 600)
+
+# 헬퍼(컬렉션)와 직접 호출(순수 재귀)의 조합
+func fib(n) do
+    if n <= 1 then
+        return n
+    end
+    return fib(n - 1) + fib(n - 2)
+end
+
+func fib_table(n) do
+    out is []
+    i is 0
+    while i <= n do
+        out.push(fib(i))
+        i is i + 1
+    end
+    return out
+end
+ft is 0
+for k in 1 to 200 do
+    ft is ft + sum_array(fib_table(10))
+end
+assert_eq(ft, 28600)
+assert_eq(to_str(fib_table(6)), to_str([0, 1, 1, 2, 3, 5, 8]))
+
+print("jit_baseline_helpers: PASS")

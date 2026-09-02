@@ -13,9 +13,10 @@ audited.
 
 **Read the platform section before quoting any number.** Sura's JIT is complete
 on Windows x64 only; on Linux and ARM64 the native tier is a baseline that
-refuses array indexing, strings, dictionaries and field access, so most of
-this suite runs interpreted there. The two tables differ a lot, and the Linux one is the
-less flattering of the two.
+compiles numeric code inline and routes array, string, dictionary and field
+operations through the interpreter's helpers, so those workloads are only as
+fast as the helpers. The two tables differ, and the Linux one is the less
+flattering of the two.
 
 ## Why the checksums matter
 
@@ -86,19 +87,23 @@ measured" rather than as a time.
 ## The same benchmark on Linux
 
 The numbers above are from Windows x64, where the JIT is complete. On Linux and
-on ARM64 the native tier is a **baseline** that compiles numeric code only. On
-Linux x86-64 and on ARM64 it handles loops, guarded global reads and
-native-to-native calls between pure numeric functions (so recursive `fib` runs
-entirely as native code), but it still refuses array indexing, strings,
-dictionaries and field access. In this suite that means two of the ten
-functions get native code instead of all ten, and the rest run interpreted.
-The ARM64 call support is validated by the unit tests on the ARM64 CI runners
-and by instruction-level emulation; the ARM64 row below predates it and still
-shows the loop-only tier.
+on ARM64 the native tier is a **baseline**. It compiles numeric code inline —
+loops, guarded global reads and native-to-native calls between pure numeric
+functions, so recursive `fib` runs entirely as native code — and since the
+fourth revision it also compiles every function that touches arrays, strings,
+dictionaries or fields by calling the interpreter's own helpers for those
+operations from native code. In this suite all ten functions now get native
+code on Linux; the arithmetic and control flow around each helper call is
+native, the helper itself costs what it costs in the interpreter. Field reads
+and writes from those helpers use the same class-keyed inline cache as the
+interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
+runners and by instruction-level emulation of the emitted bodies, including a
+helper-backed body; the ARM64 row below predates it and still shows the
+loop-only tier.
 
 Windows x64 uses the same baseline for the pure numeric functions — that is
-where its `fib` and `numeric` columns come from — and its full tier for
-everything the baseline refuses, so the two platforms agree on `fib` and
+where its `fib` and `numeric` columns come from — and its full tier, with its
+inline caches, for everything else, so the two platforms agree on `fib` and
 differ on the rest.
 
 Same machine, Ubuntu under WSL2, ms:
@@ -106,8 +111,8 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.3 | 10.5 | 59.0 | 9.9 | 77.0 | 31.7 | 108.4 | 560.8 |
-| Sura VM | 78.0 | 79.8 | 65.7 | 10.0 | 79.0 | 31.6 | 107.0 | 556.3 |
+| **Sura JIT** | 10.0 | 10.5 | 35.5 | 7.9 | 67.7 | 28.3 | 114.7 | 353.0 |
+| Sura VM | 80.3 | 84.9 | 64.7 | 10.0 | 77.8 | 32.5 | 111.2 | 618.4 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
 So the honest summary is platform-dependent, and it is worth stating plainly
@@ -115,28 +120,34 @@ rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
   about 2.5x as fast as CPython by geometric mean.
-- **On Linux x86-64** the numeric loop and the recursive `fib` reach native
-  code. Overall Sura is about 1.25x faster than CPython by geometric mean —
-  well ahead on calls and arithmetic, behind on strings, dictionaries and
-  objects, which still run interpreted.
-- **On ARM64** the same two functions now reach native code as on Linux
-  x86-64; the figure quoted here (Sura within about 10% of CPython overall)
-  is from the loop-only tier and will be re-measured.
+- **On Linux x86-64** every function in the suite reaches native code.
+  Overall Sura is about 1.4x faster than CPython by geometric mean — well
+  ahead on calls and arithmetic, ahead on arrays, sorting and matmul now that
+  the loops around the helper calls are native, still behind on strings,
+  dictionaries and objects, where the helper does all the work. A native
+  call books its callee frame on the VM value stack only when the callee can
+  reach a helper (that is what lets the collector run while native code
+  holds objects); a callee that never can, such as `fib`, keeps its frame on
+  the machine stack, so `fib` costs the same as before the helpers existed.
+- **On ARM64** the same tier is compiled; the figure quoted here (Sura within
+  about 10% of CPython overall) is from the loop-only tier and will be
+  re-measured.
 
 What holds on both platforms is where the native tier or a native library
 actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 7.9x faster | 6.4x faster |
+| `fib(30)` vs CPython | 7.9x faster | 6.0x faster |
 | numeric loop vs CPython | 16x faster | 10x faster |
-| sort vs CPython | 3.1x faster | 2.3x faster |
+| sort vs CPython | 3.1x faster | 2.6x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
-Closing the rest of the Linux gap means teaching the baseline tier the array,
-string, dictionary and field opcodes it currently refuses, which is the largest
-open item in the project.
+Closing the rest of the Linux gap means inlining what the helpers do — array
+indexing with a bounds check, field access through the inline cache, string
+concatenation — the way the Windows tier does, instead of calling out for
+each of them. That is the largest open item in the project.
 
 ### How to read this
 

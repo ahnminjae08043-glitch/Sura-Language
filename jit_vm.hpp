@@ -182,6 +182,17 @@ class JitVM {
         int32_t     warm   = 0;
         bool        failed = false;
         uint8_t     deopts = 0;         // entry-guard failures since compile
+        // Baseline type feedback: bit p is set once parameter p (p < 64) has
+        // been bound to a non-numeric value, either while the function was
+        // still interpreted or at an entry-guard deopt. The baseline compiles
+        // a NaN-box guard only for parameters that have never carried
+        // anything but numbers, so a function taking an array and a count
+        // keeps its numeric guard on the count alone.
+        uint64_t    nonnum_params = 0;
+        // Recompiles after a demotion. Feedback gathered by the deopts that
+        // demoted the slot goes into the next compile; after a couple of
+        // rounds the function stays interpreted for good.
+        uint8_t     recompiles = 0;
     };
     std::vector<JitFuncSlot> jit_slots;
 
@@ -192,6 +203,25 @@ class JitVM {
     // call and deopts when it would go negative, so the interpreter raises
     // its own [E500] instead of the machine stack overflowing.
     int64_t native_depth_budget = 0;
+    // Mid-body deopt resume point. A baseline body that hands control back
+    // after it has already run part of itself - a helper reported a runtime
+    // error, a callee's guard failed, the depth budget ran out - stores the
+    // index of the bytecode instruction that has not completed yet and
+    // returns SURA_JIT_DEOPT_SENTINEL. The three call sites that consume the
+    // sentinel then continue the function in the interpreter from that
+    // instruction instead of replaying it from its entry, which is what
+    // makes bodies with side effects (prints, stores, generic calls) safe
+    // to compile. -1 means "no resume point": an entry guard failed before
+    // the body ran, so the interpreter rebinds the arguments and starts over.
+    int64_t native_resume_ip = -1;
+    // Non-zero when native_pending_exc holds the exception a baseline helper
+    // caught. The interpreter rethrows it from the resumed frame, so the
+    // error carries the same line and stack trace as an interpreted run.
+    int64_t native_exc_valid = 0;
+    std::exception_ptr native_pending_exc;
+    // Bodies retired by a feedback recompile. Direct callers and call-site
+    // ICs may still point at the old code, so it is kept alive with the VM.
+    std::vector<std::unique_ptr<NativeFunc>> native_retired;
     // Objects that generated code compares against by raw bits (see
     // BaselineLinkContext::pin_value). Held for the life of the VM, like the
     // code itself: an address reused by a later allocation would otherwise
@@ -208,6 +238,11 @@ class JitVM {
         bool global_value(int idx, uint64_t& bits) const override;
         int32_t globals_vector_offset() const override;
         int32_t depth_budget_offset() const override;
+        int32_t resume_ip_offset() const override;
+        int32_t exc_valid_offset() const override;
+        int32_t value_stack_data_offset() const override;
+        int32_t stack_top_offset() const override;
+        int64_t stack_capacity() const override;
         bool resolve_callee(int fidx, BaselineCalleeInfo& out) override;
         void pin_value(uint64_t bits) override;
     } direct_link;
@@ -228,10 +263,17 @@ class JitVM {
             direct_link.vm = this;
             direct_link.chunk = &chunk;
             nc.set_baseline_link(&direct_link, fidx);
+            nc.set_baseline_guard_mask(~jit_slot(fidx).nonnum_params);
             auto compiled = nc.compile();
             if (compiled) {
                 raw = compiled.get();
-                native_funcs.emplace(fidx, std::move(compiled));
+                auto owner = native_funcs.find(fidx);
+                if (owner == native_funcs.end()) {
+                    native_funcs.emplace(fidx, std::move(compiled));
+                } else {
+                    native_retired.push_back(std::move(owner->second));
+                    owner->second = std::move(compiled);
+                }
             }
         } catch (...) {
             raw = nullptr;
@@ -286,41 +328,97 @@ class JitVM {
 #ifdef __GNUC__
     __attribute__((noinline))
 #endif
-    NativeFunc* resolve_native_slow(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+    NativeFunc* resolve_native_slow(const JitChunk& chunk, const JitFuncInfo& fi, int fidx,
+                                    const Value* bound_params) {
         if (__builtin_expect(prof != nullptr, 0)) return nullptr;
         JitFuncSlot& slot = jit_slot(fidx);
         if (slot.native) return slot.native;
         if (slot.failed) return nullptr;
+        if (bound_params) slot.nonnum_params |= nonnum_param_mask(bound_params, fi.params.size());
         if (++slot.warm < FUNC_LAZY_JIT_THRESHOLD) return nullptr;
         return compile_function_native(chunk, fi, fidx);
     }
 
+    static uint64_t nonnum_param_mask(const Value* params, size_t count) {
+        uint64_t mask = 0;
+        const size_t n = std::min<size_t>(count, 64);
+        for (size_t i = 0; i < n; ++i)
+            if (!params[i].is_num()) mask |= (uint64_t{1} << i);
+        return mask;
+    }
+
     // A guarded native body handed back SURA_JIT_DEOPT_SENTINEL: the call is
-    // re-run in the interpreter by the caller; here we only count the miss.
+    // finished in the interpreter by the caller; here we only count the miss.
     // A function whose arguments are persistently non-numeric would pay the
-    // guard on every call, so after a few misses the slot is demoted for good.
+    // guard on every call, so after a few misses the slot is demoted. The
+    // first demotions recompile with the feedback the misses left behind
+    // (parameters seen with non-numbers lose their guard); after that the
+    // function stays interpreted for good.
     static constexpr uint8_t NATIVE_DEOPT_DEMOTE_LIMIT = 8;
+    static constexpr uint8_t NATIVE_RECOMPILE_LIMIT = 2;
     void note_native_deopt(int fidx) {
         if (fidx < 0 || (size_t)fidx >= jit_slots.size()) return;
         JitFuncSlot& slot = jit_slots[(size_t)fidx];
         if (slot.native && ++slot.deopts >= NATIVE_DEOPT_DEMOTE_LIMIT) {
             slot.native = nullptr;   // native_funcs still owns the code
+            slot.deopts = 0;
+            if (slot.recompiles < NATIVE_RECOMPILE_LIMIT) {
+                ++slot.recompiles;
+                slot.warm = 0;       // warm up again, gathering feedback
+                return;
+            }
             slot.failed = true;
             jit_failed.insert(fidx);
         }
     }
 
+    // Consume a deopt sentinel: where the interpreter continues the callee.
+    // With a resume point the frame registers are the body's live state and
+    // must not be touched; without one the entry guard fired before the body
+    // ran, and the arguments are rebound because a mid-body guard of an older
+    // shape may have overwritten them. `rethrow` says a helper's exception is
+    // waiting in native_pending_exc; the frame starts one instruction past
+    // the resume point so the stack trace reports the faulting line, and
+    // the interpreter rethrows before executing anything.
+    struct NativeResume { size_t ip; bool rethrow; };
+    NativeResume take_native_deopt(const JitChunk& chunk, const JitFuncInfo& fi, int fidx,
+                                   Value* NR, const Value* args, size_t argc) {
+        note_native_deopt(fidx);
+        const int64_t ip = native_resume_ip;
+        native_resume_ip = -1;
+        if (ip < 0) {
+            native_exc_valid = 0;
+            native_pending_exc = nullptr;
+            bind_function_args(chunk, fi, NR, args, argc);
+            if (fidx >= 0 && (size_t)fidx < jit_slots.size())
+                jit_slots[(size_t)fidx].nonnum_params |= nonnum_param_mask(NR, fi.params.size());
+            return {fi.entry_ip, false};
+        }
+        const bool rethrow = native_exc_valid != 0;
+        if (!rethrow) native_pending_exc = nullptr;
+        return {static_cast<size_t>(ip) + (rethrow ? 1 : 0), rethrow};
+    }
+    void rethrow_pending_native_exception() {
+        std::exception_ptr pending = std::move(native_pending_exc);
+        native_pending_exc = nullptr;
+        native_exc_valid = 0;
+        if (pending) std::rethrow_exception(pending);
+    }
+
     // Resolve the native body for fidx. Once a function has settled into either
     // "compiled" or "never compilable" - which is where a hot call site spends
     // essentially all of its calls - this is a bounds check and a load.
-    inline NativeFunc* resolve_native(const JitChunk& chunk, const JitFuncInfo& fi, int fidx) {
+    // bound_params are the callee's already-bound parameter registers; while
+    // the function is still warming up they feed the baseline's type feedback.
+    inline NativeFunc* resolve_native(const JitChunk& chunk, const JitFuncInfo& fi, int fidx,
+                                      const Value* bound_params = nullptr) {
         if (fidx < 0) return nullptr;
         if (__builtin_expect((size_t)fidx < jit_slots.size(), 1)) {
             JitFuncSlot& slot = jit_slots[(size_t)fidx];
             if (slot.native) return slot.native;
             if (__builtin_expect(slot.failed, 1)) return nullptr;
         }
-        return resolve_native_slow(chunk, fi, fidx);
+        return resolve_native_slow(chunk, fi, fidx, bound_params);
     }
 
     std::unordered_map<const void*, int> method_warm_count;    // JitMethodInfo* -> call count
@@ -2531,6 +2629,19 @@ public:
         globals[idx] = Value::from_bits(bits);
         global_initialized[idx] = true;
     }
+    // A baseline helper caught the exception it was about to let escape:
+    // park it for the interpreter (see native_pending_exc) and hand the
+    // native body the deopt sentinel so it stops at its resume point.
+    uint64_t baseline_capture_exception() {
+        native_pending_exc = std::current_exception();
+        native_exc_valid = 1;
+        return SURA_JIT_DEOPT_SENTINEL;
+    }
+    uint64_t baseline_call_builtin(Value* R, const JitInst* ins);
+    // Collection safepoint for helpers that allocate on the VM's behalf.
+    void baseline_gc_tick() { run_gc_for_native_allocation(); }
+    int64_t& baseline_depth_budget() { return native_depth_budget; }
+    size_t baseline_globals_count() const { return globals.size(); }
 private:
 
     void run_gc() {
@@ -3500,6 +3611,9 @@ private:
         #define _END_CASE } _NEXT();
 _reenter:
         try {
+        // A native body that stopped at a helper's exception is resumed here;
+        // the exception must surface from inside the dispatch loop's handler.
+        if (__builtin_expect(native_exc_valid != 0, 0)) rethrow_pending_native_exception();
         _NEXT();   // first dispatch
 #else
         #define _CASE(op) case JitOp::op: {
@@ -3512,6 +3626,7 @@ _reenter:
         } while(0)
 _reenter:
         try {
+        if (native_exc_valid != 0) rethrow_pending_native_exception();
         while (lip < lend) {
             const JitInst& inst = code[lip++];
             uint16_t a = inst.a, b = inst.b, c = inst.c;
@@ -3847,21 +3962,23 @@ _reenter:
                     // Lazy compile: wait until interpreter runs warm ICs so
                     // ic_cache slots are warm before we bake them into native code.
                     NativeFunc* native = nullptr;
-                    if (jit_enabled) native = resolve_native(chunk, fi, closure->func_idx);
+                    if (jit_enabled) native = resolve_native(chunk, fi, closure->func_idx, NR);
 
+                    size_t resume_ip = fi.entry_ip;
+                    bool resume_rethrow = false;
                     if (native) {
                         native_depth_budget = static_cast<int64_t>(FRAME_CAPACITY) - 1 -
                                               static_cast<int64_t>(frame_top);
                         uint64_t bits = native->fn(this, NR, chunk.constants.data());
                         if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                            // A guard rejected this call. Guards can fire after
-                            // the body has already written frame registers (a
-                            // zero divisor is only known mid-body), so rebind
-                            // the arguments from the still-intact caller
-                            // registers before the VM re-runs the call.
-                            note_native_deopt(closure->func_idx);
-                            bind_function_args(chunk, fi, NR, &R[inst.c],
-                                               static_cast<size_t>(std::max(0, inst.operand)));
+                            // A guard rejected this call, or the body stopped
+                            // mid-way at a resume point: the interpreter
+                            // finishes the call from wherever the body left off.
+                            const NativeResume resume = take_native_deopt(
+                                chunk, fi, closure->func_idx, NR, &R[inst.c],
+                                static_cast<size_t>(std::max(0, inst.operand)));
+                            resume_ip = resume.ip;
+                            resume_rethrow = resume.rethrow;
                             native = nullptr;
                         } else {
                             R[a] = Value::from_bits(bits);
@@ -3877,12 +3994,13 @@ _reenter:
                         nf.closure   = closure;
                         nf.method    = nullptr;
                         nf.chunk     = fp->chunk;
-                        nf.ip        = fi.entry_ip;
+                        nf.ip        = resume_ip;
                         nf.end_ip    = fi.end_ip;
                         nf.ret_reg   = a;
                         nf.in_try    = false; }
                         fp = &frame_pool[frame_top-1];
                         _LOAD_FRAME();
+                        if (__builtin_expect(resume_rethrow, 0)) rethrow_pending_native_exception();
                     }
                 } // closes else (is_closure)
             } _END_CASE
@@ -4432,17 +4550,17 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
                                       static_cast<int64_t>(frame_top);
                 uint64_t bits = fast_fn(this, NR, chunk.constants.data());
                 if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                    // A guard rejected this call. Drop this site's IC, rebind
-                    // the arguments (a mid-body guard may have overwritten
-                    // frame registers), and finish the call in the VM.
-                    note_native_deopt(cl->func_idx);
+                    // A guard rejected this call or the body stopped at a
+                    // resume point. Drop this site's IC and finish the call
+                    // in the VM from where the body left off.
                     ins->ic_native_fn = nullptr;
-                    bind_function_args(chunk, fi, NR, &R[ins->c],
-                                       static_cast<size_t>(std::max(0, ins->operand)));
+                    const NativeResume resume = take_native_deopt(
+                        chunk, fi, cl->func_idx, NR, &R[ins->c],
+                        static_cast<size_t>(std::max(0, ins->operand)));
                     CallFrame cf;
                     cf.reg_base = base; cf.reg_count = cnt; cf.closure = cl;
                     cf.chunk = &chunk; cf.method = nullptr;
-                    cf.ip = fi.entry_ip; cf.end_ip = fi.end_ip;
+                    cf.ip = resume.ip; cf.end_ip = fi.end_ip;
                     cf.ret_reg = (uint16_t)-1; cf.in_try = false;
                     return execute_frame(cf).raw_bits();
                 }
@@ -4602,8 +4720,9 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
         // get native-compiled after the callee ICs have warmed.
         NativeFunc* callee_native = nullptr;
         if (jit_enabled) {
-            callee_native = resolve_native(chunk, fi, cl->func_idx);
+            callee_native = resolve_native(chunk, fi, cl->func_idx, NR);
         }
+        size_t resume_ip = fi.entry_ip;
 
         // Recursive JIT-in-JIT: if callee has native code, invoke it directly.
         if (callee_native) {
@@ -4617,13 +4736,13 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
                                   static_cast<int64_t>(frame_top);
             uint64_t bits = callee_native->fn(this, NR, chunk.constants.data());
             if (__builtin_expect(bits == SURA_JIT_DEOPT_SENTINEL, 0)) {
-                // A guard rejected this call: undo the IC we just set, rebind
-                // the arguments (a mid-body guard may have overwritten frame
-                // registers), and fall through to the interpreter.
-                note_native_deopt(cl->func_idx);
+                // A guard rejected this call or the body stopped at a resume
+                // point: undo the IC we just set and let the interpreter
+                // finish the call from where the body left off.
                 ins->ic_native_fn = nullptr;
-                bind_function_args(chunk, fi, NR, &R[ins->c],
-                                   static_cast<size_t>(std::max(0, ins->operand)));
+                resume_ip = take_native_deopt(
+                    chunk, fi, cl->func_idx, NR, &R[ins->c],
+                    static_cast<size_t>(std::max(0, ins->operand))).ip;
             } else {
                 stack_top = base;
                 return bits;
@@ -4633,7 +4752,7 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
         CallFrame cf;
         cf.reg_base = base; cf.reg_count = cnt; cf.closure = cl; cf.chunk = &chunk;
         cf.method = nullptr;
-        cf.ip = fi.entry_ip; cf.end_ip = fi.end_ip;
+        cf.ip = resume_ip; cf.end_ip = fi.end_ip;
         cf.ret_reg = (uint16_t)-1; cf.in_try = false;
         Value result = execute_frame(cf);
         return result.raw_bits();
@@ -4875,24 +4994,39 @@ inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* in
 inline uint64_t JitVM::dispatch_dot_get_from_jit(Value* R, const JitInst* ins) {
     if (!active_chunk) return Value::nil().raw_bits();
     const JitChunk& chunk = *active_chunk;
-    const std::string& prop = chunk.get_string(ins->str_idx);
     const Value& recv = R[ins->b];
     if (recv.is_inst()) {
         GCInstance* obj = recv.as_inst();
+        // Monomorphic inline cache, keyed on the class the instance was
+        // built from: the same guard the native inline IC uses. Without it
+        // every field read from native code paid three string-keyed hash
+        // lookups, which made helper-backed object code slower than the
+        // interpreter's cached DOT_GET.
+        if (ins->ic_class != nullptr && obj->jit_info == ins->ic_class &&
+            ins->ic_cache >= 0 && (size_t)ins->ic_cache < obj->fields.size())
+            return obj->fields[ins->ic_cache].raw_bits();
+        const std::string& prop = chunk.get_string(ins->str_idx);
         const std::string& cname = obj->type_name();
-        if (rt_classes.count(cname)) {
-            auto& cl = rt_classes[cname];
+        auto class_it = rt_classes.find(cname);
+        if (class_it != rt_classes.end()) {
+            JitClassInfo& cl = class_it->second;
             auto it = cl.field_indices.find(prop);
             if (it != cl.field_indices.end()) {
                 int offset = it->second;
                 if (obj->fields.size() < cl.field_defaults.size())
                     obj->fields.resize(cl.field_defaults.size(), Value::nil());
-                if (offset >= 0 && (size_t)offset < obj->fields.size())
+                if (offset >= 0 && (size_t)offset < obj->fields.size()) {
+                    if (obj->jit_info == &cl) {
+                        ins->ic_cache = offset;
+                        ins->ic_class = &cl;
+                    }
                     return obj->fields[offset].raw_bits();
+                }
             }
         }
         return Value::nil().raw_bits();
     }
+    const std::string& prop = chunk.get_string(ins->str_idx);
     if (recv.is_dict()) return recv.dict_get(prop).raw_bits();
     if (recv.is_nil()) throw JitThrow{"[E201] nil 역참조", ins->line};
     return Value::nil().raw_bits();
@@ -4903,10 +5037,16 @@ inline uint64_t JitVM::dispatch_dot_get_from_jit(Value* R, const JitInst* ins) {
 inline void JitVM::dispatch_dot_set_from_jit(Value* R, const JitInst* ins) {
     if (!active_chunk) return;
     const JitChunk& chunk = *active_chunk;
-    const std::string& prop = chunk.get_string(ins->str_idx);
     Value& recv = R[ins->a];
     if (recv.is_inst()) {
         GCInstance* obj = recv.as_inst();
+        // Same class-keyed inline cache as dispatch_dot_get_from_jit.
+        if (ins->ic_class != nullptr && obj->jit_info == ins->ic_class &&
+            ins->ic_cache >= 0 && (size_t)ins->ic_cache < obj->fields.size()) {
+            obj->fields[ins->ic_cache] = R[ins->b];
+            return;
+        }
+        const std::string& prop = chunk.get_string(ins->str_idx);
         const std::string& cname = obj->type_name();
         auto class_it = rt_classes.find(cname);
         if (class_it != rt_classes.end()) {
@@ -4926,11 +5066,16 @@ inline void JitVM::dispatch_dot_set_from_jit(Value* R, const JitInst* ins) {
             }
             if (obj->fields.size() < cl.field_defaults.size())
                 obj->fields.resize(cl.field_defaults.size(), Value::nil());
-            if (offset >= 0 && (size_t)offset < obj->fields.size())
+            if (offset >= 0 && (size_t)offset < obj->fields.size()) {
                 obj->fields[offset] = R[ins->b];
+                if (obj->jit_info == &cl) {
+                    ins->ic_cache = offset;
+                    ins->ic_class = &cl;
+                }
+            }
         }
     } else if (recv.is_dict()) {
-        recv.dict_set(prop, R[ins->b]);
+        recv.dict_set(chunk.get_string(ins->str_idx), R[ins->b]);
     }
 }
 
@@ -5209,16 +5354,68 @@ inline int32_t JitVM::DirectCallLink::depth_budget_offset() const {
     return static_cast<int32_t>(off);
 }
 
+inline int32_t JitVM::DirectCallLink::resume_ip_offset() const {
+    if (!vm) return -1;
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->native_resume_ip) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline int32_t JitVM::DirectCallLink::exc_valid_offset() const {
+    if (!vm) return -1;
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->native_exc_valid) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline int32_t JitVM::DirectCallLink::value_stack_data_offset() const {
+    if (!vm) return -1;
+    // Same layout check as globals_vector_offset: generated code reads the
+    // vector's begin pointer, which must be its first word.
+    Value* begin = nullptr;
+    std::memcpy(&begin, &vm->value_stack, sizeof(begin));
+    if (begin != vm->value_stack.data()) return -1;
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->value_stack) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline int32_t JitVM::DirectCallLink::stack_top_offset() const {
+    if (!vm) return -1;
+    static_assert(sizeof(vm->stack_top) == 8, "stack_top must be a 64-bit slot");
+    const std::ptrdiff_t off = reinterpret_cast<const char*>(&vm->stack_top) -
+                               reinterpret_cast<const char*>(vm);
+    if (off < 0 || off > std::numeric_limits<int32_t>::max()) return -1;
+    return static_cast<int32_t>(off);
+}
+
+inline int64_t JitVM::DirectCallLink::stack_capacity() const {
+    if (!vm) return 0;
+    return static_cast<int64_t>(vm->value_stack.size());
+}
+
 inline bool JitVM::DirectCallLink::resolve_callee(int fidx, BaselineCalleeInfo& out) {
     if (!vm || !chunk || fidx < 0 || static_cast<size_t>(fidx) >= chunk->func_table.size()) return false;
+    // A callee that has never run has no type feedback: its parameters would
+    // all be guarded on the caller's proof, which is exactly the shape that
+    // a non-numeric argument later demotes. Let it warm up first.
+    {
+        const JitFuncSlot& slot = vm->jit_slot(fidx);
+        if (!slot.native && slot.warm == 0) return false;
+    }
     NativeFunc* nf = vm->compile_function_native(*chunk, chunk->func_table[static_cast<size_t>(fidx)], fidx);
     if (!nf || !nf->baseline_direct_callable || !nf->code.ptr) return false;
     out.guarded_entry   = nf->code.ptr;
     out.unguarded_entry = nf->code.ptr + nf->baseline_unguarded_entry;
     out.frame_regs      = nf->frame_regs;
     out.params          = nf->baseline_params;
+    out.guard_mask      = nf->baseline_guard_mask;
     out.return_kind     = nf->baseline_return_kind;
     out.return_fidx     = nf->baseline_return_fidx;
+    out.vm_frame        = nf->baseline_vm_frame;
     return true;
 }
 
@@ -5321,6 +5518,153 @@ extern "C" inline void sura_jit_store_global(JitVM* vm, int idx, uint64_t bits) 
 // (numbers, strings, arrays, dicts, closures, instances, nil).
 extern "C" inline int sura_jit_truthy(uint64_t bits) {
     return Value::from_bits(bits).truthy() ? 1 : 0;
+}
+
+// ── Baseline helpers ──────────────────────────────────────────────
+// The baseline tiers (jit_native.hpp: SysV/Win64 x64 and AAPCS64) emit no
+// unwind information, so nothing may throw through their frames. Every
+// helper they call goes through this wrapper: it runs the interpreter's
+// semantics for one instruction and, if that throws, parks the exception
+// in the VM and returns SURA_JIT_DEOPT_SENTINEL. The body then records its
+// resume point and returns the sentinel itself, and the interpreter
+// rethrows from the resumed frame - same line, same stack trace, same
+// catch handler as an interpreted run. All take (vm, R, &inst) so that one
+// emitted call sequence serves every opcode.
+#define SURA_BL_HELPER(name, ...) \
+    extern "C" inline uint64_t name(JitVM* vm, Value* R, const JitInst* ins) { \
+        try __VA_ARGS__ catch (...) { return vm->baseline_capture_exception(); } \
+    }
+
+// One helper for the checked arithmetic, comparison and logical opcodes;
+// the opcode is read from the instruction. Mirrors execute_frame exactly,
+// including which message each type error carries.
+SURA_BL_HELPER(sura_bl_arith, {
+    const Value& lhs = R[ins->b];
+    const Value& rhs = R[ins->c];
+    switch (ins->op) {
+        case JitOp::ADD:
+            // String concatenation allocates; the interpreter reaches its
+            // collector at the next call or jump, native code here.
+            if (!lhs.is_num() || !rhs.is_num()) vm->baseline_gc_tick();
+            return (lhs + rhs).raw_bits();
+        case JitOp::SUB:
+            if (!lhs.is_num() || !rhs.is_num()) throw JitThrow{"[E200] 타입 불일치", ins->line};
+            return (lhs - rhs).raw_bits();
+        case JitOp::MUL:
+            if (!lhs.is_num() || !rhs.is_num()) throw JitThrow{"[E200] 타입 불일치", ins->line};
+            return (lhs * rhs).raw_bits();
+        case JitOp::DIV:
+            if (!lhs.is_num() || !rhs.is_num()) throw JitThrow{"[E200] type mismatch", ins->line};
+            if (rhs.as_num() == 0.0) throw JitThrow{"[E202] division by zero", ins->line};
+            return (lhs / rhs).raw_bits();
+        case JitOp::MOD:
+            if (!lhs.is_num() || !rhs.is_num()) throw JitThrow{"[E200] type mismatch", ins->line};
+            if (rhs.as_num() == 0.0) throw JitThrow{"[E202] modulo by zero", ins->line};
+            return lhs.mod(rhs).raw_bits();
+        case JitOp::NEG:
+            if (!lhs.is_num()) throw JitThrow{"[E200] 타입 불일치", ins->line};
+            return lhs.negate().raw_bits();
+        case JitOp::CMP_EQ:  return Value(lhs.eq(rhs)).raw_bits();
+        case JitOp::CMP_NEQ: return Value(lhs.neq(rhs)).raw_bits();
+        case JitOp::CMP_LT: case JitOp::CMP_LTE: case JitOp::CMP_GT: case JitOp::CMP_GTE:
+            if (!lhs.is_num() || !rhs.is_num())
+                throw JitThrow{"[E200] ordering comparison operands must be numbers", ins->line};
+            switch (ins->op) {
+                case JitOp::CMP_LT:  return Value(lhs.lt(rhs)).raw_bits();
+                case JitOp::CMP_LTE: return Value(lhs.lte(rhs)).raw_bits();
+                case JitOp::CMP_GT:  return Value(lhs.gt(rhs)).raw_bits();
+                default:             return Value(lhs.gte(rhs)).raw_bits();
+            }
+        case JitOp::LOGICAL_NOT: return lhs.logical_not().raw_bits();
+        default: return Value::nil().raw_bits();
+    }
+})
+// JUMP_IF_*: the condition as a boolean, so the emitted compare against
+// NBFALSE/NBTRUE is the same one a proven-boolean register gets.
+SURA_BL_HELPER(sura_bl_truthy, { return Value(R[ins->a].truthy()).raw_bits(); })
+SURA_BL_HELPER(sura_bl_load_global, { return vm->jit_load_global_inst(ins); })
+SURA_BL_HELPER(sura_bl_store_global, {
+    // Mirrors STORE_GLOBAL: a slot the chunk never declared is ignored.
+    if (ins->operand >= 0 && (size_t)ins->operand < vm->baseline_globals_count())
+        vm->jit_store_global(ins->operand, R[ins->a].raw_bits());
+    return Value::nil().raw_bits();
+})
+SURA_BL_HELPER(sura_bl_make_array, { return vm->make_array_from_jit(R, ins); })
+SURA_BL_HELPER(sura_bl_make_dict, { return vm->make_dict_from_jit(R, ins); })
+SURA_BL_HELPER(sura_bl_index_get, {
+    // Indexing a string allocates the one-character result.
+    if (R[ins->b].is_str()) vm->baseline_gc_tick();
+    return vm->jit_index_get(R, ins);
+})
+SURA_BL_HELPER(sura_bl_index_set, { vm->jit_index_set(R, ins); return Value::nil().raw_bits(); })
+SURA_BL_HELPER(sura_bl_dot_get, { return vm->dispatch_dot_get_from_jit(R, ins); })
+SURA_BL_HELPER(sura_bl_dot_set, { vm->dispatch_dot_set_from_jit(R, ins); return Value::nil().raw_bits(); })
+SURA_BL_HELPER(sura_bl_op_in, { vm->jit_op_in(R, ins); return Value::nil().raw_bits(); })
+SURA_BL_HELPER(sura_bl_dict_keys, {
+    vm->baseline_gc_tick();
+    vm->jit_dict_keys(R, ins);
+    return Value::nil().raw_bits();
+})
+// FOREACH_NEXT: 1 to continue, 0 to leave the loop, sentinel on error.
+SURA_BL_HELPER(sura_bl_foreach_next, {
+    if (R[ins->c].is_str()) vm->baseline_gc_tick();
+    return static_cast<uint64_t>(vm->jit_foreach_next(R, ins));
+})
+SURA_BL_HELPER(sura_bl_print, {
+    vm->jit_print(R, ins, ins->op == JitOp::PRINT ? 1 : 0);
+    return Value::nil().raw_bits();
+})
+// Generic CALL_FUNC: closures without a direct link, class constructors and
+// stdlib functions. The dispatcher resets the depth budget for the callee
+// it runs; the caller's budget is restored so its own direct calls keep
+// their accounting.
+SURA_BL_HELPER(sura_bl_call, {
+    const int64_t budget = vm->baseline_depth_budget();
+    const uint64_t bits = vm->dispatch_call_from_jit(R, ins);
+    vm->baseline_depth_budget() = budget;
+    return bits;
+})
+SURA_BL_HELPER(sura_bl_method_call, {
+    vm->baseline_gc_tick();
+    const int64_t budget = vm->baseline_depth_budget();
+    const uint64_t bits = vm->dispatch_method_call_from_jit(R, ins);
+    vm->baseline_depth_budget() = budget;
+    return bits;
+})
+SURA_BL_HELPER(sura_bl_call_builtin, {
+    vm->baseline_gc_tick();
+    return vm->baseline_call_builtin(R, ins);
+})
+#undef SURA_BL_HELPER
+
+// Mirrors the CALL_BUILTIN case in execute_frame.
+inline uint64_t JitVM::baseline_call_builtin(Value* R, const JitInst* ins) {
+    if (!active_chunk) return Value::nil().raw_bits();
+    const JitChunk& chunk = *active_chunk;
+    std::string full_name = chunk.get_string(ins->str_idx);
+    size_t sep = full_name.find('\0');
+    std::string cmd = full_name.substr(0, sep);
+    const uint16_t b = ins->b;
+    if (cmd == "input") {
+        std::string in;
+        if (ins->operand > 0) std::cout << R[b].to_str();
+        std::getline(std::cin, in);
+        return Value(in).raw_bits();
+    }
+    if (cmd == "exit") exit(0);
+    if (cmd == "clock") {
+        auto now = std::chrono::steady_clock::now().time_since_epoch();
+        return Value(std::chrono::duration<double>(now).count()).raw_bits();
+    }
+    if (cmd == "type") return Value(R[b].to_str()).raw_bits();
+    Value std_result;
+    if (SuraStd::try_dispatch(cmd, &R[b], ins->operand, ins->line, std_result))
+        return std_result.raw_bits();
+    static const std::vector<std::string> BUILTINS = {"print", "input", "exit", "clock", "type"};
+    std::string sug = sura_suggest(cmd, BUILTINS);
+    std::string msg = "unknown command '" + cmd + "'";
+    if (!sug.empty()) msg += " (did you mean '" + sug + "'?)";
+    throw JitThrow{msg, ins->line};
 }
 
 

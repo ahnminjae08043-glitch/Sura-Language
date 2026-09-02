@@ -6,7 +6,45 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <vector>
+
+// v4 bodies call the VM helpers declared in jit_native.hpp for every op the
+// analysis marks dynamic. This test links no VM, so each helper is a stub
+// that records how it was called and returns whatever the test chose:
+// a value the body must store, or the deopt sentinel the body must propagate.
+struct HelperCall {
+    const char* name;
+    JitVM* vm;
+    Value* R;
+    const JitInst* ins;
+};
+std::vector<HelperCall> g_helper_calls;
+uint64_t g_helper_result = SURA_JIT_DEOPT_SENTINEL;
+
+#define SURA_TEST_HELPER_STUB(name)                                              \
+    extern "C" uint64_t name(JitVM* vm, Value* R, const JitInst* ins) {         \
+        g_helper_calls.push_back({#name, vm, R, ins});                           \
+        return g_helper_result;                                                  \
+    }
+SURA_TEST_HELPER_STUB(sura_bl_arith)
+SURA_TEST_HELPER_STUB(sura_bl_truthy)
+SURA_TEST_HELPER_STUB(sura_bl_load_global)
+SURA_TEST_HELPER_STUB(sura_bl_store_global)
+SURA_TEST_HELPER_STUB(sura_bl_make_array)
+SURA_TEST_HELPER_STUB(sura_bl_make_dict)
+SURA_TEST_HELPER_STUB(sura_bl_index_get)
+SURA_TEST_HELPER_STUB(sura_bl_index_set)
+SURA_TEST_HELPER_STUB(sura_bl_dot_get)
+SURA_TEST_HELPER_STUB(sura_bl_dot_set)
+SURA_TEST_HELPER_STUB(sura_bl_op_in)
+SURA_TEST_HELPER_STUB(sura_bl_dict_keys)
+SURA_TEST_HELPER_STUB(sura_bl_foreach_next)
+SURA_TEST_HELPER_STUB(sura_bl_print)
+SURA_TEST_HELPER_STUB(sura_bl_call)
+SURA_TEST_HELPER_STUB(sura_bl_method_call)
+SURA_TEST_HELPER_STUB(sura_bl_call_builtin)
+#undef SURA_TEST_HELPER_STUB
 
 namespace {
 
@@ -22,12 +60,19 @@ using SysVNativeTestFn = uint64_t (__attribute__((sysv_abi)) *)(
 using Win64NativeTestFn = uint64_t (__attribute__((ms_abi)) *)(
     JitVM*, Value*, const Value*);
 
-// Stand-in for the pieces of JitVM that v3 bodies touch: the globals vector
-// (read through its begin pointer at a fixed offset) and the direct-call
-// depth budget. The generated code never dereferences anything else.
+// Stand-in for the pieces of JitVM that v3/v4 bodies touch: the globals
+// vector (read through its begin pointer at a fixed offset), the direct-call
+// depth budget, the value stack direct callees take their frames from, and
+// the resume/exception slots a deopt stub writes. Nothing else is
+// dereferenced.
 struct FakeVM {
     std::vector<Value> globals;
     int64_t depth_budget = 0;
+    // v4: direct callees take their frames from the VM's value stack.
+    std::vector<Value> value_stack = std::vector<Value>(256, Value::nil());
+    size_t stack_top = 0;
+    int64_t resume_ip = -1;
+    int64_t exc_valid = 0;
 };
 
 struct FakeLink final : BaselineLinkContext {
@@ -48,6 +93,28 @@ struct FakeLink final : BaselineLinkContext {
     int32_t depth_budget_offset() const override {
         return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->depth_budget) -
                                     reinterpret_cast<const char*>(vm));
+    }
+    int32_t resume_ip_offset() const override {
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->resume_ip) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    int32_t exc_valid_offset() const override {
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->exc_valid) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    int32_t value_stack_data_offset() const override {
+        Value* begin = nullptr;
+        std::memcpy(&begin, &vm->value_stack, sizeof(begin));
+        if (begin != vm->value_stack.data()) return -1;
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->value_stack) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    int32_t stack_top_offset() const override {
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->stack_top) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    int64_t stack_capacity() const override {
+        return static_cast<int64_t>(vm->value_stack.size());
     }
     bool resolve_callee(int, BaselineCalleeInfo&) override { return false; }
     void pin_value(uint64_t bits) override { pinned.push_back(bits); }
@@ -366,6 +433,50 @@ int main() {
                     "direct-call fib(20) must be 6765");
             require(fake_vm.depth_budget == 100,
                     "the depth budget must be restored after the calls return");
+            require(fake_vm.stack_top == 0,
+                    "every direct callee frame must be popped off the value stack");
+        }
+        {
+            // The entry frame's registers stay on the caller's side; a
+            // callee frame is carved at stack_top, so the caller sees the
+            // callee's registers only through the stored result.
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(5.0);
+            fake_vm.depth_budget = 100;
+            fake_vm.value_stack.assign(fake_vm.value_stack.size(), Value::nil());
+            fake_vm.stack_top = 40;
+            Value result = Value::from_bits(
+                fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 5.0) < 1e-12,
+                    "direct-call fib(5) must be 5");
+            require(fake_vm.stack_top == 40,
+                    "a non-zero stack_top must read as it was after the calls");
+            for (size_t i = 0; i < 40; ++i)
+                require(fake_vm.value_stack[i].is_nil(),
+                        "callee frames must not touch slots below stack_top");
+            fake_vm.stack_top = 0;
+        }
+        {
+            // fib never reaches a helper, so no collector can run while a
+            // callee frame is live: the frames stay on the machine stack
+            // and the value stack is never consulted, even when it is too
+            // full for a single frame.
+            require(!fib_compiler.vm_frame,
+                    "a helper-free body must take machine-stack frames");
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 100;
+            fake_vm.stack_top = fake_vm.value_stack.size() - fib.max_regs + 1;
+            fake_vm.resume_ip = -1;
+            Value result = Value::from_bits(
+                fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 6765.0) < 1e-12,
+                    "machine-stack frames must not depend on value-stack room");
+            require(fake_vm.stack_top == fake_vm.value_stack.size() - fib.max_regs + 1 &&
+                        fake_vm.depth_budget == 100 && fake_vm.resume_ip == -1,
+                    "machine-stack frames must leave stack_top, budget and the "
+                    "resume slot alone");
+            fake_vm.stack_top = 0;
         }
         {
             // fib(20) nests 19 direct calls below the entry frame: a budget
@@ -379,6 +490,11 @@ int main() {
                     "exhausting the depth budget must return the deopt sentinel");
             require(fake_vm.depth_budget == 18,
                     "a budget deopt must leave the budget as it found it");
+            require(fake_vm.stack_top == 0,
+                    "a budget deopt must unwind every callee frame");
+            require(fake_vm.resume_ip == 7,
+                    "a budget deopt propagated to the entry frame must resume at "
+                    "its first CALL_FUNC");
             fake_vm.depth_budget = 19;
             regs.assign(fib.max_regs, Value::nil());
             regs[0] = Value(20.0);
@@ -493,6 +609,9 @@ int main() {
                     "Win64 budget exhaustion must return the deopt sentinel");
             require(fake_vm.depth_budget == 18,
                     "a Win64 budget deopt must leave the budget as it found it");
+            require(fake_vm.stack_top == 0 && fake_vm.resume_ip == 7,
+                    "a Win64 budget deopt must unwind the value stack and set "
+                    "the resume slot");
 
             regs.assign(fib.max_regs, Value::nil());
             regs[0] = Value(true);
@@ -526,9 +645,263 @@ int main() {
                     "a Win64 tag guard must reject a non-numeric global");
         }
 
+        // ── v4: dynamic ops route to VM helpers, numeric ops stay inline ──
+        // build(): r1 = []; r2 = 5; r3 = r2 + r2; r1[0] = r3; return r1
+        JitChunk dyn;
+        dyn.max_regs = 5;
+        dyn.constants.emplace_back(5.0);
+        dyn.constants.emplace_back(0.0);
+        dyn.code.emplace_back(JitOp::MAKE_ARRAY, 1, 0, 0, 0);     // helper
+        dyn.code.emplace_back(JitOp::LOAD_CONST, 2, 0, 0, 0);
+        dyn.code.emplace_back(JitOp::ADD, 3, 2, 2);               // inline
+        dyn.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 1);
+        dyn.code.emplace_back(JitOp::INDEX_SET, 1, 4, 3);         // helper
+        dyn.code.emplace_back(JitOp::RETURN_VAL, 1);
+        {
+            // Helpers are opt-in: without them the body still falls back.
+            SysVBaselineCompiler no_helpers(dyn, 0, dyn.code.size(), dyn.max_regs, 0);
+            no_helpers.set_link(&link, 2, /*callable=*/true);
+            require(no_helpers.compile_bytes().empty(),
+                    "dynamic ops must fall back while helpers are disabled");
+        }
+        SysVBaselineCompiler dyn_compiler(dyn, 0, dyn.code.size(), dyn.max_regs, 0);
+        dyn_compiler.set_link(&link, 2, /*callable=*/true);
+        dyn_compiler.set_allow_helpers(true);
+        std::vector<uint8_t> dyn_bytes = dyn_compiler.compile_bytes();
+        require(!dyn_bytes.empty(), "a helper-backed body was rejected");
+        require(!dyn_compiler.pure,
+                "INDEX_SET is a side effect: the body must not be direct-callable");
+        // The helper stubs above carry the platform's native convention,
+        // so only the body compiled for that convention may run them: the
+        // System V body here, the Win64 body below on Windows.
+#if !defined(_WIN32)
+        ExecCode dyn_code = ExecCode::from_bytes(dyn_bytes);
+        auto dyn_function = reinterpret_cast<SysVNativeTestFn>(dyn_code.ptr);
+        {
+            std::vector<Value> regs(dyn.max_regs, Value::nil());
+            g_helper_calls.clear();
+            g_helper_result = Value(42.0).raw_bits();
+            fake_vm.resume_ip = -1;
+            Value result = Value::from_bits(
+                dyn_function(fake_vm_as_jit, regs.data(), dyn.constants.data()));
+            require(g_helper_calls.size() == 2,
+                    "MAKE_ARRAY and INDEX_SET must each call their helper once");
+            require(std::string(g_helper_calls[0].name) == "sura_bl_make_array" &&
+                        std::string(g_helper_calls[1].name) == "sura_bl_index_set",
+                    "helpers must be called in bytecode order");
+            for (const auto& call : g_helper_calls)
+                require(call.vm == fake_vm_as_jit && call.R == regs.data(),
+                        "every helper must receive the VM and the live frame");
+            require(g_helper_calls[0].ins == &dyn.code[0] &&
+                        g_helper_calls[1].ins == &dyn.code[4],
+                    "every helper must receive its own instruction");
+            require(regs[1].is_num() && regs[1].as_num() == 42.0,
+                    "a value-returning helper's result must land in R[a]");
+            require(regs[3].is_num() && regs[3].as_num() == 10.0,
+                    "the numeric add between the helpers must run inline");
+            require(result.is_num() && result.as_num() == 42.0,
+                    "the body must return the helper-produced value");
+            require(fake_vm.resume_ip == -1,
+                    "a body that completes must not touch the resume slot");
+        }
+        {
+            // A helper that raised returns the sentinel: the body stops at
+            // that instruction, names it in the resume slot, and leaves the
+            // pending exception alone for the VM to rethrow.
+            std::vector<Value> regs(dyn.max_regs, Value::nil());
+            g_helper_calls.clear();
+            g_helper_result = SURA_JIT_DEOPT_SENTINEL;
+            fake_vm.resume_ip = -1;
+            fake_vm.exc_valid = 1;
+            require(dyn_function(fake_vm_as_jit, regs.data(), dyn.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "a helper sentinel must propagate out of the body");
+            require(g_helper_calls.size() == 1,
+                    "nothing after a raising helper may run");
+            require(fake_vm.resume_ip == 0,
+                    "the resume slot must name the instruction that raised");
+            require(fake_vm.exc_valid == 1,
+                    "a helper deopt must keep the pending exception");
+            fake_vm.exc_valid = 0;
+        }
+#endif
+        {
+            // Win64 entry: the same body with the shadow space around each
+            // helper call.
+            SysVBaselineCompiler win_dyn(dyn, 0, dyn.code.size(), dyn.max_regs, 0);
+            win_dyn.set_link(&link, 2, /*callable=*/true);
+            win_dyn.set_allow_helpers(true);
+            win_dyn.set_abi(X64BaselineAbi::Win64);
+            std::vector<uint8_t> win_dyn_bytes = win_dyn.compile_bytes();
+            require(!win_dyn_bytes.empty(), "a Win64 helper-backed body was rejected");
+#if defined(_WIN32)
+            ExecCode win_dyn_code = ExecCode::from_bytes(win_dyn_bytes);
+            auto win_dyn_function = reinterpret_cast<Win64NativeTestFn>(win_dyn_code.ptr);
+            std::vector<Value> regs(dyn.max_regs, Value::nil());
+            g_helper_calls.clear();
+            g_helper_result = Value(7.0).raw_bits();
+            Value result = Value::from_bits(
+                win_dyn_function(fake_vm_as_jit, regs.data(), dyn.constants.data()));
+            require(g_helper_calls.size() == 2 &&
+                        g_helper_calls[0].vm == fake_vm_as_jit &&
+                        g_helper_calls[0].R == regs.data() &&
+                        g_helper_calls[0].ins == &dyn.code[0],
+                    "Win64 helpers must receive vm, R and the instruction");
+            require(result.is_num() && result.as_num() == 7.0 &&
+                        regs[3].is_num() && regs[3].as_num() == 10.0,
+                    "the Win64 helper body must mix helper results with inline math");
+#endif
+        }
+
+        // ── v4: a pure body that reaches a helper takes value-stack frames ──
+        // vfib(n): if n <= 1 return n; tmp = []; return vfib(n-1) + vfib(n-2)
+        // MAKE_ARRAY is pure but allocates, so the collector may run under
+        // any direct call into this body: every callee frame must be on the
+        // VM value stack where the collector can see it.
+        JitChunk vfib;
+        vfib.max_regs = 10;
+        vfib.constants.emplace_back(1.0);
+        vfib.constants.emplace_back(2.0);
+        vfib.code.emplace_back(JitOp::LOAD_CONST, 1, 0, 0, 0);
+        vfib.code.emplace_back(JitOp::CMP_LTE, 2, 0, 1);
+        vfib.code.emplace_back(JitOp::JUMP_IF_FALSE, 2, 0, 0, 4);
+        vfib.code.emplace_back(JitOp::RETURN_VAL, 0);
+        vfib.code.emplace_back(JitOp::MAKE_ARRAY, 9, 0, 0, 0);       // helper
+        vfib.code.emplace_back(JitOp::LOAD_GLOBAL, 3, 0, 0, 0);      // vfib
+        vfib.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 0);
+        vfib.code.emplace_back(JitOp::SUB, 5, 0, 4);
+        vfib.code.emplace_back(JitOp::CALL_FUNC, 6, 3, 5, 1);        // ip 8
+        vfib.code.emplace_back(JitOp::LOAD_GLOBAL, 3, 0, 0, 0);
+        vfib.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 1);
+        vfib.code.emplace_back(JitOp::SUB, 5, 0, 4);
+        vfib.code.emplace_back(JitOp::CALL_FUNC, 7, 3, 5, 1);        // ip 12
+        vfib.code.emplace_back(JitOp::ADD, 8, 6, 7);
+        vfib.code.emplace_back(JitOp::RETURN_VAL, 8);
+        JitFuncInfo vfib_info;
+        vfib_info.name = "vfib";
+        vfib_info.params = {"n"};
+        vfib_info.entry_ip = 0;
+        vfib_info.end_ip = vfib.code.size();
+        vfib_info.max_regs = vfib.max_regs;
+        vfib.func_table.push_back(vfib_info);
+        {
+            SysVBaselineCompiler vfib_compiler(vfib, 0, vfib.code.size(), vfib.max_regs, 1);
+            vfib_compiler.set_link(&link, 0, /*callable=*/true);
+            vfib_compiler.set_allow_helpers(true);
+#if defined(_WIN32)
+            vfib_compiler.set_abi(X64BaselineAbi::Win64);
+#endif
+            std::vector<uint8_t> vfib_bytes = vfib_compiler.compile_bytes();
+            require(!vfib_bytes.empty(), "a helper-using recursive body was rejected");
+            require(vfib_compiler.pure && vfib_compiler.vm_frame,
+                    "MAKE_ARRAY keeps a body pure but puts its frames on the value stack");
+            ExecCode vfib_code = ExecCode::from_bytes(vfib_bytes);
+#if defined(_WIN32)
+            auto vfib_function = reinterpret_cast<Win64NativeTestFn>(vfib_code.ptr);
+#else
+            auto vfib_function = reinterpret_cast<SysVNativeTestFn>(vfib_code.ptr);
+#endif
+            {
+                std::vector<Value> regs(vfib.max_regs, Value::nil());
+                regs[0] = Value(15.0);
+                fake_vm.depth_budget = 100;
+                fake_vm.stack_top = 40;
+                fake_vm.value_stack.assign(fake_vm.value_stack.size(), Value::nil());
+                g_helper_calls.clear();
+                g_helper_result = Value(42.0).raw_bits();
+                Value result = Value::from_bits(
+                    vfib_function(fake_vm_as_jit, regs.data(), vfib.constants.data()));
+                require(result.is_num() && std::fabs(result.as_num() - 610.0) < 1e-12,
+                        "value-stack vfib(15) must be 610");
+                require(fake_vm.depth_budget == 100 && fake_vm.stack_top == 40,
+                        "every value-stack callee frame must be popped again");
+                for (size_t i = 0; i < 40; ++i)
+                    require(fake_vm.value_stack[i].is_nil(),
+                            "value-stack frames must not touch slots below stack_top");
+                // The first helper runs in the entry frame; every later
+                // one runs in a callee frame carved from the value stack.
+                require(!g_helper_calls.empty() && g_helper_calls[0].R == regs.data(),
+                        "the entry frame's helper must see the entry registers");
+                bool callee_frames_on_stack = g_helper_calls.size() > 1;
+                for (size_t i = 1; i < g_helper_calls.size(); ++i) {
+                    Value* base = fake_vm.value_stack.data();
+                    if (g_helper_calls[i].R < base + 40 ||
+                        g_helper_calls[i].R >= base + fake_vm.value_stack.size())
+                        callee_frames_on_stack = false;
+                }
+                require(callee_frames_on_stack,
+                        "a helper in a direct callee must see a value-stack frame");
+                fake_vm.stack_top = 0;
+            }
+            {
+                // A value stack too small for one more callee frame deopts
+                // before anything is pushed: stack_top and budget read as
+                // they were, and the resume slot names the CALL_FUNC.
+                std::vector<Value> regs(vfib.max_regs, Value::nil());
+                regs[0] = Value(15.0);
+                fake_vm.depth_budget = 100;
+                fake_vm.stack_top = fake_vm.value_stack.size() - vfib.max_regs + 1;
+                fake_vm.resume_ip = -1;
+                g_helper_result = Value(42.0).raw_bits();
+                require(vfib_function(fake_vm_as_jit, regs.data(), vfib.constants.data()) ==
+                            SURA_JIT_DEOPT_SENTINEL,
+                        "a full value stack must return the deopt sentinel");
+                require(fake_vm.stack_top == fake_vm.value_stack.size() - vfib.max_regs + 1,
+                        "a capacity deopt must leave stack_top as it found it");
+                require(fake_vm.depth_budget == 100,
+                        "a capacity deopt must leave the budget as it found it");
+                require(fake_vm.resume_ip == 8,
+                        "a capacity deopt must resume at the first CALL_FUNC");
+                fake_vm.stack_top = 0;
+            }
+            {
+                // vfib(15) nests 14 direct calls: a budget of 13 deopts,
+                // and every value-stack frame is popped on the way out.
+                std::vector<Value> regs(vfib.max_regs, Value::nil());
+                regs[0] = Value(15.0);
+                fake_vm.depth_budget = 13;
+                fake_vm.resume_ip = -1;
+                require(vfib_function(fake_vm_as_jit, regs.data(), vfib.constants.data()) ==
+                            SURA_JIT_DEOPT_SENTINEL,
+                        "exhausting the budget under value-stack frames must deopt");
+                require(fake_vm.depth_budget == 13 && fake_vm.stack_top == 0 &&
+                            fake_vm.resume_ip == 8,
+                        "a budget deopt must unwind every value-stack frame");
+                fake_vm.depth_budget = 14;
+                regs.assign(vfib.max_regs, Value::nil());
+                regs[0] = Value(15.0);
+                Value result = Value::from_bits(
+                    vfib_function(fake_vm_as_jit, regs.data(), vfib.constants.data()));
+                require(result.is_num() && std::fabs(result.as_num() - 610.0) < 1e-12,
+                        "a budget of exactly the recursion depth must succeed");
+            }
+            {
+                // A helper that raised inside a callee: the sentinel walks
+                // back up through every direct call, frames popped, budget
+                // restored, and the entry frame names its own CALL_FUNC.
+                std::vector<Value> regs(vfib.max_regs, Value::nil());
+                regs[0] = Value(15.0);
+                fake_vm.depth_budget = 100;
+                fake_vm.resume_ip = -1;
+                fake_vm.exc_valid = 1;
+                g_helper_calls.clear();
+                g_helper_result = SURA_JIT_DEOPT_SENTINEL;
+                require(vfib_function(fake_vm_as_jit, regs.data(), vfib.constants.data()) ==
+                            SURA_JIT_DEOPT_SENTINEL,
+                        "a raising helper must propagate the sentinel");
+                require(g_helper_calls.size() == 1 && fake_vm.resume_ip == 4 &&
+                            fake_vm.exc_valid == 1 && fake_vm.stack_top == 0 &&
+                            fake_vm.depth_budget == 100,
+                        "the entry frame's own helper deopt keeps the exception and "
+                        "names the raising instruction");
+                fake_vm.exc_valid = 0;
+                g_helper_result = Value(42.0).raw_bits();
+            }
+        }
+
         std::cout << "jit sysv baseline: PASS (division, six comparisons, NaN semantics, "
                      "guarded fallbacks, parameter guards, loops, global guards, "
-                     "direct calls, and the Win64 entry)\n";
+                     "direct calls, VM helpers, hybrid frames, and the Win64 entry)\n";
 #else
         std::cout << "jit sysv baseline: PASS (non-x86-64 compile-only target)\n";
 #endif
