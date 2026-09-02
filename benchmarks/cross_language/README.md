@@ -13,8 +13,8 @@ audited.
 
 **Read the platform section before quoting any number.** Sura's JIT is complete
 on Windows x64 only; on Linux and ARM64 the native tier is a baseline that
-refuses function calls, array indexing and field access, so most of this suite
-runs interpreted there. The two tables differ a lot, and the Linux one is the
+refuses array indexing, strings, dictionaries and field access, so most of
+this suite runs interpreted there. The two tables differ a lot, and the Linux one is the
 less flattering of the two.
 
 ## Why the checksums matter
@@ -87,12 +87,14 @@ measured" rather than as a time.
 
 The numbers above are from Windows x64, where the JIT is complete. On Linux and
 on ARM64 the native tier is a **baseline** that compiles numeric code only. On
-Linux x86-64 it handles loops, guarded global reads and native-to-native calls
-between pure numeric functions (so recursive `fib` runs entirely as native
-code), but it still refuses array indexing, strings, dictionaries and field
-access. In this suite that means two of the ten functions get native code
-instead of all ten, and the rest run interpreted. ARM64 does not have the
-call support yet, so only the numeric loop reaches native code there.
+Linux x86-64 and on ARM64 it handles loops, guarded global reads and
+native-to-native calls between pure numeric functions (so recursive `fib` runs
+entirely as native code), but it still refuses array indexing, strings,
+dictionaries and field access. In this suite that means two of the ten
+functions get native code instead of all ten, and the rest run interpreted.
+The ARM64 call support is validated by the unit tests on the ARM64 CI runners
+and by instruction-level emulation; the ARM64 row below predates it and still
+shows the loop-only tier.
 
 Windows x64 uses the same baseline for the pure numeric functions — that is
 where its `fib` and `numeric` columns come from — and its full tier for
@@ -117,8 +119,9 @@ rather than quoting the better platform:
   code. Overall Sura is about 1.25x faster than CPython by geometric mean —
   well ahead on calls and arithmetic, behind on strings, dictionaries and
   objects, which still run interpreted.
-- **On ARM64** only the numeric loop reaches native code, and Sura lands within
-  about 10% of CPython overall.
+- **On ARM64** the same two functions now reach native code as on Linux
+  x86-64; the figure quoted here (Sura within about 10% of CPython overall)
+  is from the loop-only tier and will be re-measured.
 
 What holds on both platforms is where the native tier or a native library
 actually applies:

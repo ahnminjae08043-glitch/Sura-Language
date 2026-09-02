@@ -2,7 +2,9 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <map>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -20,6 +22,58 @@ uint32_t read_word(const std::vector<uint8_t>& code, size_t offset) {
            (static_cast<uint32_t>(code[offset + 2]) << 16) |
            (static_cast<uint32_t>(code[offset + 3]) << 24);
 }
+
+// Byte offsets of every BL in `code`, each paired with its resolved target
+// offset relative to the start of the body.
+std::vector<std::pair<size_t, size_t>> find_bl(const std::vector<uint8_t>& code) {
+    std::vector<std::pair<size_t, size_t>> found;
+    for (size_t at = 0; at + 4 <= code.size(); at += 4) {
+        const uint32_t w = read_word(code, at);
+        if ((w & 0xFC000000U) != 0x94000000U) continue;
+        int32_t imm = static_cast<int32_t>(w & 0x03FFFFFFU);
+        if (imm & 0x02000000) imm -= 0x04000000;
+        found.emplace_back(at, static_cast<size_t>(
+            static_cast<int64_t>(at) + static_cast<int64_t>(imm) * 4));
+    }
+    return found;
+}
+
+// Stand-in for the pieces of JitVM that v3 bodies touch: the globals vector
+// (read through its begin pointer at a fixed offset) and the direct-call
+// depth budget. The generated code never dereferences anything else.
+struct FakeVM {
+    std::vector<Value> globals;
+    int64_t depth_budget = 0;
+};
+
+struct FakeLink final : BaselineLinkContext {
+    FakeVM* vm = nullptr;
+    std::vector<uint64_t> pinned;
+    std::map<int, BaselineCalleeInfo> callees;
+    bool global_value(int idx, uint64_t& bits) const override {
+        if (idx < 0 || static_cast<size_t>(idx) >= vm->globals.size()) return false;
+        bits = vm->globals[static_cast<size_t>(idx)].raw_bits();
+        return true;
+    }
+    int32_t globals_vector_offset() const override {
+        Value* begin = nullptr;
+        std::memcpy(&begin, &vm->globals, sizeof(begin));
+        if (begin != vm->globals.data()) return -1;
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->globals) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    int32_t depth_budget_offset() const override {
+        return static_cast<int32_t>(reinterpret_cast<const char*>(&vm->depth_budget) -
+                                    reinterpret_cast<const char*>(vm));
+    }
+    bool resolve_callee(int fidx, BaselineCalleeInfo& out) override {
+        auto it = callees.find(fidx);
+        if (it == callees.end()) return false;
+        out = it->second;
+        return true;
+    }
+    void pin_value(uint64_t bits) override { pinned.push_back(bits); }
+};
 
 } // namespace
 
@@ -410,14 +464,315 @@ int main() {
                     bad_jump.max_regs).compile_bytes().empty(),
                 "out-of-body jump target must fall back to the register VM");
 
+        // ── v3: LOAD_GLOBAL identity guard + self-recursive direct call ──
+        // fib(n): if n <= 1 return n; return fib(n - 1) + fib(n - 2)
+        JitChunk fib;
+        fib.max_regs = 9;
+        fib.constants.emplace_back(1.0);
+        fib.constants.emplace_back(2.0);
+        fib.code.emplace_back(JitOp::LOAD_CONST, 1, 0, 0, 0);       // one = 1
+        fib.code.emplace_back(JitOp::CMP_LTE, 2, 0, 1);              // n <= 1 ?
+        fib.code.emplace_back(JitOp::JUMP_IF_FALSE, 2, 0, 0, 4);
+        fib.code.emplace_back(JitOp::RETURN_VAL, 0);
+        fib.code.emplace_back(JitOp::LOAD_GLOBAL, 3, 0, 0, 0);      // fib
+        fib.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 0);
+        fib.code.emplace_back(JitOp::SUB, 5, 0, 4);                  // n - 1
+        fib.code.emplace_back(JitOp::CALL_FUNC, 6, 3, 5, 1);         // fib(n - 1)
+        fib.code.emplace_back(JitOp::LOAD_GLOBAL, 3, 0, 0, 0);
+        fib.code.emplace_back(JitOp::LOAD_CONST, 4, 0, 0, 1);
+        fib.code.emplace_back(JitOp::SUB, 5, 0, 4);                  // n - 2
+        fib.code.emplace_back(JitOp::CALL_FUNC, 7, 3, 5, 1);         // fib(n - 2)
+        fib.code.emplace_back(JitOp::ADD, 8, 6, 7);
+        fib.code.emplace_back(JitOp::RETURN_VAL, 8);
+        JitFuncInfo fib_info;
+        fib_info.name = "fib";
+        fib_info.params = {"n"};
+        fib_info.entry_ip = 0;
+        fib_info.end_ip = fib.code.size();
+        fib_info.max_regs = fib.max_regs;
+        fib.func_table.push_back(fib_info);
+
+        GCClosure fib_closure("fib");
+        fib_closure.func_idx = 0;
+        GCClosure other_closure("other");
+        other_closure.func_idx = 0;
+        FakeVM fake_vm;
+        fake_vm.globals.push_back(Value(static_cast<GCObject*>(&fib_closure)));
+        FakeLink link;
+        link.vm = &fake_vm;
+        auto* fake_vm_as_jit = reinterpret_cast<JitVM*>(&fake_vm);
+        (void)fake_vm_as_jit;  // only dereferenced by native runs
+
+        // Without a link the body is refused: LOAD_GLOBAL has no guard to
+        // check against and CALL_FUNC no target.
+        require(Arm64BaselineCompiler(fib, 0, fib.code.size(), fib.max_regs, 1)
+                    .compile_bytes().empty(),
+                "an unlinked ARM64 body with globals and calls must fall back");
+
+        Arm64BaselineCompiler fib_compiler(fib, 0, fib.code.size(), fib.max_regs, 1);
+        fib_compiler.set_link(&link, 0, /*callable=*/true);
+        std::vector<uint8_t> fib_bytes = fib_compiler.compile_bytes();
+        require(!fib_bytes.empty(), "linked ARM64 self-recursive fib was rejected");
+        require(fib_compiler.return_kind == BaselineBodyAnalysis::kNum,
+                "fib's self-return hypothesis must settle on Num");
+        require(link.pinned.size() == 2 &&
+                    link.pinned[0] == fake_vm.globals[0].raw_bits() &&
+                    link.pinned[1] == fake_vm.globals[0].raw_bits(),
+                "each ARM64 identity guard must pin the closure it compares against");
+        // The parameter guard (9 words, as in the leaf bodies) is followed
+        // by the framed prologue; that boundary is the unguarded entry
+        // native callers jump to.
+        require(fib_compiler.unguarded_entry_offset == 36,
+                "ARM64 fib must expose its unguarded entry right after the guard");
+        require(read_word(fib_bytes, 36) == 0xA9BD7BFDU,
+                "ARM64 framed prologue must start with stp x29, x30, [sp, #-48]!");
+        require(read_word(fib_bytes, 40) == 0xA90153F3U,
+                "ARM64 framed prologue must save x19 and x20");
+        require(read_word(fib_bytes, 44) == 0xF90013F5U,
+                "ARM64 framed prologue must save x21");
+        require(read_word(fib_bytes, 48) == 0x910003FDU,
+                "ARM64 framed prologue must set the frame pointer");
+        require(read_word(fib_bytes, 52) == 0xAA0103F3U &&
+                    read_word(fib_bytes, 56) == 0xAA0203F4U &&
+                    read_word(fib_bytes, 60) == 0xAA0003F5U,
+                "ARM64 framed prologue must move R, consts and vm into x19-x21");
+        require(read_word(fib_bytes, fib_bytes.size() - 4) == 0xD65F03C0U,
+                "ARM64 fib does not end in ret");
+        {
+            // Both self calls must be direct BLs to the unguarded entry.
+            const auto calls = find_bl(fib_bytes);
+            require(calls.size() == 2, "ARM64 fib must contain exactly two BLs");
+            for (const auto& call : calls)
+                require(call.second == fib_compiler.unguarded_entry_offset,
+                        "ARM64 self calls must target the unguarded entry");
+            // Each call hands the callee the machine-stack frame as R.
+            require(read_word(fib_bytes, calls[0].first - 12) == 0xAA1503E0U &&
+                        read_word(fib_bytes, calls[0].first - 8) == 0x910003E1U &&
+                        read_word(fib_bytes, calls[0].first - 4) == 0xAA1403E2U,
+                    "ARM64 direct call must pass vm, sp and consts in x0-x2");
+        }
+
+        // A body that is not callable by direct call (it reads its argument
+        // count, say) keeps its globals but must refuse to call itself.
+        {
+            Arm64BaselineCompiler uncallable(fib, 0, fib.code.size(), fib.max_regs, 1);
+            uncallable.set_link(&link, 0, /*callable=*/false);
+            require(uncallable.compile_bytes().empty(),
+                    "an ARM64 self call into an uncallable body must fall back");
+        }
+
+        // ── v3: a leaf callee and a caller that reaches it through BLR ──
+        // square(n) = n * n; sum_squares(a, b) = square(a) + square(b)
+        JitChunk pair;
+        pair.max_regs = 7;
+        JitFuncInfo square_info;
+        square_info.name = "square";
+        square_info.params = {"n"};
+        square_info.entry_ip = pair.code.size();
+        pair.code.emplace_back(JitOp::MUL, 1, 0, 0);
+        pair.code.emplace_back(JitOp::RETURN_VAL, 1);
+        square_info.end_ip = pair.code.size();
+        square_info.max_regs = 2;
+        pair.func_table.push_back(square_info);
+        JitFuncInfo sum_info;
+        sum_info.name = "sum_squares";
+        sum_info.params = {"a", "b"};
+        sum_info.entry_ip = pair.code.size();
+        pair.code.emplace_back(JitOp::LOAD_GLOBAL, 2, 0, 0, 1);     // square
+        pair.code.emplace_back(JitOp::MOVE, 3, 0);
+        pair.code.emplace_back(JitOp::CALL_FUNC, 4, 2, 3, 1);        // square(a)
+        pair.code.emplace_back(JitOp::LOAD_GLOBAL, 2, 0, 0, 1);
+        pair.code.emplace_back(JitOp::MOVE, 3, 1);
+        pair.code.emplace_back(JitOp::CALL_FUNC, 5, 2, 3, 1);        // square(b)
+        pair.code.emplace_back(JitOp::ADD, 6, 4, 5);
+        pair.code.emplace_back(JitOp::RETURN_VAL, 6);
+        sum_info.end_ip = pair.code.size();
+        sum_info.max_regs = 7;
+        pair.func_table.push_back(sum_info);
+
+        GCClosure square_closure("square");
+        square_closure.func_idx = 0;
+        fake_vm.globals.push_back(Value(static_cast<GCObject*>(&square_closure)));
+
+        Arm64BaselineCompiler square_compiler(
+            pair, square_info.entry_ip, square_info.end_ip, square_info.max_regs, 1);
+        square_compiler.set_link(&link, 0, /*callable=*/true);
+        std::vector<uint8_t> square_bytes = square_compiler.compile_bytes();
+        require(!square_bytes.empty(), "ARM64 square was rejected");
+        require(square_compiler.unguarded_entry_offset == 36,
+                "a leaf callee's unguarded entry follows its parameter guard");
+        require(read_word(square_bytes, 36) == 0xFD400020U,
+                "a leaf callee must not open a frame");
+#if SURA_JIT_ARM64_BASELINE
+        ExecCode square_code = ExecCode::from_bytes(square_bytes);
+        const uint8_t* square_entry = static_cast<const uint8_t*>(square_code.ptr);
+#else
+        const uint8_t* square_entry = square_bytes.data();
+#endif
+        {
+            BaselineCalleeInfo info;
+            info.guarded_entry = square_entry;
+            info.unguarded_entry = square_entry + square_compiler.unguarded_entry_offset;
+            info.frame_regs = square_info.max_regs;
+            info.params = 1;
+            info.return_kind = static_cast<uint8_t>(square_compiler.return_kind.k);
+            info.return_fidx = square_compiler.return_kind.fidx;
+            link.callees[0] = info;
+        }
+        Arm64BaselineCompiler sum_compiler(
+            pair, sum_info.entry_ip, sum_info.end_ip, sum_info.max_regs, 2);
+        sum_compiler.set_link(&link, 1, /*callable=*/true);
+        std::vector<uint8_t> sum_bytes = sum_compiler.compile_bytes();
+        require(!sum_bytes.empty(), "ARM64 sum_squares was rejected");
+        require(find_bl(sum_bytes).empty(),
+                "calls into another body must not use a PC-relative BL");
+        {
+            size_t blr_count = 0;
+            for (size_t at = 0; at + 4 <= sum_bytes.size(); at += 4)
+                if (read_word(sum_bytes, at) == 0xD63F0120U) ++blr_count;  // blr x9
+            require(blr_count == 2,
+                    "ARM64 sum_squares must reach square through two BLRs");
+        }
+
+        // ── v3: numeric global through a NaN-tag guard ──
+        // scale(n): return n * RATE
+        JitChunk scale;
+        scale.max_regs = 3;
+        scale.code.emplace_back(JitOp::LOAD_GLOBAL, 1, 0, 0, 2);    // RATE
+        scale.code.emplace_back(JitOp::MUL, 2, 0, 1);
+        scale.code.emplace_back(JitOp::RETURN_VAL, 2);
+        fake_vm.globals.push_back(Value(3.0));
+        Arm64BaselineCompiler scale_compiler(scale, 0, scale.code.size(), scale.max_regs, 1);
+        scale_compiler.set_link(&link, 2, /*callable=*/true);
+        std::vector<uint8_t> scale_bytes = scale_compiler.compile_bytes();
+        require(!scale_bytes.empty(), "an ARM64 numeric global read was rejected");
+
+#if SURA_JIT_ARM64_BASELINE
+        ExecCode fib_code = ExecCode::from_bytes(fib_bytes);
+        auto fib_function = reinterpret_cast<SuraNativeFn>(fib_code.ptr);
+        {
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 100;
+            Value result = Value::from_bits(
+                fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 6765.0) < 1e-12,
+                    "ARM64 direct-call fib(20) must be 6765");
+            require(fake_vm.depth_budget == 100,
+                    "ARM64 must restore the depth budget after the calls return");
+        }
+        {
+            // fib(20) nests 19 direct calls below the entry frame: a budget
+            // of 18 must deopt and read as untouched afterwards.
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 18;
+            require(fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "ARM64 budget exhaustion must return the deopt sentinel");
+            require(fake_vm.depth_budget == 18,
+                    "an ARM64 budget deopt must leave the budget as it found it");
+            fake_vm.depth_budget = 19;
+            regs.assign(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            Value result = Value::from_bits(
+                fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 6765.0) < 1e-12,
+                    "an ARM64 budget of exactly the recursion depth must succeed");
+        }
+        {
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(true);
+            fake_vm.depth_budget = 100;
+            require(fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 non-numeric argument must still hit the entry guard");
+        }
+        {
+            // Rebinding the global to another closure breaks the identity
+            // guard even though the new closure names the same body.
+            fake_vm.globals[0] = Value(static_cast<GCObject*>(&other_closure));
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 100;
+            require(fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 rebound global must fail the identity guard");
+            require(fake_vm.depth_budget == 100,
+                    "an ARM64 identity-guard deopt must not consume budget");
+            fake_vm.globals[0] = Value(static_cast<GCObject*>(&fib_closure));
+            regs.assign(fib.max_regs, Value::nil());
+            regs[0] = Value(1.0);
+            Value result = Value::from_bits(
+                fib_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 1.0) < 1e-12,
+                    "restoring the ARM64 binding must make the guard pass again");
+        }
+        {
+            ExecCode sum_code = ExecCode::from_bytes(sum_bytes);
+            auto sum_function = reinterpret_cast<SuraNativeFn>(sum_code.ptr);
+            std::vector<Value> regs(sum_info.max_regs, Value::nil());
+            regs[0] = Value(3.0);
+            regs[1] = Value(4.0);
+            fake_vm.depth_budget = 100;
+            Value result = Value::from_bits(
+                sum_function(fake_vm_as_jit, regs.data(), nullptr));
+            require(result.is_num() && std::fabs(result.as_num() - 25.0) < 1e-12,
+                    "ARM64 sum_squares(3, 4) through BLR must be 25");
+            require(fake_vm.depth_budget == 100,
+                    "ARM64 BLR calls must restore the depth budget");
+            fake_vm.depth_budget = 0;
+            regs.assign(sum_info.max_regs, Value::nil());
+            regs[0] = Value(3.0);
+            regs[1] = Value(4.0);
+            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 BLR call with no budget must deopt");
+            fake_vm.globals[1] = Value(static_cast<GCObject*>(&fib_closure));
+            fake_vm.depth_budget = 100;
+            regs.assign(sum_info.max_regs, Value::nil());
+            regs[0] = Value(3.0);
+            regs[1] = Value(4.0);
+            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 rebound callee must fail the identity guard");
+            fake_vm.globals[1] = Value(static_cast<GCObject*>(&square_closure));
+        }
+        {
+            ExecCode scale_code = ExecCode::from_bytes(scale_bytes);
+            auto scale_function = reinterpret_cast<SuraNativeFn>(scale_code.ptr);
+            std::vector<Value> regs(scale.max_regs, Value::nil());
+            regs[0] = Value(7.0);
+            Value result = Value::from_bits(
+                scale_function(fake_vm_as_jit, regs.data(), nullptr));
+            require(result.is_num() && std::fabs(result.as_num() - 21.0) < 1e-12,
+                    "ARM64 scale(7) with RATE = 3 must be 21");
+            // The guard checks the tag, not the value: a new number passes.
+            fake_vm.globals[2] = Value(5.0);
+            regs.assign(scale.max_regs, Value::nil());
+            regs[0] = Value(7.0);
+            result = Value::from_bits(
+                scale_function(fake_vm_as_jit, regs.data(), nullptr));
+            require(result.is_num() && std::fabs(result.as_num() - 35.0) < 1e-12,
+                    "ARM64 scale(7) with RATE = 5 must read the live value 35");
+            fake_vm.globals[2] = Value(true);
+            regs.assign(scale.max_regs, Value::nil());
+            regs[0] = Value(7.0);
+            require(scale_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 non-numeric global must fail the tag guard");
+        }
+#endif
+
 #if SURA_JIT_ARM64_BASELINE
         // The smoke gate distinguishes real ARM64 runs by the literal phrase
         // "native execution"; keep it in this branch's summary.
         std::cout << "jit arm64 baseline: PASS (native execution of division/comparisons, "
-                     "parameter guards, loops, and guarded fallbacks)\n";
+                     "parameter guards, loops, guarded fallbacks, global guards, "
+                     "and direct calls)\n";
 #else
         std::cout << "jit arm64 baseline: PASS (division/comparison encoder, parameter "
-                     "guards, loops, and guarded fallbacks)\n";
+                     "guards, loops, guarded fallbacks, global guards, and direct calls)\n";
 #endif
         return 0;
     } catch (const std::exception& error) {

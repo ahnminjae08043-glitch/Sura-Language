@@ -44,7 +44,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #elif defined(__aarch64__) || defined(_M_ARM64)
         #if SURA_JIT_ARM64_BASELINE
             return {"windows", "arm64", "windows-arm64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free straight-line ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, and division by a proven nonzero divisor; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
         #else
             return {"windows", "arm64", "windows-arm64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};
@@ -57,7 +57,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #if defined(__aarch64__) || defined(__arm64__)
         #if SURA_JIT_ARM64_BASELINE
             return {"macos", "arm64", "aapcs64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free straight-line ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, and division by a proven nonzero divisor; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
         #else
             return {"macos", "arm64", "aapcs64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};
@@ -73,7 +73,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
     #if defined(__aarch64__)
         #if SURA_JIT_ARM64_BASELINE
             return {"linux", "arm64", "aapcs64", "arm64-aapcs-baseline", true,
-                    "register-vm", "exception-free straight-line ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, and division by a proven nonzero divisor; unsupported bytecode falls back to the register VM"};
+                    "register-vm", "exception-free ARM64 baseline emitter supports constants, moves, proven-numeric +, -, *, unary -, comparisons, division by a proven nonzero divisor, guarded global reads and native direct calls between pure numeric functions; unsupported bytecode falls back to the register VM"};
         #else
             return {"linux", "arm64", "aapcs64", "none", false,
                     "register-vm", "the ARM64 baseline requires a supported little-endian target"};

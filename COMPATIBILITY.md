@@ -90,8 +90,8 @@ Sura는 `major.minor.patch` 형식을 사용한다.
   사이의 네이티브 직접 호출을 더하며, 가드 실패나 재귀 깊이 예산 소진은
   register VM으로 되돌아가 같은 오류를 낸다. Win64 x86-64는 baseline이
   거부한 함수를 기존 부분 컴파일러로 넘긴다. little-endian
-  Windows·Linux·macOS ARM64는 전역·호출을 제외한 같은 범위의 AAPCS64
-  baseline을 사용한다. 0이거나 정적으로 확인할 수 없는 제수, 동적 비교를
+  Windows·Linux·macOS ARM64는 가드된 전역 읽기와 직접 호출까지 같은
+  범위를 갖는 AAPCS64 baseline을 사용한다. 0이거나 정적으로 확인할 수 없는 제수, 동적 비교를
   포함한 그 밖의 bytecode와 macOS x86-64는 register VM에서 실행한다.
 - CUDA: 호환 NVIDIA 드라이버와 구현된 resident 연산만 지원
 - 미디어: FFmpeg가 설치되었거나 명시적으로 지정된 환경에서 지원

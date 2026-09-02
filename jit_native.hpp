@@ -1239,6 +1239,9 @@ class Arm64BaselineCompiler {
     uint32_t frame_regs;
     uint32_t guarded_params;
     bool deopt_allowed;
+    BaselineLinkContext* link = nullptr;
+    int self_fidx = -1;
+    bool self_callable = false;
 
     class Emitter {
         std::vector<uint8_t>& code;
@@ -1342,6 +1345,52 @@ class Arm64BaselineCompiler {
             code[at + 3] = static_cast<uint8_t>((inst >> 24) & 0xffU);
             return true;
         }
+        // Register-offset forms for vm-relative slots whose displacement
+        // may exceed the 12-bit scaled immediate: [base + index].
+        void ldr_x_reg(unsigned target, unsigned base, unsigned index) {
+            word(0xF8606800U | (index << 16) | (base << 5) | target);
+        }
+        void str_x_reg(unsigned source, unsigned base, unsigned index) {
+            word(0xF8206800U | (index << 16) | (base << 5) | source);
+        }
+        void add_imm(unsigned target, unsigned source, uint16_t imm12) {
+            word(0x91000000U | (static_cast<uint32_t>(imm12) << 10) |
+                 (source << 5) | target);
+        }
+        void sub_imm(unsigned target, unsigned source, uint16_t imm12) {
+            word(0xD1000000U | (static_cast<uint32_t>(imm12) << 10) |
+                 (source << 5) | target);
+        }
+        void subs_imm(unsigned target, unsigned source, uint16_t imm12) {
+            word(0xF1000000U | (static_cast<uint32_t>(imm12) << 10) |
+                 (source << 5) | target);
+        }
+        void mov_xx(unsigned target, unsigned source) {  // orr xd, xzr, xs
+            word(0xAA0003E0U | (source << 16) | target);
+        }
+        // STP/LDP with a signed 7-bit offset in eight-byte units.
+        void stp_pre(unsigned t1, unsigned t2, unsigned base, int imm7) {
+            word(0xA9800000U | ((static_cast<uint32_t>(imm7) & 0x7FU) << 15) |
+                 (t2 << 10) | (base << 5) | t1);
+        }
+        void stp_off(unsigned t1, unsigned t2, unsigned base, int imm7) {
+            word(0xA9000000U | ((static_cast<uint32_t>(imm7) & 0x7FU) << 15) |
+                 (t2 << 10) | (base << 5) | t1);
+        }
+        void ldp_off(unsigned t1, unsigned t2, unsigned base, int imm7) {
+            word(0xA9400000U | ((static_cast<uint32_t>(imm7) & 0x7FU) << 15) |
+                 (t2 << 10) | (base << 5) | t1);
+        }
+        void ldp_post(unsigned t1, unsigned t2, unsigned base, int imm7) {
+            word(0xA8C00000U | ((static_cast<uint32_t>(imm7) & 0x7FU) << 15) |
+                 (t2 << 10) | (base << 5) | t1);
+        }
+        size_t bl_placeholder() {
+            const size_t at = code.size();
+            word(0x94000000U);
+            return at;
+        }
+        void blr(unsigned target) { word(0xD63F0000U | (target << 5)); }
         void bti_c() { word(0xD503245FU); }
         void ret() { word(0xD65F03C0U); }
     };
@@ -1356,7 +1405,22 @@ public:
         : chunk(source), entry_ip(begin), end_ip(end), frame_regs(registers),
           guarded_params(guarded_param_regs), deopt_allowed(allow_deopt) {}
 
-    std::vector<uint8_t> compile_bytes() const {
+    // Offset of the entry past the parameter guards, for direct callers
+    // that have proven their arguments numeric. Valid after compile_bytes.
+    size_t unguarded_entry_offset = 0;
+    // Static kind of the value this body returns (see BaselineBodyAnalysis).
+    BaselineBodyAnalysis::RegKind return_kind = BaselineBodyAnalysis::kOther;
+
+    // Same contract as SysVBaselineCompiler::set_link: the context resolves
+    // globals and callees; `callable` says whether this body itself may be
+    // entered by a direct call (needed for self recursion).
+    void set_link(BaselineLinkContext* ctx, int fidx, bool callable) {
+        link = ctx;
+        self_fidx = fidx;
+        self_callable = callable;
+    }
+
+    std::vector<uint8_t> compile_bytes() {
         // AArch64 unsigned load/store immediates are 12-bit values scaled by
         // eight for X/D registers, so register and constant indices must fit.
         if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
@@ -1366,8 +1430,23 @@ public:
         const size_t body_len = end_ip - entry_ip;
         BaselineBodyAnalysis analysis(chunk, entry_ip, end_ip, frame_regs,
                                       guarded_params, 4095U, 4095,
-                                      deopt_allowed);
+                                      deopt_allowed,
+                                      /*require_provable_div=*/true,
+                                      link, self_fidx, self_callable);
         if (!analysis.ok) return {};
+        return_kind = analysis.return_kind;
+
+        // A body that reads globals or calls needs the VM pointer and must
+        // survive calls, so it keeps R, the constants and the VM in the
+        // callee-saved x19/x20/x21 behind a frame. Leaf bodies keep working
+        // straight out of the argument registers with no frame at all, so
+        // their encoding is unchanged.
+        const bool needs_vm = analysis.uses_vm;
+        const unsigned R = needs_vm ? 19U : 1U;
+        const unsigned K = needs_vm ? 20U : 2U;
+        const unsigned VM = 21U;
+        const int32_t globals_off = needs_vm ? link->globals_vector_offset() : 0;
+        const int32_t budget_off = needs_vm ? link->depth_budget_offset() : 0;
 
         std::vector<uint8_t> code;
         Emitter em(code);
@@ -1376,19 +1455,63 @@ public:
         em.bti_c();
 
         // Entry guards: (bits & NBQNAN) == NBQNAN means "not a number";
-        // branch to the shared deopt tail that returns the sentinel.
-        std::vector<size_t> deopt_branches;
+        // branch to a tail that returns the sentinel. They run before the
+        // prologue, so their tail has nothing to unwind.
+        std::vector<size_t> entry_deopt_branches;
         for (uint32_t p = 0; p < guarded_params; ++p) {
             em.ldr_x(9, 1, static_cast<uint16_t>(p));
             em.mov_imm64(10, NBQNAN);
             em.and_xx(9, 9, 10);
             em.cmp_xx(9, 10);
-            deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+            entry_deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
         }
 
+        unguarded_entry_offset = em.pos();
+        if (needs_vm) {
+            em.stp_pre(29, 30, 31, -6);    // stp x29, x30, [sp, #-48]!
+            em.stp_off(19, 20, 31, 2);     // stp x19, x20, [sp, #16]
+            em.str_x(VM, 31, 4);           // str x21, [sp, #32]
+            em.add_imm(29, 31, 0);         // mov x29, sp
+            em.mov_xx(R, 1);
+            em.mov_xx(K, 2);
+            em.mov_xx(VM, 0);
+        }
+        auto emit_return = [&]() {
+            if (needs_vm) {
+                em.ldr_x(VM, 31, 4);
+                em.ldp_off(19, 20, 31, 2);
+                em.ldp_post(29, 30, 31, 6);
+            }
+            em.ret();
+        };
+        // Access a vm-relative slot: the scaled immediate form reaches the
+        // first 32 KiB of JitVM; deeper displacements go through x10.
+        auto slot_fits_immediate = [](int32_t disp) {
+            return disp >= 0 && disp % 8 == 0 && disp / 8 < 4096;
+        };
+        auto load_vm_slot = [&](unsigned target, int32_t disp) {
+            if (slot_fits_immediate(disp)) {
+                em.ldr_x(target, VM, static_cast<uint16_t>(disp / 8));
+                return;
+            }
+            em.mov_imm64(10, static_cast<uint64_t>(static_cast<int64_t>(disp)));
+            em.ldr_x_reg(target, VM, 10);
+        };
+        auto store_vm_slot = [&](unsigned source, int32_t disp) {
+            if (slot_fits_immediate(disp)) {
+                em.str_x(source, VM, static_cast<uint16_t>(disp / 8));
+                return;
+            }
+            em.mov_imm64(10, static_cast<uint64_t>(static_cast<int64_t>(disp)));
+            em.str_x_reg(source, VM, 10);
+        };
+
+        std::vector<size_t> deopt_branches;
         std::vector<size_t> ip_off(body_len, 0);
         struct BranchFixup { size_t at; size_t target_ip; };
         std::vector<BranchFixup> branch_fixups;
+        struct SelfCallFixup { size_t at; bool unguarded; };
+        std::vector<SelfCallFixup> self_call_fixups;
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
@@ -1398,20 +1521,20 @@ public:
                 case JitOp::NOP:
                     break;
                 case JitOp::LOAD_CONST:
-                    em.ldr_x(9, 2, static_cast<uint16_t>(inst.operand));
-                    em.str_x(9, 1, inst.a);
+                    em.ldr_x(9, K, static_cast<uint16_t>(inst.operand));
+                    em.str_x(9, R, inst.a);
                     break;
                 case JitOp::LOAD_NIL:
                     em.mov_imm64(9, NBNIL);
-                    em.str_x(9, 1, inst.a);
+                    em.str_x(9, R, inst.a);
                     break;
                 case JitOp::LOAD_BOOL:
                     em.mov_imm64(9, inst.operand ? NBTRUE : NBFALSE);
-                    em.str_x(9, 1, inst.a);
+                    em.str_x(9, R, inst.a);
                     break;
                 case JitOp::MOVE:
-                    em.ldr_x(9, 1, inst.b);
-                    em.str_x(9, 1, inst.a);
+                    em.ldr_x(9, R, inst.b);
+                    em.str_x(9, R, inst.a);
                     break;
                 case JitOp::ADD:
                 case JitOp::SUB:
@@ -1421,14 +1544,14 @@ public:
                         // Same contract as the System V tier: clear the sign
                         // bit so -0.0 counts as zero, then deopt so the
                         // interpreter raises [E202].
-                        em.ldr_x(9, 1, inst.c);
+                        em.ldr_x(9, R, inst.c);
                         em.mov_imm64(10, 0x7FFFFFFFFFFFFFFFULL);
                         em.and_xx(9, 9, 10);
                         em.cmp_xx(9, 31);  // xzr
                         deopt_branches.push_back(em.b_cond_placeholder(0));
                     }
-                    em.ldr_d(0, 1, inst.b);
-                    em.ldr_d(1, 1, inst.c);
+                    em.ldr_d(0, R, inst.b);
+                    em.ldr_d(1, R, inst.c);
                     if (inst.op == JitOp::ADD) {
                         em.fadd_d(0, 0, 1);
                     } else if (inst.op == JitOp::SUB) {
@@ -1438,12 +1561,12 @@ public:
                     } else {
                         em.fdiv_d(0, 0, 1);
                     }
-                    em.str_d(0, 1, inst.a);
+                    em.str_d(0, R, inst.a);
                     break;
                 case JitOp::NEG:
-                    em.ldr_d(0, 1, inst.b);
+                    em.ldr_d(0, R, inst.b);
                     em.fneg_d(0, 0);
-                    em.str_d(0, 1, inst.a);
+                    em.str_d(0, R, inst.a);
                     break;
                 case JitOp::CMP_EQ:
                 case JitOp::CMP_NEQ:
@@ -1451,8 +1574,8 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
-                    em.ldr_d(0, 1, inst.b);
-                    em.ldr_d(1, 1, inst.c);
+                    em.ldr_d(0, R, inst.b);
+                    em.ldr_d(1, R, inst.c);
                     em.fcmp_d(0, 1);
                     em.mov_imm64(10, NBTRUE);
                     em.mov_imm64(11, NBFALSE);
@@ -1470,7 +1593,7 @@ public:
                         default: return {};
                     }
                     em.csel_x(9, 10, 11, condition);
-                    em.str_x(9, 1, inst.a);
+                    em.str_x(9, R, inst.a);
                     break;
                 }
                 case JitOp::JUMP:
@@ -1479,21 +1602,99 @@ public:
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
-                    em.ldr_x(9, 1, inst.a);
+                    em.ldr_x(9, R, inst.a);
                     em.mov_imm64(10, inst.op == JitOp::JUMP_IF_FALSE ? NBFALSE : NBTRUE);
                     em.cmp_xx(9, 10);
                     branch_fixups.push_back({em.b_cond_placeholder(0),  // EQ
                                              static_cast<size_t>(inst.operand)});
                     break;
                 case JitOp::RETURN_VAL:
-                    em.ldr_x(0, 1, inst.a);
-                    em.ret();
+                    em.ldr_x(0, R, inst.a);
+                    emit_return();
                     break;
                 case JitOp::RETURN_NONE:
                 case JitOp::HALT:
                     em.mov_imm64(0, NBNIL);
-                    em.ret();
+                    emit_return();
                     break;
+                case JitOp::LOAD_GLOBAL: {
+                    // Read the slot through the vector's begin pointer on
+                    // every execution: the vector reallocates as globals are
+                    // added, so only the vm-relative location is stable.
+                    const auto& g = analysis.global_guard[ip - entry_ip];
+                    load_vm_slot(9, globals_off);
+                    if (g.index < 4096) {
+                        em.ldr_x(9, 9, static_cast<uint16_t>(g.index));
+                    } else {
+                        em.mov_imm64(10, static_cast<uint64_t>(g.index) * 8U);
+                        em.ldr_x_reg(9, 9, 10);
+                    }
+                    if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
+                        em.mov_imm64(10, g.bits);
+                        em.cmp_xx(9, 10);
+                        deopt_branches.push_back(em.b_cond_placeholder(1));  // NE
+                        link->pin_value(g.bits);
+                    } else {
+                        em.mov_imm64(10, NBQNAN);
+                        em.and_xx(11, 9, 10);
+                        em.cmp_xx(11, 10);
+                        deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+                    }
+                    em.str_x(9, R, inst.a);
+                    break;
+                }
+                case JitOp::CALL_FUNC: {
+                    const auto& dc = analysis.direct_call[ip - entry_ip];
+                    if (!dc.valid) return {};
+                    const uint32_t argc = static_cast<uint32_t>(inst.operand);
+                    const uint32_t callee_regs = dc.self ? frame_regs : dc.callee.frame_regs;
+                    const uint16_t frame_bytes =
+                        static_cast<uint16_t>((callee_regs * 8U + 15U) & ~15U);
+                    // The interpreter refuses the call that would exceed its
+                    // frame limit; the budget mirrors that limit so a deep
+                    // recursion deopts before the machine stack is at risk
+                    // and the interpreter raises its own [E500].
+                    load_vm_slot(9, budget_off);
+                    em.subs_imm(9, 9, 1);
+                    deopt_branches.push_back(em.b_cond_placeholder(4));  // MI
+                    store_vm_slot(9, budget_off);
+                    // Callee frame: arguments in registers 0..argc-1, the
+                    // rest zero like alloc_frame_regs' Value(0.0) fill.
+                    em.sub_imm(31, 31, frame_bytes);
+                    for (uint32_t i = 0; i < argc; ++i) {
+                        em.ldr_x(9, R, static_cast<uint16_t>(inst.c + i));
+                        em.str_x(9, 31, static_cast<uint16_t>(i));
+                    }
+                    for (uint32_t r = argc; r < callee_regs; ++r) {
+                        em.str_x(31, 31, static_cast<uint16_t>(r));  // xzr
+                    }
+                    em.mov_xx(0, VM);
+                    em.add_imm(1, 31, 0);  // mov x1, sp
+                    em.mov_xx(2, K);
+                    if (dc.self) {
+                        // BL is a direct branch, so it may skip the guards
+                        // and their BTI landing pad.
+                        self_call_fixups.push_back({em.bl_placeholder(), dc.args_num});
+                    } else {
+                        // Indirect calls always take the callee's guarded
+                        // entry: it starts with the BTI landing pad, and the
+                        // guards are a handful of instructions per argument.
+                        em.mov_imm64(9, static_cast<uint64_t>(
+                            reinterpret_cast<uintptr_t>(dc.callee.guarded_entry)));
+                        em.blr(9);
+                    }
+                    em.add_imm(31, 31, frame_bytes);
+                    load_vm_slot(9, budget_off);
+                    em.add_imm(9, 9, 1);
+                    store_vm_slot(9, budget_off);
+                    // A guard that failed anywhere below hands back the
+                    // sentinel; propagate it rather than storing it.
+                    em.mov_imm64(10, SURA_JIT_DEOPT_SENTINEL);
+                    em.cmp_xx(0, 10);
+                    deopt_branches.push_back(em.b_cond_placeholder(0));  // EQ
+                    em.str_x(0, R, inst.a);
+                    break;
+                }
                 default:
                     return {};
             }
@@ -1503,20 +1704,42 @@ public:
         // instruction does not unconditionally leave the function.
         if (analysis.falls_off_end(chunk, entry_ip, end_ip)) {
             em.mov_imm64(0, NBNIL);
-            em.ret();
+            emit_return();
         }
 
-        // Deopt tail shared by the entry guards and the zero-divisor checks.
+        // A leaf body has no frame to unwind, so its entry guards and its
+        // body checks share one tail, exactly as before.
+        if (!needs_vm) {
+            deopt_branches.insert(deopt_branches.end(),
+                                  entry_deopt_branches.begin(),
+                                  entry_deopt_branches.end());
+            entry_deopt_branches.clear();
+        }
+        // Deopt tail shared by the zero-divisor checks, global guards and
+        // call budget/propagation checks: unwind the frame, if any, and
+        // hand back the sentinel.
         if (!deopt_branches.empty()) {
             const size_t deopt_at = em.pos();
             em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
-            em.ret();
+            emit_return();
             for (size_t at : deopt_branches) {
+                if (!em.patch_branch(at, deopt_at)) return {};
+            }
+        }
+        // Entry-guard tail of a framed body: nothing has been pushed yet.
+        if (!entry_deopt_branches.empty()) {
+            const size_t deopt_at = em.pos();
+            em.mov_imm64(0, SURA_JIT_DEOPT_SENTINEL);
+            em.ret();
+            for (size_t at : entry_deopt_branches) {
                 if (!em.patch_branch(at, deopt_at)) return {};
             }
         }
         for (const BranchFixup& fx : branch_fixups) {
             if (!em.patch_branch(fx.at, ip_off[fx.target_ip - entry_ip])) return {};
+        }
+        for (const SelfCallFixup& fx : self_call_fixups) {
+            if (!em.patch_branch(fx.at, fx.unguarded ? unguarded_entry_offset : 0)) return {};
         }
         return code;
     }
@@ -2216,12 +2439,24 @@ public:
                 ? static_cast<uint32_t>(callable_param_count) : 0U;
             Arm64BaselineCompiler baseline(chunk, entry_ip, end_ip,
                                            native_frame_regs, guarded, deoptable);
+            const bool direct_callable =
+                deoptable && baseline_link != nullptr &&
+                jit_default_arg_count_reg(chunk, entry_ip, 0, callable_param_count) < 0 &&
+                native_frame_regs <= BaselineBodyAnalysis::kMaxDirectCalleeRegs;
+            if (baseline_link) {
+                baseline.set_link(baseline_link, baseline_self_fidx, direct_callable);
+            }
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
             if (baseline_code.empty()) return nullptr;
             auto nf = std::make_unique<NativeFunc>();
             nf->code = ExecCode::from_bytes(baseline_code);
             nf->fn = reinterpret_cast<SuraNativeFn>(nf->code.ptr);
             nf->frame_regs = native_frame_regs;
+            nf->baseline_direct_callable = direct_callable;
+            nf->baseline_params = static_cast<uint32_t>(callable_param_count);
+            nf->baseline_unguarded_entry = baseline.unguarded_entry_offset;
+            nf->baseline_return_kind = static_cast<uint8_t>(baseline.return_kind.k);
+            nf->baseline_return_fidx = baseline.return_kind.fidx;
             for (size_t ip = entry_ip; ip < end_ip; ++ip)
                 nf->emitted_ops |= 1ULL << static_cast<int>(chunk.code[ip].op);
             return nf;
