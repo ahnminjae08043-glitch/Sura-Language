@@ -17,6 +17,10 @@ void require(bool condition, const std::string& message) {
 #if (defined(__x86_64__) || defined(_M_X64)) && (defined(__GNUC__) || defined(__clang__))
 using SysVNativeTestFn = uint64_t (__attribute__((sysv_abi)) *)(
     JitVM*, Value*, const Value*);
+// The same body entered through the Windows x64 convention. GCC and Clang
+// honour ms_abi on every x86-64 target, so this section also runs on Linux.
+using Win64NativeTestFn = uint64_t (__attribute__((ms_abi)) *)(
+    JitVM*, Value*, const Value*);
 
 // Stand-in for the pieces of JitVM that v3 bodies touch: the globals vector
 // (read through its begin pointer at a fixed offset) and the direct-call
@@ -458,9 +462,73 @@ int main() {
                     "a non-numeric global must fail the tag guard");
         }
 
+        // ── Win64 convention: the same fib and scale bodies, entered with
+        // vm/R/consts in RCX/RDX/R8. The direct-call sequence must hand the
+        // callee its arguments in the same registers, and the entry guard
+        // must leave RCX and RDX intact for the prologue.
+        {
+            SysVBaselineCompiler win_fib(fib, 0, fib.code.size(), fib.max_regs, 1);
+            win_fib.set_link(&link, 0, /*callable=*/true);
+            win_fib.set_abi(X64BaselineAbi::Win64);
+            std::vector<uint8_t> win_bytes = win_fib.compile_bytes();
+            require(!win_bytes.empty(), "Win64 self-recursive fib was rejected");
+            ExecCode win_code = ExecCode::from_bytes(win_bytes);
+            auto win_function = reinterpret_cast<Win64NativeTestFn>(win_code.ptr);
+
+            std::vector<Value> regs(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 100;
+            Value result = Value::from_bits(
+                win_function(fake_vm_as_jit, regs.data(), fib.constants.data()));
+            require(result.is_num() && std::fabs(result.as_num() - 6765.0) < 1e-12,
+                    "Win64 direct-call fib(20) must be 6765");
+            require(fake_vm.depth_budget == 100,
+                    "the Win64 sequence must restore the depth budget");
+
+            regs.assign(fib.max_regs, Value::nil());
+            regs[0] = Value(20.0);
+            fake_vm.depth_budget = 18;
+            require(win_function(fake_vm_as_jit, regs.data(), fib.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "Win64 budget exhaustion must return the deopt sentinel");
+            require(fake_vm.depth_budget == 18,
+                    "a Win64 budget deopt must leave the budget as it found it");
+
+            regs.assign(fib.max_regs, Value::nil());
+            regs[0] = Value(true);
+            fake_vm.depth_budget = 100;
+            require(win_function(fake_vm_as_jit, regs.data(), fib.constants.data()) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "the Win64 entry guard must reject a non-numeric argument");
+
+            // The tag guard is chosen from the live global at compile time,
+            // so RATE must hold a number again before compiling.
+            fake_vm.globals[1] = Value(4.0);
+            SysVBaselineCompiler win_scale(scale, 0, scale.code.size(), scale.max_regs, 1);
+            win_scale.set_link(&link, 1, /*callable=*/true);
+            win_scale.set_abi(X64BaselineAbi::Win64);
+            std::vector<uint8_t> win_scale_bytes = win_scale.compile_bytes();
+            require(!win_scale_bytes.empty(), "Win64 numeric global read was rejected");
+            ExecCode win_scale_code = ExecCode::from_bytes(win_scale_bytes);
+            auto win_scale_function =
+                reinterpret_cast<Win64NativeTestFn>(win_scale_code.ptr);
+            regs.assign(scale.max_regs, Value::nil());
+            regs[0] = Value(7.0);
+            result = Value::from_bits(
+                win_scale_function(fake_vm_as_jit, regs.data(), nullptr));
+            require(result.is_num() && std::fabs(result.as_num() - 28.0) < 1e-12,
+                    "Win64 scale(7) with RATE = 4 must be 28");
+            fake_vm.globals[1] = Value::nil();
+            regs.assign(scale.max_regs, Value::nil());
+            regs[0] = Value(7.0);
+            require(win_scale_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "a Win64 tag guard must reject a non-numeric global");
+        }
+
         std::cout << "jit sysv baseline: PASS (division, six comparisons, NaN semantics, "
                      "guarded fallbacks, parameter guards, loops, global guards, "
-                     "and direct calls)\n";
+                     "direct calls, and the Win64 entry)\n";
 #else
         std::cout << "jit sysv baseline: PASS (non-x86-64 compile-only target)\n";
 #endif

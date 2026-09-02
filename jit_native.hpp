@@ -875,6 +875,14 @@ public:
 // stack. Callee bodies are pure, so no frame is ever visible to the GC or to
 // exception unwinding, and a guard failure anywhere in the call tree simply
 // propagates the sentinel up to the interpreter's call site.
+// Calling conventions the x86-64 baseline can be entered through. The body
+// itself is convention-neutral: it keeps R in RBX, the constants in R12 and
+// the VM in R13, all callee-saved under both conventions. Only the entry
+// (which argument register holds what) and the direct-call sequence differ.
+// Win64 shadow space is not reserved: a baseline body only ever calls other
+// baseline bodies, none of which touch it.
+enum class X64BaselineAbi : uint8_t { SysV, Win64 };
+
 class SysVBaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
@@ -885,6 +893,12 @@ class SysVBaselineCompiler {
     BaselineLinkContext* link = nullptr;
     int self_fidx = -1;
     bool self_callable = false;
+    X64BaselineAbi abi = X64BaselineAbi::SysV;
+
+    // Argument registers of the convention in use: (vm, R, consts).
+    int arg_vm() const     { return abi == X64BaselineAbi::SysV ? XR::RDI : XR::RCX; }
+    int arg_regs() const   { return abi == X64BaselineAbi::SysV ? XR::RSI : XR::RDX; }
+    int arg_consts() const { return abi == X64BaselineAbi::SysV ? XR::RDX : XR::R8; }
 
     static int32_t off_r(uint16_t reg) {
         return static_cast<int32_t>(static_cast<uint32_t>(reg) * 8U);
@@ -921,6 +935,11 @@ public:
         self_callable = callable;
     }
 
+    // Select the convention the emitted code is entered through. Direct
+    // callees resolved through the link must have been compiled for the
+    // same convention.
+    void set_abi(X64BaselineAbi a) { abi = a; }
+
     std::vector<uint8_t> compile_bytes() {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() || frame_regs == 0 ||
             frame_regs > std::numeric_limits<uint16_t>::max()) {
@@ -944,15 +963,18 @@ public:
 
         // Entry guards come before the prologue so a direct caller that has
         // already proven its arguments numeric can enter past them. They
-        // read R through RSI and escape to a tail that has nothing to pop.
-        // Every guarded parameter must be a NaN-boxed number
-        // ((bits & NBQNAN) != NBQNAN); otherwise branch to the deopt tail.
+        // read R through its argument register and escape to a tail that has
+        // nothing to pop. R10 is the scratch: it is caller-saved and not an
+        // argument register under either convention, so the arguments stay
+        // intact for the prologue. Every guarded parameter must be a
+        // NaN-boxed number ((bits & NBQNAN) != NBQNAN); otherwise branch to
+        // the deopt tail.
         std::vector<size_t> entry_deopt_fixups;
         for (uint32_t p = 0; p < guarded_params; ++p) {
-            em.mov_r_mem(XR::RAX, XR::RSI, off_r(static_cast<uint16_t>(p)));
-            em.mov_ri64(XR::RCX, NBQNAN);
-            em.and_rr(XR::RAX, XR::RCX);
-            em.cmp_rr(XR::RAX, XR::RCX);
+            em.mov_r_mem(XR::RAX, arg_regs(), off_r(static_cast<uint16_t>(p)));
+            em.mov_ri64(XR::R10, NBQNAN);
+            em.and_rr(XR::RAX, XR::R10);
+            em.cmp_rr(XR::RAX, XR::R10);
             entry_deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
         }
 
@@ -960,9 +982,9 @@ public:
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         if (needs_vm) em.push_r(XR::R13);
-        em.mov_rr(XR::RBX, XR::RSI);
-        em.mov_rr(XR::R12, XR::RDX);
-        if (needs_vm) em.mov_rr(XR::R13, XR::RDI);
+        em.mov_rr(XR::RBX, arg_regs());
+        em.mov_rr(XR::R12, arg_consts());
+        if (needs_vm) em.mov_rr(XR::R13, arg_vm());
 
         auto emit_return = [&]() {
             if (needs_vm) em.pop_r(XR::R13);
@@ -1144,9 +1166,9 @@ public:
                     for (uint32_t r = argc; r < callee_regs; ++r) {
                         em.mov_mem_imm32(XR::RSP, static_cast<int32_t>(r * 8U), 0);
                     }
-                    em.mov_rr(XR::RDI, XR::R13);
-                    em.mov_rr(XR::RSI, XR::RSP);
-                    em.mov_rr(XR::RDX, XR::R12);
+                    em.mov_rr(arg_vm(), XR::R13);
+                    em.mov_rr(arg_regs(), XR::RSP);
+                    em.mov_rr(arg_consts(), XR::R12);
                     if (dc.self) {
                         self_call_fixups.push_back({em.call_rel32_placeholder(), dc.args_num});
                     } else {
@@ -2131,7 +2153,7 @@ public:
             return nullptr;
         }
 
-#if SURA_JIT_X64_SYSV_BASELINE
+#if SURA_JIT_X64_SYSV_BASELINE || SURA_JIT_X64_WIN64_BASELINE_FIRST
         try {
             // Only closure calls re-run a deopted call, and only they rebind
             // arguments first. The top-level chunk cannot be replayed at all,
@@ -2142,6 +2164,14 @@ public:
                 ? static_cast<uint32_t>(callable_param_count) : 0U;
             SysVBaselineCompiler baseline(chunk, entry_ip, end_ip,
                                           native_frame_regs, guarded, deoptable);
+#if SURA_JIT_X64_WIN64_BASELINE_FIRST
+            // On Win64 the full tier below handles everything, so the
+            // baseline is only worth taking for bodies it accepts whole and
+            // can replay: pure numeric closures, where its guarded entry and
+            // native-to-native calls beat the full tier's helper calls.
+            if (!deoptable) throw std::runtime_error("baseline: not replayable");
+            baseline.set_abi(X64BaselineAbi::Win64);
+#endif
             // A body can be a direct callee only when a direct call binds
             // exactly what the interpreter would: every parameter, guarded,
             // and no hidden argument-count register.
@@ -2153,7 +2183,11 @@ public:
                 baseline.set_link(baseline_link, baseline_self_fidx, direct_callable);
             }
             std::vector<uint8_t> baseline_code = baseline.compile_bytes();
+#if SURA_JIT_X64_WIN64_BASELINE_FIRST
+            if (baseline_code.empty()) throw std::runtime_error("baseline: refused");
+#else
             if (baseline_code.empty()) return nullptr;
+#endif
             auto nf = std::make_unique<NativeFunc>();
             nf->code = ExecCode::from_bytes(baseline_code);
             nf->fn = reinterpret_cast<SuraNativeFn>(nf->code.ptr);
@@ -2167,7 +2201,11 @@ public:
                 nf->emitted_ops |= 1ULL << static_cast<int>(chunk.code[ip].op);
             return nf;
         } catch (...) {
+#if SURA_JIT_X64_WIN64_BASELINE_FIRST
+            // Fall through to the full Win64 tier.
+#else
             return nullptr;
+#endif
         }
 #endif
 

@@ -75,9 +75,9 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 22.3 | 15.2 | 38.8 | 10.8 | 65.8 | 29.6 | 81.3 | 219.5 |
+| **Sura JIT** | 9.9 | 10.4 | 35.7 | 10.1 | 53.2 | 27.6 | 71.8 | 195.6 |
 | Sura VM | 75.1 | 71.0 | 65.5 | 12.9 | 98.9 | 34.9 | 148.1 | 549.0 |
-| Python 3.12 | 82.2 | 184.5 | 96.9 | 7.3 | 37.4 | 95.8 | 81.3 | 699.3 |
+| Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
 Go's `object` column is zero because its compiler removes the loop entirely;
 varying the input per repetition did not stop it. Read that cell as "not
@@ -94,6 +94,11 @@ access. In this suite that means two of the ten functions get native code
 instead of all ten, and the rest run interpreted. ARM64 does not have the
 call support yet, so only the numeric loop reaches native code there.
 
+Windows x64 uses the same baseline for the pure numeric functions — that is
+where its `fib` and `numeric` columns come from — and its full tier for
+everything the baseline refuses, so the two platforms agree on `fib` and
+differ on the rest.
+
 Same machine, Ubuntu under WSL2, ms:
 
 | language | fib | numeric | array | string | dict | sort | object | matmul |
@@ -107,7 +112,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about twice as fast as CPython by geometric mean.
+  about 2.5x as fast as CPython by geometric mean.
 - **On Linux x86-64** the numeric loop and the recursive `fib` reach native
   code. Overall Sura is about 1.25x faster than CPython by geometric mean —
   well ahead on calls and arithmetic, behind on strings, dictionaries and
@@ -120,9 +125,9 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 3.7x faster | 6.4x faster |
-| numeric loop vs CPython | 12x faster | 10x faster |
-| sort vs CPython | 3.2x faster | 2.3x faster |
+| `fib(30)` vs CPython | 7.9x faster | 6.4x faster |
+| numeric loop vs CPython | 16x faster | 10x faster |
+| sort vs CPython | 3.1x faster | 2.3x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
@@ -132,9 +137,8 @@ open item in the project.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about twice as fast as CPython,
-roughly six and a half times slower than Node, and fourteen times slower than
-C++. On Linux, see the platform section above — the summary there is different
+On Windows, by geometric mean Sura's JIT is about 2.5 times as fast as CPython,
+roughly five times slower than Node, and eleven times slower than C++. On Linux, see the platform section above — the summary there is different
 and less flattering.
 
 Sura is competitive at sorting, because `array.sort` calls a native C++ sort

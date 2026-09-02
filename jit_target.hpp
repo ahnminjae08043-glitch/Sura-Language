@@ -19,6 +19,15 @@ struct SuraJitTargetInfo {
     #define SURA_JIT_X64_SYSV_BASELINE 0
 #endif
 
+// Windows x86-64 has a full-featured tier of its own; the x64 baseline is
+// tried first there, entered through the Win64 convention, and only kept for
+// replayable pure-numeric closures it accepts whole (see NativeCompiler).
+#if defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    #define SURA_JIT_X64_WIN64_BASELINE_FIRST 1
+#else
+    #define SURA_JIT_X64_WIN64_BASELINE_FIRST 0
+#endif
+
 #if (defined(__aarch64__) || defined(__arm64__) || defined(_M_ARM64)) && \
     (defined(_WIN32) || defined(__linux__) || (defined(__APPLE__) && defined(__MACH__))) && \
     !defined(__AARCH64EB__)
@@ -31,7 +40,7 @@ inline constexpr SuraJitTargetInfo sura_jit_target_info() {
 #if defined(_WIN32)
     #if defined(__x86_64__) || defined(_M_X64)
         return {"windows", "x86-64", "win64", "x64-win64", true,
-                "register-vm", "native x86-64 emitter available"};
+                "register-vm", "native x86-64 emitter available; replayable pure-numeric closures take the guarded baseline with native direct calls first"};
     #elif defined(__aarch64__) || defined(_M_ARM64)
         #if SURA_JIT_ARM64_BASELINE
             return {"windows", "arm64", "windows-arm64", "arm64-aapcs-baseline", true,
