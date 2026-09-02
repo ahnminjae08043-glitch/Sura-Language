@@ -853,6 +853,21 @@ int main() {
             require(fake_vm.depth_budget == 100,
                     "ARM64 BLR calls must restore the depth budget");
             fake_vm.depth_budget = 0;
+            regs.assign(sum_info.max_regs, Value::nil());
+            regs[0] = Value(3.0);
+            regs[1] = Value(4.0);
+            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 BLR call with no budget must deopt");
+            fake_vm.globals[1] = Value(static_cast<GCObject*>(&fib_closure));
+            fake_vm.depth_budget = 100;
+            regs.assign(sum_info.max_regs, Value::nil());
+            regs[0] = Value(3.0);
+            regs[1] = Value(4.0);
+            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
+                        SURA_JIT_DEOPT_SENTINEL,
+                    "an ARM64 rebound callee must fail the identity guard");
+            fake_vm.globals[1] = Value(static_cast<GCObject*>(&square_closure));
         }
         {
             ExecCode vfib_code = ExecCode::from_bytes(vfib_bytes);
@@ -926,21 +941,6 @@ int main() {
                     "names the raising instruction");
             fake_vm.exc_valid = 0;
             fake_vm.depth_budget = 0;
-            regs.assign(sum_info.max_regs, Value::nil());
-            regs[0] = Value(3.0);
-            regs[1] = Value(4.0);
-            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
-                        SURA_JIT_DEOPT_SENTINEL,
-                    "an ARM64 BLR call with no budget must deopt");
-            fake_vm.globals[1] = Value(static_cast<GCObject*>(&fib_closure));
-            fake_vm.depth_budget = 100;
-            regs.assign(sum_info.max_regs, Value::nil());
-            regs[0] = Value(3.0);
-            regs[1] = Value(4.0);
-            require(sum_function(fake_vm_as_jit, regs.data(), nullptr) ==
-                        SURA_JIT_DEOPT_SENTINEL,
-                    "an ARM64 rebound callee must fail the identity guard");
-            fake_vm.globals[1] = Value(static_cast<GCObject*>(&square_closure));
         }
         {
             ExecCode scale_code = ExecCode::from_bytes(scale_bytes);
