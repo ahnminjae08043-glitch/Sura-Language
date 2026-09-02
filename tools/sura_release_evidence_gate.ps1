@@ -325,7 +325,14 @@ if (Test-Path -LiteralPath $windowsSignaturePath) {
     $unsignedCount = [int](Get-PropertyValue $signatureReport "unsigned_count")
     Add-Check $checks "Windows signature schema" (([string](Get-PropertyValue $signatureReport "schema")) -eq "sura.windows.signature.report.v1") "windows_signature.json schema" "rerun sura_windows_signature_gate.ps1"
     Add-Check $checks "Windows signature audit passed" (([string](Get-PropertyValue $signatureReport "status")) -eq "pass") "signature audit must contain no invalid signatures or manifest mismatch" "fix invalid signatures or public manifest drift"
-    Add-Check $checks "Windows signature file inventory" ($signatureFiles.Count -ge 3) "engine, package manager, and direct installer signatures must be audited" "rerun signature gate with all Windows executables"
+    # The direct installer ships with the website repository; it is part of the
+    # inventory only while this tree still tracks the site (see the signature
+    # gate's installer_expected), otherwise the engine and package manager are
+    # the whole Windows surface built here.
+    $installerExpected = [bool](Get-PropertyValue $signatureReport "installer_expected")
+    $requiredSignatureFiles = $(if ($installerExpected) { 3 } else { 2 })
+    $inventoryDetail = $(if ($installerExpected) { "engine, package manager, and direct installer signatures must be audited" } else { "engine and package manager signatures must be audited" })
+    Add-Check $checks "Windows signature file inventory" ($signatureFiles.Count -ge $requiredSignatureFiles) $inventoryDetail "rerun signature gate with all Windows executables"
     Add-Check $checks "unsigned direct-download action recorded" ($unsignedCount -eq 0 -or -not [string]::IsNullOrWhiteSpace([string](Get-PropertyValue $signatureReport "next_action"))) "unsigned releases must record the Store or trusted-certificate next action" "record the signing or Store publication action"
 }
 

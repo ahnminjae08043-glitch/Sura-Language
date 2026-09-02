@@ -15,14 +15,25 @@ $version = [string](([System.IO.File]::ReadAllText((Join-Path $root "version.jso
 # its own repository. When this tree does not carry them there is nothing to
 # audit beyond the executables built here, so they are included only when
 # present. An explicitly passed -ReleaseManifest is still required to exist.
+# Whether the installer is *expected* follows the same rule as
+# sura_version_sync.ps1: only while this repository still tracks the site, so
+# an untracked local copy cannot resurrect a contract the tree no longer owns.
+$installerExpected = $false
+if (Test-Path -LiteralPath (Join-Path $root "sura_presentation") -PathType Container) {
+    $installerExpected = $true
+    if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
+        $tracked = & git -C $root ls-files "sura_presentation/package.json"
+        if ($LASTEXITCODE -eq 0) { $installerExpected = -not [string]::IsNullOrWhiteSpace(($tracked | Out-String)) }
+    }
+}
+$installer = Join-Path $root "sura_presentation/public/downloads/SuraLanguageSetup-$version.exe"
 $manifestRequired = -not [string]::IsNullOrWhiteSpace($ReleaseManifest)
 if ($Files.Count -eq 0) {
     $Files = @(
         (Join-Path $root "SuraLanguage.exe"),
         (Join-Path $root "surapkg.exe")
     )
-    $installer = Join-Path $root "sura_presentation/public/downloads/SuraLanguageSetup-$version.exe"
-    if (Test-Path -LiteralPath $installer -PathType Leaf) { $Files += $installer }
+    if ($installerExpected -or (Test-Path -LiteralPath $installer -PathType Leaf)) { $Files += $installer }
 }
 if (-not $manifestRequired) {
     $defaultManifest = Join-Path $root "sura_presentation/public/downloads/release-$version.json"
@@ -91,6 +102,8 @@ $report = [ordered]@{
     valid_count = $validCount
     unsigned_count = $unsignedCount
     direct_download_warning_expected = ($unsignedCount -gt 0)
+    installer_expected = [bool]$installerExpected
+    installer_audited = [bool](@($results | Where-Object { $_.file -eq $installer }).Count -gt 0)
     release_manifest = $ReleaseManifest
     release_manifest_authenticode = $manifestSigning
     files = $results
