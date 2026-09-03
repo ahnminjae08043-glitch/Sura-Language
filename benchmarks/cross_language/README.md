@@ -92,11 +92,15 @@ loops, guarded global reads and native-to-native calls between pure numeric
 functions, so recursive `fib` runs entirely as native code — and since the
 fourth revision it also compiles every function that touches arrays, strings,
 dictionaries or fields by calling the interpreter's own helpers for those
-operations from native code. In this suite all ten functions now get native
-code on Linux; the arithmetic and control flow around each helper call is
-native, the helper itself costs what it costs in the interpreter. Field reads
-and writes from those helpers use the same class-keyed inline cache as the
-interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
+operations from native code. The fifth revision inlines the common shapes
+before falling back to a helper: array indexing with a bounds check, `push`,
+`len`, dictionary `has`, and arithmetic, comparisons and branches on values
+whose type was not proven statically (a NaN-box tag check picks the inline
+path when both operands are numbers). In this suite all ten functions get
+native code on Linux; only the operations that genuinely need the runtime
+(string concatenation, dictionary reads and writes, field access, calls)
+still cost what they cost in the interpreter. Field reads and writes from
+those helpers use the same class-keyed inline cache as the interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
 runners and by instruction-level emulation of the emitted bodies, including a
 helper-backed body; the ARM64 row below predates it and still shows the
 loop-only tier.
@@ -111,7 +115,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.2 | 10.6 | 34.9 | 7.9 | 72.5 | 26.7 | 18.9 | 320.3 |
+| **Sura JIT** | 9.3 | 10.6 | 11.2 | 3.8 | 42.6 | 22.5 | 15.0 | 101.5 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -124,10 +128,11 @@ rather than quoting the better platform:
   constructor such as `Point(x, y)` is a single allocation, which is what
   moved the `array`, `object` and `matmul` columns.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 1.9x faster than CPython by geometric mean — well
+  Overall Sura is about 3.1x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
-  matmul now that the loops around the helper calls are native, still behind
-  on strings and dictionaries, where the helper does all the work. A native
+  matmul now that indexing and guarded arithmetic are inline, roughly even
+  on strings, still behind on dictionaries, where the hash lookups happen in
+  the helper. A native
   call books its callee frame on the VM value stack only when the callee can
   reach a helper (that is what lets the collector run while native code
   holds objects); a callee that never can, such as `fib`, keeps its frame on
@@ -141,16 +146,18 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 8.3x faster | 6.5x faster |
+| `fib(30)` vs CPython | 8.3x faster | 6.4x faster |
 | numeric loop vs CPython | 16x faster | 10x faster |
-| sort vs CPython | 4.2x faster | 2.8x faster |
+| sort vs CPython | 4.2x faster | 3.3x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
-Closing the rest of the Linux gap means inlining what the helpers do — array
-indexing with a bounds check, field access through the inline cache, string
-concatenation — the way the Windows tier does, instead of calling out for
-each of them. That is the largest open item in the project.
+What remains of the Linux gap is field access through an inline cache and
+dictionary reads and writes, which still call out; both tiers now share the
+same inline array indexing and guarded arithmetic. Beyond that, both
+platforms are limited by the same thing — every value round-trips through
+memory and re-checks its tag — and the next step is loop-level register
+allocation with hoisted guards.
 
 ### How to read this
 

@@ -1166,6 +1166,177 @@ public:
 // baseline bodies, none of which touch it.
 enum class X64BaselineAbi : uint8_t { SysV, Win64 };
 
+// NaN-box sentinels (mirrored from value.hpp so we can bake them into code)
+static constexpr uint64_t JIT_NBNIL   = 0x7FFC000000000000ULL;
+static constexpr uint64_t JIT_NBFALSE = 0x7FFC000000000001ULL;
+static constexpr uint64_t JIT_NBTRUE  = 0x7FFC000000000002ULL;
+// NaN-box object mask constants
+static constexpr uint64_t JIT_NBOBJ   = 0xFFFC000000000000ULL; // NBQNAN | NBSIGN
+static constexpr uint64_t JIT_NBPMASK = 0x0003FFFFFFFFFFFFULL; // ~NBOBJ (lower 50 bits = ptr)
+
+// ── GCInstance memory-layout offsets (libstdc++ / MinGW64) ─────────────────
+// GCObject:   vtable*(8) + obj_type(4) + marked(1) + pad(3) = 16 bytes
+// GCInstance uses SmallValueVec for fields. Its first member is a Value* data
+// pointer, mirroring std::vector's data-pointer-at-offset-0 layout for JIT ICs.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static const int32_t INST_OBJTYPE_OFFSET = (int32_t)__builtin_offsetof(GCInstance, obj_type);
+static const int32_t INST_FIELDS_OFFSET  = (int32_t)__builtin_offsetof(GCInstance, fields);
+static const int32_t INST_JITINFO_OFFSET = (int32_t)__builtin_offsetof(GCInstance, jit_info);
+static const int32_t CLOSURE_FUNC_IDX_OFFSET = (int32_t)__builtin_offsetof(GCClosure, func_idx);
+static const int32_t JITINST_IC_NATIVE_FN_OFFSET = (int32_t)__builtin_offsetof(JitInst, ic_native_fn);
+static const int32_t JITINST_IC_NATIVE_FRAME_REGS_OFFSET =
+    (int32_t)__builtin_offsetof(JitInst, ic_native_frame_regs);
+#pragma GCC diagnostic pop
+static constexpr int32_t VECTOR_DATA_OFFSET = 0;   // _M_start at vector base
+static constexpr int32_t SMALL_VALUE_VEC_SIZE_OFFSET = 8; // data_ then size_ on Win64
+static constexpr int8_t  OBJ_TYPE_INSTANCE  = 5;   // ObjType::INSTANCE enum value
+static constexpr int8_t  OBJ_TYPE_FUNC      = 3;   // ObjType::FUNC enum value
+static_assert(static_cast<int>(ObjType::INSTANCE) == OBJ_TYPE_INSTANCE,
+              "native JIT INSTANCE tag must match ObjType");
+static_assert(static_cast<int>(ObjType::FUNC) == OBJ_TYPE_FUNC,
+              "native JIT FUNC tag must match ObjType");
+
+// ── GCArray layout for the inline array-index fast path ─────────────────────
+// GCArray is GCObject + std::vector<Value>. libstdc++ lays the vector out as
+// {_M_start, _M_finish, _M_end_of_storage}; the fast path reads the first two
+// to bounds-check without a call. The layout is probed once at runtime, so a
+// different standard library simply keeps the helper call instead of
+// reading garbage.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static const int32_t ARRAY_OBJTYPE_OFFSET  = (int32_t)__builtin_offsetof(GCArray, obj_type);
+static const int32_t ARRAY_ELEMENTS_OFFSET = (int32_t)__builtin_offsetof(GCArray, elements);
+#pragma GCC diagnostic pop
+static constexpr int32_t VECTOR_FINISH_OFFSET = 8;  // _M_finish follows _M_start
+static constexpr int32_t VECTOR_CAP_OFFSET    = 16; // _M_end_of_storage
+static constexpr int8_t  OBJ_TYPE_ARRAY = 1;        // ObjType::ARRAY enum value
+static constexpr int8_t  OBJ_TYPE_DICT  = 2;        // ObjType::DICT enum value
+static_assert(static_cast<int>(ObjType::ARRAY) == OBJ_TYPE_ARRAY,
+              "native JIT ARRAY tag must match ObjType");
+static_assert(static_cast<int>(ObjType::DICT) == OBJ_TYPE_DICT,
+              "native JIT DICT tag must match ObjType");
+
+// `d.has(k)` on a proven dict: one hash probe, no method-name dispatch. The
+// key is converted with Value::to_str exactly as the builtin does.
+extern "C" inline uint64_t sura_jit_dict_has(GCDict* dict, uint64_t key_bits) {
+    const Value key = Value::from_bits(key_bits);
+    const bool found = key.is_str()
+        ? dict->elements.find(key.as_str_ref()) != dict->elements.end()
+        : dict->elements.find(key.to_str()) != dict->elements.end();
+    return found ? JIT_NBTRUE : JIT_NBFALSE;
+}
+
+inline bool jit_array_layout_verified() {
+    static const bool ok = [] {
+        if (std::getenv("SURA_JIT_DISABLE_ARRAY_IC")) return false;
+        std::vector<Value> probe(3);
+        probe.reserve(8);
+        const char* base = reinterpret_cast<const char*>(&probe);
+        Value* start = nullptr;
+        Value* finish = nullptr;
+        Value* cap = nullptr;
+        std::memcpy(&start, base + VECTOR_DATA_OFFSET, sizeof start);
+        std::memcpy(&finish, base + VECTOR_FINISH_OFFSET, sizeof finish);
+        std::memcpy(&cap, base + VECTOR_CAP_OFFSET, sizeof cap);
+        return start == probe.data() && finish == probe.data() + probe.size() &&
+               cap == probe.data() + probe.capacity();
+    }();
+    return ok;
+}
+
+// ── Inline guards shared by every x64 tier ──────────────────────────────────
+// The Win64 full tier and the x64 baseline (SysV on Linux, Win64 as the
+// baseline-first tier) all keep the register file base in RBX, so the same
+// byte sequences serve both. Clobbers RAX, RCX, RDX, R10.
+inline void sura_x64_emit_object_receiver_guard(X64Emitter& em, int32_t container_off,
+                                                int8_t obj_tag,
+                                                std::vector<size_t>& slow_jmps) {
+    em.mov_r_mem(XR::RAX, XR::RBX, container_off);
+    em.mov_ri64(XR::R10, JIT_NBOBJ);
+    em.mov_rr(XR::RCX, XR::RAX);
+    em.and_rr(XR::RCX, XR::R10);
+    em.cmp_rr(XR::RCX, XR::R10);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+    em.mov_ri64(XR::R10, JIT_NBPMASK);
+    em.and_rr(XR::RAX, XR::R10);
+    em.cmp_mem32_imm8(XR::RAX, ARRAY_OBJTYPE_OFFSET, obj_tag);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+}
+
+// On exit RCX = &elements[idx] for an array receiver with an in-bounds,
+// non-negative numeric key; every failing guard is queued in slow_jmps.
+//   1. R[container] is an object            (bits & NBOBJ) == NBOBJ
+//   2. obj_type == ARRAY
+//   3. R[key] is a number                   (hi32 & 0x7ffc0000) != 0x7ffc0000
+//   4. idx = (int64)trunc(key), 0 <= idx <= INT32_MAX  (one unsigned compare)
+//   5. &elements[idx] < _M_finish            (bounds)
+inline void sura_x64_emit_array_index_guard(X64Emitter& em, int32_t container_off,
+                                            int32_t key_off,
+                                            std::vector<size_t>& slow_jmps) {
+    sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
+    static constexpr uint32_t TAG32 = 0x7ffc0000U;
+    em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+    em.and_r32_imm32(XR::RCX, TAG32);
+    em.cmp_r32_imm32(XR::RCX, TAG32);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+    em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
+    em.cmp_r_imm32(XR::RCX, 0x7fffffff);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
+    em.shl_r_imm8(XR::RCX, 3);
+    em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+    em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+    em.add_rr(XR::RCX, XR::RDX);
+    em.cmp_rr(XR::RCX, XR::R10);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+}
+
+// a.push(v): store + pointer bump when the vector has spare capacity; leaves
+// R[a] = receiver like the builtin. RAX = GCArray* is expected from the guard.
+inline void sura_x64_emit_array_push_fast(X64Emitter& em, int32_t recv_off, int32_t arg_off,
+                                          int32_t dst_off, std::vector<size_t>& slow_jmps) {
+    em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+    em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_CAP_OFFSET);
+    em.cmp_rr(XR::RDX, XR::R10);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+    em.mov_r_mem(XR::RCX, XR::RBX, arg_off);
+    em.mov_mem_r(XR::RDX, 0, XR::RCX);
+    em.add_r_imm32(XR::RDX, 8);
+    em.mov_mem_r(XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET, XR::RDX);
+    em.mov_r_mem(XR::RAX, XR::RBX, recv_off);
+    em.mov_mem_r(XR::RBX, dst_off, XR::RAX);
+}
+
+// a.len(): (finish - start) / 8 as a double into R[dst]. RAX = GCArray*.
+inline void sura_x64_emit_array_len_fast(X64Emitter& em, int32_t dst_off) {
+    em.mov_r_mem(XR::RCX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+    em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+    em.not_r(XR::RDX);
+    em.add_r_imm32(XR::RDX, 1);   // rdx = -start
+    em.add_rr(XR::RCX, XR::RDX);  // rcx = finish - start (bytes)
+    em.mov_ri64(XR::RDX, 3);
+    em.mov_rr(XR::R10, XR::RCX);
+    em.mov_rr(XR::RCX, XR::RDX);
+    em.sar_r_cl(XR::R10);         // r10 = element count
+    em.cvtsi2sd_x_r(XR::XMM0, XR::R10);
+    em.movsd_mem_x(XR::RBX, dst_off, XR::XMM0);
+}
+
+// Which METHOD_CALL shapes the baseline tiers inline. Only the receiver
+// kind is decided at run time by a guard; the name and arity are static.
+constexpr int kInlineArrayPush = 1;
+constexpr int kInlineArrayLen  = 2;
+constexpr int kInlineDictHas   = 3;
+inline int inline_method_kind(const JitChunk& chunk, const JitInst& inst) {
+    if (inst.str_idx < 0) return 0;
+    const std::string& name = chunk.get_string(inst.str_idx);
+    if (inst.operand == 1 && (name == "push" || name == "append")) return kInlineArrayPush;
+    if (inst.operand == 0 && (name == "len" || name == "size" || name == "length"))
+        return kInlineArrayLen;
+    if (inst.operand == 1 && (name == "has" || name == "contains")) return kInlineDictHas;
+    return 0;
+}
+
 class SysVBaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
@@ -1339,6 +1510,16 @@ public:
         // Self-recursive calls: (disp position, enter past the guards)
         struct SelfCallFixup { size_t disp_pos; bool unguarded; };
         std::vector<SelfCallFixup> self_call_fixups;
+        const bool inline_collections = allow_helpers && jit_array_layout_verified();
+        // Branch to `slow` unless R[off] is a NaN-boxed number: the high
+        // 32 bits carry the whole tag, so a 32-bit compare suffices.
+        auto emit_non_number_to = [&](int32_t off, std::vector<size_t>& slow) {
+            static constexpr uint32_t TAG32 = 0x7ffc0000U;
+            em.mov_r32_mem(XR::RCX, XR::RBX, off + 4);
+            em.and_r32_imm32(XR::RCX, TAG32);
+            em.cmp_r32_imm32(XR::RCX, TAG32);
+            slow.push_back(em.jcc_rel32_placeholder(CC::E));
+        };
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
@@ -1367,14 +1548,26 @@ public:
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
-                case JitOp::DIV:
+                case JitOp::DIV: {
+                    // Not proven numeric (a value read from a collection, a
+                    // possible string concatenation, an error, or a division
+                    // by a constant zero): check the NaN-box tags at run time
+                    // and compute inline when both are numbers, otherwise the
+                    // helper keeps the interpreter's exact semantics. A
+                    // dynamic divisor is also required to be nonzero here so
+                    // the helper raises [E202].
+                    std::vector<size_t> slow;
                     if (dyn) {
-                        // Not proven numeric (string concatenation, an
-                        // error, or a division by a constant zero).
-                        helper_store(&sura_bl_arith, ip, inst.a);
-                        break;
-                    }
-                    if (analysis.div_zero_guard[ip - entry_ip]) {
+                        emit_non_number_to(off_r(inst.b), slow);
+                        emit_non_number_to(off_r(inst.c), slow);
+                        if (inst.op == JitOp::DIV) {
+                            em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.c));
+                            em.mov_ri64(XR::RCX, 0x7FFFFFFFFFFFFFFFULL);
+                            em.and_rr(XR::RAX, XR::RCX);
+                            em.cmp_r_imm32(XR::RAX, 0);
+                            slow.push_back(em.jcc_rel32_placeholder(CC::E));
+                        }
+                    } else if (analysis.div_zero_guard[ip - entry_ip]) {
                         // Division by zero must raise [E202]; the interpreter
                         // owns that error, so deopt instead of dividing.
                         // Clearing the sign bit makes -0.0 test equal to 0.0,
@@ -1397,7 +1590,14 @@ public:
                         em.divsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
                     }
                     em.movsd_mem_x(XR::RBX, off_r(inst.a), XR::XMM0);
+                    if (dyn) {
+                        const size_t done = em.jmp_rel32_placeholder();
+                        for (size_t j : slow) em.patch_rel32(j, em.pos());
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        em.patch_rel32(done, em.pos());
+                    }
                     break;
+                }
                 case JitOp::MOD:
                     helper_store(&sura_bl_arith, ip, inst.a);
                     break;
@@ -1428,9 +1628,12 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
+                    // Dynamic operands: numbers compare inline, anything else
+                    // (string equality, the ordering type error) in the helper.
+                    std::vector<size_t> slow;
                     if (dyn) {
-                        helper_store(&sura_bl_arith, ip, inst.a);
-                        break;
+                        emit_non_number_to(off_r(inst.b), slow);
+                        emit_non_number_to(off_r(inst.c), slow);
                     }
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
                     em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
@@ -1464,6 +1667,12 @@ public:
                             break;
                     }
                     em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    if (dyn) {
+                        const size_t done = em.jmp_rel32_placeholder();
+                        for (size_t j : slow) em.patch_rel32(j, em.pos());
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        em.patch_rel32(done, em.pos());
+                    }
                     break;
                 }
                 case JitOp::JUMP:
@@ -1473,9 +1682,21 @@ public:
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
                     if (dyn) {
-                        // Not a proven Bool: the helper applies the
-                        // interpreter's truthiness and hands back a Bool.
+                        // Not a proven Bool. A value that already is one
+                        // (the usual case: a guarded comparison result) is
+                        // used directly; anything else goes through the
+                        // helper, which applies the interpreter's truthiness
+                        // and hands back a Bool in RAX.
+                        std::vector<size_t> is_bool;
+                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.a));
+                        em.mov_ri64(XR::RCX, NBFALSE);
+                        em.cmp_rr(XR::RAX, XR::RCX);
+                        is_bool.push_back(em.jcc_rel32_placeholder(CC::E));
+                        em.mov_ri64(XR::RCX, NBTRUE);
+                        em.cmp_rr(XR::RAX, XR::RCX);
+                        is_bool.push_back(em.jcc_rel32_placeholder(CC::E));
                         emit_helper(&sura_bl_truthy, ip);
+                        for (size_t j : is_bool) em.patch_rel32(j, em.pos());
                     } else {
                         em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.a));
                     }
@@ -1528,12 +1749,39 @@ public:
                 case JitOp::MAKE_DICT:
                     helper_store(&sura_bl_make_dict, ip, inst.a);
                     break;
-                case JitOp::INDEX_GET:
+                case JitOp::INDEX_GET: {
+                    // Array + in-bounds numeric index reads inline (the same
+                    // guards as the Win64 full tier); everything else, and
+                    // the range error, goes through the helper.
+                    if (!inline_collections) {
+                        helper_store(&sura_bl_index_get, ip, inst.a);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    sura_x64_emit_array_index_guard(em, off_r(inst.b), off_r(inst.c), slow);
+                    em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    const size_t done = em.jmp_rel32_placeholder();
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
                     helper_store(&sura_bl_index_get, ip, inst.a);
+                    em.patch_rel32(done, em.pos());
                     break;
-                case JitOp::INDEX_SET:
+                }
+                case JitOp::INDEX_SET: {
+                    if (!inline_collections) {
+                        emit_helper(&sura_bl_index_set, ip);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    sura_x64_emit_array_index_guard(em, off_r(inst.a), off_r(inst.b), slow);
+                    em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
+                    em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                    const size_t done = em.jmp_rel32_placeholder();
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
                     emit_helper(&sura_bl_index_set, ip);
+                    em.patch_rel32(done, em.pos());
                     break;
+                }
                 case JitOp::DOT_GET:
                     helper_store(&sura_bl_dot_get, ip, inst.a);
                     break;
@@ -1562,9 +1810,42 @@ public:
                 case JitOp::CALL_BUILTIN:
                     helper_store(&sura_bl_call_builtin, ip, inst.a);
                     break;
-                case JitOp::METHOD_CALL:
+                case JitOp::METHOD_CALL: {
+                    // push / len on arrays and has on dicts inline; the
+                    // helper remains the slow path and every other method.
+                    const int kind = inline_collections
+                        ? inline_method_kind(chunk, inst) : 0;
+                    if (kind == 0) {
+                        helper_store(&sura_bl_method_call, ip, inst.a);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    if (kind == kInlineDictHas) {
+                        sura_x64_emit_object_receiver_guard(em, off_r(inst.b), OBJ_TYPE_DICT, slow);
+                        em.mov_rr(arg_vm(), XR::RAX);
+                        em.mov_r_mem(arg_regs(), XR::RBX, off_r(static_cast<uint16_t>(inst.b + 1)));
+                        if (abi == X64BaselineAbi::Win64) em.sub_rsp_imm8(32);
+                        em.mov_ri64(XR::RAX, static_cast<uint64_t>(
+                            reinterpret_cast<uintptr_t>(&sura_jit_dict_has)));
+                        em.call_rax();
+                        if (abi == X64BaselineAbi::Win64) em.add_rsp_imm8(32);
+                        em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    } else {
+                        sura_x64_emit_object_receiver_guard(em, off_r(inst.b), OBJ_TYPE_ARRAY, slow);
+                        if (kind == kInlineArrayPush) {
+                            sura_x64_emit_array_push_fast(
+                                em, off_r(inst.b), off_r(static_cast<uint16_t>(inst.b + 1)),
+                                off_r(inst.a), slow);
+                        } else {
+                            sura_x64_emit_array_len_fast(em, off_r(inst.a));
+                        }
+                    }
+                    const size_t done = em.jmp_rel32_placeholder();
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
                     helper_store(&sura_bl_method_call, ip, inst.a);
+                    em.patch_rel32(done, em.pos());
                     break;
+                }
                 case JitOp::CALL_FUNC: {
                     const auto& dc = analysis.direct_call[ip - entry_ip];
                     if (!dc.valid) {
@@ -1865,6 +2146,29 @@ class Arm64BaselineCompiler {
         void str_x_reg(unsigned source, unsigned base, unsigned index) {
             word(0xF8206800U | (index << 16) | (base << 5) | source);
         }
+        // ldr w, [base, #imm] (scaled by 4): zero-extends into the X register.
+        void ldr_w(unsigned target, unsigned base, uint16_t scaled_offset) {
+            word(0xB9400000U | (static_cast<uint32_t>(scaled_offset) << 10) |
+                 (base << 5) | target);
+        }
+        // ldr x, [base] with no offset (the address was formed in `base`).
+        void ldr_x0(unsigned target, unsigned base) { ldr_x(target, base, 0); }
+        void str_x0(unsigned source, unsigned base) { str_x(source, base, 0); }
+        // fcvtzs x, d: truncate toward zero (matches cvttsd2si / C `(int)`).
+        void fcvtzs_x_d(unsigned target, unsigned source) {
+            word(0x9E780000U | (source << 5) | target);
+        }
+        // scvtf d, x: signed 64-bit integer to double.
+        void scvtf_d_x(unsigned target, unsigned source) {
+            word(0x9E620000U | (source << 5) | target);
+        }
+        void sub_xx(unsigned target, unsigned left, unsigned right) {
+            word(0xCB000000U | (right << 16) | (left << 5) | target);
+        }
+        // lsr x, x, #shift (UBFM with imms = 63).
+        void lsr_imm(unsigned target, unsigned source, unsigned shift) {
+            word(0xD340FC00U | (shift << 16) | (source << 5) | target);
+        }
         void add_imm(unsigned target, unsigned source, uint16_t imm12) {
             word(0x91000000U | (static_cast<uint32_t>(imm12) << 10) |
                  (source << 5) | target);
@@ -2073,6 +2377,53 @@ public:
         std::vector<BranchFixup> branch_fixups;
         struct SelfCallFixup { size_t at; bool unguarded; };
         std::vector<SelfCallFixup> self_call_fixups;
+        const bool inline_collections = allow_helpers && jit_array_layout_verified();
+        // Branch to `slow` unless R[reg] is a NaN-boxed number. Uses x9-x11.
+        auto emit_non_number_to = [&](uint16_t reg, std::vector<size_t>& slow) {
+            em.ldr_x(9, R, reg);
+            em.mov_imm64(10, NBQNAN);
+            em.and_xx(11, 9, 10);
+            em.cmp_xx(11, 10);
+            slow.push_back(em.b_cond_placeholder(0));  // EQ: not a number
+        };
+        // Guards R[reg] is an object with the given tag; leaves x9 = GCObject*.
+        // Uses x9, x10, x11. Failing guards are queued as branch offsets.
+        auto emit_object_receiver_guard = [&](uint16_t reg, int8_t obj_tag,
+                                              std::vector<size_t>& slow) {
+            em.ldr_x(9, R, reg);
+            em.mov_imm64(10, JIT_NBOBJ);
+            em.and_xx(11, 9, 10);
+            em.cmp_xx(11, 10);
+            slow.push_back(em.b_cond_placeholder(1));  // NE
+            em.mov_imm64(10, JIT_NBPMASK);
+            em.and_xx(9, 9, 10);
+            em.ldr_w(10, 9, static_cast<uint16_t>(ARRAY_OBJTYPE_OFFSET / 4));
+            em.subs_imm(31, 10, static_cast<uint16_t>(obj_tag));
+            slow.push_back(em.b_cond_placeholder(1));  // NE
+        };
+        // Array receiver + in-bounds non-negative numeric key; leaves
+        // x9 = GCArray*, x11 = &elements[idx]. Uses x9-x13, d0.
+        auto emit_array_index_guard = [&](uint16_t container, uint16_t key,
+                                          std::vector<size_t>& slow) {
+            emit_object_receiver_guard(container, OBJ_TYPE_ARRAY, slow);
+            em.ldr_x(11, R, key);
+            em.mov_imm64(10, NBQNAN);
+            em.and_xx(12, 11, 10);
+            em.cmp_xx(12, 10);
+            slow.push_back(em.b_cond_placeholder(0));  // EQ: not a number
+            em.ldr_d(0, R, key);
+            em.fcvtzs_x_d(11, 0);
+            em.mov_imm64(10, 0x7fffffffULL);
+            em.cmp_xx(11, 10);
+            slow.push_back(em.b_cond_placeholder(8));  // HI: negative or huge
+            em.ldr_x(12, 9, static_cast<uint16_t>(
+                (ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET) / 8));
+            em.ldr_x(13, 9, static_cast<uint16_t>(
+                (ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET) / 8));
+            em.add_lsl(11, 12, 11, 3);
+            em.cmp_xx(11, 13);
+            slow.push_back(em.b_cond_placeholder(2));  // HS: out of bounds
+        };
 
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
@@ -2101,12 +2452,23 @@ public:
                 case JitOp::ADD:
                 case JitOp::SUB:
                 case JitOp::MUL:
-                case JitOp::DIV:
+                case JitOp::DIV: {
+                    // Same contract as the x64 tier: dynamic operands are
+                    // tag-checked at run time and computed inline when both
+                    // are numbers (and a dynamic divisor is nonzero); the
+                    // helper handles the rest.
+                    std::vector<size_t> slow;
                     if (dyn) {
-                        helper_store(&sura_bl_arith, ip, inst.a);
-                        break;
-                    }
-                    if (analysis.div_zero_guard[ip - entry_ip]) {
+                        emit_non_number_to(inst.b, slow);
+                        emit_non_number_to(inst.c, slow);
+                        if (inst.op == JitOp::DIV) {
+                            em.ldr_x(9, R, inst.c);
+                            em.mov_imm64(10, 0x7FFFFFFFFFFFFFFFULL);
+                            em.and_xx(9, 9, 10);
+                            em.cmp_xx(9, 31);  // xzr
+                            slow.push_back(em.b_cond_placeholder(0));  // EQ
+                        }
+                    } else if (analysis.div_zero_guard[ip - entry_ip]) {
                         // Same contract as the System V tier: clear the sign
                         // bit so -0.0 counts as zero, then deopt so the
                         // interpreter raises [E202].
@@ -2128,7 +2490,14 @@ public:
                         em.fdiv_d(0, 0, 1);
                     }
                     em.str_d(0, R, inst.a);
+                    if (dyn) {
+                        const size_t done = em.b_placeholder();
+                        for (size_t at : slow) if (!em.patch_branch(at, em.pos())) return {};
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        if (!em.patch_branch(done, em.pos())) return {};
+                    }
                     break;
+                }
                 case JitOp::MOD:
                     helper_store(&sura_bl_arith, ip, inst.a);
                     break;
@@ -2158,9 +2527,10 @@ public:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
+                    std::vector<size_t> slow;
                     if (dyn) {
-                        helper_store(&sura_bl_arith, ip, inst.a);
-                        break;
+                        emit_non_number_to(inst.b, slow);
+                        emit_non_number_to(inst.c, slow);
                     }
                     em.ldr_d(0, R, inst.b);
                     em.ldr_d(1, R, inst.c);
@@ -2182,6 +2552,12 @@ public:
                     }
                     em.csel_x(9, 10, 11, condition);
                     em.str_x(9, R, inst.a);
+                    if (dyn) {
+                        const size_t done = em.b_placeholder();
+                        for (size_t at : slow) if (!em.patch_branch(at, em.pos())) return {};
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        if (!em.patch_branch(done, em.pos())) return {};
+                    }
                     break;
                 }
                 case JitOp::JUMP:
@@ -2191,8 +2567,19 @@ public:
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
                     if (dyn) {
+                        // A value that already is a Bool is used directly;
+                        // the helper applies truthiness to anything else.
+                        std::vector<size_t> is_bool;
+                        em.ldr_x(9, R, inst.a);
+                        em.mov_imm64(10, NBFALSE);
+                        em.cmp_xx(9, 10);
+                        is_bool.push_back(em.b_cond_placeholder(0));  // EQ
+                        em.mov_imm64(10, NBTRUE);
+                        em.cmp_xx(9, 10);
+                        is_bool.push_back(em.b_cond_placeholder(0));  // EQ
                         emit_helper(&sura_bl_truthy, ip);
                         em.mov_xx(9, 0);
+                        for (size_t at : is_bool) if (!em.patch_branch(at, em.pos())) return {};
                     } else {
                         em.ldr_x(9, R, inst.a);
                     }
@@ -2249,12 +2636,39 @@ public:
                 case JitOp::MAKE_DICT:
                     helper_store(&sura_bl_make_dict, ip, inst.a);
                     break;
-                case JitOp::INDEX_GET:
+                case JitOp::INDEX_GET: {
+                    // Same shape as the x64 tiers: array + in-bounds numeric
+                    // index inline, helper otherwise. x9 = GCArray*, x11 =
+                    // &elements[idx] on the fast path.
+                    if (!inline_collections) {
+                        helper_store(&sura_bl_index_get, ip, inst.a);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    emit_array_index_guard(inst.b, inst.c, slow);
+                    em.ldr_x0(9, 11);
+                    em.str_x(9, R, inst.a);
+                    const size_t done = em.b_placeholder();
+                    for (size_t at : slow) if (!em.patch_branch(at, em.pos())) return {};
                     helper_store(&sura_bl_index_get, ip, inst.a);
+                    if (!em.patch_branch(done, em.pos())) return {};
                     break;
-                case JitOp::INDEX_SET:
+                }
+                case JitOp::INDEX_SET: {
+                    if (!inline_collections) {
+                        emit_helper(&sura_bl_index_set, ip);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    emit_array_index_guard(inst.a, inst.b, slow);
+                    em.ldr_x(10, R, inst.c);
+                    em.str_x0(10, 11);
+                    const size_t done = em.b_placeholder();
+                    for (size_t at : slow) if (!em.patch_branch(at, em.pos())) return {};
                     emit_helper(&sura_bl_index_set, ip);
+                    if (!em.patch_branch(done, em.pos())) return {};
                     break;
+                }
                 case JitOp::DOT_GET:
                     helper_store(&sura_bl_dot_get, ip, inst.a);
                     break;
@@ -2281,9 +2695,56 @@ public:
                 case JitOp::CALL_BUILTIN:
                     helper_store(&sura_bl_call_builtin, ip, inst.a);
                     break;
-                case JitOp::METHOD_CALL:
+                case JitOp::METHOD_CALL: {
+                    const int kind = inline_collections
+                        ? inline_method_kind(chunk, inst) : 0;
+                    if (kind == 0) {
+                        helper_store(&sura_bl_method_call, ip, inst.a);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    if (kind == kInlineDictHas) {
+                        emit_object_receiver_guard(inst.b, OBJ_TYPE_DICT, slow);
+                        em.mov_xx(0, 9);
+                        em.ldr_x(1, R, static_cast<uint16_t>(inst.b + 1));
+                        em.mov_imm64(9, static_cast<uint64_t>(
+                            reinterpret_cast<uintptr_t>(&sura_jit_dict_has)));
+                        em.blr(9);
+                        em.str_x(0, R, inst.a);
+                    } else {
+                        emit_object_receiver_guard(inst.b, OBJ_TYPE_ARRAY, slow);
+                        if (kind == kInlineArrayPush) {
+                            // x12 = finish, x13 = capacity end
+                            em.ldr_x(12, 9, static_cast<uint16_t>(
+                                (ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET) / 8));
+                            em.ldr_x(13, 9, static_cast<uint16_t>(
+                                (ARRAY_ELEMENTS_OFFSET + VECTOR_CAP_OFFSET) / 8));
+                            em.cmp_xx(12, 13);
+                            slow.push_back(em.b_cond_placeholder(2));  // HS: full
+                            em.ldr_x(10, R, static_cast<uint16_t>(inst.b + 1));
+                            em.str_x0(10, 12);
+                            em.add_imm(12, 12, 8);
+                            em.str_x(12, 9, static_cast<uint16_t>(
+                                (ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET) / 8));
+                            em.ldr_x(9, R, inst.b);
+                            em.str_x(9, R, inst.a);
+                        } else {
+                            em.ldr_x(12, 9, static_cast<uint16_t>(
+                                (ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET) / 8));
+                            em.ldr_x(13, 9, static_cast<uint16_t>(
+                                (ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET) / 8));
+                            em.sub_xx(12, 12, 13);
+                            em.lsr_imm(12, 12, 3);
+                            em.scvtf_d_x(0, 12);
+                            em.str_d(0, R, inst.a);
+                        }
+                    }
+                    const size_t done = em.b_placeholder();
+                    for (size_t at : slow) if (!em.patch_branch(at, em.pos())) return {};
                     helper_store(&sura_bl_method_call, ip, inst.a);
+                    if (!em.patch_branch(done, em.pos())) return {};
                     break;
+                }
                 case JitOp::CALL_FUNC: {
                     const auto& dc = analysis.direct_call[ip - entry_ip];
                     if (!dc.valid) {
@@ -2767,84 +3228,6 @@ inline uint32_t sura_jit_required_function_frame_regs(
     return required;
 }
 
-// NaN-box sentinels (mirrored from value.hpp so we can bake them into code)
-static constexpr uint64_t JIT_NBNIL   = 0x7FFC000000000000ULL;
-static constexpr uint64_t JIT_NBFALSE = 0x7FFC000000000001ULL;
-static constexpr uint64_t JIT_NBTRUE  = 0x7FFC000000000002ULL;
-// NaN-box object mask constants
-static constexpr uint64_t JIT_NBOBJ   = 0xFFFC000000000000ULL; // NBQNAN | NBSIGN
-static constexpr uint64_t JIT_NBPMASK = 0x0003FFFFFFFFFFFFULL; // ~NBOBJ (lower 50 bits = ptr)
-
-// ── GCInstance memory-layout offsets (libstdc++ / MinGW64) ─────────────────
-// GCObject:   vtable*(8) + obj_type(4) + marked(1) + pad(3) = 16 bytes
-// GCInstance uses SmallValueVec for fields. Its first member is a Value* data
-// pointer, mirroring std::vector's data-pointer-at-offset-0 layout for JIT ICs.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-static const int32_t INST_OBJTYPE_OFFSET = (int32_t)__builtin_offsetof(GCInstance, obj_type);
-static const int32_t INST_FIELDS_OFFSET  = (int32_t)__builtin_offsetof(GCInstance, fields);
-static const int32_t INST_JITINFO_OFFSET = (int32_t)__builtin_offsetof(GCInstance, jit_info);
-static const int32_t CLOSURE_FUNC_IDX_OFFSET = (int32_t)__builtin_offsetof(GCClosure, func_idx);
-static const int32_t JITINST_IC_NATIVE_FN_OFFSET = (int32_t)__builtin_offsetof(JitInst, ic_native_fn);
-static const int32_t JITINST_IC_NATIVE_FRAME_REGS_OFFSET =
-    (int32_t)__builtin_offsetof(JitInst, ic_native_frame_regs);
-#pragma GCC diagnostic pop
-static constexpr int32_t VECTOR_DATA_OFFSET = 0;   // _M_start at vector base
-static constexpr int32_t SMALL_VALUE_VEC_SIZE_OFFSET = 8; // data_ then size_ on Win64
-static constexpr int8_t  OBJ_TYPE_INSTANCE  = 5;   // ObjType::INSTANCE enum value
-static constexpr int8_t  OBJ_TYPE_FUNC      = 3;   // ObjType::FUNC enum value
-static_assert(static_cast<int>(ObjType::INSTANCE) == OBJ_TYPE_INSTANCE,
-              "native JIT INSTANCE tag must match ObjType");
-static_assert(static_cast<int>(ObjType::FUNC) == OBJ_TYPE_FUNC,
-              "native JIT FUNC tag must match ObjType");
-
-// ── GCArray layout for the inline array-index fast path ─────────────────────
-// GCArray is GCObject + std::vector<Value>. libstdc++ lays the vector out as
-// {_M_start, _M_finish, _M_end_of_storage}; the fast path reads the first two
-// to bounds-check without a call. The layout is probed once at runtime, so a
-// different standard library simply keeps the helper call instead of
-// reading garbage.
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-static const int32_t ARRAY_OBJTYPE_OFFSET  = (int32_t)__builtin_offsetof(GCArray, obj_type);
-static const int32_t ARRAY_ELEMENTS_OFFSET = (int32_t)__builtin_offsetof(GCArray, elements);
-#pragma GCC diagnostic pop
-static constexpr int32_t VECTOR_FINISH_OFFSET = 8;  // _M_finish follows _M_start
-static constexpr int32_t VECTOR_CAP_OFFSET    = 16; // _M_end_of_storage
-static constexpr int8_t  OBJ_TYPE_ARRAY = 1;        // ObjType::ARRAY enum value
-static constexpr int8_t  OBJ_TYPE_DICT  = 2;        // ObjType::DICT enum value
-static_assert(static_cast<int>(ObjType::ARRAY) == OBJ_TYPE_ARRAY,
-              "native JIT ARRAY tag must match ObjType");
-static_assert(static_cast<int>(ObjType::DICT) == OBJ_TYPE_DICT,
-              "native JIT DICT tag must match ObjType");
-
-// `d.has(k)` on a proven dict: one hash probe, no method-name dispatch. The
-// key is converted with Value::to_str exactly as the builtin does.
-extern "C" inline uint64_t sura_jit_dict_has(GCDict* dict, uint64_t key_bits) {
-    const Value key = Value::from_bits(key_bits);
-    const bool found = key.is_str()
-        ? dict->elements.find(key.as_str_ref()) != dict->elements.end()
-        : dict->elements.find(key.to_str()) != dict->elements.end();
-    return found ? JIT_NBTRUE : JIT_NBFALSE;
-}
-
-inline bool jit_array_layout_verified() {
-    static const bool ok = [] {
-        if (std::getenv("SURA_JIT_DISABLE_ARRAY_IC")) return false;
-        std::vector<Value> probe(3);
-        probe.reserve(8);
-        const char* base = reinterpret_cast<const char*>(&probe);
-        Value* start = nullptr;
-        Value* finish = nullptr;
-        Value* cap = nullptr;
-        std::memcpy(&start, base + VECTOR_DATA_OFFSET, sizeof start);
-        std::memcpy(&finish, base + VECTOR_FINISH_OFFSET, sizeof finish);
-        std::memcpy(&cap, base + VECTOR_CAP_OFFSET, sizeof cap);
-        return start == probe.data() && finish == probe.data() + probe.size() &&
-               cap == probe.data() + probe.capacity();
-    }();
-    return ok;
-}
 
 // ── JitVM memory-layout offsets (Win64 / MinGW64) ──────────────────────────
 // JitVM first data members (no vtable; static constexpr have no storage):
@@ -4349,43 +4732,17 @@ private:
     // Clobbers RAX, RCX, R10.
     void emit_array_receiver_guard(X64Emitter& em, int32_t container_off,
                                    std::vector<size_t>& slow_jmps) {
-        emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
+        sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
     }
 
-    // Guards that R[container] is an object with the given tag; leaves
-    // RAX = GCObject*. Clobbers RAX, RCX, R10. GCArray/GCDict/GCInstance all
-    // share GCObject's header, so one obj_type offset serves every tag.
     void emit_object_receiver_guard(X64Emitter& em, int32_t container_off,
                                     int8_t obj_tag, std::vector<size_t>& slow_jmps) {
-        em.mov_r_mem(XR::RAX, XR::RBX, container_off);
-        em.mov_ri64(XR::R10, JIT_NBOBJ);
-        em.mov_rr(XR::RCX, XR::RAX);
-        em.and_rr(XR::RCX, XR::R10);
-        em.cmp_rr(XR::RCX, XR::R10);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
-        em.mov_ri64(XR::R10, JIT_NBPMASK);
-        em.and_rr(XR::RAX, XR::R10);
-        em.cmp_mem32_imm8(XR::RAX, ARRAY_OBJTYPE_OFFSET, obj_tag);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+        sura_x64_emit_object_receiver_guard(em, container_off, obj_tag, slow_jmps);
     }
 
     void emit_array_index_guard(X64Emitter& em, int32_t container_off,
                                 int32_t key_off, std::vector<size_t>& slow_jmps) {
-        emit_array_receiver_guard(em, container_off, slow_jmps);
-        static constexpr uint32_t TAG32 = 0x7ffc0000U;
-        em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
-        em.and_r32_imm32(XR::RCX, TAG32);
-        em.cmp_r32_imm32(XR::RCX, TAG32);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
-        em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
-        em.cmp_r_imm32(XR::RCX, 0x7fffffff);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
-        em.shl_r_imm8(XR::RCX, 3);
-        em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
-        em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
-        em.add_rr(XR::RCX, XR::RDX);
-        em.cmp_rr(XR::RCX, XR::R10);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+        sura_x64_emit_array_index_guard(em, container_off, key_off, slow_jmps);
     }
 
     bool emit_op(const JitInst& inst, size_t ip,
