@@ -28,6 +28,13 @@ if (compatibilityContract.schema !== "sura.compatibility.v1" ||
 }
 const apiPath = path.join(root, "build", "reference-docs", "api.json");
 const cssPath = path.join(siteRoot, "public", "reference.css");
+// Reference document date. Bump when the generated wording changes, not on
+// every regeneration, so the published document stays reproducible.
+const DOC_DATE = "2026-09-02";
+// Logo mark (from assets/sura-logo.png) embedded as a data URI so the
+// standalone reference.html keeps its logo when copied out of the site.
+const logoDataUri = "data:image/png;base64," +
+  fs.readFileSync(path.join(siteRoot, "public", "sura-mark-96.b64"), "utf8").trim();
 const targetAuditPath = path.join(root, "artifacts", "target_lowering_audit.json");
 const goalAuditPath = path.join(root, "artifacts", "goal_audit.json");
 const nativePerformancePath = path.join(root, "artifacts", "native_perf.json");
@@ -314,12 +321,14 @@ const machineFacts = {
     optional_native_jit: {
       flag: "--jit",
       platform_abi: "Windows x64 / Win64, Linux x86-64 / System V, and little-endian Windows/Linux/macOS ARM64 / AAPCS64 baseline",
-      emitter_backend: "x64-win64 partial compiler; x64-sysv-baseline and arm64-aapcs-baseline exception-free straight-line subsets",
+      emitter_backend: "x64-win64 full compiler with baseline-first pure numeric functions; x64-sysv-baseline and arm64-aapcs-baseline helper-calling baselines (revision 4) with hybrid frames",
       backends: [
-        { os: "windows", architecture: "x86-64", abi: "win64", backend: "x64-win64", scope: "supported functions, methods, helpers, and guarded optimization paths" },
-        { os: "linux", architecture: "x86-64", abi: "sysv-x86-64", backend: "x64-sysv-baseline", scope: "constant loads, moves, statically proven numeric add/subtract/multiply and unary negation, and returns; no helper calls" },
-        { os: "windows/linux/macos", architecture: "arm64", abi: "aapcs64", backend: "arm64-aapcs-baseline", scope: "little-endian constant loads, moves, statically proven numeric add/subtract/multiply and unary negation, and returns; no helper calls" },
+        { os: "windows", architecture: "x86-64", abi: "win64", backend: "x64-win64", scope: "pure numeric functions go to the baseline first; everything else uses the full compiler with inline caches, helpers, and guarded optimization paths" },
+        { os: "linux", architecture: "x86-64", abi: "sysv-x86-64", backend: "x64-sysv-baseline", scope: "inline constants, moves, statically proven numeric + - *, unary -, the six comparisons, proven non-zero /, guarded global reads, and native direct calls between pure numeric functions including recursion; arrays, strings, dicts, field access, in, for...in, general calls, and method calls run through VM helpers; a helper exception deopts to the register VM at that instruction" },
+        { os: "windows/linux/macos", architecture: "arm64", abi: "aapcs64", backend: "arm64-aapcs-baseline", scope: "little-endian; same scope as x64-sysv-baseline, verified by unit tests on ARM64 CI runners and instruction-level unicorn emulation" },
       ],
+      baseline_helpers: ["sura_bl_arith", "sura_bl_call", "sura_bl_call_builtin", "sura_bl_dict_keys", "sura_bl_dot_get", "sura_bl_dot_set", "sura_bl_foreach_next", "sura_bl_index_get", "sura_bl_index_set", "sura_bl_load_global", "sura_bl_make_array", "sura_bl_make_dict", "sura_bl_method_call", "sura_bl_op_in", "sura_bl_print", "sura_bl_store_global", "sura_bl_truthy"],
+      hybrid_frames: "a native direct call places the callee frame on the VM value stack only when the callee can reach a helper, so the collector sees it; helper-free callees such as fib keep the machine stack",
       mode: "lazy partial compilation inside the register VM",
       warmup_thresholds: { function_calls: 6, method_calls: 5 },
       fallback: "unsupported or failed native compilation continues in the register VM",
@@ -1196,7 +1205,7 @@ const machineFacts = {
       hardware: "RTX 4060",
       source: "Guide/GPU_AND_SCALE.md",
     },
-    current_jit_gaps: ["full System V opcode/helper coverage", "broader ARM64 opcode/helper coverage", "macOS x86-64 native backend", "general function and method inlining", "general escape analysis beyond guarded 2/3-field no-alias record updates", "general register allocation", "loop-invariant code motion", "loop-carried XMM SSA"],
+    current_jit_gaps: ["baseline helpers do the whole job for strings, dicts, and objects, so those workloads are still slower than CPython on Linux x86-64", "inline caches for field access and method calls outside Win64", "ARM64 benchmark table re-measurement", "macOS x86-64 native backend", "general function and method inlining", "general escape analysis beyond guarded 2/3-field no-alias record updates", "general register allocation", "loop-invariant code motion", "loop-carried XMM SSA"],
   },
   documentation_limits: {
     api_entries: `${apiSymbolCount} module entries contain canonical names, call signatures, and source locations; shared runtime limits and module-specific contracts are recorded in the prose and structured sections`,
@@ -1432,7 +1441,7 @@ const sections = [];
 sections.push(section("overview", "문서 개요",
   paragraph("이 문서는 " + code("Sura Language " + version) + "의 공개 레퍼런스입니다. 문법, 런타임 의미, 명령행, 표준 라이브러리 API, 동시성, AI/CUDA, 미디어, 외부 연동, 패키지 관리, 타깃 상태와 검증 기록을 한 파일에 담습니다.") +
   "<div class='status-grid'>" +
-    "<div class='status-card status-editor'><strong>실행 파이프라인</strong><span>lexer → parser/AST → strict typecheck → register bytecode → register VM. Windows x64는 부분 JIT, Linux x86-64는 helper 없는 straight-line baseline을 사용합니다.</span></div>" +
+    "<div class='status-card status-editor'><strong>실행 파이프라인</strong><span>lexer → parser/AST → strict typecheck → register bytecode → register VM. Windows x64는 전체 JIT, Linux x86-64와 ARM64는 배열·문자열·딕셔너리를 VM helper로 처리하는 baseline JIT를 사용합니다.</span></div>" +
     "<div class='status-card status-targets'><strong>API 인벤토리</strong><span>runtime module namespace 35개, catalog module 34개, module signature " + apiSymbolCount + "개, global builtin name·alias " + globalBuiltinNames.length + "개입니다.</span></div>" +
     "<div class='status-card status-release'><strong>검증 기준</strong><span>최종 " + version + " engine에서 stable suite는 VM " + escapeHtml(verificationManifest.results.stable_vm) + "와 JIT " + escapeHtml(verificationManifest.results.stable_jit) + "를 통과했습니다.</span></div>" +
   "</div>" +
@@ -1726,7 +1735,7 @@ sections.push(section("packages", "패키지·개발 도구",
 
 sections.push(section("targets", "JavaScript·WebAssembly 타깃",
   table(["타깃", "2026-07-17 AST lowering 분류"], [
-    ["Native VM/JIT", "register VM이 주 실행 경로; Win64 x64 partial JIT, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline"],
+    ["Native VM/JIT", "register VM이 주 실행 경로; Win64 x64 전체 JIT(순수 숫자 함수는 baseline 우선), Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline — 두 baseline은 helper를 통해 배열·문자열·딕셔너리까지 네이티브 코드로 내보냅니다"],
     ["JavaScript", targetAudit.ast_node_count + "개 node 중 full " + targetAudit.js.full + ", ignored " + targetAudit.js.ignored + ", partial " + targetAudit.js.partial],
     ["WebAssembly", targetAudit.ast_node_count + "개 node 중 full " + targetAudit.wasm.full + ", partial " + targetAudit.wasm.partial + ", ignored " + targetAudit.wasm.ignored],
   ]) +
@@ -1827,7 +1836,7 @@ sections.push(section("performance", "성능과 검증 기록",
   paragraph("최신 기록은 2026-07-17 Windows x64, " + escapeHtml(nativePerformance.host.cpu) + ", " + escapeHtml(nativePerformance.compiler_version) + "에서 같은 100,000-step inner physics loop를 Sura JIT와 C++ O3로 각각 5회 측정했습니다. Vec2는 Sura JIT " + currentVec2Perf.sura_jit_ms.toFixed(3) + " ms, C++ O3 " + currentVec2Perf.native_ms.toFixed(3) + " ms, 비율 " + currentVec2Perf.sura_native_ratio.toFixed(2) + "×였습니다. Vec3는 Sura JIT " + currentVec3Perf.sura_jit_ms.toFixed(3) + " ms, C++ O3 " + currentVec3Perf.native_ms.toFixed(3) + " ms, 비율 " + currentVec3Perf.sura_native_ratio.toFixed(2) + "×였습니다. 두 fair-scope 검사를 모두 통과했으며, 이 수치는 특정 물리 루프 기록이지 언어 전체 성능을 대표하지 않습니다. 측정 engine SHA-256은 " + code(nativePerformance.engine.sha256) + "입니다.") +
   paragraph("2026-07-13의 이전 공개 기록은 Vec2 38.33×, Vec3 105.62×였고, 2026-07-12의 더 이전 기록은 Vec2 17.225 ms, Vec3 62.254 ms였습니다. 비교 범위와 엔진이 다른 기록은 최신 수치와 섞어 해석하지 않습니다.") +
   paragraph("Guide/GPU_AND_SCALE.md에 기록된 RTX 4060 결과는 Sura 1.8, engine SHA-256 prefix 3270a9의 역사적 측정입니다. direct causal-attention forward+backward 50회 중앙값은 B1/H4/T64/D32에서 Sura 1.5076 ms, PyTorch 0.4649 ms, 비율 3.242×였고 B1/H4/T128/D64에서는 Sura 5.6562 ms, PyTorch 0.4282 ms, 비율 13.209×였습니다.") +
-  paragraph("native emitter는 Win64 x64 partial backend, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline을 구현합니다. 두 baseline은 helper를 호출하지 않는 상수·이동·정적으로 숫자임이 증명된 덧셈·뺄셈·곱셈·단항 음수·반환만 처리하고, 나머지는 register VM에서 실행합니다. macOS x86-64에는 native backend가 없습니다. Vec2/Vec3 benchmark의 strict counted-loop shortcut은 인식된 top-level loop, closure identity, 정확한 field-copy constructor, Vec2/Vec3 layout, add/scale/cross와 step/step3 bytecode graph, numeric input, escape·non-alias 조건을 모두 증명한 경우에만 사용합니다. 하나라도 맞지 않으면 원래 VM/native bytecode path로 실행합니다. 한 번 이상 반복한 shortcut은 원래 position을 변경하지 않고 fresh result instance를 저장하므로 원래 객체를 가리키는 alias의 field가 바뀌지 않으며, 0회 반복은 원래 identity를 유지합니다. 이 경로는 일반 사용자 loop 최적화가 아닙니다. 일반 control-flow deoptimization, 범용 escape analysis, register allocation, loop-invariant code motion은 구현되지 않았습니다. Windows x64 native helper frame은 UNWIND_INFO를 등록합니다.")
+  paragraph("native emitter는 Win64 x64 전체 backend, Linux x86-64 System V baseline, little-endian Windows/Linux/macOS ARM64 AAPCS64 baseline을 구현합니다. 두 baseline(4차 개정)은 상수·이동·정적으로 숫자임이 증명된 덧셈·뺄셈·곱셈·단항 음수·여섯 가지 비교·0이 아님이 증명된 나눗셈·가드된 전역 읽기·순수 숫자 함수 사이의 네이티브 직접 호출(재귀 포함)을 인라인으로 내보내고, 배열·문자열·딕셔너리·필드 접근·in·for ... in·일반 호출·메서드 호출은 17개 VM helper를 네이티브 코드에서 호출합니다. helper가 예외를 내면 그 명령에서 register VM으로 되돌아가 VM과 같은 오류를 냅니다. 네이티브 직접 호출은 callee가 helper에 닿을 수 있을 때만 프레임을 VM 값 스택에 올리고(하이브리드 프레임), fib처럼 helper에 닿지 않는 callee는 기계 스택을 씁니다. Windows x64는 순수 숫자 함수만 baseline으로 보내고 나머지는 인라인 캐시를 가진 전체 컴파일러가 맡습니다. macOS x86-64에는 native backend가 없습니다. Vec2/Vec3 benchmark의 strict counted-loop shortcut은 인식된 top-level loop, closure identity, 정확한 field-copy constructor, Vec2/Vec3 layout, add/scale/cross와 step/step3 bytecode graph, numeric input, escape·non-alias 조건을 모두 증명한 경우에만 사용합니다. 하나라도 맞지 않으면 원래 VM/native bytecode path로 실행합니다. 한 번 이상 반복한 shortcut은 원래 position을 변경하지 않고 fresh result instance를 저장하므로 원래 객체를 가리키는 alias의 field가 바뀌지 않으며, 0회 반복은 원래 identity를 유지합니다. 이 경로는 일반 사용자 loop 최적화가 아닙니다. 일반 control-flow deoptimization, 범용 escape analysis, register allocation, loop-invariant code motion은 구현되지 않았습니다. Windows x64 native helper frame은 UNWIND_INFO를 등록합니다.")
 ));
 
 const machineJson = JSON.stringify(machineFacts, null, 2).replaceAll("<", "\\u003c");
@@ -1929,7 +1938,7 @@ let html = "<!DOCTYPE html>\n<html lang='ko'>\n<head>\n<meta charset='UTF-8'>\n"
   "<meta name='description' content='Sura " + version + "의 문법, 런타임, CLI, 표준 라이브러리, 타깃 제한과 검증 기록을 한 문서에서 확인하는 공식 레퍼런스'>\n" +
   "<title>Sura 언어 레퍼런스 " + version + "</title>\n<style>" + css + "</style>\n</head>\n<body>\n" +
   "<a class='skip-link' href='#main-content'>본문 바로가기</a>\n<nav aria-label='레퍼런스 목차'>" +
-  "<div class='logo'><a class='logo-home' href='/' aria-label='Sura 홈페이지'><span>Sura</span><strong>Reference</strong></a><span class='nav-version'>v" + version + "</span></div>" +
+  "<div class='logo'><a class='logo-home' href='/' aria-label='Sura 홈페이지'><img src='" + logoDataUri + "' alt='' width='30' height='30'><span>Sura</span><strong>Reference</strong></a><span class='nav-version'>v" + version + "</span></div>" +
   "<div class='nav-search'><label class='sr-only' for='filter'>문서 검색</label><input id='filter' type='search' placeholder='문법, 명령, API 검색' autocomplete='off'></div>" +
   "<p id='filter-status' class='search-status' aria-live='polite'>전체 문서</p>" +
   "<div class='nav-section'>" + navigation + "</div></nav>\n" +
@@ -1937,7 +1946,7 @@ let html = "<!DOCTYPE html>\n<html lang='ko'>\n<head>\n<meta charset='UTF-8'>\n"
   "<h1 class='official-title'>Sura 언어<br>레퍼런스</h1>" +
   "<p class='official-subtitle'>문법과 실행 모델부터 CLI, 표준 라이브러리, 플랫폼별 제한, 배포 파일의 검증 근거까지 한 HTML 문서에 정리했습니다. 다른 도구가 읽을 수 있는 구조화 JSON도 같은 문서에 포함합니다.</p>" +
   "<div class='doc-index'><a href='#install'>설치와 실행</a><a href='#lexical'>문법부터 읽기</a><a href='#stdlib'>API 찾기</a><a href='#machine'>구조화 데이터</a></div>" +
-  "<p class='doc-meta'>" + version + " · 2026-07-19 · UTF-8 · " + apiSymbolCount + " API signatures</p></header>" +
+  "<p class='doc-meta'>" + version + " · " + DOC_DATE + " · UTF-8 · " + apiSymbolCount + " API signatures</p></header>" +
   sections.join("\n") + "</main>\n" +
   "<script id='sura-reference-data' type='application/json'>" + machineJson + "</script>\n" +
   "<script>" + clientScript + "</script>\n" +
