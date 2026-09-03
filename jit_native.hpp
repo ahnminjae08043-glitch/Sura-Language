@@ -64,6 +64,12 @@ class JitVM;
 // `extern "C" inline` in jit_vm.hpp so their addresses are stable.
 extern "C" uint64_t sura_jit_call(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" uint64_t sura_jit_construct_plain2(JitVM* vm, const JitClassInfo* cls, uint64_t v0, uint64_t v1);
+// Collector safepoint taken before every record allocation issued from native
+// code. Without it a loop that only constructs records never reaches a GC
+// trigger: MAKE_ARRAY/MAKE_DICT tick the collector, but constructors did not,
+// so five million short-lived instances piled up and every allocation paid
+// for fresh, cold memory. Defined in jit_vm.hpp.
+extern "C" void sura_jit_record_alloc_safepoint(JitVM* vm);
 extern "C" uint64_t sura_jit_construct_plain3(JitVM* vm, const JitClassInfo* cls, uint64_t v0, uint64_t v1, uint64_t v2);
 extern "C" uint64_t sura_jit_materialize_scalar_record(JitVM* vm,
                                                          Value* R,
@@ -78,9 +84,11 @@ extern "C" int sura_jit_strict_vector_loop(JitVM* vm,
 // Exact-width record constructors avoid the generic default-field copy when
 // the class has no trailing fields. The optimization is shape-based and keeps
 // the generic helpers below for prefix constructors on larger records.
-extern "C" inline uint64_t sura_jit_construct_exact2(const JitClassInfo* cls,
+extern "C" inline uint64_t sura_jit_construct_exact2(JitVM* vm,
+                                                      const JitClassInfo* cls,
                                                       uint64_t v0,
                                                       uint64_t v1) {
+    sura_jit_record_alloc_safepoint(vm);
     Value obj = Value::make_inst_ref(&cls->name);
     GCInstance* instance = obj.as_inst();
     instance->fields.resize(2, Value::nil());
@@ -90,10 +98,12 @@ extern "C" inline uint64_t sura_jit_construct_exact2(const JitClassInfo* cls,
     return obj.raw_bits();
 }
 
-extern "C" inline uint64_t sura_jit_construct_exact3(const JitClassInfo* cls,
+extern "C" inline uint64_t sura_jit_construct_exact3(JitVM* vm,
+                                                      const JitClassInfo* cls,
                                                       uint64_t v0,
                                                       uint64_t v1,
                                                       uint64_t v2) {
+    sura_jit_record_alloc_safepoint(vm);
     Value obj = Value::make_inst_ref(&cls->name);
     GCInstance* instance = obj.as_inst();
     instance->fields.resize(3, Value::nil());
@@ -124,7 +134,7 @@ extern "C" void     sura_jit_op_in(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" void     sura_jit_dict_keys(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" int      sura_jit_foreach_next(JitVM* vm, Value* R, const JitInst* ins);
 extern "C" void     sura_jit_print(JitVM* vm, struct Value* R, const JitInst* ins, int newline);
-extern "C" uint64_t sura_jit_add(uint64_t a, uint64_t b);  // Phase 10 safe ADD
+extern "C" uint64_t sura_jit_add(uint64_t a, uint64_t b, JitVM* vm);  // Phase 10 safe ADD
 // Baseline-tier helpers (jit_vm.hpp, SURA_BL_HELPER): one instruction of
 // interpreter semantics each, with every throw parked in the VM and turned
 // into SURA_JIT_DEOPT_SENTINEL so nothing unwinds through baseline code.
@@ -2788,6 +2798,54 @@ static_assert(static_cast<int>(ObjType::INSTANCE) == OBJ_TYPE_INSTANCE,
 static_assert(static_cast<int>(ObjType::FUNC) == OBJ_TYPE_FUNC,
               "native JIT FUNC tag must match ObjType");
 
+// ── GCArray layout for the inline array-index fast path ─────────────────────
+// GCArray is GCObject + std::vector<Value>. libstdc++ lays the vector out as
+// {_M_start, _M_finish, _M_end_of_storage}; the fast path reads the first two
+// to bounds-check without a call. The layout is probed once at runtime, so a
+// different standard library simply keeps the helper call instead of
+// reading garbage.
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Winvalid-offsetof"
+static const int32_t ARRAY_OBJTYPE_OFFSET  = (int32_t)__builtin_offsetof(GCArray, obj_type);
+static const int32_t ARRAY_ELEMENTS_OFFSET = (int32_t)__builtin_offsetof(GCArray, elements);
+#pragma GCC diagnostic pop
+static constexpr int32_t VECTOR_FINISH_OFFSET = 8;  // _M_finish follows _M_start
+static constexpr int32_t VECTOR_CAP_OFFSET    = 16; // _M_end_of_storage
+static constexpr int8_t  OBJ_TYPE_ARRAY = 1;        // ObjType::ARRAY enum value
+static constexpr int8_t  OBJ_TYPE_DICT  = 2;        // ObjType::DICT enum value
+static_assert(static_cast<int>(ObjType::ARRAY) == OBJ_TYPE_ARRAY,
+              "native JIT ARRAY tag must match ObjType");
+static_assert(static_cast<int>(ObjType::DICT) == OBJ_TYPE_DICT,
+              "native JIT DICT tag must match ObjType");
+
+// `d.has(k)` on a proven dict: one hash probe, no method-name dispatch. The
+// key is converted with Value::to_str exactly as the builtin does.
+extern "C" inline uint64_t sura_jit_dict_has(GCDict* dict, uint64_t key_bits) {
+    const Value key = Value::from_bits(key_bits);
+    const bool found = key.is_str()
+        ? dict->elements.find(key.as_str_ref()) != dict->elements.end()
+        : dict->elements.find(key.to_str()) != dict->elements.end();
+    return found ? JIT_NBTRUE : JIT_NBFALSE;
+}
+
+inline bool jit_array_layout_verified() {
+    static const bool ok = [] {
+        if (std::getenv("SURA_JIT_DISABLE_ARRAY_IC")) return false;
+        std::vector<Value> probe(3);
+        probe.reserve(8);
+        const char* base = reinterpret_cast<const char*>(&probe);
+        Value* start = nullptr;
+        Value* finish = nullptr;
+        Value* cap = nullptr;
+        std::memcpy(&start, base + VECTOR_DATA_OFFSET, sizeof start);
+        std::memcpy(&finish, base + VECTOR_FINISH_OFFSET, sizeof finish);
+        std::memcpy(&cap, base + VECTOR_CAP_OFFSET, sizeof cap);
+        return start == probe.data() && finish == probe.data() + probe.size() &&
+               cap == probe.data() + probe.capacity();
+    }();
+    return ok;
+}
+
 // ── JitVM memory-layout offsets (Win64 / MinGW64) ──────────────────────────
 // JitVM first data members (no vtable; static constexpr have no storage):
 //   std::vector<Value> value_stack    → 3 pointers = 24 bytes, at offset 0
@@ -4278,6 +4336,58 @@ private:
         return em.jcc_rel32_placeholder(CC::E);
     }
 
+    // Emits the guards shared by the INDEX_GET / INDEX_SET array fast paths.
+    // On exit RCX holds &elements[idx] and every failing guard has been
+    // recorded in slow_jmps for the caller to patch to its helper call.
+    //   1. R[container] is an object            (bits & NBOBJ) == NBOBJ
+    //   2. obj_type == ARRAY
+    //   3. R[key] is a number                   (hi32 & 0x7ffc0000) != 0x7ffc0000
+    //   4. idx = (int64)trunc(key), 0 <= idx <= INT32_MAX  (one unsigned compare)
+    //   5. &elements[idx] < _M_finish            (bounds)
+    // Clobbers RAX, RCX, RDX, R10.
+    // Guards that R[container] is an array; leaves RAX = GCArray*.
+    // Clobbers RAX, RCX, R10.
+    void emit_array_receiver_guard(X64Emitter& em, int32_t container_off,
+                                   std::vector<size_t>& slow_jmps) {
+        emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
+    }
+
+    // Guards that R[container] is an object with the given tag; leaves
+    // RAX = GCObject*. Clobbers RAX, RCX, R10. GCArray/GCDict/GCInstance all
+    // share GCObject's header, so one obj_type offset serves every tag.
+    void emit_object_receiver_guard(X64Emitter& em, int32_t container_off,
+                                    int8_t obj_tag, std::vector<size_t>& slow_jmps) {
+        em.mov_r_mem(XR::RAX, XR::RBX, container_off);
+        em.mov_ri64(XR::R10, JIT_NBOBJ);
+        em.mov_rr(XR::RCX, XR::RAX);
+        em.and_rr(XR::RCX, XR::R10);
+        em.cmp_rr(XR::RCX, XR::R10);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+        em.mov_ri64(XR::R10, JIT_NBPMASK);
+        em.and_rr(XR::RAX, XR::R10);
+        em.cmp_mem32_imm8(XR::RAX, ARRAY_OBJTYPE_OFFSET, obj_tag);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+    }
+
+    void emit_array_index_guard(X64Emitter& em, int32_t container_off,
+                                int32_t key_off, std::vector<size_t>& slow_jmps) {
+        emit_array_receiver_guard(em, container_off, slow_jmps);
+        static constexpr uint32_t TAG32 = 0x7ffc0000U;
+        em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+        em.and_r32_imm32(XR::RCX, TAG32);
+        em.cmp_r32_imm32(XR::RCX, TAG32);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
+        em.cmp_r_imm32(XR::RCX, 0x7fffffff);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
+        em.shl_r_imm8(XR::RCX, 3);
+        em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+        em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+        em.add_rr(XR::RCX, XR::RDX);
+        em.cmp_rr(XR::RCX, XR::R10);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+    }
+
     bool emit_op(const JitInst& inst, size_t ip,
                  const JitInst* runtime_inst = nullptr) {
         using O = JitOp;
@@ -4355,6 +4465,7 @@ private:
                     for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
                     em.mov_r_mem(XR::RCX, XR::RBX, ob);
                     em.mov_r_mem(XR::RDX, XR::RBX, oc);
+                    em.mov_rr(XR::R8, XR::R13);
                     em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_add);
                     em.call_rax();
                     em.mov_mem_r(XR::RBX, oa, XR::RAX);
@@ -4688,13 +4799,15 @@ private:
                         const bool exact_width =
                             inst.ic_class->field_defaults.size() == (size_t)inst.operand;
                         if (exact_width) {
-                            em.mov_ri64(XR::RCX, (uint64_t)(uintptr_t)inst.ic_class);
-                            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
-                            em.mov_r_mem(XR::R8, XR::RBX,
+                            em.mov_rr(XR::RCX, XR::R13);
+                            em.mov_ri64(XR::RDX, (uint64_t)(uintptr_t)inst.ic_class);
+                            em.mov_r_mem(XR::R8, XR::RBX, off_r(inst.c));
+                            em.mov_r_mem(XR::R9, XR::RBX,
                                          off_r((uint16_t)(inst.c + 1)));
                             if (inst.operand == 3) {
-                                em.mov_r_mem(XR::R9, XR::RBX,
+                                em.mov_r_mem(XR::R10, XR::RBX,
                                              off_r((uint16_t)(inst.c + 2)));
+                                em.mov_rsp_disp8_r(32, XR::R10);
                                 em.mov_ri64(XR::RAX,
                                     (uint64_t)(uintptr_t)&sura_jit_construct_exact3);
                             } else {
@@ -4858,6 +4971,94 @@ private:
             }
 
             case O::METHOD_CALL: {
+                // ── Inline array push ───────────────────────────────────────
+                // `a.push(v)` with one argument on an array whose vector still
+                // has spare capacity is a store plus a pointer bump. The
+                // interpreter's builtin dispatch returns the receiver, so the
+                // fast path does too. Reallocation, other receivers and any
+                // other arity fall through to the ordinary helper below.
+                if (jit_array_layout_verified()) {
+                    const std::string& mname = chunk.get_string(inst.str_idx);
+                    // a.len() / a.size() / a.length(): (finish - start) / 8 as a double.
+                    if (inst.operand == 0 &&
+                        (mname == "len" || mname == "size" || mname == "length")) {
+                        std::vector<size_t> slow_jmps;
+                        emit_array_receiver_guard(em, ob, slow_jmps);
+                        em.mov_r_mem(XR::RCX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+                        em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+                        em.not_r(XR::RDX);
+                        em.add_r_imm32(XR::RDX, 1);   // rdx = -start
+                        em.add_rr(XR::RCX, XR::RDX);  // rcx = finish - start (bytes)
+                        em.mov_ri64(XR::RDX, 3);
+                        em.mov_rr(XR::R10, XR::RCX);
+                        em.mov_rr(XR::RCX, XR::RDX);
+                        em.sar_r_cl(XR::R10);         // r10 = element count
+                        em.cvtsi2sd_x_r(XR::XMM0, XR::R10);
+                        em.movsd_mem_x(XR::RBX, oa, XR::XMM0);
+                        size_t done_jmp = em.jmp_rel32_placeholder();
+                        size_t slow_pos = em.pos();
+                        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                        const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        em.mov_rr(XR::RCX, XR::R13);
+                        em.mov_rr(XR::RDX, XR::RBX);
+                        em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_method_call);
+                        em.call_rax();
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                        em.patch_rel32(done_jmp, em.pos());
+                        return true;
+                    }
+                    // d.has(k) / d.contains(k): proven dict -> single hash probe.
+                    if (inst.operand == 1 && (mname == "has" || mname == "contains")) {
+                        std::vector<size_t> slow_jmps;
+                        emit_object_receiver_guard(em, ob, OBJ_TYPE_DICT, slow_jmps);
+                        em.mov_rr(XR::RCX, XR::RAX);
+                        em.mov_r_mem(XR::RDX, XR::RBX, off_r(static_cast<uint16_t>(inst.b + 1)));
+                        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_dict_has);
+                        em.call_rax();
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                        size_t done_jmp = em.jmp_rel32_placeholder();
+                        size_t slow_pos = em.pos();
+                        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                        const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        em.mov_rr(XR::RCX, XR::R13);
+                        em.mov_rr(XR::RDX, XR::RBX);
+                        em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_method_call);
+                        em.call_rax();
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                        em.patch_rel32(done_jmp, em.pos());
+                        return true;
+                    }
+                    if (inst.operand == 1 && (mname == "push" || mname == "append")) {
+                        const int32_t arg_off = off_r(static_cast<uint16_t>(inst.b + 1));
+                        std::vector<size_t> slow_jmps;
+                        emit_array_receiver_guard(em, ob, slow_jmps);
+                        em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+                        em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_CAP_OFFSET);
+                        em.cmp_rr(XR::RDX, XR::R10);
+                        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+                        em.mov_r_mem(XR::RCX, XR::RBX, arg_off);
+                        em.mov_mem_r(XR::RDX, 0, XR::RCX);
+                        em.add_r_imm32(XR::RDX, 8);
+                        em.mov_mem_r(XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET, XR::RDX);
+                        em.mov_r_mem(XR::RAX, XR::RBX, ob);
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                        size_t done_jmp = em.jmp_rel32_placeholder();
+
+                        size_t slow_pos = em.pos();
+                        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                        const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        em.mov_rr(XR::RCX, XR::R13);
+                        em.mov_rr(XR::RDX, XR::RBX);
+                        em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+                        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_method_call);
+                        em.call_rax();
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                        em.patch_rel32(done_jmp, em.pos());
+                        return true;
+                    }
+                }
                 // ── Monomorphic IC fast path (ic_native_fn warm at JIT compile time) ──
                 // Emits inline class guard + direct call to ic_native_fn, bypassing
                 // sura_jit_method_call and its hash lookups entirely.
@@ -5294,11 +5495,28 @@ private:
             // INDEX_GET, register a is the container being written to.
             case O::INDEX_SET: {
                 const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                std::vector<size_t> slow_jmps;
+                size_t done_jmp = 0;
+                const bool fast = jit_array_layout_verified();
+                if (fast) {
+                    // Fast path: R[a] is an array, R[b] a non-negative number
+                    // inside its bounds -> elements[idx] = R[c]. arr_set only
+                    // ever writes in-bounds slots, so this is exactly what the
+                    // helper would do; everything else (dict, negative index,
+                    // out of range, non-number key) takes the helper.
+                    emit_array_index_guard(em, oa, ob, slow_jmps);
+                    em.mov_r_mem(XR::RDX, XR::RBX, oc);
+                    em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                    done_jmp = em.jmp_rel32_placeholder();
+                    size_t slow_pos = em.pos();
+                    for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                }
                 em.mov_rr(XR::RCX, XR::R13);
                 em.mov_rr(XR::RDX, XR::RBX);
                 em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
                 em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_set);
                 em.call_rax();
+                if (fast) em.patch_rel32(done_jmp, em.pos());
                 return true;
             }
 
@@ -5310,12 +5528,28 @@ private:
             // tests/ from native compilation - the largest single blocker.
             case O::INDEX_GET: {
                 const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                std::vector<size_t> slow_jmps;
+                size_t done_jmp = 0;
+                const bool fast = jit_array_layout_verified();
+                if (fast) {
+                    // Fast path: array + in-bounds non-negative numeric index
+                    // -> R[a] = elements[idx], no call. Mirrors the array arm
+                    // of jit_index_get; negative wrap-around, dict/string
+                    // targets and the range error stay in the helper.
+                    emit_array_index_guard(em, ob, oc, slow_jmps);
+                    em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                    em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                    done_jmp = em.jmp_rel32_placeholder();
+                    size_t slow_pos = em.pos();
+                    for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                }
                 em.mov_rr(XR::RCX, XR::R13);
                 em.mov_rr(XR::RDX, XR::RBX);
                 em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
                 em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_get);
                 em.call_rax();
                 em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                if (fast) em.patch_rel32(done_jmp, em.pos());
                 return true;
             }
 

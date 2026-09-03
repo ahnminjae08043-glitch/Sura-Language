@@ -1352,10 +1352,10 @@ public:
                     cls->field_defaults.size() == static_cast<size_t>(ins->operand)) {
                     if (ins->operand == 2) {
                         return sura_jit_construct_exact2(
-                            cls, R[ins->c].raw_bits(), R[ins->c + 1].raw_bits());
+                            this, cls, R[ins->c].raw_bits(), R[ins->c + 1].raw_bits());
                     }
                     return sura_jit_construct_exact3(
-                        cls, R[ins->c].raw_bits(), R[ins->c + 1].raw_bits(),
+                        this, cls, R[ins->c].raw_bits(), R[ins->c + 1].raw_bits(),
                         R[ins->c + 2].raw_bits());
                 }
             }
@@ -2590,6 +2590,8 @@ public:
     void     dispatch_dot_set_from_jit(Value* R, const JitInst* ins);
     uint64_t make_array_from_jit(Value* R, const JitInst* ins);
     uint64_t make_dict_from_jit(Value* R, const JitInst* ins);
+    // Public face of the native-allocation GC tick for the C trampolines.
+    void gc_safepoint_for_record_allocation() { run_gc_for_native_allocation(); }
     // Phase 10: helpers for top-level main JIT (called from JIT-emitted code).
     uint64_t jit_make_lambda(Value* R, const JitInst* ins);
     void     jit_def_class(Value* R, const JitInst* ins);
@@ -3075,6 +3077,7 @@ private:
         }
 
         std::vector<int> field_by_param(ctor->params.size(), -1);
+        std::vector<std::pair<std::string, size_t>> pending_fields;
         size_t ip = ctor->entry_ip;
         bool ok = true;
         while (ip < ctor->end_ip) {
@@ -3104,18 +3107,41 @@ private:
             }
             size_t param_index = (size_t)(param_reg - 1);
             const std::string& field_name = active_chunk->get_string(field_set.str_idx);
-            auto fit = cls->field_indices.find(field_name);
-            if (fit == cls->field_indices.end() ||
-                field_name != ctor->params[param_index] ||
+            if (field_name != ctor->params[param_index] ||
                 field_by_param[param_index] >= 0) {
                 ok = false;
                 break;
             }
-            field_by_param[param_index] = fit->second;
+            // Mark the slot as claimed; the field offset is resolved below,
+            // once the whole body has been proven to be the plain shape.
+            field_by_param[param_index] = std::numeric_limits<int>::max();
+            pending_fields.emplace_back(field_name, param_index);
             ip += 3;
         }
 
         if (ip != ctor->end_ip) ok = false;
+        if (ok) {
+            // The class layout is discovered lazily by DOT_SET, so on the very
+            // first `Point(x, y)` no field exists yet. Rejecting the ctor here
+            // used to poison non_plain_ctor_cache for the rest of the run and
+            // every later instantiation paid for a native ctor frame. Widen
+            // the layout in body order instead - exactly what the interpreter's
+            // DOT_SET would do when the constructor ran - so the record path
+            // is available from the first call.
+            JitClassInfo* layout = const_cast<JitClassInfo*>(cls);
+            for (const auto& [field_name, param_index] : pending_fields) {
+                auto fit = layout->field_indices.find(field_name);
+                int offset;
+                if (fit != layout->field_indices.end()) {
+                    offset = fit->second;
+                } else {
+                    offset = (int)layout->field_indices.size();
+                    layout->field_indices[field_name] = offset;
+                    layout->field_defaults.push_back(Value::nil());
+                }
+                field_by_param[param_index] = offset;
+            }
+        }
         for (int field_index : field_by_param) {
             if (field_index < 0 || (size_t)field_index >= cls->field_defaults.size()) {
                 ok = false;
@@ -4522,6 +4548,7 @@ inline uint64_t JitVM::make_dict_from_jit(Value* R, const JitInst* ins) {
 inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
     if (!active_chunk) return Value::nil().raw_bits();
     run_gc_for_tensor_pressure();
+    run_gc_for_native_allocation();
     const JitChunk& chunk = *active_chunk;
 
     // ── Phase 7: monomorphic CALL_FUNC closure IC fast path ────────────
@@ -4583,6 +4610,7 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
         const JitMethodInfo* ctor = ins->ic_method;
 
         if (const std::vector<int>* plain_fields = plain_ctor_fields(cls, ctor)) {
+            run_gc_for_native_allocation();
             return make_plain_ctor_instance(cls, ctor, *plain_fields, R, ins).raw_bits();
         }
 
@@ -4592,6 +4620,7 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
         } else {
             SuraNativeFn fn = reinterpret_cast<SuraNativeFn>(ins->ic_native_fn);
 
+            run_gc_for_native_allocation();
             Value obj = make_initialized_instance(cls, ins->line);
 
             size_t cnt  = method_frame_regs(chunk, *ctor);
@@ -4762,6 +4791,7 @@ inline uint64_t JitVM::dispatch_call_from_jit(Value* R, const JitInst* ins) {
 }
 
 inline uint64_t JitVM::construct_plain2_from_jit(const JitClassInfo* cls, uint64_t v0, uint64_t v1) {
+    run_gc_for_native_allocation();
     Value obj = make_layout_instance(cls);
     GCInstance* idata = obj.as_inst();
     if (idata->fields.size() < 2) idata->fields.resize(2, Value::nil());
@@ -4771,6 +4801,7 @@ inline uint64_t JitVM::construct_plain2_from_jit(const JitClassInfo* cls, uint64
 }
 
 inline uint64_t JitVM::construct_plain3_from_jit(const JitClassInfo* cls, uint64_t v0, uint64_t v1, uint64_t v2) {
+    run_gc_for_native_allocation();
     Value obj = make_layout_instance(cls);
     GCInstance* idata = obj.as_inst();
     if (idata->fields.size() < 3) idata->fields.resize(3, Value::nil());
@@ -4786,6 +4817,7 @@ inline uint64_t JitVM::construct_plain3_from_jit(const JitClassInfo* cls, uint64
 inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* ins) {
     if (!active_chunk) return Value::nil().raw_bits();
     run_gc_for_tensor_pressure();
+    run_gc_for_native_allocation();
     const JitChunk& chunk = *active_chunk;
     const std::string& meth = chunk.get_string(ins->str_idx);
     int nargs = ins->operand;
@@ -5182,6 +5214,7 @@ inline void JitVM::jit_new_instance(Value* R, const JitInst* ins) {
     const std::string cls = chunk.get_string(ins->str_idx);
 
     auto class_found = rt_classes.find(cls);
+    run_gc_for_native_allocation();
     Value inst_val = class_found == rt_classes.end()
         ? Value::make_inst(cls)
         : make_initialized_instance(&class_found->second, ins->line);
@@ -5432,6 +5465,9 @@ inline void JitVM::DirectCallLink::pin_value(uint64_t bits) {
 extern "C" inline uint64_t sura_jit_call(JitVM* vm, Value* R, const JitInst* ins) {
     return vm->dispatch_call_from_jit(R, ins);
 }
+extern "C" inline void sura_jit_record_alloc_safepoint(JitVM* vm) {
+    if (vm) vm->gc_safepoint_for_record_allocation();
+}
 extern "C" inline uint64_t sura_jit_construct_plain2(JitVM* vm, const JitClassInfo* cls, uint64_t v0, uint64_t v1) {
     return vm->construct_plain2_from_jit(cls, v0, v1);
 }
@@ -5502,8 +5538,14 @@ extern "C" inline void sura_jit_print(JitVM* vm, Value* R, const JitInst* ins, i
 }
 // Phase 10: safe ADD wrapper used only by JIT'd main (handles string concat).
 // Inside JIT'd user functions we keep the fast unchecked addsd path.
-extern "C" inline uint64_t sura_jit_add(uint64_t a, uint64_t b) {
-    return (Value::from_bits(a) + Value::from_bits(b)).raw_bits();
+extern "C" inline uint64_t sura_jit_add(uint64_t a, uint64_t b, JitVM* vm) {
+    const Value va = Value::from_bits(a);
+    const Value vb = Value::from_bits(b);
+    // Only the non-numeric arms allocate (string / array concat); take the
+    // collector safepoint there so concatenation loops do not pile up
+    // millions of dead strings between two MAKE_ARRAY ticks.
+    if (vm && !(va.is_num() && vb.is_num())) vm->gc_safepoint_for_record_allocation();
+    return (va + vb).raw_bits();
 }
 extern "C" inline uint64_t sura_jit_eq(uint64_t a, uint64_t b, int neq) {
     Value va = Value::from_bits(a);

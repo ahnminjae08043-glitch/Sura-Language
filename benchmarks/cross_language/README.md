@@ -76,8 +76,8 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 9.9 | 10.4 | 35.7 | 10.1 | 53.2 | 27.6 | 71.8 | 195.6 |
-| Sura VM | 75.1 | 71.0 | 65.5 | 12.9 | 98.9 | 34.9 | 148.1 | 549.0 |
+| **Sura JIT** | 9.4 | 10.5 | 10.1 | 5.1 | 48.1 | 20.7 | 14.0 | 110.9 |
+| Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
 Go's `object` column is zero because its compiler removes the loop entirely;
@@ -111,20 +111,23 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 10.0 | 10.5 | 35.5 | 7.9 | 67.7 | 28.3 | 114.7 | 353.0 |
-| Sura VM | 80.3 | 84.9 | 64.7 | 10.0 | 77.8 | 32.5 | 111.2 | 618.4 |
+| **Sura JIT** | 9.2 | 10.6 | 34.9 | 7.9 | 72.5 | 26.7 | 18.9 | 320.3 |
+| Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
 So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 2.5x as fast as CPython by geometric mean.
+  about 4.4x as fast as CPython by geometric mean. Array indexing, `push`,
+  `len` and dictionary `has` are inline in the full tier, and a plain
+  constructor such as `Point(x, y)` is a single allocation, which is what
+  moved the `array`, `object` and `matmul` columns.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 1.4x faster than CPython by geometric mean — well
-  ahead on calls and arithmetic, ahead on arrays, sorting and matmul now that
-  the loops around the helper calls are native, still behind on strings,
-  dictionaries and objects, where the helper does all the work. A native
+  Overall Sura is about 1.9x faster than CPython by geometric mean — well
+  ahead on calls and arithmetic, ahead on arrays, sorting, objects and
+  matmul now that the loops around the helper calls are native, still behind
+  on strings and dictionaries, where the helper does all the work. A native
   call books its callee frame on the VM value stack only when the callee can
   reach a helper (that is what lets the collector run while native code
   holds objects); a callee that never can, such as `fib`, keeps its frame on
@@ -138,9 +141,9 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 7.9x faster | 6.0x faster |
+| `fib(30)` vs CPython | 8.3x faster | 6.5x faster |
 | numeric loop vs CPython | 16x faster | 10x faster |
-| sort vs CPython | 3.1x faster | 2.6x faster |
+| sort vs CPython | 4.2x faster | 2.8x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
@@ -151,20 +154,25 @@ each of them. That is the largest open item in the project.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 2.5 times as fast as CPython,
-roughly five times slower than Node, and eleven times slower than C++. On Linux, see the platform section above — the summary there is different
-and less flattering.
+On Windows, by geometric mean Sura's JIT is about 4.4 times as fast as CPython,
+roughly three times slower than Node, and six times slower than C++. On Linux,
+see the platform section above — the summary there is different and less
+flattering.
 
 Sura is competitive at sorting, because `array.sort` calls a native C++ sort
 rather than interpreting a comparison per element.
 
-Sura is worst at `object`. There is no escape analysis, so every object in a
-loop is really allocated: measured separately, creating one instance costs about
-145 ns, against roughly 0.6 ns per iteration for the compiled languages, which
-do not allocate at all. Splitting that benchmark shows where the time goes —
-allocating each iteration takes 77 ms, reusing one object takes 4.1 ms, and
-using no object at all takes 2.5 ms. Ninety-five percent of it is allocation and
-collection; the field access itself is already cheap.
+Sura is still well behind the compiled languages at `object`. There is no
+escape analysis, so every object in a loop is really allocated: creating one
+instance costs about 25 ns, against roughly 0.6 ns per iteration for the
+compiled languages, which do not allocate at all. Splitting that benchmark
+shows where the time goes — allocating each iteration takes 12.5 ms, reusing
+one object takes 3.0 ms. Most of what is left is allocation and collection;
+the field access itself is cheap. (It used to be 145 ns per instance: the
+plain-constructor shortcut was rejected on the very first `Point(x, y)`
+because the class had not discovered its fields yet, and that verdict was
+cached for the rest of the run, so every instance went through a native
+constructor frame. The layout is now widened at that first check instead.)
 
 ### The matmul column is the naive loop, not the fast path
 

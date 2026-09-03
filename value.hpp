@@ -82,6 +82,7 @@ inline void gc_mark_object(GCObject* object);
 struct GCString : public GCObject {
     std::string str;
     GCString(const std::string& s) : GCObject(ObjType::STRING), str(s) {}
+    GCString(std::string&& s) : GCObject(ObjType::STRING), str(std::move(s)) {}
 };
 
 class Value;
@@ -791,6 +792,7 @@ public:
     explicit Value(bool b)       : bits_(b ? NBTRUE : NBFALSE) {}
     explicit Value(GCObject* p)  : bits_(p ? NBOBJ | (uint64_t)(uintptr_t)p : NBNIL) {}
     explicit Value(const std::string& s) : Value((GCObject*)GC::allocate<GCString>(s)) {}
+    explicit Value(std::string&& s) : Value((GCObject*)GC::allocate<GCString>(std::move(s))) {}
     explicit Value(const char* s)        : Value(std::string(s ? s : "")) {}
 
     // ── Factory helpers ───────────────────────────────────────────────
@@ -926,7 +928,12 @@ public:
     
     Value operator+(const Value& r) const {
         if (is_num() && r.is_num()) return Value(as_num() + r.as_num());
-        if (is_str() || r.is_str()) return Value(to_str() + r.to_str());
+        if (is_str() || r.is_str()) {
+            std::string joined;
+            if (is_str()) joined = as_str_ref(); else joined = to_str();
+            if (r.is_str()) joined += r.as_str_ref(); else joined += r.to_str();
+            return Value(std::move(joined));
+        }
         if (is_arr() && r.is_arr()) {
             Value nv = make_array();
             auto* arr = nv.as_arr();
@@ -975,8 +982,8 @@ public:
     Value dict_get(const std::string& k) const {
         if (!is_dict()) return nil();
         auto* dict = as_dict();
-        if (dict->elements.count(k)) return dict->elements.at(k);
-        return nil();
+        auto found = dict->elements.find(k);
+        return found == dict->elements.end() ? nil() : found->second;
     }
     void dict_set(const std::string& k, const Value& val) {
         if (is_dict()) as_dict()->elements[k] = val;
