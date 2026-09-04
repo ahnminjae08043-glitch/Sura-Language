@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 9.4 | 10.5 | 10.1 | 5.1 | 48.1 | 20.7 | 14.0 | 110.9 |
+| **Sura JIT** | 8.6 | 5.7 | 7.2 | 4.7 | 47.9 | 20.6 | 12.6 | 90.0 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -96,11 +96,22 @@ operations from native code. The fifth revision inlines the common shapes
 before falling back to a helper: array indexing with a bounds check, `push`,
 `len`, dictionary `has`, and arithmetic, comparisons and branches on values
 whose type was not proven statically (a NaN-box tag check picks the inline
-path when both operands are numbers). In this suite all ten functions get
-native code on Linux; only the operations that genuinely need the runtime
-(string concatenation, dictionary reads and writes, field access, calls)
-still cost what they cost in the interpreter. Field reads and writes from
-those helpers use the same class-keyed inline cache as the interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
+path when both operands are numbers). The sixth revision adds a loop
+register cache to both x86-64 tiers: inside a loop that nothing outside
+jumps into, the registers that arithmetic reads and writes also live in XMM
+registers (XMM6–XMM15 under Win64, saved by the prologue and described in
+the unwind record; any XMM under System V, refreshed after each call). Every
+definition still writes the register slot, so helpers, the collector, deopts
+and exceptions always see current memory; what disappears is the
+store-to-load round trip on every loop-carried chain, so `i = i + 1` costs
+one addition. The Win64 full tier also keeps its numeric proof across
+arrays, calls and objects (previously any such instruction switched the
+proof off for the whole function) and compares numbers for equality inline.
+In this suite all ten functions get native code on Linux; only the
+operations that genuinely need the runtime (string concatenation, dictionary
+reads and writes, field access, calls) still cost what they cost in the
+interpreter. Field reads and writes from those helpers use the same
+class-keyed inline cache as the interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
 runners and by instruction-level emulation of the emitted bodies, including a
 helper-backed body; the ARM64 row below predates it and still shows the
 loop-only tier.
@@ -115,7 +126,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.3 | 10.6 | 11.2 | 3.8 | 42.6 | 22.5 | 15.0 | 101.5 |
+| **Sura JIT** | 9.7 | 5.7 | 8.2 | 3.8 | 41.1 | 21.6 | 14.9 | 88.9 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -123,16 +134,17 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 4.4x as fast as CPython by geometric mean. Array indexing, `push`,
-  `len` and dictionary `has` are inline in the full tier, and a plain
-  constructor such as `Point(x, y)` is a single allocation, which is what
-  moved the `array`, `object` and `matmul` columns.
+  about 5.3x as fast as CPython by geometric mean. Array indexing, `push`,
+  `len` and dictionary `has` are inline in the full tier, a plain
+  constructor such as `Point(x, y)` is a single allocation, and loop-carried
+  numbers stay in registers, which is what moved the `numeric`, `array`,
+  `object` and `matmul` columns.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 3.1x faster than CPython by geometric mean — well
+  Overall Sura is about 3.5x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
-  matmul now that indexing and guarded arithmetic are inline, roughly even
-  on strings, still behind on dictionaries, where the hash lookups happen in
-  the helper. A native
+  matmul now that indexing, guarded arithmetic and the loop register cache
+  are in, roughly even on strings, still behind on dictionaries, where the
+  hash lookups happen in the helper. A native
   call books its callee frame on the VM value stack only when the callee can
   reach a helper (that is what lets the collector run while native code
   holds objects); a callee that never can, such as `fib`, keeps its frame on
@@ -146,22 +158,24 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 8.3x faster | 6.4x faster |
-| numeric loop vs CPython | 16x faster | 10x faster |
-| sort vs CPython | 4.2x faster | 3.3x faster |
+| `fib(30)` vs CPython | 9.0x faster | 6.2x faster |
+| numeric loop vs CPython | 29x faster | 19x faster |
+| sort vs CPython | 4.2x faster | 3.4x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
 What remains of the Linux gap is field access through an inline cache and
 dictionary reads and writes, which still call out; both tiers now share the
-same inline array indexing and guarded arithmetic. Beyond that, both
-platforms are limited by the same thing — every value round-trips through
-memory and re-checks its tag — and the next step is loop-level register
-allocation with hoisted guards.
+same inline array indexing, guarded arithmetic and loop register cache.
+Beyond that, both platforms pay for the same two things: a value that is not
+proven numeric re-checks its tag on every use (hoisting those checks out of
+the loop is the next step), and a call inside a loop moves its arguments
+and result through the frame and between the GPR and XMM register files,
+so a numeric calling convention is the step after that.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 4.4 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 5.3 times as fast as CPython,
 roughly three times slower than Node, and six times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.

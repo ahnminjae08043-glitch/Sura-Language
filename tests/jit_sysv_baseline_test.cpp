@@ -168,8 +168,10 @@ int main() {
             {JitOp::CMP_LTE, 4.0, 4.0, true},
             {JitOp::CMP_GT, 5.0, 4.0, true},
             {JitOp::CMP_GTE, 4.0, 4.0, true},
-            {JitOp::CMP_EQ, nan, nan, false},
-            {JitOp::CMP_NEQ, nan, nan, true},
+            // Value::eq compares bits first, so a NaN equals itself (the
+            // interpreter's answer); an ordered compare alone would say no.
+            {JitOp::CMP_EQ, nan, nan, true},
+            {JitOp::CMP_NEQ, nan, nan, false},
             {JitOp::CMP_LT, nan, 1.0, false},
             {JitOp::CMP_LTE, nan, 1.0, false},
             {JitOp::CMP_GT, nan, 1.0, false},

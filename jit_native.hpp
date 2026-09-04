@@ -501,7 +501,50 @@ private:
     bool self_callable_ = false;
     uint64_t guard_mask_ = ~0ULL;
     bool allow_helpers_ = false;
+    // Proof-only mode (the Win64 full tier): the analysis never refuses a
+    // body. Opcodes the baseline cannot emit are treated as the
+    // interpreter's own, contributing only what they may write, so the
+    // numeric proof survives arrays, calls and objects and the tier can drop
+    // its per-operation guards around them.
+    bool proof_only_ = false;
     std::vector<std::pair<int, std::pair<bool, BaselineCalleeInfo>>> callee_memo_;
+
+    // What an opcode the proof does not interpret may write:
+    //   0 nothing, 1 register a, 2 registers a and b, -1 unknown (everything).
+    static int proof_write_shape(JitOp op) {
+        switch (op) {
+            case JitOp::STORE_GLOBAL: case JitOp::STORE_UPVAL:
+            case JitOp::INDEX_SET: case JitOp::DOT_SET:
+            case JitOp::PRINT: case JitOp::PRINT_NO_NL:
+                return 0;
+            case JitOp::LOAD_GLOBAL: case JitOp::LOAD_UPVAL:
+            case JitOp::CALL_FUNC: case JitOp::CALL_BUILTIN: case JitOp::METHOD_CALL:
+            case JitOp::MAKE_ARRAY: case JitOp::MAKE_DICT:
+            case JitOp::INDEX_GET: case JitOp::DOT_GET: case JitOp::OP_IN:
+            case JitOp::DICT_KEYS: case JitOp::MAKE_LAMBDA:
+            case JitOp::BIT_AND: case JitOp::BIT_OR: case JitOp::BIT_XOR:
+            case JitOp::LSHIFT: case JitOp::RSHIFT: case JitOp::BIT_NOT:
+                return 1;
+            case JitOp::FOREACH_NEXT:
+                return 2;
+            default:
+                return -1;
+        }
+    }
+    static bool proof_interprets(JitOp op) {
+        switch (op) {
+            case JitOp::NOP: case JitOp::LOAD_CONST: case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL:
+            case JitOp::MOVE: case JitOp::NEG: case JitOp::LOGICAL_NOT:
+            case JitOp::ADD: case JitOp::SUB: case JitOp::MUL: case JitOp::DIV: case JitOp::MOD:
+            case JitOp::CMP_EQ: case JitOp::CMP_NEQ: case JitOp::CMP_LT: case JitOp::CMP_LTE:
+            case JitOp::CMP_GT: case JitOp::CMP_GTE:
+            case JitOp::JUMP: case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+            case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT:
+                return true;
+            default:
+                return false;
+        }
+    }
 
     const BaselineCalleeInfo* callee(int fidx) {
         for (auto& entry : callee_memo_)
@@ -581,9 +624,11 @@ public:
                          int self_fidx = -1,
                          bool self_callable = false,
                          uint64_t guard_mask = ~0ULL,
-                         bool allow_helpers = false)
+                         bool allow_helpers = false,
+                         bool proof_only = false)
         : link_(link), self_fidx_(self_fidx), self_callable_(self_callable),
-          guard_mask_(guard_mask), allow_helpers_(allow_helpers) {
+          guard_mask_(guard_mask), allow_helpers_(allow_helpers),
+          proof_only_(proof_only) {
         if (entry_ip >= end_ip || end_ip > chunk.code.size() ||
             frame_regs == 0 || guarded_params > frame_regs ||
             (guarded_params > 0 && !allow_runtime_deopt)) {
@@ -681,6 +726,22 @@ private:
         };
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             const JitInst& inst = chunk.code[ip];
+            if (proof_only_ && !proof_interprets(inst.op)) {
+                if (inst.op == JitOp::FOREACH_NEXT && !valid_target(inst.operand)) return;
+                const int shape = proof_write_shape(inst.op);
+                if (shape == 1 || shape == 2) {
+                    if (!valid_reg(inst.a)) return;
+                    wrote_dynamic(inst.a);
+                }
+                if (shape == 2) {
+                    if (!valid_reg(inst.b)) return;
+                    wrote_dynamic(inst.b);
+                }
+                if (shape < 0) {
+                    for (uint32_t r = 0; r < nregs; ++r) wrote_dynamic(static_cast<uint16_t>(r));
+                }
+                continue;
+            }
             switch (inst.op) {
                 case JitOp::NOP:
                     break;
@@ -850,6 +911,13 @@ private:
         std::vector<RegKind> out(nregs);
         auto transfer = [&](size_t ip, RegKind* state) {
             const JitInst& inst = chunk.code[ip];
+            if (proof_only_ && !proof_interprets(inst.op)) {
+                const int shape = proof_write_shape(inst.op);
+                if (shape == 1 || shape == 2) state[inst.a] = kConflict;
+                if (shape == 2) state[inst.b] = kConflict;
+                if (shape < 0) std::fill(state, state + nregs, kConflict);
+                return;
+            }
             switch (inst.op) {
                 case JitOp::LOAD_CONST:
                     state[inst.a] =
@@ -960,6 +1028,10 @@ private:
         // bits and need no proof; unreachable instructions are never emitted,
         // so they are exempt too.
         auto to_helper = [&](size_t ip) -> bool {
+            if (proof_only_) {
+                dynamic[ip - entry_ip] = 1;
+                return true;
+            }
             if (!helpers_ok) return false;
             dynamic[ip - entry_ip] = 1;
             uses_vm = true;
@@ -970,6 +1042,11 @@ private:
             if (!reached[ip - entry_ip]) continue;
             const JitInst& inst = chunk.code[ip];
             const RegKind* in = state_at(ip);
+            if (proof_only_ && !proof_interprets(inst.op)) {
+                dynamic[ip - entry_ip] = 1;
+                pure = false;
+                continue;
+            }
             switch (inst.op) {
                 case JitOp::ADD:
                 case JitOp::SUB:
@@ -1165,6 +1242,244 @@ public:
 // Win64 shadow space is not reserved: a baseline body only ever calls other
 // baseline bodies, none of which touch it.
 enum class X64BaselineAbi : uint8_t { SysV, Win64 };
+
+// ── Loop register cache ─────────────────────────────────────────────────────
+// Every tier keeps a Value in its register slot in memory, so a loop-carried
+// chain like `i = i + 1` costs a store and a forwarded load per iteration on
+// top of the addition. Inside an accepted loop the hottest registers also
+// live in XMM registers. The scheme is write-through: every definition the
+// cache emits writes both the slot and the XMM copy, so memory is always
+// current and helpers, the collector, deopts and every operation the cache
+// does not emit itself keep working unchanged; such an operation only has to
+// refresh the copies it may have overwritten. A loop qualifies when nothing
+// outside [header, backedge] jumps into it (the copies are loaded on the
+// fall-in edge just before the header) and it contains arithmetic to speed
+// up. Outer loops are tried first; a loop nested in an accepted loop shares
+// its copies.
+struct JitLoopCache {
+    size_t header_ip = 0;
+    size_t backedge_ip = 0;
+    std::vector<int8_t> xmm_of;    // per register: XMM number or -1
+    std::vector<uint16_t> regs;    // cached registers in XMM order
+};
+
+inline bool jit_is_branch_op(JitOp op) {
+    return op == JitOp::JUMP || op == JitOp::JUMP_IF_FALSE ||
+           op == JitOp::JUMP_IF_TRUE || op == JitOp::FOREACH_NEXT;
+}
+
+inline bool jit_is_cache_arith_op(JitOp op) {
+    switch (op) {
+        case JitOp::ADD: case JitOp::SUB: case JitOp::MUL:
+        case JitOp::CMP_EQ: case JitOp::CMP_NEQ:
+        case JitOp::CMP_LT: case JitOp::CMP_LTE:
+        case JitOp::CMP_GT: case JitOp::CMP_GTE:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// `reached` (optional, indexed by ip - entry_ip) skips dead loops. Registers
+// at or above `reg_limit`, and `excluded_reg`, are never cached.
+inline std::vector<JitLoopCache> jit_plan_loop_caches(
+        const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+        const std::vector<uint8_t>* reached, uint32_t reg_limit,
+        uint32_t excluded_reg, int xmm_first, int xmm_count,
+        const char* tier_name) {
+    std::vector<JitLoopCache> caches;
+    if (xmm_count <= 0 || std::getenv("SURA_JIT_DISABLE_LOOP_CACHE")) return caches;
+    struct Candidate { size_t header; size_t backedge; };
+    std::vector<Candidate> candidates;
+    for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+        const JitInst& inst = chunk.code[ip];
+        if (inst.op != JitOp::JUMP || inst.operand < 0) continue;
+        const size_t target = static_cast<size_t>(inst.operand);
+        if (target < entry_ip || target >= ip) continue;
+        if (reached && !(*reached)[target - entry_ip]) continue;
+        candidates.push_back({target, ip});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& l, const Candidate& r) {
+                  return (l.backedge - l.header) > (r.backedge - r.header);
+              });
+    for (const Candidate& cand : candidates) {
+        bool covered = false;
+        for (const JitLoopCache& done : caches) {
+            const bool disjoint = cand.backedge < done.header_ip || cand.header > done.backedge_ip;
+            if (!disjoint) { covered = true; break; }
+        }
+        if (covered) continue;
+        bool valid = true;
+        for (size_t ip = entry_ip; ip < end_ip && valid; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+            const size_t target = static_cast<size_t>(inst.operand);
+            const bool target_inside = target >= cand.header && target <= cand.backedge;
+            const bool source_inside = ip >= cand.header && ip <= cand.backedge;
+            if (target_inside && !source_inside) valid = false;
+        }
+        if (!valid) continue;
+        size_t max_reg = 0;
+        bool has_arith = false;
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            max_reg = std::max<size_t>(max_reg, std::max<size_t>(inst.a, std::max<size_t>(inst.b, inst.c)));
+            if (jit_is_cache_arith_op(inst.op)) has_arith = true;
+        }
+        if (!has_arith) continue;
+        // A register earns a copy when a number flows through it into or
+        // out of arithmetic. The compiler spells `acc = acc + x` as
+        // MOVE tmp, acc / ADD res, tmp, x / MOVE acc, res, so MOVEs carry
+        // arithmetic values and their registers count too - but only when
+        // the value they carry comes from arithmetic (forward scan: what
+        // last defined the source) or goes to it (backward scan: what next
+        // uses the destination). A call result moved into a variable, or a
+        // variable moved into an argument slot, gets no copy: it would only
+        // pay GPR/XMM transfers for nothing.
+        std::vector<uint32_t> reads(max_reg + 1, 0), writes(max_reg + 1, 0);
+        std::vector<uint8_t> eligible(max_reg + 1, 0);
+        enum : uint8_t { kNone = 0, kArith = 1, kOther = 2 };
+        auto numeric_op = [](JitOp op) {
+            switch (op) {
+                case JitOp::ADD: case JitOp::SUB: case JitOp::MUL:
+                case JitOp::DIV: case JitOp::MOD: case JitOp::NEG:
+                case JitOp::CMP_EQ: case JitOp::CMP_NEQ:
+                case JitOp::CMP_LT: case JitOp::CMP_LTE:
+                case JitOp::CMP_GT: case JitOp::CMP_GTE:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+        auto reads_a = [](JitOp op) {
+            switch (op) {
+                case JitOp::INDEX_SET: case JitOp::DOT_SET: case JitOp::STORE_GLOBAL:
+                case JitOp::STORE_UPVAL: case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                case JitOp::RETURN_VAL: case JitOp::PRINT: case JitOp::PRINT_NO_NL:
+                    return true;
+                default:
+                    return false;
+            }
+        };
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            switch (inst.op) {
+                case JitOp::LOAD_CONST: case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL:
+                    ++writes[inst.a]; break;
+                case JitOp::MOVE:
+                    ++writes[inst.a]; ++reads[inst.b]; break;
+                default:
+                    if (numeric_op(inst.op)) {
+                        ++writes[inst.a]; ++reads[inst.b];
+                        if (inst.op != JitOp::NEG) ++reads[inst.c];
+                        eligible[inst.a] = 1; eligible[inst.b] = 1;
+                        if (inst.op != JitOp::NEG) eligible[inst.c] = 1;
+                    }
+                    break;
+            }
+        }
+        // Forward: the kind of value each register last received. Two
+        // rounds so the end of the loop body feeds its beginning.
+        std::vector<uint8_t> last_def(max_reg + 1, kNone);
+        for (int round = 0; round < 2; ++round) {
+            for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+                const JitInst& inst = chunk.code[ip];
+                if (inst.op == JitOp::LOAD_CONST) {
+                    last_def[inst.a] = kArith;
+                } else if (inst.op == JitOp::MOVE) {
+                    if (last_def[inst.b] == kArith) eligible[inst.a] = 1;
+                    last_def[inst.a] = last_def[inst.b];
+                } else if (numeric_op(inst.op)) {
+                    last_def[inst.a] = kArith;
+                } else if (jit_is_branch_op(inst.op) || inst.op == JitOp::NOP ||
+                           reads_a(inst.op)) {
+                    if (inst.op == JitOp::FOREACH_NEXT) {
+                        last_def[inst.a] = kOther; last_def[inst.b] = kOther;
+                    }
+                } else if (inst.op == JitOp::LOAD_NIL || inst.op == JitOp::LOAD_BOOL) {
+                    last_def[inst.a] = kOther;
+                } else {
+                    last_def[inst.a] = kOther;
+                }
+            }
+        }
+        // Backward: what next reads each register.
+        std::vector<uint8_t> next_use(max_reg + 1, kNone);
+        for (int round = 0; round < 2; ++round) {
+            for (size_t ip = cand.backedge + 1; ip-- > cand.header;) {
+                const JitInst& inst = chunk.code[ip];
+                if (inst.op == JitOp::MOVE) {
+                    if (next_use[inst.a] == kArith) eligible[inst.b] = 1;
+                    next_use[inst.b] = next_use[inst.a] == kNone ? next_use[inst.b] : next_use[inst.a];
+                    next_use[inst.a] = kNone;
+                } else if (numeric_op(inst.op)) {
+                    next_use[inst.a] = kNone;
+                    next_use[inst.b] = kArith;
+                    if (inst.op != JitOp::NEG) next_use[inst.c] = kArith;
+                } else if (inst.op == JitOp::LOAD_CONST || inst.op == JitOp::LOAD_NIL ||
+                           inst.op == JitOp::LOAD_BOOL) {
+                    next_use[inst.a] = kNone;
+                } else if (reads_a(inst.op)) {
+                    next_use[inst.a] = kOther;
+                    if (inst.op == JitOp::INDEX_SET || inst.op == JitOp::DOT_SET) {
+                        next_use[inst.b] = kOther;
+                        if (inst.op == JitOp::INDEX_SET) next_use[inst.c] = kOther;
+                    }
+                } else if (inst.op == JitOp::JUMP || inst.op == JitOp::NOP) {
+                } else {
+                    // Everything else writes a and reads through b, c and
+                    // (for calls) the argument window starting at c.
+                    next_use[inst.a] = kNone;
+                    next_use[inst.b] = kOther;
+                    next_use[inst.c] = kOther;
+                    if (inst.op == JitOp::CALL_FUNC || inst.op == JitOp::METHOD_CALL ||
+                        inst.op == JitOp::CALL_BUILTIN || inst.op == JitOp::MAKE_ARRAY ||
+                        inst.op == JitOp::MAKE_DICT || inst.op == JitOp::PRINT) {
+                        const uint32_t first = inst.op == JitOp::CALL_FUNC ? inst.c : inst.b;
+                        const int count = inst.op == JitOp::MAKE_DICT ? inst.operand * 2
+                                        : inst.op == JitOp::METHOD_CALL ? inst.operand + 1
+                                        : inst.operand;
+                        for (int i = 0; i < count && first + static_cast<uint32_t>(i) <= max_reg; ++i)
+                            next_use[first + static_cast<uint32_t>(i)] = kOther;
+                    }
+                }
+            }
+        }
+        std::vector<std::pair<uint32_t, uint16_t>> scored;
+        for (size_t r = 0; r <= max_reg; ++r) {
+            if (r >= reg_limit || r == excluded_reg || !eligible[r]) continue;
+            const uint32_t uses = reads[r] + writes[r];
+            if (uses == 0) continue;
+            const uint32_t carried = (reads[r] && writes[r]) ? 64U : 0U;
+            scored.push_back({uses + carried, static_cast<uint16_t>(r)});
+        }
+        if (scored.empty()) continue;
+        std::sort(scored.begin(), scored.end(),
+                  [](const std::pair<uint32_t, uint16_t>& l,
+                     const std::pair<uint32_t, uint16_t>& r) {
+                      return l.first != r.first ? l.first > r.first : l.second < r.second;
+                  });
+        JitLoopCache cache;
+        cache.header_ip = cand.header;
+        cache.backedge_ip = cand.backedge;
+        cache.xmm_of.assign(max_reg + 1, -1);
+        for (size_t k = 0; k < scored.size() && k < static_cast<size_t>(xmm_count); ++k) {
+            cache.xmm_of[scored[k].second] = static_cast<int8_t>(xmm_first + static_cast<int>(k));
+            cache.regs.push_back(scored[k].second);
+        }
+        caches.push_back(std::move(cache));
+    }
+    std::sort(caches.begin(), caches.end(),
+              [](const JitLoopCache& l, const JitLoopCache& r) { return l.header_ip < r.header_ip; });
+    if (std::getenv("SURA_JIT_DIAG")) {
+        for (const JitLoopCache& cache : caches) {
+            std::fprintf(stderr, "[jit] %s loop cache ip %zu..%zu: %zu register(s) in XMM%d..\n",
+                         tier_name, cache.header_ip, cache.backedge_ip, cache.regs.size(), xmm_first);
+        }
+    }
+    return caches;
+}
 
 // NaN-box sentinels (mirrored from value.hpp so we can bake them into code)
 static constexpr uint64_t JIT_NBNIL   = 0x7FFC000000000000ULL;
@@ -1451,15 +1766,46 @@ public:
             entry_deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
         }
 
+        // Loop register cache (JitLoopCache). Under Win64 the copies live in
+        // the callee-saved XMM6..XMM15, saved here and restored by every
+        // return, so helper calls and direct calls leave them intact. Under
+        // System V every XMM is caller-saved: nothing is saved, and every
+        // call refreshes every copy from memory afterwards.
+        const bool xmm_preserved = abi == X64BaselineAbi::Win64;
+        const int cache_xmm_first = xmm_preserved ? XR::XMM6 : XR::XMM2;
+        const int cache_xmm_count = xmm_preserved ? 10 : 14;
+        const std::vector<JitLoopCache> loop_caches = jit_plan_loop_caches(
+            chunk, entry_ip, end_ip, &analysis.reached, frame_regs,
+            std::numeric_limits<uint32_t>::max(), cache_xmm_first, cache_xmm_count,
+            xmm_preserved ? "win64-baseline" : "sysv-baseline");
+        int xmm_saved = 0;
+        if (xmm_preserved) {
+            for (const JitLoopCache& cache : loop_caches)
+                xmm_saved = std::max<int>(xmm_saved, static_cast<int>(cache.regs.size()));
+        }
+        const int32_t cache_frame_bytes = 16 * xmm_saved;
+
         unguarded_entry_offset = em.pos();
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         if (needs_vm) em.push_r(XR::R13);
+        if (xmm_saved > 0) {
+            if (cache_frame_bytes <= 127) em.sub_rsp_imm8(static_cast<int8_t>(cache_frame_bytes));
+            else em.sub_rsp_imm32(cache_frame_bytes);
+            for (int k = 0; k < xmm_saved; ++k)
+                em.movdqu_mem_x(XR::RSP, 16 * k, cache_xmm_first + k);
+        }
         em.mov_rr(XR::RBX, arg_regs());
         em.mov_rr(XR::R12, arg_consts());
         if (needs_vm) em.mov_rr(XR::R13, arg_vm());
 
         auto emit_return = [&]() {
+            if (xmm_saved > 0) {
+                for (int k = 0; k < xmm_saved; ++k)
+                    em.movdqu_x_mem(cache_xmm_first + k, XR::RSP, 16 * k);
+                if (cache_frame_bytes <= 127) em.add_rsp_imm8(static_cast<int8_t>(cache_frame_bytes));
+                else em.add_rsp_imm32(cache_frame_bytes);
+            }
             if (needs_vm) em.pop_r(XR::R13);
             em.pop_r(XR::R12);
             em.pop_r(XR::RBX);
@@ -1521,11 +1867,296 @@ public:
             slow.push_back(em.jcc_rel32_placeholder(CC::E));
         };
 
+        // ── Loop register cache: emission ──
+        const JitLoopCache* cache = nullptr;
+        auto inst_index_of = [&](const JitInst& inst) -> size_t {
+            return static_cast<size_t>(&inst - chunk.code.data()) - entry_ip;
+        };
+        auto cached_xmm = [&](uint16_t r) -> int {
+            if (cache == nullptr || r >= cache->xmm_of.size()) return -1;
+            return cache->xmm_of[r];
+        };
+        auto reload_cached = [&](uint16_t r) {
+            const int x = cached_xmm(r);
+            if (x >= 0) em.movsd_x_mem(x, XR::RBX, off_r(r));
+        };
+        auto reload_all_cached = [&]() {
+            if (cache == nullptr) return;
+            for (uint16_t r : cache->regs) reload_cached(r);
+        };
+        // A copy refreshed from RAX (which still holds the value most
+        // instructions just stored) stays in registers; a reload from the
+        // slot would wait on store forwarding, and a mixed GPR/SSE pair
+        // forwards slower than the GPR-only pairs the CPU can rename away.
+        auto refresh_from_rax = [&](uint16_t r) {
+            const int x = cached_xmm(r);
+            if (x >= 0) em.movq_x_r(x, XR::RAX);
+        };
+        // After a call that wrote R[written] (or nothing, when written is
+        // 65535): the copies that survived the call stay, the rest reload.
+        // `in_rax` says RAX still holds the written value.
+        auto after_call = [&](uint16_t written, bool in_rax = true) {
+            if (cache == nullptr) return;
+            if (!xmm_preserved) {
+                for (uint16_t r : cache->regs) {
+                    if (r == written && in_rax) refresh_from_rax(r);
+                    else reload_cached(r);
+                }
+            } else if (written != 65535) {
+                if (in_rax) refresh_from_rax(written); else reload_cached(written);
+            }
+        };
+        auto load_operand_xmm0 = [&](uint16_t r) {
+            const int x = cached_xmm(r);
+            if (x >= 0) em.movaps_xx(XR::XMM0, x);
+            else em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+        };
+        auto arith_xmm0 = [&](JitOp op, uint16_t r) {
+            const int x = cached_xmm(r);
+            if (op == JitOp::ADD) {
+                if (x >= 0) em.addsd_xx(XR::XMM0, x); else em.addsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+            } else if (op == JitOp::SUB) {
+                if (x >= 0) em.subsd_xx(XR::XMM0, x); else em.subsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+            } else {
+                if (x >= 0) em.mulsd_xx(XR::XMM0, x); else em.mulsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+            }
+        };
+        auto ucomisd_xmm0 = [&](uint16_t r) {
+            const int x = cached_xmm(r);
+            if (x >= 0) em.ucomisd_xx(XR::XMM0, x);
+            else em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+        };
+        auto load_bits = [&](int gpr, uint16_t r) {
+            const int x = cached_xmm(r);
+            if (x >= 0) em.movq_r_x(gpr, x);
+            else em.mov_r_mem(gpr, XR::RBX, off_r(r));
+        };
+        auto store_result_xmm0 = [&](uint16_t a) {
+            em.movsd_mem_x(XR::RBX, off_r(a), XR::XMM0);
+            const int x = cached_xmm(a);
+            if (x >= 0) em.movaps_xx(x, XR::XMM0);
+        };
+        auto store_result_rax = [&](uint16_t a) {
+            em.mov_mem_r(XR::RBX, off_r(a), XR::RAX);
+            const int x = cached_xmm(a);
+            if (x >= 0) em.movq_x_r(x, XR::RAX);
+        };
+        auto touches_cache = [&](const JitInst& inst) {
+            return cached_xmm(inst.a) >= 0 || cached_xmm(inst.b) >= 0 || cached_xmm(inst.c) >= 0;
+        };
+        // The operations the cache emits itself; false hands the instruction
+        // to the switch below, followed by reload_after.
+        auto emit_cached = [&](const JitInst& inst, size_t ip, bool dyn) -> bool {
+            switch (inst.op) {
+                case JitOp::LOAD_CONST: {
+                    const int x = cached_xmm(inst.a);
+                    if (x < 0) return false;
+                    em.movsd_x_mem(x, XR::R12, off_c(inst.operand));
+                    em.movsd_mem_x(XR::RBX, off_r(inst.a), x);
+                    return true;
+                }
+                case JitOp::LOAD_NIL:
+                case JitOp::LOAD_BOOL: {
+                    if (cached_xmm(inst.a) < 0) return false;
+                    em.mov_ri64(XR::RAX, inst.op == JitOp::LOAD_NIL ? NBNIL
+                                         : (inst.operand ? NBTRUE : NBFALSE));
+                    store_result_rax(inst.a);
+                    return true;
+                }
+                case JitOp::MOVE: {
+                    const int xa = cached_xmm(inst.a);
+                    const int xb = cached_xmm(inst.b);
+                    if (xa < 0 && xb < 0) return false;
+                    if (xb >= 0 && xa >= 0) {
+                        em.movsd_mem_x(XR::RBX, off_r(inst.a), xb);
+                        if (xa != xb) em.movaps_xx(xa, xb);
+                    } else if (xb >= 0) {
+                        // The destination has no copy, so nothing arithmetic
+                        // reads it: copy the slot with a GPR pair (the slot
+                        // is current), which the CPU renames when the value
+                        // came from a call or a helper, instead of pulling
+                        // it out of the XMM copy.
+                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.b));
+                        em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    } else {
+                        em.movsd_x_mem(xa, XR::RBX, off_r(inst.b));
+                        em.movsd_mem_x(XR::RBX, off_r(inst.a), xa);
+                    }
+                    return true;
+                }
+                case JitOp::ADD:
+                case JitOp::SUB:
+                case JitOp::MUL: {
+                    if (!touches_cache(inst)) return false;
+                    std::vector<size_t> slow;
+                    if (dyn) {
+                        emit_non_number_to(off_r(inst.b), slow);
+                        emit_non_number_to(off_r(inst.c), slow);
+                    }
+                    load_operand_xmm0(inst.b);
+                    arith_xmm0(inst.op, inst.c);
+                    store_result_xmm0(inst.a);
+                    if (dyn) {
+                        const size_t done = em.jmp_rel32_placeholder();
+                        for (size_t j : slow) em.patch_rel32(j, em.pos());
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        after_call(inst.a);
+                        em.patch_rel32(done, em.pos());
+                    }
+                    return true;
+                }
+                case JitOp::CMP_EQ:
+                case JitOp::CMP_NEQ:
+                case JitOp::CMP_LT:
+                case JitOp::CMP_LTE:
+                case JitOp::CMP_GT:
+                case JitOp::CMP_GTE: {
+                    if (!touches_cache(inst)) return false;
+                    std::vector<size_t> slow;
+                    if (dyn) {
+                        emit_non_number_to(off_r(inst.b), slow);
+                        emit_non_number_to(off_r(inst.c), slow);
+                    }
+                    // b < c is evaluated as c > b so an unordered compare
+                    // (NaN) yields false, the way Value::lt does.
+                    const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
+                    load_operand_xmm0(swapped ? inst.c : inst.b);
+                    ucomisd_xmm0(swapped ? inst.b : inst.c);
+                    em.mov_ri64(XR::RAX, NBFALSE);
+                    em.mov_ri64(XR::RCX, NBTRUE);
+                    switch (inst.op) {
+                        case JitOp::CMP_EQ:
+                        case JitOp::CMP_NEQ: {
+                            // Value::eq on numbers: identical bits, or an
+                            // ordered equal compare (+0 == -0; a NaN equals
+                            // only itself).
+                            const bool neq = inst.op == JitOp::CMP_NEQ;
+                            em.mov_ri64(XR::RAX, neq ? NBTRUE : NBFALSE);
+                            em.mov_ri64(XR::RCX, neq ? NBFALSE : NBTRUE);
+                            em.cmov_rr(CC::E, XR::RAX, XR::RCX);
+                            em.mov_ri64(XR::RDX, neq ? NBTRUE : NBFALSE);
+                            em.cmov_rr(CC::P, XR::RAX, XR::RDX);
+                            load_bits(XR::RDX, inst.b);
+                            load_bits(XR::R8, inst.c);
+                            em.cmp_rr(XR::RDX, XR::R8);
+                            em.cmov_rr(CC::E, XR::RAX, XR::RCX);
+                            break;
+                        }
+                        case JitOp::CMP_LT:
+                        case JitOp::CMP_GT:
+                            em.cmov_rr(CC::A, XR::RAX, XR::RCX);
+                            break;
+                        default:
+                            em.cmov_rr(CC::AE, XR::RAX, XR::RCX);
+                            break;
+                    }
+                    store_result_rax(inst.a);
+                    if (dyn) {
+                        const size_t done = em.jmp_rel32_placeholder();
+                        for (size_t j : slow) em.patch_rel32(j, em.pos());
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        after_call(inst.a);
+                        em.patch_rel32(done, em.pos());
+                    }
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        };
+        // Bring the copies back in line after an instruction the switch
+        // emitted. Only instructions that can reach a call use after_call;
+        // the ones that never call refresh just the register they wrote.
+        auto reload_after = [&](const JitInst& inst, bool dyn) {
+            if (cache == nullptr) return;
+            switch (inst.op) {
+                case JitOp::NOP: case JitOp::JUMP:
+                case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT:
+                    return;
+                case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                    if (dyn) after_call(65535);
+                    return;
+                // The switch only emits these when no operand is cached,
+                // so the destination has no copy to refresh.
+                case JitOp::LOAD_CONST: case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL:
+                case JitOp::MOVE:
+                case JitOp::ADD: case JitOp::SUB: case JitOp::MUL:
+                case JitOp::CMP_EQ: case JitOp::CMP_NEQ: case JitOp::CMP_LT:
+                case JitOp::CMP_LTE: case JitOp::CMP_GT: case JitOp::CMP_GTE:
+                    return;
+                case JitOp::DIV: {
+                    // Inline: result in XMM0. Dynamic: helper, result in RAX.
+                    if (dyn) { after_call(inst.a); return; }
+                    const int x = cached_xmm(inst.a);
+                    if (x >= 0) em.movaps_xx(x, XR::XMM0);
+                    return;
+                }
+                case JitOp::NEG: case JitOp::LOGICAL_NOT:
+                    if (dyn) after_call(inst.a); else refresh_from_rax(inst.a);
+                    return;
+                case JitOp::LOAD_GLOBAL:
+                    if (analysis.global_guard[inst_index_of(inst)].mode ==
+                        BaselineBodyAnalysis::GlobalGuard::Helper) after_call(inst.a);
+                    else refresh_from_rax(inst.a);
+                    return;
+                case JitOp::INDEX_GET: case JitOp::INDEX_SET:
+                    // Both paths of INDEX_GET leave the element in RAX; the
+                    // helper slow paths refresh the other copies themselves.
+                    if (inst.op == JitOp::INDEX_GET) refresh_from_rax(inst.a);
+                    return;
+                case JitOp::STORE_GLOBAL: case JitOp::DOT_SET: case JitOp::PRINT:
+                case JitOp::PRINT_NO_NL:
+                    after_call(65535);
+                    return;
+                case JitOp::MOD: case JitOp::MAKE_ARRAY: case JitOp::MAKE_DICT:
+                case JitOp::DOT_GET: case JitOp::CALL_BUILTIN: case JitOp::CALL_FUNC:
+                    after_call(inst.a);
+                    return;
+                case JitOp::METHOD_CALL:
+                    // The inline push / len paths do not end in RAX.
+                    after_call(inst.a, false);
+                    return;
+                default:
+                    // OP_IN, DICT_KEYS, FOREACH_NEXT and anything new: the
+                    // helper may write more than one register.
+                    reload_all_cached();
+                    return;
+            }
+        };
+
+        // Instruction ips that some branch targets: a value left in XMM0 by
+        // the previous instruction is only known there when control cannot
+        // arrive from elsewhere.
+        std::vector<uint8_t> branch_target(body_len, 0);
+        for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+            const size_t target = static_cast<size_t>(inst.operand);
+            if (target >= entry_ip && target < end_ip) branch_target[target - entry_ip] = 1;
+        }
+        int xmm0_holds_reg = -1;      // register whose value XMM0 holds
+        size_t xmm0_holds_ip = 0;     // ip of the instruction that left it there
+
+        size_t next_loop_cache = 0;
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
+            if (next_loop_cache < loop_caches.size() &&
+                loop_caches[next_loop_cache].header_ip == ip) {
+                cache = &loop_caches[next_loop_cache++];
+                for (uint16_t r : cache->regs)
+                    em.movsd_x_mem(cache->xmm_of[r], XR::RBX, off_r(r));
+            }
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
             const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
+            const bool xmm0_fresh = xmm0_holds_reg >= 0 && xmm0_holds_ip + 1 == ip &&
+                                    !branch_target[ip - entry_ip];
+            const int xmm0_reg = xmm0_fresh ? xmm0_holds_reg : -1;
+            xmm0_holds_reg = -1;
+            if (cache != nullptr && emit_cached(inst, ip, dyn)) {
+                if (ip == cache->backedge_ip) cache = nullptr;
+                continue;
+            }
             switch (inst.op) {
                 case JitOp::NOP:
                     break;
@@ -1595,6 +2226,9 @@ public:
                         for (size_t j : slow) em.patch_rel32(j, em.pos());
                         helper_store(&sura_bl_arith, ip, inst.a);
                         em.patch_rel32(done, em.pos());
+                    } else {
+                        xmm0_holds_reg = inst.a;
+                        xmm0_holds_ip = ip;
                     }
                     break;
                 }
@@ -1641,13 +2275,24 @@ public:
                     em.mov_ri64(XR::RCX, NBTRUE);
                     switch (inst.op) {
                         case JitOp::CMP_EQ:
+                            // Value::eq: an ordered equal compare, or
+                            // identical bits (a NaN equals itself).
                             em.cmov_rr(CC::E, XR::RAX, XR::RCX);
                             em.mov_ri64(XR::RDX, NBFALSE);
                             em.cmov_rr(CC::P, XR::RAX, XR::RDX);
+                            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
+                            em.mov_r_mem(XR::R8, XR::RBX, off_r(inst.c));
+                            em.cmp_rr(XR::RDX, XR::R8);
+                            em.cmov_rr(CC::E, XR::RAX, XR::RCX);
                             break;
                         case JitOp::CMP_NEQ:
                             em.cmov_rr(CC::NE, XR::RAX, XR::RCX);
                             em.cmov_rr(CC::P, XR::RAX, XR::RCX);
+                            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
+                            em.mov_r_mem(XR::R8, XR::RBX, off_r(inst.c));
+                            em.cmp_rr(XR::RDX, XR::R8);
+                            em.mov_ri64(XR::RDX, NBFALSE);
+                            em.cmov_rr(CC::E, XR::RAX, XR::RDX);
                             break;
                         case JitOp::CMP_LT:
                             em.cmov_rr(CC::B, XR::RAX, XR::RCX);
@@ -1706,7 +2351,8 @@ public:
                                            static_cast<size_t>(inst.operand)});
                     break;
                 case JitOp::RETURN_VAL:
-                    em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.a));
+                    if (xmm0_reg == inst.a) em.movq_r_x(XR::RAX, XR::XMM0);
+                    else load_bits(XR::RAX, inst.a);
                     emit_return();
                     break;
                 case JitOp::RETURN_NONE:
@@ -1755,6 +2401,7 @@ public:
                     // the range error, goes through the helper.
                     if (!inline_collections) {
                         helper_store(&sura_bl_index_get, ip, inst.a);
+                        after_call(inst.a);
                         break;
                     }
                     std::vector<size_t> slow;
@@ -1764,12 +2411,14 @@ public:
                     const size_t done = em.jmp_rel32_placeholder();
                     for (size_t j : slow) em.patch_rel32(j, em.pos());
                     helper_store(&sura_bl_index_get, ip, inst.a);
+                    if (cache != nullptr && !xmm_preserved) reload_all_cached();
                     em.patch_rel32(done, em.pos());
                     break;
                 }
                 case JitOp::INDEX_SET: {
                     if (!inline_collections) {
                         emit_helper(&sura_bl_index_set, ip);
+                        after_call(65535);
                         break;
                     }
                     std::vector<size_t> slow;
@@ -1779,6 +2428,7 @@ public:
                     const size_t done = em.jmp_rel32_placeholder();
                     for (size_t j : slow) em.patch_rel32(j, em.pos());
                     emit_helper(&sura_bl_index_set, ip);
+                    if (cache != nullptr && !xmm_preserved) reload_all_cached();
                     em.patch_rel32(done, em.pos());
                     break;
                 }
@@ -1879,7 +2529,7 @@ public:
                         // fill.
                         em.sub_r_imm32(XR::RSP, frame_bytes);
                         for (uint32_t i = 0; i < argc; ++i) {
-                            em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + i)));
+                            load_bits(XR::RAX, static_cast<uint16_t>(inst.c + i));
                             em.mov_mem_r(XR::RSP, static_cast<int32_t>(i * 8U), XR::RAX);
                         }
                         for (uint32_t r = argc; r < callee_regs; ++r) {
@@ -1936,7 +2586,7 @@ public:
                     em.shl_r_imm8(XR::RAX, 3);
                     em.add_rr(XR::R10, XR::RAX);
                     for (uint32_t i = 0; i < argc; ++i) {
-                        em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + i)));
+                        load_bits(XR::RAX, static_cast<uint16_t>(inst.c + i));
                         em.mov_mem_r(XR::R10, static_cast<int32_t>(i * 8U), XR::RAX);
                     }
                     for (uint32_t r = argc; r < callee_regs; ++r) {
@@ -1972,7 +2622,12 @@ public:
                 default:
                     return {};
             }
+            if (cache != nullptr) {
+                reload_after(inst, dyn);
+                if (ip == cache->backedge_ip) cache = nullptr;
+            }
         }
+        cache = nullptr;
 
         // Fall-through end of body: only needed when the last reachable
         // instruction does not unconditionally leave the function.
@@ -2011,6 +2666,15 @@ public:
         }
         for (const SelfCallFixup& fx : self_call_fixups) {
             em.patch_rel32(fx.disp_pos, fx.unguarded ? unguarded_entry_offset : 0);
+        }
+        if (const char* dump_dir = std::getenv("SURA_JIT_DUMP_DIR")) {
+            // Raw machine code for `objdump -D -b binary -m i386:x86-64`.
+            const std::string path = std::string(dump_dir) + "/baseline_" +
+                                     std::to_string(entry_ip) + ".bin";
+            if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(code.data(), 1, code.size(), f);
+                std::fclose(f);
+            }
         }
         return code;
     }
@@ -3292,6 +3956,24 @@ class NativeCompiler {
     // NativeFunc::baseline_guard_mask for the body being compiled.
     uint64_t             baseline_guard_mask_ = ~0ULL;
 
+    // Loop register cache. Inside an accepted loop the hottest registers
+    // also live in XMM6..XMM15. Every definition through the cache writes
+    // both the register slot and the XMM copy, so memory is always current:
+    // helpers, the GC, exceptions and every operation this cache does not
+    // emit itself keep working unchanged, and such an operation only has to
+    // reload the copies it may have overwritten. What the cache removes is
+    // the store-to-load round trip on every loop-carried arithmetic chain.
+    using LoopCache = JitLoopCache;
+    std::vector<LoopCache> loop_caches;
+    const LoopCache*     active_cache = nullptr;
+    int                  xmm_saved_count = 0;   // XMM6..XMM(5+n) saved by the prologue
+    uint32_t             frame_bytes = 48;      // sub rsp, frame_bytes
+    uint8_t              prolog_size_ = 9;
+    uint8_t              alloc_code_offset_ = 9;
+    std::vector<Win64UnwindXmmSave> xmm_saves_;
+    static constexpr int kLoopCacheXmmFirst = 6;
+    static constexpr int kLoopCacheXmmCount = 10;
+
     struct ScalarValue {
         bool is_virtual_record = false;
         bool known_numeric = false;
@@ -3637,11 +4319,15 @@ public:
                 std::numeric_limits<uint16_t>::max(),
                 std::numeric_limits<int32_t>::max() / 8,
                 /*allow_runtime_deopt=*/false,
-                /*require_provable_div=*/false);
+                /*require_provable_div=*/false,
+                /*link=*/nullptr, /*self_fidx=*/-1, /*self_callable=*/false,
+                /*guard_mask=*/~0ULL, /*allow_helpers=*/false,
+                /*proof_only=*/true);
             if (proof->ok) numeric_proof = std::move(proof);
         } catch (...) {
             numeric_proof.reset();
         }
+        plan_loop_caches();
 
         // ── Prologue ──────────────────────────────────────
         // Save non-volatile regs we use (Win64: RBX, R12-R15 are callee-saved).
@@ -3657,7 +4343,20 @@ public:
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         em.push_r(XR::R13);
-        em.sub_rsp_imm8(48);
+        if (frame_bytes <= 127) em.sub_rsp_imm8(static_cast<int8_t>(frame_bytes));
+        else em.sub_rsp_imm32(static_cast<int32_t>(frame_bytes));
+        alloc_code_offset_ = static_cast<uint8_t>(em.pos());
+        // Loop register cache: XMM6.. are callee-saved, so a body that keeps
+        // registers in them saves them at [rsp+48..] and the unwind record
+        // below describes those saves for exceptions thrown by helpers.
+        xmm_saves_.clear();
+        for (int k = 0; k < xmm_saved_count; ++k) {
+            em.movdqu_mem_x(XR::RSP, 48 + 16 * k, XR::XMM6 + k);
+            xmm_saves_.push_back({static_cast<uint8_t>(em.pos()),
+                                  static_cast<uint8_t>(XR::XMM6 + k),
+                                  static_cast<uint32_t>(48 + 16 * k)});
+        }
+        prolog_size_ = static_cast<uint8_t>(em.pos());
         if (is_top_level) {
             // [rsp+40] is an integer base index for the one eligible
             // GC-visible persistent callee frame. It never stores a Value or
@@ -3737,7 +4436,15 @@ public:
                 }
             }
 
+            size_t next_loop_cache = 0;
+            active_cache = nullptr;
             for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                if (next_loop_cache < loop_caches.size() &&
+                    loop_caches[next_loop_cache].header_ip == ip) {
+                    active_cache = &loop_caches[next_loop_cache++];
+                    for (uint16_t r : active_cache->regs)
+                        em.movsd_x_mem(active_cache->xmm_of[r], XR::RBX, off_r(r));
+                }
                 ip_to_native[ip] = em.pos();
                 if (is_top_level && ip < strict_at.size() && strict_at[ip] != nullptr) {
                     const JitStrictCountedLoop* spec = strict_at[ip];
@@ -3758,7 +4465,10 @@ public:
                     return nullptr;
                 }
                 emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
+                if (active_cache != nullptr && ip == active_cache->backedge_ip)
+                    active_cache = nullptr;
             }
+            active_cache = nullptr;
             // Safety net: if control falls off the end, return nil.
             emit_epilogue_nil();
 
@@ -3775,9 +4485,18 @@ public:
         try {
             auto nf = std::make_unique<NativeFunc>();
             const Win64UnwindSpec unwind{
-                9, 9, 48, {{1, 3}, {3, 12}, {5, 13}}
+                prolog_size_, alloc_code_offset_, frame_bytes,
+                {{1, 3}, {3, 12}, {5, 13}}, xmm_saves_
             };
             nf->code = ExecCode::from_bytes(buf, unwind);
+            if (const char* dump_dir = std::getenv("SURA_JIT_DUMP_DIR")) {
+                const std::string path = std::string(dump_dir) + "/full_" +
+                                         std::to_string(entry_ip) + ".bin";
+                if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                    std::fwrite(buf.data(), 1, buf.size(), f);
+                    std::fclose(f);
+                }
+            }
             nf->fn   = (SuraNativeFn)nf->code.ptr;
             nf->scalarized = used_scalar_plan;
             nf->record_reuse_capable = has_record_reuse_materializer;
@@ -4650,7 +5369,7 @@ private:
         emit_epilogue_with_rax();
     }
     void emit_epilogue_with_rax() {
-        em.add_rsp_imm8(48);
+        emit_frame_teardown();
         em.pop_r(XR::R13);
         em.pop_r(XR::R12);
         em.pop_r(XR::RBX);
@@ -4658,7 +5377,7 @@ private:
     }
     void emit_epilogue_nil() {
         em.mov_ri64(XR::RAX, JIT_NBNIL);
-        em.add_rsp_imm8(48);
+        emit_frame_teardown();
         em.pop_r(XR::R13);
         em.pop_r(XR::R12);
         em.pop_r(XR::RBX);
@@ -4745,8 +5464,295 @@ private:
         sura_x64_emit_array_index_guard(em, container_off, key_off, slow_jmps);
     }
 
+    // ── Loop register cache: planning ─────────────────────────────────
+    // The copies live in XMM6..XMM15, which Win64 makes callee-saved: the
+    // prologue saves the ones in use and the unwind record describes the
+    // saves, so helpers may keep throwing through this frame.
+    void plan_loop_caches() {
+        loop_caches.clear();
+        xmm_saved_count = 0;
+        frame_bytes = 48;
+        if (is_top_level) return;
+        const uint32_t reg_limit = native_scratch_regs ? native_scratch_base : native_frame_regs;
+        loop_caches = jit_plan_loop_caches(chunk, entry_ip, end_ip, nullptr, reg_limit,
+                                           native_reuse_flag_reg, kLoopCacheXmmFirst,
+                                           kLoopCacheXmmCount, "full-tier");
+        for (const LoopCache& cache : loop_caches)
+            xmm_saved_count = std::max<int>(xmm_saved_count, static_cast<int>(cache.regs.size()));
+        frame_bytes = 48 + 16U * static_cast<uint32_t>(xmm_saved_count);
+    }
+
+    void emit_frame_teardown() {
+        for (int k = 0; k < xmm_saved_count; ++k)
+            em.movdqu_x_mem(XR::XMM6 + k, XR::RSP, 48 + 16 * k);
+        if (frame_bytes <= 127) em.add_rsp_imm8(static_cast<int8_t>(frame_bytes));
+        else em.add_rsp_imm32(static_cast<int32_t>(frame_bytes));
+    }
+
+    // ── Loop register cache: emission ─────────────────────────────────
+    int cached_xmm(uint16_t r) const {
+        if (!active_cache || r >= active_cache->xmm_of.size()) return -1;
+        return active_cache->xmm_of[r];
+    }
+    bool proven_num_at(size_t ip, uint16_t r) const {
+        return !used_scalar_plan && numeric_proof && numeric_proof->proven_num(ip, r);
+    }
+    // xmm0 = R[r], from the XMM copy when there is one.
+    void load_operand_xmm0(uint16_t r) {
+        const int x = cached_xmm(r);
+        if (x >= 0) em.movaps_xx(XR::XMM0, x);
+        else em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+    }
+    void arith_xmm0(JitOp op, uint16_t r) {
+        const int x = cached_xmm(r);
+        switch (op) {
+            case JitOp::ADD: if (x >= 0) em.addsd_xx(XR::XMM0, x); else em.addsd_x_mem(XR::XMM0, XR::RBX, off_r(r)); break;
+            case JitOp::SUB: if (x >= 0) em.subsd_xx(XR::XMM0, x); else em.subsd_x_mem(XR::XMM0, XR::RBX, off_r(r)); break;
+            default:         if (x >= 0) em.mulsd_xx(XR::XMM0, x); else em.mulsd_x_mem(XR::XMM0, XR::RBX, off_r(r)); break;
+        }
+    }
+    void ucomisd_xmm0(uint16_t r) {
+        const int x = cached_xmm(r);
+        if (x >= 0) em.ucomisd_xx(XR::XMM0, x);
+        else em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+    }
+    void load_bits(int gpr, uint16_t r) {
+        const int x = cached_xmm(r);
+        if (x >= 0) em.movq_r_x(gpr, x);
+        else em.mov_r_mem(gpr, XR::RBX, off_r(r));
+    }
+    // R[a] = xmm0 / rax: the slot and, when cached, the XMM copy.
+    void store_result_xmm0(uint16_t a) {
+        em.movsd_mem_x(XR::RBX, off_r(a), XR::XMM0);
+        const int x = cached_xmm(a);
+        if (x >= 0) em.movaps_xx(x, XR::XMM0);
+    }
+    void store_result_rax(uint16_t a) {
+        em.mov_mem_r(XR::RBX, off_r(a), XR::RAX);
+        const int x = cached_xmm(a);
+        if (x >= 0) em.movq_x_r(x, XR::RAX);
+    }
+    void reload_cached(uint16_t r) {
+        const int x = cached_xmm(r);
+        if (x >= 0) em.movsd_x_mem(x, XR::RBX, off_r(r));
+    }
+    void reload_all_cached() {
+        if (!active_cache) return;
+        for (uint16_t r : active_cache->regs) reload_cached(r);
+    }
+    bool touches_cache(const JitInst& inst) const {
+        return cached_xmm(inst.a) >= 0 || cached_xmm(inst.b) >= 0 || cached_xmm(inst.c) >= 0;
+    }
+
+    // After an operation emitted by the general path, bring the XMM copies
+    // back in line with what it wrote. Calls may run arbitrary code, so they
+    // refresh every copy; the cheap operations write only R[a].
+    void refresh_from_rax(uint16_t r) {
+        const int x = cached_xmm(r);
+        if (x >= 0) em.movq_x_r(x, XR::RAX);
+    }
+    void reload_after(const JitInst& inst) {
+        using O = JitOp;
+        switch (inst.op) {
+            case O::NOP: case O::JUMP: case O::JUMP_IF_FALSE: case O::JUMP_IF_TRUE:
+            case O::INDEX_SET: case O::DOT_SET: case O::STORE_GLOBAL: case O::STORE_UPVAL:
+            case O::PRINT: case O::PRINT_NO_NL:
+            case O::RETURN_VAL: case O::RETURN_NONE: case O::HALT:
+                return;
+            // Every path of these ends with `mov [R[a]], rax`, so the copy
+            // comes straight from RAX instead of waiting on the store.
+            case O::LOAD_GLOBAL: case O::DIV: case O::MOD:
+            case O::BIT_AND: case O::BIT_OR: case O::BIT_XOR:
+            case O::CMP_EQ: case O::CMP_NEQ: case O::NEG: case O::LOGICAL_NOT:
+            case O::MAKE_ARRAY: case O::MAKE_DICT: case O::INDEX_GET: case O::CALL_FUNC:
+            case O::DOT_GET:
+                refresh_from_rax(inst.a);
+                return;
+            case O::LOAD_CONST: case O::LOAD_NIL: case O::LOAD_BOOL: case O::MOVE:
+            case O::LOAD_UPVAL:
+            case O::ADD: case O::SUB: case O::MUL:
+            case O::LSHIFT: case O::RSHIFT: case O::BIT_NOT:
+            case O::CMP_LT: case O::CMP_LTE: case O::CMP_GT: case O::CMP_GTE:
+            case O::OP_IN: case O::DICT_KEYS: case O::METHOD_CALL:
+                reload_cached(inst.a);
+                return;
+            default:
+                reload_all_cached();
+                return;
+        }
+    }
+
+    // Operations the cache emits itself. Returns false to hand the
+    // instruction to the general path (followed by reload_after).
+    bool emit_cached_op(const JitInst& inst, size_t ip) {
+        using O = JitOp;
+        const int32_t oa = off_r(inst.a);
+        const int32_t ob = off_r(inst.b);
+        const int32_t oc = off_r(inst.c);
+        switch (inst.op) {
+            case O::LOAD_CONST: {
+                const int x = cached_xmm(inst.a);
+                if (x < 0) return false;
+                if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size()) return false;
+                em.movsd_x_mem(x, XR::R12, off_c(inst.operand));
+                em.movsd_mem_x(XR::RBX, oa, x);
+                return true;
+            }
+            case O::LOAD_NIL: case O::LOAD_BOOL: {
+                if (cached_xmm(inst.a) < 0) return false;
+                em.mov_ri64(XR::RAX, inst.op == O::LOAD_NIL ? JIT_NBNIL
+                                     : (inst.operand ? JIT_NBTRUE : JIT_NBFALSE));
+                store_result_rax(inst.a);
+                return true;
+            }
+            case O::MOVE: {
+                const int xa = cached_xmm(inst.a);
+                const int xb = cached_xmm(inst.b);
+                if (xa < 0 && xb < 0) return false;
+                if (xb >= 0 && xa >= 0) {
+                    em.movsd_mem_x(XR::RBX, oa, xb);
+                    if (xa != xb) em.movaps_xx(xa, xb);
+                } else if (xb >= 0) {
+                    em.mov_r_mem(XR::RAX, XR::RBX, ob);
+                    em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                } else {
+                    em.movsd_x_mem(xa, XR::RBX, ob);
+                    em.movsd_mem_x(XR::RBX, oa, xa);
+                }
+                return true;
+            }
+            case O::ADD: case O::SUB: case O::MUL: {
+                if (!touches_cache(inst)) return false;
+                const bool fast = inst.ic_numeric_fast ||
+                                  (proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
+                std::vector<size_t> slow_jmps;
+                if (!fast) {
+                    if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(ob));
+                    if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(oc));
+                }
+                load_operand_xmm0(inst.b);
+                arith_xmm0(inst.op, inst.c);
+                store_result_xmm0(inst.a);
+                if (slow_jmps.empty()) return true;
+                const size_t done_jmp = em.jmp_rel32_placeholder();
+                const size_t slow_pos = em.pos();
+                for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                em.mov_r_mem(XR::RCX, XR::RBX, ob);
+                em.mov_r_mem(XR::RDX, XR::RBX, oc);
+                if (inst.op == O::ADD) {
+                    em.mov_rr(XR::R8, XR::R13);
+                    em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_add);
+                } else {
+                    em.mov_ri64(XR::R8, inst.op == O::SUB ? JIT_ARITH_SUB : JIT_ARITH_MUL);
+                    em.mov_ri64(XR::R9, (uint64_t)(uint32_t)inst.line);
+                    em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_binary);
+                }
+                em.call_rax();
+                store_result_rax(inst.a);
+                em.patch_rel32(done_jmp, em.pos());
+                return true;
+            }
+            case O::CMP_LT: case O::CMP_LTE: case O::CMP_GT: case O::CMP_GTE:
+                return emit_cmp_ord(inst, ip);
+            case O::CMP_EQ: case O::CMP_NEQ:
+                return emit_cmp_eq(inst, ip);
+            default:
+                return false;
+        }
+    }
+
+    // CMP_LT / LTE / GT / GTE: proven or tag-checked numbers compare inline;
+    // b < c is evaluated as c > b so that an unordered compare (NaN) yields
+    // false, the way Value::lt does. Anything else keeps the checked helper
+    // (the ordering type error). Works with or without an active loop cache.
+    bool emit_cmp_ord(const JitInst& inst, size_t ip) {
+        using O = JitOp;
+        const int32_t ob = off_r(inst.b);
+        const int32_t oc = off_r(inst.c);
+        std::vector<size_t> slow_jmps;
+        if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(ob));
+        if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(oc));
+        const bool swapped = inst.op == O::CMP_LT || inst.op == O::CMP_LTE;
+        load_operand_xmm0(swapped ? inst.c : inst.b);
+        ucomisd_xmm0(swapped ? inst.b : inst.c);
+        const uint8_t cc = (inst.op == O::CMP_LT || inst.op == O::CMP_GT) ? CC::A : CC::AE;
+        em.mov_ri64(XR::RAX, JIT_NBFALSE);
+        em.mov_ri64(XR::RCX, JIT_NBTRUE);
+        em.cmov_rr(cc, XR::RAX, XR::RCX);
+        store_result_rax(inst.a);
+        if (slow_jmps.empty()) return true;
+        const size_t done_jmp = em.jmp_rel32_placeholder();
+        const size_t slow_pos = em.pos();
+        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        int helper_op = JIT_CMP_LT;
+        switch (inst.op) {
+            case O::CMP_LTE: helper_op = JIT_CMP_LTE; break;
+            case O::CMP_GT:  helper_op = JIT_CMP_GT; break;
+            case O::CMP_GTE: helper_op = JIT_CMP_GTE; break;
+            default: break;
+        }
+        em.mov_r_mem(XR::RCX, XR::RBX, ob);
+        em.mov_r_mem(XR::RDX, XR::RBX, oc);
+        em.mov_ri64(XR::R8, (uint64_t)helper_op);
+        em.mov_ri64(XR::R9, (uint64_t)(uint32_t)inst.line);
+        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_binary);
+        em.call_rax();
+        store_result_rax(inst.a);
+        em.patch_rel32(done_jmp, em.pos());
+        return true;
+    }
+
+    // CMP_EQ / CMP_NEQ: two numbers compare inline (Value::eq: identical
+    // bits, or an ordered equal compare, so +0 == -0 and a NaN equals only
+    // itself); operands not proven numeric are tag-checked first and
+    // anything else (strings, objects, nil) keeps the helper. Works with or
+    // without an active loop cache.
+    bool emit_cmp_eq(const JitInst& inst, size_t ip) {
+        const bool neq = inst.op == JitOp::CMP_NEQ;
+        const uint64_t when_equal = neq ? JIT_NBFALSE : JIT_NBTRUE;
+        const uint64_t when_differ = neq ? JIT_NBTRUE : JIT_NBFALSE;
+        std::vector<size_t> slow_jmps;
+        if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.b)));
+        if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.c)));
+        load_operand_xmm0(inst.b);
+        ucomisd_xmm0(inst.c);
+        em.mov_ri64(XR::RAX, when_differ);
+        em.mov_ri64(XR::RCX, when_equal);
+        em.cmov_rr(CC::E, XR::RAX, XR::RCX);
+        em.mov_ri64(XR::RDX, when_differ);
+        em.cmov_rr(CC::P, XR::RAX, XR::RDX);
+        load_bits(XR::RDX, inst.b);
+        load_bits(XR::R8, inst.c);
+        em.cmp_rr(XR::RDX, XR::R8);
+        em.cmov_rr(CC::E, XR::RAX, XR::RCX);
+        store_result_rax(inst.a);
+        if (slow_jmps.empty()) return true;
+        const size_t done_jmp = em.jmp_rel32_placeholder();
+        const size_t slow_pos = em.pos();
+        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        em.mov_r_mem(XR::RCX, XR::RBX, off_r(inst.b));
+        em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
+        em.mov_ri64(XR::R8, neq ? 1 : 0);
+        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_eq);
+        em.call_rax();
+        store_result_rax(inst.a);
+        em.patch_rel32(done_jmp, em.pos());
+        return true;
+    }
+
     bool emit_op(const JitInst& inst, size_t ip,
                  const JitInst* runtime_inst = nullptr) {
+        if (active_cache != nullptr && runtime_inst == nullptr) {
+            if (emit_cached_op(inst, ip)) return true;
+            if (!emit_op_impl(inst, ip, runtime_inst)) return false;
+            reload_after(inst);
+            return true;
+        }
+        return emit_op_impl(inst, ip, runtime_inst);
+    }
+
+    bool emit_op_impl(const JitInst& inst, size_t ip,
+                      const JitInst* runtime_inst) {
         using O = JitOp;
         int32_t oa = off_r(inst.a);
         int32_t ob = off_r(inst.b);
@@ -4865,63 +5871,15 @@ private:
                 return true;
             }
 
-            case O::CMP_LT: case O::CMP_LTE: case O::CMP_GT: case O::CMP_GTE: {
-                std::vector<size_t> slow_jmps;
-                slow_jmps.push_back(emit_non_number_jump(ob));
-                slow_jmps.push_back(emit_non_number_jump(oc));
-
-                // xmm0 = R[b];  ucomisd xmm0, R[c]
-                // rax = NBFALSE;  rcx = NBTRUE;  cmov<cc> rax, rcx;  R[a] = rax
-                em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
-                em.ucomisd_x_mem(XR::XMM0, XR::RBX, oc);
-                em.mov_ri64(XR::RAX, JIT_NBFALSE);
-                em.mov_ri64(XR::RCX, JIT_NBTRUE);
-                uint8_t cc;
-                switch (inst.op) {
-                    case O::CMP_LT:  cc = CC::B;  break;
-                    case O::CMP_LTE: cc = CC::BE; break;
-                    case O::CMP_GT:  cc = CC::A;  break;
-                    case O::CMP_GTE: cc = CC::AE; break;
-                    default: return false;
-                }
-                em.cmov_rr(cc, XR::RAX, XR::RCX);
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                size_t done_jmp = em.jmp_rel32_placeholder();
-
-                int helper_op = JIT_CMP_LT;
-                switch (inst.op) {
-                    case O::CMP_LT:  helper_op = JIT_CMP_LT; break;
-                    case O::CMP_LTE: helper_op = JIT_CMP_LTE; break;
-                    case O::CMP_GT:  helper_op = JIT_CMP_GT; break;
-                    case O::CMP_GTE: helper_op = JIT_CMP_GTE; break;
-                    default: return false;
-                }
-                size_t slow_pos = em.pos();
-                for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
-                em.mov_r_mem(XR::RCX, XR::RBX, ob);
-                em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                em.mov_ri64(XR::R8, (uint64_t)helper_op);
-                em.mov_ri64(XR::R9, (uint64_t)(uint32_t)inst.line);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_binary);
-                em.call_rax();
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                em.patch_rel32(done_jmp, em.pos());
-                return true;
-            }
+            case O::CMP_LT: case O::CMP_LTE: case O::CMP_GT: case O::CMP_GTE:
+                return emit_cmp_ord(inst, ip);
 
             // ── Phase 9: equality comparisons (bit-equal fast path) ──
             // Matches interpreter for: nil, bool, identical numbers, same pointer.
             // Differs for: strings with same content but different GCString*.
             // (The existing arithmetic ops similarly skip type checks for speed.)
-            case O::CMP_EQ: case O::CMP_NEQ: {
-                em.mov_r_mem(XR::RCX, XR::RBX, ob);
-                em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                em.mov_ri64(XR::R8, inst.op == O::CMP_NEQ ? 1 : 0);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_eq);
-                em.call_rax();
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                return true;
-            }
+            case O::CMP_EQ: case O::CMP_NEQ:
+                return emit_cmp_eq(inst, ip);
 
             // ── Phase 9: NEG (flip sign bit) ─────────────────────────
             // Numeric values flip the sign bit after a NaN-box type guard;

@@ -1,0 +1,181 @@
+# JIT 루프 레지스터 캐시: 루프 안의 숫자 값이 XMM 레지스터에 상주하는 동안에도
+# 메모리 슬롯이 항상 최신이어야 helper·GC·예외·deopt가 그대로 동작한다.
+# 각 함수는 검사 호출 전에 충분히 불러 네이티브 코드로 컴파일되게 한다.
+
+use array
+
+# 1) 순수 숫자 루프 (baseline): acc, i가 캐시된다. 닫힌 식과 비교.
+func sum_loop(n) do
+  acc is 0
+  i is 0
+  while i < n do
+    acc is acc + (i * 3 - 1) / 2
+    i is i + 1
+  end
+  return acc
+end
+
+# 2) 배열 읽기 + 매개변수와의 == (전체 tier): k가 순환한다.
+func cyclic_reads(a, m, reads) do
+  total is 0
+  j is 0
+  k is 0
+  while j < reads do
+    total is total + a[k]
+    k is k + 1
+    if k == m then
+      k is 0
+    end
+    j is j + 1
+  end
+  return total
+end
+
+# 3) 루프 안의 호출: 호출 결과가 변수로, 변수가 인자로 흐른다.
+func add1(x) do
+  return x + 1
+end
+
+func call_loop(n) do
+  acc is 0
+  i is 0
+  while i < n do
+    acc is add1(acc)
+    i is i + 1
+  end
+  return acc
+end
+
+# 4) 중첩 루프: 바깥 루프가 캐시를 가지고 안쪽 루프는 그 복사본을 공유한다.
+func nested(n) do
+  total is 0
+  i is 0
+  while i < n do
+    j is 0
+    while j < n do
+      total is total + i * j
+      j is j + 1
+    end
+    i is i + 1
+  end
+  return total
+end
+
+# 5) 안쪽 루프에 호출이 있는 중첩 루프.
+func nested_call(n) do
+  total is 0
+  i is 0
+  while i < n do
+    j is 0
+    while j < n do
+      total is total + add1(j)
+      j is j + 1
+    end
+    i is i + 1
+  end
+  return total
+end
+
+# 6) 캐시된 루프 안의 for…in (FOREACH_NEXT는 두 레지스터를 쓴다).
+func foreach_sum(arr, reps) do
+  total is 0
+  r is 0
+  while r < reps do
+    for x in arr do
+      total is total + x
+    end
+    r is r + 1
+  end
+  return total
+end
+
+# 7) NaN과 -0.0: 순서 비교는 NaN이면 항상 거짓, -0.0 == 0.0은 참.
+func nan_checks(n) do
+  big is 1.0
+  k is 0
+  while k < 400 do
+    big is big * 10
+    k is k + 1
+  end
+  nan is big - big
+  negzero is -0.0
+  lt is 0
+  gt is 0
+  lte is 0
+  zeros is 0
+  i is 0
+  while i < n do
+    if nan < 1 then
+      lt is lt + 1
+    end
+    if nan > 1 then
+      gt is gt + 1
+    end
+    if nan <= nan then
+      lte is lte + 1
+    end
+    if negzero == 0.0 then
+      zeros is zeros + 1
+    end
+    i is i + 1
+  end
+  return lt * 1000000 + gt * 10000 + lte * 100 + zeros
+end
+
+# 8) 캐시된 루프 안에서 helper가 예외를 던진다 (0으로 나누기): 예외가
+#    XMM을 저장한 네이티브 프레임을 지나 호출자의 catch에 닿아야 한다.
+func div_loop(a, n, m) do
+  acc is 0
+  i is 0
+  while i < n do
+    acc is acc + a[i] / (m - i)
+    i is i + 1
+  end
+  return acc
+end
+
+# ── warm-up: 네이티브 코드로 컴파일되도록 반복 호출 ──
+small is [1, 2, 3, 4]
+w is 0
+while w < 40 do
+  t1 is sum_loop(50)
+  t2 is cyclic_reads(small, 4, 50)
+  t3 is call_loop(50)
+  t4 is nested(6)
+  t5 is nested_call(6)
+  t6 is foreach_sum(small, 3)
+  t7 is nan_checks(5)
+  t8 is div_loop(small, 4, 10)
+  w is w + 1
+end
+
+# ── 검사 ──
+assert_eq(sum_loop(1000), 748750)
+
+arr is []
+i is 0
+while i < 100 do
+  arr.push(i)
+  i is i + 1
+end
+assert_eq(cyclic_reads(arr, 100, 10000), 495000)
+
+assert_eq(call_loop(100000), 100000)
+assert_eq(nested(50), 1500625)
+assert_eq(nested_call(20), 4200)
+assert_eq(foreach_sum(small, 10), 100)
+assert_eq(nan_checks(1000), 1000)
+
+caught is ""
+try
+  x is div_loop(small, 4, 3)
+catch e
+  caught is "E202"
+end
+assert_eq(caught, "E202")
+
+# 예외 뒤에도 부동소수점 계산이 멀쩡해야 한다.
+assert_eq(1.5 * 2.5, 3.75)
+assert_eq(sum_loop(10), 62.5)
+
+print "jit_loop_cache: PASS"

@@ -15,7 +15,9 @@ namespace XR {
         RAX=0, RCX=1, RDX=2, RBX=3, RSP=4, RBP=5, RSI=6, RDI=7,
         R8=8,  R9=9,  R10=10, R11=11, R12=12, R13=13, R14=14, R15=15
     };
-    enum : int { XMM0=0, XMM1=1, XMM2=2, XMM3=3, XMM4=4, XMM5=5 };
+    enum : int { XMM0=0, XMM1=1, XMM2=2, XMM3=3, XMM4=4, XMM5=5, XMM6=6, XMM7=7,
+                 XMM8=8, XMM9=9, XMM10=10, XMM11=11, XMM12=12, XMM13=13,
+                 XMM14=14, XMM15=15 };
 }
 
 // Condition codes used for cmov/jcc (the low byte of the opcode)
@@ -163,6 +165,54 @@ public:
         emit8(0x66);
         rex(false, x, 0, base);
         emit8(0x0F); emit8(0x2E);
+        mem_disp32(x, base, disp);
+    }
+
+    // ── Register-to-register SSE forms for the loop register cache ──
+    // movaps xmm, xmm (0F 28 /r): whole-register copy, so it neither keeps
+    // a dependency on the destination's old upper half nor costs a merge.
+    void movaps_xx(int dst, int src) {
+        rex(false, dst, 0, src);
+        emit8(0x0F); emit8(0x28);
+        emit8(modrm(3, dst, src));
+    }
+    // addsd / subsd / mulsd / divsd xmm, xmm  (F2 0F <op> /r)
+    void xmm_arith_xx(uint8_t op, int dst, int src) {
+        emit8(0xF2);
+        rex(false, dst, 0, src);
+        emit8(0x0F); emit8(op);
+        emit8(modrm(3, dst, src));
+    }
+    void addsd_xx(int dst, int src) { xmm_arith_xx(0x58, dst, src); }
+    void subsd_xx(int dst, int src) { xmm_arith_xx(0x5C, dst, src); }
+    void mulsd_xx(int dst, int src) { xmm_arith_xx(0x59, dst, src); }
+    void divsd_xx(int dst, int src) { xmm_arith_xx(0x5E, dst, src); }
+    // ucomisd xmm, xmm  (66 0F 2E /r)
+    void ucomisd_xx(int a, int b) {
+        emit8(0x66);
+        rex(false, a, 0, b);
+        emit8(0x0F); emit8(0x2E);
+        emit8(modrm(3, a, b));
+    }
+    // movq r64, xmm  (66 REX.W 0F 7E /r)
+    void movq_r_x(int dst, int x) {
+        emit8(0x66);
+        rex(true, x, 0, dst);
+        emit8(0x0F); emit8(0x7E);
+        emit8(modrm(3, x, dst));
+    }
+    // movq xmm, r64  (66 REX.W 0F 6E /r)
+    void movq_x_r(int x, int src) {
+        emit8(0x66);
+        rex(true, x, 0, src);
+        emit8(0x0F); emit8(0x6E);
+        emit8(modrm(3, x, src));
+    }
+    // movdqu xmm, [base + disp32]  (F3 0F 6F /r): callee-saved XMM restore.
+    void movdqu_x_mem(int x, int base, int32_t disp) {
+        emit8(0xF3);
+        rex(false, x, 0, base);
+        emit8(0x0F); emit8(0x6F);
         mem_disp32(x, base, disp);
     }
 
@@ -344,6 +394,13 @@ public:
     }
     void add_rsp_imm8(int8_t v) {
         emit8(0x48); emit8(0x83); emit8(0xC4); emit8((uint8_t)v);
+    }
+    // sub/add rsp, imm32  (REX.W 81 /5 id, REX.W 81 /0 id) for frames past 127 bytes.
+    void sub_rsp_imm32(int32_t v) {
+        emit8(0x48); emit8(0x81); emit8(0xEC); emit32((uint32_t)v);
+    }
+    void add_rsp_imm32(int32_t v) {
+        emit8(0x48); emit8(0x81); emit8(0xC4); emit32((uint32_t)v);
     }
 
     // ── Indirect call: call rax  (FF /2, opcode FF D0) ─────

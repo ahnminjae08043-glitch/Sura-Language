@@ -26,15 +26,25 @@ struct Win64UnwindPush {
     uint8_t register_number = 0;
 };
 
+// A callee-saved XMM register stored into the frame after the allocation.
+// frame_offset is the byte offset from RSP once the allocation is done and
+// must be a multiple of 16 (UWOP_SAVE_XMM128 scales it by 16).
+struct Win64UnwindXmmSave {
+    uint8_t code_offset = 0;
+    uint8_t register_number = 0;
+    uint32_t frame_offset = 0;
+};
+
 struct Win64UnwindSpec {
     uint8_t prolog_size = 0;
     uint8_t stack_allocation_code_offset = 0;
     uint32_t stack_allocation_bytes = 0;
     std::vector<Win64UnwindPush> pushed_nonvolatiles;
+    std::vector<Win64UnwindXmmSave> saved_xmm128;
 
     bool enabled() const noexcept {
         return prolog_size != 0 || stack_allocation_bytes != 0 ||
-               !pushed_nonvolatiles.empty();
+               !pushed_nonvolatiles.empty() || !saved_xmm128.empty();
     }
 };
 
@@ -259,6 +269,32 @@ private:
             actions.push_back(std::move(allocation));
         } else if (spec.stack_allocation_code_offset != 0) {
             throw std::runtime_error("ExecCode: allocation offset without stack allocation");
+        }
+
+        // Callee-saved XMM registers. C++ exceptions thrown by helpers unwind
+        // through these frames, so the unwinder must restore XMM6..XMM15 the
+        // way it restores the pushed GPRs; without these codes a caller that
+        // kept a double in XMM6 across the native call would see it change.
+        std::unordered_set<uint8_t> saved_xmm;
+        for (const auto& save : spec.saved_xmm128) {
+            if (save.code_offset == 0 || save.code_offset > spec.prolog_size ||
+                save.register_number < 6 || save.register_number > 15 ||
+                (save.frame_offset & 15U) != 0 ||
+                save.frame_offset / 16 > std::numeric_limits<uint16_t>::max() ||
+                spec.stack_allocation_bytes == 0 ||
+                save.frame_offset + 16 > spec.stack_allocation_bytes ||
+                save.code_offset <= spec.stack_allocation_code_offset)
+                throw std::runtime_error("ExecCode: invalid Win64 XMM save");
+            if (!saved_xmm.insert(save.register_number).second)
+                throw std::runtime_error("ExecCode: duplicate Win64 XMM save");
+            if (!action_offsets.insert(save.code_offset).second)
+                throw std::runtime_error("ExecCode: duplicate Win64 unwind code offset");
+            UnwindAction action;
+            action.code_offset = save.code_offset;
+            action.operation = 8; // UWOP_SAVE_XMM128
+            action.info = save.register_number;
+            action.extra_slots.push_back(static_cast<uint16_t>(save.frame_offset / 16));
+            actions.push_back(std::move(action));
         }
 
         // Windows requires unwind operations in descending prologue offset.
