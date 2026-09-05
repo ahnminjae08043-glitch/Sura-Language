@@ -184,6 +184,8 @@ public:
         T* obj = nullptr;
         if constexpr (std::is_same_v<T, GCInstance>) {
             obj = allocate_instance(std::forward<Args>(args)...);
+        } else if constexpr (is_pooled_v<T>) {
+            obj = Pool<T>::allocate(std::forward<Args>(args)...);
         } else {
             obj = new T(std::forward<Args>(args)...);
         }
@@ -284,6 +286,63 @@ private:
         }
     }
 
+    // The same scheme for the objects programs allocate in bulk: strings,
+    // arrays and dictionaries. A general-purpose malloc/free pair costs more
+    // than the rest of a short string's life; a slot from a per-type free
+    // list costs a few loads. Blocks are never returned to the OS. The
+    // runtime mutex, held by allocate() and sweep(), guards the lists.
+    template<typename T>
+    static constexpr bool is_pooled_v =
+        std::is_same_v<T, GCString> || std::is_same_v<T, GCArray> || std::is_same_v<T, GCDict>;
+
+    template<typename T>
+    struct Pool {
+        static constexpr size_t BLOCK_SLOTS = 4096;
+        static void*& free_list() {
+            static void* head = nullptr;
+            return head;
+        }
+        static std::vector<void*>& blocks() {
+            static std::vector<void*> list;
+            return list;
+        }
+        static void replenish() {
+            char* block = static_cast<char*>(::operator new(sizeof(T) * BLOCK_SLOTS));
+            try {
+                blocks().push_back(block);
+            } catch (...) {
+                ::operator delete(block);
+                throw;
+            }
+            void*& head = free_list();
+            for (size_t i = 0; i < BLOCK_SLOTS; ++i) {
+                void* slot = block + i * sizeof(T);
+                *reinterpret_cast<void**>(slot) = head;
+                head = slot;
+            }
+        }
+        template<typename... Args>
+        static T* allocate(Args&&... args) {
+            void*& head = free_list();
+            if (!head) replenish();
+            void* slot = head;
+            head = *reinterpret_cast<void**>(slot);
+            try {
+                return new (slot) T(std::forward<Args>(args)...);
+            } catch (...) {
+                *reinterpret_cast<void**>(slot) = head;
+                head = slot;
+                throw;
+            }
+        }
+        static void release(T* obj) {
+            obj->~T();
+            void*& head = free_list();
+            *reinterpret_cast<void**>(obj) = head;
+            head = obj;
+        }
+    };
+
     template<typename... Args>
     static GCInstance* allocate_instance(Args&&... args) {
         void*& head = instance_free_list();
@@ -308,10 +367,12 @@ private:
 
     static void release_object(GCObject* obj) {
         if (!obj) return;
-        if (obj->obj_type == ObjType::INSTANCE) {
-            release_instance(static_cast<GCInstance*>(obj));
-        } else {
-            delete obj;
+        switch (obj->obj_type) {
+            case ObjType::INSTANCE: release_instance(static_cast<GCInstance*>(obj)); break;
+            case ObjType::STRING:   Pool<GCString>::release(static_cast<GCString*>(obj)); break;
+            case ObjType::ARRAY:    Pool<GCArray>::release(static_cast<GCArray*>(obj)); break;
+            case ObjType::DICT:     Pool<GCDict>::release(static_cast<GCDict*>(obj)); break;
+            default:                delete obj; break;
         }
     }
 };

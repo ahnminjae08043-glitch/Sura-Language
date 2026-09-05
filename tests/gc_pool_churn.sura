@@ -1,0 +1,63 @@
+# GC 풀 재사용: 문자열·배열·딕셔너리는 크기별 free list에서 할당되고 수거 뒤
+# 같은 슬롯이 다시 쓰인다. 여러 번의 수거를 지나며 살아 있는 객체의 내용이
+# 그대로이고, 재사용된 슬롯의 새 객체가 옛 내용을 비치지 않아야 한다.
+
+use array
+
+func churn(rounds, width) do
+  keep is []
+  r is 0
+  while r < rounds do
+    # 죽을 객체를 대량으로 만든다 (수거 여러 번 유발).
+    j is 0
+    while j < width do
+      tmp is "t" + (r * width + j)
+      arr is [j, j + 1, j + 2]
+      d is {}
+      d[tmp] is arr
+      j is j + 1
+    end
+    # 살아남을 객체 하나를 라운드마다 남긴다.
+    s is "live" + r
+    a is [r, r * 2, s]
+    m is {}
+    m["s"] is s
+    m["a"] is a
+    m["n"] is r
+    keep.push(m)
+    r is r + 1
+  end
+  return keep
+end
+
+kept is churn(40, 3000)
+assert_eq(kept.len(), 40)
+i is 0
+while i < 40 do
+  m is kept[i]
+  assert_eq(m["s"], "live" + i)
+  assert_eq(m["n"], i)
+  a is m["a"]
+  assert_eq(a.len(), 3)
+  assert_eq(a[0], i)
+  assert_eq(a[1], i * 2)
+  assert_eq(a[2], "live" + i)
+  i is i + 1
+end
+
+# 새 객체는 비어 있어야 한다 (재사용 슬롯이 옛 내용을 물려주지 않음).
+fresh is churn(5, 2000)
+k is 0
+while k < 2000 do
+  e is {}
+  assert_eq(e.keys().len(), 0)
+  z is []
+  assert_eq(z.len(), 0)
+  w is "" + k
+  assert_eq(w.len(), ("" + k).len())
+  k is k + 1
+end
+assert_eq(fresh.len(), 5)
+assert_eq(fresh[4]["s"], "live4")
+
+print "gc_pool_churn: PASS"

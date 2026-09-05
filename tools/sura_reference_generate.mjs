@@ -340,7 +340,7 @@ const machineFacts = {
       },
     },
     value_representation: "NaN-boxed dynamic Value",
-    garbage_collector: "mark-sweep; process-global heap",
+    garbage_collector: "mark-sweep; process-global heap; per-type free-list pools for strings, arrays, dictionaries and instances",
     diagnostics_default: "English",
     diagnostics_korean: "--lang ko or SURA_LANG=ko",
     strict_types_default: true,
@@ -1445,7 +1445,7 @@ sections.push(section("overview", "문서 개요",
     "<div class='status-card status-targets'><strong>API 인벤토리</strong><span>runtime module namespace 35개, catalog module 34개, module signature " + apiSymbolCount + "개, global builtin name·alias " + globalBuiltinNames.length + "개입니다.</span></div>" +
     "<div class='status-card status-release'><strong>검증 기준</strong><span>최종 " + version + " engine에서 stable suite는 VM " + escapeHtml(verificationManifest.results.stable_vm) + "와 JIT " + escapeHtml(verificationManifest.results.stable_jit) + "를 통과했습니다.</span></div>" +
   "</div>" +
-  paragraph("Sura source 확장자는 " + code(".sura") + "입니다. 값은 NaN-boxed dynamic Value로 표현하고, register VM과 mark-sweep GC가 실행합니다. GC heap은 프로세스 전역입니다.") +
+  paragraph("Sura source 확장자는 " + code(".sura") + "입니다. 값은 NaN-boxed dynamic Value로 표현하고, register VM과 mark-sweep GC(문자열·배열·딕셔너리·인스턴스는 타입별 free list 풀에서 할당)가 실행합니다. GC heap은 프로세스 전역입니다.") +
   paragraph("기본 진단 언어는 영어입니다. 한국어 진단은 " + code("--lang ko") + " 또는 " + code("SURA_LANG=ko") + "로 선택합니다.")
 ));
 
