@@ -1445,7 +1445,7 @@ sections.push(section("overview", "문서 개요",
     "<div class='status-card status-targets'><strong>API 인벤토리</strong><span>runtime module namespace 35개, catalog module 34개, module signature " + apiSymbolCount + "개, global builtin name·alias " + globalBuiltinNames.length + "개입니다.</span></div>" +
     "<div class='status-card status-release'><strong>검증 기준</strong><span>최종 " + version + " engine에서 stable suite는 VM " + escapeHtml(verificationManifest.results.stable_vm) + "와 JIT " + escapeHtml(verificationManifest.results.stable_jit) + "를 통과했습니다.</span></div>" +
   "</div>" +
-  paragraph("Sura source 확장자는 " + code(".sura") + "입니다. 값은 NaN-boxed dynamic Value로 표현하고, register VM과 mark-sweep GC(문자열·배열·딕셔너리·인스턴스는 타입별 free list 풀에서 할당)가 실행하며, 딕셔너리는 삽입 순서를 지키는 compact open-addressing 표(항목은 고정 크기 청크에, 인덱스는 2의 거듭제곱 크기의 선형 탐사 표)입니다. 순회와 출력은 삽입 순서를 따르고, 삭제된 항목은 인덱스 재구성 때 압축됩니다. 실행합니다. GC heap은 프로세스 전역입니다.") +
+  paragraph("Sura source 확장자는 " + code(".sura") + "입니다. 값은 NaN-boxed dynamic Value로 표현하고, register VM과 mark-sweep GC(문자열·배열·딕셔너리·인스턴스는 타입별 free list 풀에서 할당)가 실행하며, 딕셔너리는 삽입 순서를 지키는 compact open-addressing 표(항목은 고정 크기 청크에, 인덱스는 2의 거듭제곱 크기의 선형 탐사 표)입니다. 순회와 출력은 삽입 순서를 따르고, 삭제된 항목은 인덱스 재구성 때 압축됩니다. GC heap은 프로세스 전역입니다.") +
   paragraph("기본 진단 언어는 영어입니다. 한국어 진단은 " + code("--lang ko") + " 또는 " + code("SURA_LANG=ko") + "로 선택합니다.")
 ));
 
