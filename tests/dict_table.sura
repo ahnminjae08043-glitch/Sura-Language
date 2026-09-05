@@ -1,0 +1,108 @@
+# 딕셔너리 표: compact open-addressing 표는 삽입 순서로 순회하고, 삭제된 항목은
+# 죽은 슬롯으로 남았다가 인덱스 재구성 때 압축된다. 덮어쓰기·삭제·재삽입·대량
+# 삽입(재구성)·대량 삭제 뒤 삽입(압축)에서 내용과 순서가 맞아야 한다.
+
+use array
+
+# 1) 삽입 순서 순회와 덮어쓰기(순서 유지)
+d is {}
+d["b"] is 1
+d["a"] is 2
+d["c"] is 3
+d["a"] is 20
+ks is d.keys()
+assert_eq(ks.len(), 3)
+assert_eq(ks[0], "b")
+assert_eq(ks[1], "a")
+assert_eq(ks[2], "c")
+assert_eq(d["a"], 20)
+assert_eq(d.has("a"), true)
+assert_eq(d.has("z"), false)
+
+# 2) 삭제 뒤 재삽입: 새 항목은 끝에 붙는다
+d.remove("b")
+assert_eq(d.has("b"), false)
+assert_eq(d.keys().len(), 2)
+d["b"] is 5
+ks is d.keys()
+assert_eq(ks[0], "a")
+assert_eq(ks[1], "c")
+assert_eq(ks[2], "b")
+assert_eq(d["b"], 5)
+
+# 3) 대량 삽입(인덱스 재구성 여러 번) 뒤 모든 키가 맞는 값을 돌려준다
+big is {}
+i is 0
+while i < 20000 do
+  big["k" + i] is i * 2
+  i is i + 1
+end
+assert_eq(big.keys().len(), 20000)
+i is 0
+while i < 20000 do
+  assert_eq(big["k" + i], i * 2)
+  i is i + 1
+end
+ks is big.keys()
+assert_eq(ks[0], "k0")
+assert_eq(ks[19999], "k19999")
+
+# 4) 대량 삭제 뒤 삽입(압축): 남은 항목과 새 항목이 모두 맞다
+i is 0
+while i < 19000 do
+  big.remove("k" + i)
+  i is i + 1
+end
+assert_eq(big.keys().len(), 1000)
+i is 0
+while i < 5000 do
+  big["n" + i] is i
+  i is i + 1
+end
+assert_eq(big.keys().len(), 6000)
+assert_eq(big.has("k18999"), false)
+assert_eq(big["k19000"], 38000)
+assert_eq(big["k19999"], 39998)
+assert_eq(big["n4999"], 4999)
+ks is big.keys()
+assert_eq(ks[0], "k19000")
+assert_eq(ks[999], "k19999")
+assert_eq(ks[1000], "n0")
+
+# 5) 같은 키를 반복해서 지우고 넣어도 항목 수가 새지 않는다
+j is 0
+while j < 3000 do
+  d["tmp"] is j
+  d.remove("tmp")
+  j is j + 1
+end
+assert_eq(d.keys().len(), 3)
+assert_eq(d.has("tmp"), false)
+
+# 6) keys()는 삽입 순서를 따른다 (5번의 삭제·재삽입 뒤에도)
+order is d.keys()
+assert_eq(order.len(), 3)
+assert_eq(order[0], "a")
+assert_eq(order[1], "c")
+assert_eq(order[2], "b")
+
+# 7) 숫자 키와 중첩 딕셔너리
+m is {}
+inner1 is {}
+inner1["x"] is 10
+m[1] is inner1
+inner2 is {}
+inner2["x"] is 20
+m[2] is inner2
+assert_eq(m[1]["x"], 10)
+assert_eq(m[2]["x"], 20)
+assert_eq(m.keys().len(), 2)
+
+# 8) 빈 딕셔너리 동작
+e is {}
+assert_eq(e.keys().len(), 0)
+assert_eq(e.has("a"), false)
+e.remove("a")
+assert_eq(e.keys().len(), 0)
+
+print "dict_table: PASS"

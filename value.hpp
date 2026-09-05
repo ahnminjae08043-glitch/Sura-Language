@@ -155,8 +155,298 @@ struct GCArray : public GCObject {
     void mark() override;
 };
 
+
+// ── Dictionary table ─────────────────────────────────────────────────────────
+// A compact open-addressing hash table with the std::unordered_map surface
+// the runtime uses (find / count / insert / emplace / try_emplace / at /
+// operator[] / erase / iteration / reserve / clear). Entries live in
+// insertion order in fixed 256-slot chunks - so a reference to a mapped
+// value stays valid across later insertions, as with unordered_map - and a
+// power-of-two index of int32 entry numbers (linear probing, at most 3/4
+// full) maps hashes to them. Compared with the node-based unordered_map a
+// lookup touches the index and one entry instead of a bucket, a node chain
+// and the key's heap block, and iteration walks the entries in the order
+// they were added, which also makes printed dictionaries deterministic.
+// Erasing leaves a dead entry behind (its key is kept, its value cleared);
+// dead entries are dropped when an insertion has to rebuild the index and
+// they outnumber the live ones, which is the one operation that moves
+// entries.
+template<class V>
+struct SuraDictEntry {
+    size_t hash;
+    bool alive;
+    std::pair<const std::string, V> kv;
+    template<class K, class... Args>
+    SuraDictEntry(size_t h, K&& key, Args&&... args)
+        : hash(h), alive(true),
+          kv(std::piecewise_construct, std::forward_as_tuple(std::forward<K>(key)),
+             std::forward_as_tuple(std::forward<Args>(args)...)) {}
+};
+
+template<class V>
+class SuraDictMap {
+public:
+    using key_type = std::string;
+    using mapped_type = V;
+    using value_type = std::pair<const std::string, V>;
+    using size_type = size_t;
+
+private:
+    using Entry = SuraDictEntry<V>;
+    static constexpr size_t kChunkShift = 8;
+    static constexpr size_t kChunkSize = size_t(1) << kChunkShift;
+    static constexpr size_t kChunkMask = kChunkSize - 1;
+    static constexpr int32_t kEmpty = -1;
+    static constexpr int32_t kDeleted = -2;
+    struct Chunk {
+        alignas(Entry) unsigned char bytes[sizeof(Entry) * kChunkSize];
+    };
+
+    std::vector<int32_t> index_;    // entry number, kEmpty or kDeleted
+    std::vector<Chunk*> chunks_;
+    size_t entries_ = 0;            // entries appended, dead ones included
+    size_t live_ = 0;
+    size_t index_used_ = 0;         // index slots that are not kEmpty
+
+    Entry* entry_at(size_t i) const {
+        return reinterpret_cast<Entry*>(chunks_[i >> kChunkShift]->bytes) + (i & kChunkMask);
+    }
+    static size_t hash_of(const std::string& key) {
+        size_t h = std::hash<std::string>{}(key);
+        h ^= h >> 29; h *= 0x9E3779B97F4A7C15ULL; h ^= h >> 32;   // spread low bits
+        return h;
+    }
+    int32_t lookup(const std::string& key, size_t h) const {
+        if (index_.empty()) return -1;
+        const size_t mask = index_.size() - 1;
+        size_t i = h & mask;
+        for (;;) {
+            const int32_t e = index_[i];
+            if (e == kEmpty) return -1;
+            if (e >= 0) {
+                const Entry* en = entry_at(static_cast<size_t>(e));
+                if (en->hash == h && en->kv.first == key) return e;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+    static size_t index_size_for(size_t live) {
+        size_t n = 16;
+        while (n * 3 < live * 4 + 4) n <<= 1;
+        return n;
+    }
+    void place(int32_t e, size_t h) {
+        const size_t mask = index_.size() - 1;
+        size_t i = h & mask;
+        while (index_[i] >= 0) i = (i + 1) & mask;
+        if (index_[i] == kEmpty) ++index_used_;
+        index_[i] = e;
+    }
+    // Rebuild the index for `wanted` live entries; drop dead entries first
+    // when they outnumber the live ones.
+    void rebuild(size_t wanted) {
+        if (entries_ - live_ > live_ && entries_ - live_ >= 64) compact();
+        index_.assign(index_size_for(std::max(wanted, live_)), kEmpty);
+        index_used_ = 0;
+        for (size_t i = 0; i < entries_; ++i) {
+            const Entry* en = entry_at(i);
+            if (en->alive) place(static_cast<int32_t>(i), en->hash);
+        }
+    }
+    void compact() {
+        std::vector<Chunk*> chunks;
+        size_t count = 0;
+        for (size_t i = 0; i < entries_; ++i) {
+            Entry* en = entry_at(i);
+            if (!en->alive) { en->~Entry(); continue; }
+            if ((count & kChunkMask) == 0) chunks.push_back(new Chunk);
+            Entry* dst = reinterpret_cast<Entry*>(chunks[count >> kChunkShift]->bytes) + (count & kChunkMask);
+            new (dst) Entry(en->hash, en->kv.first, std::move(en->kv.second));
+            en->~Entry();
+            ++count;
+        }
+        for (Chunk* c : chunks_) delete c;
+        chunks_.swap(chunks);
+        entries_ = count;
+        live_ = count;
+    }
+    void destroy_all() {
+        for (size_t i = 0; i < entries_; ++i) entry_at(i)->~Entry();
+        for (Chunk* c : chunks_) delete c;
+        chunks_.clear();
+        index_.clear();
+        entries_ = live_ = index_used_ = 0;
+    }
+    template<class K, class... Args>
+    int32_t append(size_t h, K&& key, Args&&... args) {
+        if ((index_used_ + 1) * 4 > index_.size() * 3) rebuild(live_ + 1);
+        if ((entries_ & kChunkMask) == 0) chunks_.push_back(new Chunk);
+        Entry* slot = reinterpret_cast<Entry*>(chunks_[entries_ >> kChunkShift]->bytes) + (entries_ & kChunkMask);
+        new (slot) Entry(h, std::forward<K>(key), std::forward<Args>(args)...);
+        const int32_t e = static_cast<int32_t>(entries_);
+        ++entries_;
+        ++live_;
+        place(e, h);
+        return e;
+    }
+    size_t next_alive(size_t i) const {
+        while (i < entries_ && !entry_at(i)->alive) ++i;
+        return i;
+    }
+
+public:
+    template<bool Const>
+    class Iter {
+        friend class SuraDictMap;
+    public:
+        using value_type = typename SuraDictMap::value_type;
+    private:
+        using Map = std::conditional_t<Const, const SuraDictMap, SuraDictMap>;
+        using Ref = std::conditional_t<Const, const value_type&, value_type&>;
+        using Ptr = std::conditional_t<Const, const value_type*, value_type*>;
+        Map* map_ = nullptr;
+        size_t i_ = 0;
+        Iter(Map* m, size_t i) : map_(m), i_(i) {}
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using difference_type = std::ptrdiff_t;
+        using reference = Ref;
+        using pointer = Ptr;
+        Iter() = default;
+        template<bool C2, class = std::enable_if_t<Const && !C2>>
+        Iter(const Iter<C2>& o) : map_(o.map_), i_(o.i_) {}
+        Ref operator*() const { return map_->entry_at(i_)->kv; }
+        Ptr operator->() const { return &map_->entry_at(i_)->kv; }
+        Iter& operator++() { i_ = map_->next_alive(i_ + 1); return *this; }
+        Iter operator++(int) { Iter t = *this; ++*this; return t; }
+        bool operator==(const Iter& o) const { return i_ == o.i_; }
+        bool operator!=(const Iter& o) const { return i_ != o.i_; }
+        template<bool C2> friend class Iter;
+    };
+    using iterator = Iter<false>;
+    using const_iterator = Iter<true>;
+
+    SuraDictMap() = default;
+    SuraDictMap(const SuraDictMap& o) { copy_from(o); }
+    SuraDictMap(SuraDictMap&& o) noexcept { swap(o); }
+    SuraDictMap& operator=(const SuraDictMap& o) {
+        if (this != &o) { destroy_all(); copy_from(o); }
+        return *this;
+    }
+    SuraDictMap& operator=(SuraDictMap&& o) noexcept {
+        if (this != &o) { destroy_all(); swap(o); }
+        return *this;
+    }
+    ~SuraDictMap() { destroy_all(); }
+    void swap(SuraDictMap& o) noexcept {
+        index_.swap(o.index_); chunks_.swap(o.chunks_);
+        std::swap(entries_, o.entries_); std::swap(live_, o.live_);
+        std::swap(index_used_, o.index_used_);
+    }
+
+    iterator begin() { return iterator(this, next_alive(0)); }
+    iterator end() { return iterator(this, entries_); }
+    const_iterator begin() const { return const_iterator(this, next_alive(0)); }
+    const_iterator end() const { return const_iterator(this, entries_); }
+    const_iterator cbegin() const { return begin(); }
+    const_iterator cend() const { return end(); }
+
+    size_t size() const { return live_; }
+    bool empty() const { return live_ == 0; }
+    size_t bucket_count() const { return index_.size(); }
+    void clear() { destroy_all(); }
+    void reserve(size_t n) {
+        if (index_size_for(n) > index_.size()) rebuild(n);
+    }
+
+    iterator find(const std::string& key) {
+        const int32_t e = lookup(key, hash_of(key));
+        return iterator(this, e < 0 ? entries_ : static_cast<size_t>(e));
+    }
+    const_iterator find(const std::string& key) const {
+        const int32_t e = lookup(key, hash_of(key));
+        return const_iterator(this, e < 0 ? entries_ : static_cast<size_t>(e));
+    }
+    size_t count(const std::string& key) const { return lookup(key, hash_of(key)) >= 0 ? 1 : 0; }
+    bool contains(const std::string& key) const { return lookup(key, hash_of(key)) >= 0; }
+
+    template<class K, class... Args>
+    std::pair<iterator, bool> try_emplace(K&& key, Args&&... args) {
+        const std::string& k = key;
+        const size_t h = hash_of(k);
+        const int32_t found = lookup(k, h);
+        if (found >= 0) return {iterator(this, static_cast<size_t>(found)), false};
+        const int32_t e = append(h, std::forward<K>(key), std::forward<Args>(args)...);
+        return {iterator(this, static_cast<size_t>(e)), true};
+    }
+    V& operator[](const std::string& key) { return try_emplace(key).first->second; }
+    V& operator[](std::string&& key) { return try_emplace(std::move(key)).first->second; }
+    V& at(const std::string& key) {
+        const int32_t e = lookup(key, hash_of(key));
+        if (e < 0) throw std::out_of_range("SuraDictMap::at");
+        return entry_at(static_cast<size_t>(e))->kv.second;
+    }
+    const V& at(const std::string& key) const {
+        const int32_t e = lookup(key, hash_of(key));
+        if (e < 0) throw std::out_of_range("SuraDictMap::at");
+        return entry_at(static_cast<size_t>(e))->kv.second;
+    }
+    std::pair<iterator, bool> insert(const value_type& v) { return try_emplace(v.first, v.second); }
+    std::pair<iterator, bool> insert(value_type&& v) { return try_emplace(v.first, std::move(v.second)); }
+    template<class P, class = std::enable_if_t<std::is_constructible_v<value_type, P&&>>>
+    std::pair<iterator, bool> insert(P&& p) {
+        return try_emplace(std::forward<P>(p).first, std::forward<P>(p).second);
+    }
+    template<class It>
+    void insert(It first, It last) { for (; first != last; ++first) insert(*first); }
+    template<class... Args>
+    std::pair<iterator, bool> emplace(Args&&... args) {
+        value_type v(std::forward<Args>(args)...);
+        return try_emplace(v.first, std::move(v.second));
+    }
+    template<class M>
+    std::pair<iterator, bool> insert_or_assign(const std::string& key, M&& m) {
+        auto r = try_emplace(key, std::forward<M>(m));
+        if (!r.second) r.first->second = std::forward<M>(m);
+        return r;
+    }
+
+    iterator erase(const_iterator pos) {
+        erase_at(pos.i_);
+        return iterator(this, next_alive(pos.i_ + 1));
+    }
+    iterator erase(iterator pos) {
+        erase_at(pos.i_);
+        return iterator(this, next_alive(pos.i_ + 1));
+    }
+    size_t erase(const std::string& key) {
+        const size_t h = hash_of(key);
+        const int32_t e = lookup(key, h);
+        if (e < 0) return 0;
+        erase_at(static_cast<size_t>(e));
+        return 1;
+    }
+
+private:
+    void erase_at(size_t i) {
+        Entry* en = entry_at(i);
+        if (!en->alive) return;
+        const size_t mask = index_.size() - 1;
+        size_t slot = en->hash & mask;
+        while (index_[slot] != static_cast<int32_t>(i)) slot = (slot + 1) & mask;
+        index_[slot] = kDeleted;
+        en->alive = false;
+        en->kv.second = V();
+        --live_;
+    }
+    void copy_from(const SuraDictMap& o) {
+        reserve(o.live_);
+        for (const auto& kv : o) append(hash_of(kv.first), kv.first, kv.second);
+    }
+};
+
 struct GCDict : public GCObject {
-    std::unordered_map<std::string, Value> elements;
+    SuraDictMap<Value> elements;
     GCDict() : GCObject(ObjType::DICT) {}
     void mark() override;
 };

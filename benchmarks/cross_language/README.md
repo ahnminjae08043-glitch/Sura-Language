@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 38.2 | 20.6 | 12.6 | 63.7 |
+| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 25.1 | 20.6 | 12.6 | 63.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -123,8 +123,16 @@ register cache uses too. Alongside it, the runtime now allocates strings,
 arrays and dictionaries from per-type free lists (the scheme instances
 already used) instead of `malloc`/`free`: a short-lived string costs a few
 loads rather than an allocator round trip on both ends of its life, which
-is what moved the `dict` column (it builds a key string per iteration) and
-the string- and allocation-heavy micro-benchmarks, on both platforms.
+is what first moved the `dict` column (it builds a key string per
+iteration) and the string- and allocation-heavy micro-benchmarks, on both
+platforms. The dictionary itself then changed representation: a compact
+open-addressing table (a power-of-two index of entry numbers with linear
+probing, entries kept in insertion order in fixed chunks) replaced the
+node-based `std::unordered_map`, so a lookup touches the index and one
+entry instead of a bucket, a node chain and the key's heap block. That took
+`dict` from 38 to 25.1 ms on Windows and from 37 to 23.1 ms on Linux - ahead of
+CPython on Windows, level with it on Linux - and dictionaries now iterate
+and print in insertion order.
 In this suite all ten functions get native code on Linux; only the
 operations that genuinely need the runtime (string concatenation, dictionary
 reads and writes, field access, calls) still cost what they cost in the
@@ -144,7 +152,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 36.7 | 21.6 | 14.9 | 63.6 |
+| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 23.1 | 21.6 | 14.9 | 63.6 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -152,18 +160,19 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 5.8x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 6.1x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation, and loop-carried
   numbers stay in registers, which is what moved the `numeric`, `array`,
   `object` and `matmul` columns; hoisting the container checks out of the
   loop then took `matmul` from 90 to 63.7 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 3.8x faster than CPython by geometric mean — well
+  Overall Sura is about 4.0x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
   matmul now that indexing, guarded arithmetic, the loop register cache and
-  the hoisted container checks are in, roughly even on strings, still behind on dictionaries, where the
-  hash lookups happen in the helper. A native
+  the hoisted container checks are in, roughly even on strings and, since
+  the compact table, on dictionaries too, although their lookups still run
+  in the helper. A native
   call books its callee frame on the VM value stack only when the callee can
   reach a helper (that is what lets the collector run while native code
   holds objects); a callee that never can, such as `fib`, keeps its frame on
@@ -194,14 +203,14 @@ container check is hoisted now; the tag checks of invariant operands are
 the next step, and element checks would need a typed array
 representation), and a call inside a loop moves its arguments and result
 through the frame and between the GPR and XMM register files, so a numeric
-calling convention is the step after that. Dictionaries are the one column
-still behind CPython: the table is a node-based `std::unordered_map`, so a
-lookup in a 50,000-entry dictionary is two cache misses; a compact
-open-addressing table is the fix, and a larger change.
+calling convention is the step after that. Dictionary reads and writes
+still go through a helper that hashes the key on every access; caching the
+hash in the string object and inlining the probe would be the next step
+for that column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 5.8 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 6.1 times as fast as CPython,
 roughly three times slower than Node, and six times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
