@@ -1251,11 +1251,11 @@ enum class X64BaselineAbi : uint8_t { SysV, Win64 };
 // cache emits writes both the slot and the XMM copy, so memory is always
 // current and helpers, the collector, deopts and every operation the cache
 // does not emit itself keep working unchanged; such an operation only has to
-// refresh the copies it may have overwritten. A loop qualifies when nothing
-// outside [header, backedge] jumps into it (the copies are loaded on the
-// fall-in edge just before the header) and it contains arithmetic to speed
-// up. Outer loops are tried first; a loop nested in an accepted loop shares
-// its copies.
+// refresh the copies it may have overwritten. A loop qualifies when it is
+// entered only through its header (the copies are loaded in a pre-header
+// just before it, and a branch from outside that targets the header is
+// redirected there) and it contains arithmetic to speed up. Outer loops are
+// tried first; a loop nested in an accepted loop shares its copies.
 struct JitLoopCache {
     size_t header_ip = 0;
     size_t backedge_ip = 0;
@@ -1278,6 +1278,202 @@ inline bool jit_is_cache_arith_op(JitOp op) {
         default:
             return false;
     }
+}
+
+// True when the loop [header, backedge] can only be entered through its
+// header: no branch from outside the range targets an instruction inside it
+// other than the header itself. Both tiers emit per-loop setup code in a
+// pre-header just before the header and redirect outside branches that
+// target the header to that pre-header, so this is the condition under
+// which the setup is guaranteed to have run inside the loop.
+inline bool jit_loop_entered_at_header_only(const JitChunk& chunk, size_t entry_ip,
+                                            size_t end_ip, size_t header, size_t backedge) {
+    for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+        const JitInst& inst = chunk.code[ip];
+        if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+        const size_t target = static_cast<size_t>(inst.operand);
+        const bool target_inside = target > header && target <= backedge;
+        const bool source_inside = ip >= header && ip <= backedge;
+        if (target_inside && !source_inside) return false;
+    }
+    return true;
+}
+
+// ── Loop-invariant array containers ─────────────────────────────────────────
+// `row[q]` inside a loop that never writes `row` re-proves on every
+// iteration that R[row] is an array object. The tiers instead check once in
+// the pre-header and keep the GCArray* - or 0 when the register held
+// something else - in a callee-saved GPR for the extent of the loop; each
+// access then costs a null test, the index conversion and the bounds check,
+// and still reads the element pointer and the bounds every time, since the
+// loop may push. Loops are planned innermost first so the hottest loop has
+// first pick of the GPRs; loops sharing a header run their pre-headers
+// outer to inner.
+struct JitHoistLoop {
+    size_t header_ip = 0;
+    size_t backedge_ip = 0;
+    std::vector<std::pair<uint16_t, int>> regs;        // (register, GPR number)
+    // INDEX_GET / INDEX_SET instructions whose container is one of those
+    // registers, or a temporary the loop fills from one by MOVE just
+    // before the access: (ip, GPR number).
+    std::vector<std::pair<size_t, int>> access_gpr;
+};
+
+// Which registers an opcode may write: 0 none, 1 a, 2 a and b, -1 unknown.
+// Calls write only their result: callee frames are allocated above the
+// caller's registers, never inside them.
+inline int jit_hoist_write_shape(JitOp op) {
+    switch (op) {
+        case JitOp::STORE_GLOBAL: case JitOp::STORE_UPVAL:
+        case JitOp::INDEX_SET: case JitOp::DOT_SET:
+        case JitOp::PRINT: case JitOp::PRINT_NO_NL:
+        case JitOp::JUMP: case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+        case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT: case JitOp::NOP:
+            return 0;
+        case JitOp::LOAD_CONST: case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL: case JitOp::MOVE:
+        case JitOp::LOAD_GLOBAL: case JitOp::LOAD_UPVAL:
+        case JitOp::ADD: case JitOp::SUB: case JitOp::MUL: case JitOp::DIV: case JitOp::MOD:
+        case JitOp::BIT_AND: case JitOp::BIT_OR: case JitOp::BIT_XOR:
+        case JitOp::LSHIFT: case JitOp::RSHIFT:
+        case JitOp::CMP_EQ: case JitOp::CMP_NEQ: case JitOp::CMP_LT: case JitOp::CMP_LTE:
+        case JitOp::CMP_GT: case JitOp::CMP_GTE:
+        case JitOp::NEG: case JitOp::BIT_NOT: case JitOp::LOGICAL_NOT:
+        case JitOp::CALL_FUNC: case JitOp::CALL_BUILTIN: case JitOp::METHOD_CALL:
+        case JitOp::MAKE_ARRAY: case JitOp::MAKE_DICT: case JitOp::INDEX_GET:
+        case JitOp::DOT_GET: case JitOp::OP_IN: case JitOp::NEW_INSTANCE:
+        case JitOp::MAKE_LAMBDA: case JitOp::DICT_KEYS:
+            return 1;
+        case JitOp::FOREACH_NEXT:
+            return 2;
+        default:
+            return -1;
+    }
+}
+
+// `gprs[0..gpr_count)` are the callee-saved GPRs the tier reserves for
+// hoisted containers. Registers at or above `reg_limit`, and
+// `excluded_reg`, are never hoisted.
+inline std::vector<JitHoistLoop> jit_plan_array_hoists(
+        const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+        const std::vector<uint8_t>* reached, uint32_t reg_limit, uint32_t excluded_reg,
+        const int* gprs, int gpr_count, const char* tier_name) {
+    std::vector<JitHoistLoop> loops;
+    if (gpr_count <= 0 || std::getenv("SURA_JIT_DISABLE_ARRAY_HOIST")) return loops;
+    struct Candidate { size_t header; size_t backedge; };
+    std::vector<Candidate> candidates;
+    for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+        const JitInst& inst = chunk.code[ip];
+        if (inst.op != JitOp::JUMP || inst.operand < 0) continue;
+        const size_t target = static_cast<size_t>(inst.operand);
+        if (target < entry_ip || target >= ip) continue;
+        if (reached && !(*reached)[target - entry_ip]) continue;
+        candidates.push_back({target, ip});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [](const Candidate& l, const Candidate& r) {
+                  return (l.backedge - l.header) < (r.backedge - r.header);
+              });
+    for (const Candidate& cand : candidates) {
+        if (!jit_loop_entered_at_header_only(chunk, entry_ip, end_ip, cand.header, cand.backedge))
+            continue;
+        size_t max_reg = 0;
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            max_reg = std::max<size_t>(max_reg, std::max<size_t>(inst.a, std::max<size_t>(inst.b, inst.c)));
+        }
+        std::vector<uint8_t> written(max_reg + 1, 0);
+        bool shapes_known = true;
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            const int shape = jit_hoist_write_shape(inst.op);
+            if (shape < 0) { shapes_known = false; break; }
+            if (shape >= 1) written[inst.a] = 1;
+            if (shape == 2) written[inst.b] = 1;
+        }
+        if (!shapes_known) continue;
+        // The compiler indexes a local through a temporary (MOVE tmp, row /
+        // INDEX_GET x, tmp, q), so follow copies: within one basic block a
+        // register last defined by MOVE from an unwritten register holds
+        // that register's value. Every branch target inside the loop
+        // starts a new block with nothing known.
+        std::vector<uint8_t> block_start(cand.backedge - cand.header + 1, 0);
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+            const size_t target = static_cast<size_t>(inst.operand);
+            if (target > cand.header && target <= cand.backedge)
+                block_start[target - cand.header] = 1;
+        }
+        std::vector<uint32_t> uses(max_reg + 1, 0);
+        std::vector<std::pair<size_t, uint16_t>> accesses;   // (ip, invariant register)
+        std::vector<int32_t> copy_of(max_reg + 1, -1);
+        for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
+            if (block_start[ip - cand.header]) std::fill(copy_of.begin(), copy_of.end(), -1);
+            const JitInst& inst = chunk.code[ip];
+            const uint16_t container = inst.op == JitOp::INDEX_GET ? inst.b
+                                     : inst.op == JitOp::INDEX_SET ? inst.a : 0;
+            if (inst.op == JitOp::INDEX_GET || inst.op == JitOp::INDEX_SET) {
+                const int32_t source = !written[container] ? static_cast<int32_t>(container)
+                                                            : copy_of[container];
+                if (source >= 0) {
+                    ++uses[static_cast<size_t>(source)];
+                    accesses.push_back({ip, static_cast<uint16_t>(source)});
+                }
+            }
+            const int shape = jit_hoist_write_shape(inst.op);
+            if (shape >= 1) {
+                copy_of[inst.a] = -1;
+                if (inst.op == JitOp::MOVE)
+                    copy_of[inst.a] = !written[inst.b] ? static_cast<int32_t>(inst.b) : copy_of[inst.b];
+            }
+            if (shape == 2) copy_of[inst.b] = -1;
+        }
+        // GPRs held by loops nested inside this one stay theirs.
+        std::vector<uint8_t> taken(static_cast<size_t>(gpr_count), 0);
+        for (const JitHoistLoop& done : loops) {
+            if (done.header_ip < cand.header || done.backedge_ip > cand.backedge) continue;
+            for (const auto& rg : done.regs)
+                for (int k = 0; k < gpr_count; ++k)
+                    if (gprs[k] == rg.second) taken[static_cast<size_t>(k)] = 1;
+        }
+        std::vector<std::pair<uint32_t, uint16_t>> scored;
+        for (size_t r = 0; r <= max_reg; ++r) {
+            if (r >= reg_limit || r == excluded_reg || written[r] || uses[r] == 0) continue;
+            scored.push_back({uses[r], static_cast<uint16_t>(r)});
+        }
+        if (scored.empty()) continue;
+        std::sort(scored.begin(), scored.end(),
+                  [](const std::pair<uint32_t, uint16_t>& l, const std::pair<uint32_t, uint16_t>& r) {
+                      return l.first != r.first ? l.first > r.first : l.second < r.second;
+                  });
+        JitHoistLoop loop;
+        loop.header_ip = cand.header;
+        loop.backedge_ip = cand.backedge;
+        int next = 0;
+        for (const auto& sc : scored) {
+            while (next < gpr_count && taken[static_cast<size_t>(next)]) ++next;
+            if (next >= gpr_count) break;
+            loop.regs.push_back({sc.second, gprs[next++]});
+        }
+        if (loop.regs.empty()) continue;
+        for (const auto& access : accesses)
+            for (const auto& rg : loop.regs)
+                if (rg.first == access.second) loop.access_gpr.push_back({access.first, rg.second});
+        loops.push_back(std::move(loop));
+    }
+    std::sort(loops.begin(), loops.end(), [](const JitHoistLoop& l, const JitHoistLoop& r) {
+        return l.header_ip != r.header_ip ? l.header_ip < r.header_ip
+                                          : l.backedge_ip > r.backedge_ip;
+    });
+    if (std::getenv("SURA_JIT_DIAG")) {
+        for (const JitHoistLoop& loop : loops) {
+            std::fprintf(stderr, "[jit] %s array hoist ip %zu..%zu:", tier_name,
+                         loop.header_ip, loop.backedge_ip);
+            for (const auto& rg : loop.regs) std::fprintf(stderr, " r%u->gpr%d", rg.first, rg.second);
+            std::fprintf(stderr, " (%zu access(es))\n", loop.access_gpr.size());
+        }
+    }
+    return loops;
 }
 
 // `reached` (optional, indexed by ip - entry_ip) skips dead loops. Registers
@@ -1310,16 +1506,8 @@ inline std::vector<JitLoopCache> jit_plan_loop_caches(
             if (!disjoint) { covered = true; break; }
         }
         if (covered) continue;
-        bool valid = true;
-        for (size_t ip = entry_ip; ip < end_ip && valid; ++ip) {
-            const JitInst& inst = chunk.code[ip];
-            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
-            const size_t target = static_cast<size_t>(inst.operand);
-            const bool target_inside = target >= cand.header && target <= cand.backedge;
-            const bool source_inside = ip >= cand.header && ip <= cand.backedge;
-            if (target_inside && !source_inside) valid = false;
-        }
-        if (!valid) continue;
+        if (!jit_loop_entered_at_header_only(chunk, entry_ip, end_ip, cand.header, cand.backedge))
+            continue;
         size_t max_reg = 0;
         bool has_arith = false;
         for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
@@ -1340,6 +1528,18 @@ inline std::vector<JitLoopCache> jit_plan_loop_caches(
         std::vector<uint32_t> reads(max_reg + 1, 0), writes(max_reg + 1, 0);
         std::vector<uint8_t> eligible(max_reg + 1, 0);
         enum : uint8_t { kNone = 0, kArith = 1, kOther = 2 };
+        // An accepted loop covers the loops nested in it, whose bodies run
+        // many times per outer iteration: a use inside an inner loop weighs
+        // eight times a use one level out, so the copies go to the
+        // registers of the innermost loops first.
+        std::vector<uint32_t> weight(cand.backedge - cand.header + 1, 1);
+        for (const Candidate& inner : candidates) {
+            if (inner.header <= cand.header || inner.backedge > cand.backedge) continue;
+            for (size_t ip = inner.header; ip <= inner.backedge; ++ip) {
+                uint32_t& w = weight[ip - cand.header];
+                w = w >= 4096 ? w : w * 8;
+            }
+        }
         auto numeric_op = [](JitOp op) {
             switch (op) {
                 case JitOp::ADD: case JitOp::SUB: case JitOp::MUL:
@@ -1364,15 +1564,16 @@ inline std::vector<JitLoopCache> jit_plan_loop_caches(
         };
         for (size_t ip = cand.header; ip <= cand.backedge; ++ip) {
             const JitInst& inst = chunk.code[ip];
+            const uint32_t w = weight[ip - cand.header];
             switch (inst.op) {
                 case JitOp::LOAD_CONST: case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL:
-                    ++writes[inst.a]; break;
+                    writes[inst.a] += w; break;
                 case JitOp::MOVE:
-                    ++writes[inst.a]; ++reads[inst.b]; break;
+                    writes[inst.a] += w; reads[inst.b] += w; break;
                 default:
                     if (numeric_op(inst.op)) {
-                        ++writes[inst.a]; ++reads[inst.b];
-                        if (inst.op != JitOp::NEG) ++reads[inst.c];
+                        writes[inst.a] += w; reads[inst.b] += w;
+                        if (inst.op != JitOp::NEG) reads[inst.c] += w;
                         eligible[inst.a] = 1; eligible[inst.b] = 1;
                         if (inst.op != JitOp::NEG) eligible[inst.c] = 1;
                     }
@@ -1586,24 +1787,49 @@ inline void sura_x64_emit_object_receiver_guard(X64Emitter& em, int32_t containe
 //   3. R[key] is a number                   (hi32 & 0x7ffc0000) != 0x7ffc0000
 //   4. idx = (int64)trunc(key), 0 <= idx <= INT32_MAX  (one unsigned compare)
 //   5. &elements[idx] < _M_finish            (bounds)
+// The same guard with what a loop already knows:
+//   hoist_gpr >= 0  the container's GCArray* (or 0 when R[container] was not
+//                   an array at loop entry) sits in that callee-saved GPR, so
+//                   steps 1-2 collapse to one null test;
+//   key_proven      R[key] is a proven number: step 3 is skipped;
+//   key_xmm >= 0    R[key] also lives in that XMM copy, which feeds the
+//                   conversion directly instead of the slot.
+// The element pointer and bounds are still read on every access: the loop
+// may push. RAX = GCArray* on exit only when the container was not hoisted.
+inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container_off,
+                                               int hoist_gpr, int32_t key_off,
+                                               int key_xmm, bool key_proven,
+                                               std::vector<size_t>& slow_jmps) {
+    int base = XR::RAX;
+    if (hoist_gpr >= 0) {
+        em.test_rr(hoist_gpr, hoist_gpr);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        base = hoist_gpr;
+    } else {
+        sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
+    }
+    if (!key_proven) {
+        static constexpr uint32_t TAG32 = 0x7ffc0000U;
+        em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+        em.and_r32_imm32(XR::RCX, TAG32);
+        em.cmp_r32_imm32(XR::RCX, TAG32);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+    }
+    if (key_xmm >= 0) em.cvttsd2si_r_x(XR::RCX, key_xmm);
+    else em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
+    em.cmp_r_imm32(XR::RCX, 0x7fffffff);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
+    em.mov_r_mem(XR::RDX, base, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+    em.mov_r_mem(XR::R10, base, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+    em.lea_r_base_index8(XR::RCX, XR::RDX, XR::RCX);
+    em.cmp_rr(XR::RCX, XR::R10);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+}
+
 inline void sura_x64_emit_array_index_guard(X64Emitter& em, int32_t container_off,
                                             int32_t key_off,
                                             std::vector<size_t>& slow_jmps) {
-    sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
-    static constexpr uint32_t TAG32 = 0x7ffc0000U;
-    em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
-    em.and_r32_imm32(XR::RCX, TAG32);
-    em.cmp_r32_imm32(XR::RCX, TAG32);
-    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
-    em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
-    em.cmp_r_imm32(XR::RCX, 0x7fffffff);
-    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
-    em.shl_r_imm8(XR::RCX, 3);
-    em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
-    em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
-    em.add_rr(XR::RCX, XR::RDX);
-    em.cmp_rr(XR::RCX, XR::R10);
-    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+    sura_x64_emit_array_index_guard_ex(em, container_off, -1, key_off, -1, false, slow_jmps);
 }
 
 // a.push(v): store + pointer bump when the vector has spare capacity; leaves
@@ -1784,11 +2010,23 @@ public:
                 xmm_saved = std::max<int>(xmm_saved, static_cast<int>(cache.regs.size()));
         }
         const int32_t cache_frame_bytes = 16 * xmm_saved;
+        // Loop-invariant array containers live in R14 and R15, callee-saved
+        // under both conventions and pushed as a pair so RSP keeps its
+        // alignment. Helpers preserve them; a direct callee that uses them
+        // saves them itself.
+        static constexpr int kHoistGprs[2] = {XR::R14, XR::R15};
+        const std::vector<JitHoistLoop> hoist_loops = jit_plan_array_hoists(
+            chunk, entry_ip, end_ip, &analysis.reached, frame_regs,
+            std::numeric_limits<uint32_t>::max(), kHoistGprs,
+            (allow_helpers && jit_array_layout_verified()) ? 2 : 0,
+            xmm_preserved ? "win64-baseline" : "sysv-baseline");
+        const int hoist_gprs = hoist_loops.empty() ? 0 : 2;
 
         unguarded_entry_offset = em.pos();
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         if (needs_vm) em.push_r(XR::R13);
+        for (int k = 0; k < hoist_gprs; ++k) em.push_r(kHoistGprs[k]);
         if (xmm_saved > 0) {
             if (cache_frame_bytes <= 127) em.sub_rsp_imm8(static_cast<int8_t>(cache_frame_bytes));
             else em.sub_rsp_imm32(cache_frame_bytes);
@@ -1806,6 +2044,7 @@ public:
                 if (cache_frame_bytes <= 127) em.add_rsp_imm8(static_cast<int8_t>(cache_frame_bytes));
                 else em.add_rsp_imm32(cache_frame_bytes);
             }
+            for (int k = hoist_gprs; k-- > 0;) em.pop_r(kHoistGprs[k]);
             if (needs_vm) em.pop_r(XR::R13);
             em.pop_r(XR::R12);
             em.pop_r(XR::RBX);
@@ -1851,7 +2090,7 @@ public:
             em.mov_mem_r(XR::RBX, off_r(dst), XR::RAX);
         };
         std::vector<size_t> ip_off(body_len, 0);
-        struct JumpFixup { size_t disp_pos; size_t target_ip; };
+        struct JumpFixup { size_t disp_pos; size_t target_ip; size_t src_ip; };
         std::vector<JumpFixup> jump_fixups;
         // Self-recursive calls: (disp position, enter past the guards)
         struct SelfCallFixup { size_t disp_pos; bool unguarded; };
@@ -2100,9 +2339,9 @@ public:
                     else refresh_from_rax(inst.a);
                     return;
                 case JitOp::INDEX_GET: case JitOp::INDEX_SET:
-                    // Both paths of INDEX_GET leave the element in RAX; the
-                    // helper slow paths refresh the other copies themselves.
-                    if (inst.op == JitOp::INDEX_GET) refresh_from_rax(inst.a);
+                    // The cases refresh the copies themselves: the inline
+                    // path moves the element between the XMM copy and the
+                    // element slot, the helper path calls after_call.
                     return;
                 case JitOp::STORE_GLOBAL: case JitOp::DOT_SET: case JitOp::PRINT:
                 case JitOp::PRINT_NO_NL:
@@ -2137,14 +2376,43 @@ public:
         int xmm0_holds_reg = -1;      // register whose value XMM0 holds
         size_t xmm0_holds_ip = 0;     // ip of the instruction that left it there
 
+        // Pre-headers (loop cache loads, hoisted container checks) and the
+        // hoisted containers in effect at the instruction being emitted.
+        struct PreHeader { size_t header; size_t backedge; size_t native; };
+        std::vector<PreHeader> preheaders;
+        std::vector<const JitHoistLoop*> active_hoists;
+        // The GPR holding the container of the index instruction at `ip`,
+        // innermost loop first, or -1.
+        auto hoisted_gpr_at = [&](size_t ip) -> int {
+            for (size_t k = active_hoists.size(); k-- > 0;)
+                for (const auto& ag : active_hoists[k]->access_gpr)
+                    if (ag.first == ip) return ag.second;
+            return -1;
+        };
         size_t next_loop_cache = 0;
+        size_t next_hoist = 0;
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
             if (!analysis.reached[ip - entry_ip]) continue;
+            while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
+                active_hoists.pop_back();
             if (next_loop_cache < loop_caches.size() &&
                 loop_caches[next_loop_cache].header_ip == ip) {
                 cache = &loop_caches[next_loop_cache++];
+                preheaders.push_back({cache->header_ip, cache->backedge_ip, em.pos()});
                 for (uint16_t r : cache->regs)
                     em.movsd_x_mem(cache->xmm_of[r], XR::RBX, off_r(r));
+            }
+            while (next_hoist < hoist_loops.size() && hoist_loops[next_hoist].header_ip == ip) {
+                const JitHoistLoop& loop = hoist_loops[next_hoist++];
+                preheaders.push_back({loop.header_ip, loop.backedge_ip, em.pos()});
+                for (const auto& rg : loop.regs) {
+                    std::vector<size_t> slow;
+                    em.xor_rr(rg.second, rg.second);
+                    sura_x64_emit_object_receiver_guard(em, off_r(rg.first), OBJ_TYPE_ARRAY, slow);
+                    em.mov_rr(rg.second, XR::RAX);
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
+                }
+                active_hoists.push_back(&loop);
             }
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
@@ -2322,7 +2590,7 @@ public:
                 }
                 case JitOp::JUMP:
                     jump_fixups.push_back({em.jmp_rel32_placeholder(),
-                                           static_cast<size_t>(inst.operand)});
+                                           static_cast<size_t>(inst.operand), ip});
                     break;
                 case JitOp::JUMP_IF_FALSE:
                 case JitOp::JUMP_IF_TRUE:
@@ -2348,7 +2616,7 @@ public:
                     em.mov_ri64(XR::RCX, inst.op == JitOp::JUMP_IF_FALSE ? NBFALSE : NBTRUE);
                     em.cmp_rr(XR::RAX, XR::RCX);
                     jump_fixups.push_back({em.jcc_rel32_placeholder(CC::E),
-                                           static_cast<size_t>(inst.operand)});
+                                           static_cast<size_t>(inst.operand), ip});
                     break;
                 case JitOp::RETURN_VAL:
                     if (xmm0_reg == inst.a) em.movq_r_x(XR::RAX, XR::XMM0);
@@ -2405,13 +2673,23 @@ public:
                         break;
                     }
                     std::vector<size_t> slow;
-                    sura_x64_emit_array_index_guard(em, off_r(inst.b), off_r(inst.c), slow);
-                    em.mov_r_mem(XR::RAX, XR::RCX, 0);
-                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    sura_x64_emit_array_index_guard_ex(
+                        em, off_r(inst.b), hoisted_gpr_at(ip), off_r(inst.c),
+                        cached_xmm(inst.c), analysis.proven_num(ip, inst.c), slow);
+                    const int ax = cached_xmm(inst.a);
+                    if (ax >= 0) {
+                        // The element goes straight to the XMM copy; the
+                        // slot is written from there.
+                        em.movsd_x_mem(ax, XR::RCX, 0);
+                        em.movsd_mem_x(XR::RBX, off_r(inst.a), ax);
+                    } else {
+                        em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                        em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    }
                     const size_t done = em.jmp_rel32_placeholder();
                     for (size_t j : slow) em.patch_rel32(j, em.pos());
                     helper_store(&sura_bl_index_get, ip, inst.a);
-                    if (cache != nullptr && !xmm_preserved) reload_all_cached();
+                    after_call(inst.a);
                     em.patch_rel32(done, em.pos());
                     break;
                 }
@@ -2422,13 +2700,20 @@ public:
                         break;
                     }
                     std::vector<size_t> slow;
-                    sura_x64_emit_array_index_guard(em, off_r(inst.a), off_r(inst.b), slow);
-                    em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
-                    em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                    sura_x64_emit_array_index_guard_ex(
+                        em, off_r(inst.a), hoisted_gpr_at(ip), off_r(inst.b),
+                        cached_xmm(inst.b), analysis.proven_num(ip, inst.b), slow);
+                    const int cx = cached_xmm(inst.c);
+                    if (cx >= 0) {
+                        em.movsd_mem_x(XR::RCX, 0, cx);
+                    } else {
+                        em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
+                        em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                    }
                     const size_t done = em.jmp_rel32_placeholder();
                     for (size_t j : slow) em.patch_rel32(j, em.pos());
                     emit_helper(&sura_bl_index_set, ip);
-                    if (cache != nullptr && !xmm_preserved) reload_all_cached();
+                    after_call(65535);
                     em.patch_rel32(done, em.pos());
                     break;
                 }
@@ -2451,7 +2736,7 @@ public:
                     emit_helper(&sura_bl_foreach_next, ip);
                     em.cmp_r_imm32(XR::RAX, 0);
                     jump_fixups.push_back({em.jcc_rel32_placeholder(CC::E),
-                                           static_cast<size_t>(inst.operand)});
+                                           static_cast<size_t>(inst.operand), ip});
                     break;
                 case JitOp::PRINT:
                 case JitOp::PRINT_NO_NL:
@@ -2662,7 +2947,15 @@ public:
             for (size_t disp : entry_deopt_fixups) em.patch_rel32(disp, deopt_off);
         }
         for (const JumpFixup& fx : jump_fixups) {
-            em.patch_rel32(fx.disp_pos, ip_off[fx.target_ip - entry_ip]);
+            // A branch into a loop header from outside the loop enters
+            // through the pre-header (outermost of those sharing the header
+            // that the branch is outside of).
+            size_t target = ip_off[fx.target_ip - entry_ip];
+            for (const PreHeader& ph : preheaders) {
+                if (ph.header != fx.target_ip) continue;
+                if (fx.src_ip < ph.header || fx.src_ip > ph.backedge) { target = ph.native; break; }
+            }
+            em.patch_rel32(fx.disp_pos, target);
         }
         for (const SelfCallFixup& fx : self_call_fixups) {
             em.patch_rel32(fx.disp_pos, fx.unguarded ? unguarded_entry_offset : 0);
@@ -3974,6 +4267,21 @@ class NativeCompiler {
     static constexpr int kLoopCacheXmmFirst = 6;
     static constexpr int kLoopCacheXmmCount = 10;
 
+    // Loop-invariant array containers (see JitHoistLoop): GCArray* or 0 in
+    // R14, R15, RSI, RDI for the extent of their loop. The prologue pushes
+    // the ones in use in pairs, so RSP keeps its alignment, and the unwind
+    // record describes the pushes.
+    std::vector<JitHoistLoop>        hoist_loops;
+    std::vector<const JitHoistLoop*> active_hoists;
+    int                              hoist_gpr_count = 0;
+    std::vector<Win64UnwindPush>     pushes_;
+    // Per-loop setup code emitted just before the header; a branch from
+    // outside the loop that targets the header is redirected to it.
+    struct PreHeader { size_t header; size_t backedge; size_t native; };
+    std::vector<PreHeader>           preheaders_;
+    std::vector<size_t>              pending_src;      // source ip of each pending jump
+    static constexpr int kHoistGprs[4] = {XR::R14, XR::R15, XR::RSI, XR::RDI};
+
     struct ScalarValue {
         bool is_virtual_record = false;
         bool known_numeric = false;
@@ -4343,6 +4651,12 @@ public:
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         em.push_r(XR::R13);
+        pushes_ = {{1, 3}, {3, 12}, {5, 13}};
+        for (int k = 0; k < hoist_gpr_count; ++k) {
+            em.push_r(kHoistGprs[k]);
+            pushes_.push_back({static_cast<uint8_t>(em.pos()),
+                               static_cast<uint8_t>(kHoistGprs[k])});
+        }
         if (frame_bytes <= 127) em.sub_rsp_imm8(static_cast<int8_t>(frame_bytes));
         else em.sub_rsp_imm32(static_cast<int32_t>(frame_bytes));
         alloc_code_offset_ = static_cast<uint8_t>(em.pos());
@@ -4437,13 +4751,29 @@ public:
             }
 
             size_t next_loop_cache = 0;
+            size_t next_hoist = 0;
             active_cache = nullptr;
+            active_hoists.clear();
+            preheaders_.clear();
+            pending_src.assign(pending.size(), SIZE_MAX);
             for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
+                    active_hoists.pop_back();
+                // Pre-headers: loop cache loads first, then the hoisted
+                // container checks, outer loops before inner ones that
+                // share the header.
                 if (next_loop_cache < loop_caches.size() &&
                     loop_caches[next_loop_cache].header_ip == ip) {
                     active_cache = &loop_caches[next_loop_cache++];
+                    preheaders_.push_back({active_cache->header_ip, active_cache->backedge_ip, em.pos()});
                     for (uint16_t r : active_cache->regs)
                         em.movsd_x_mem(active_cache->xmm_of[r], XR::RBX, off_r(r));
+                }
+                while (next_hoist < hoist_loops.size() && hoist_loops[next_hoist].header_ip == ip) {
+                    const JitHoistLoop& loop = hoist_loops[next_hoist++];
+                    preheaders_.push_back({loop.header_ip, loop.backedge_ip, em.pos()});
+                    emit_hoist_preheader(loop);
+                    active_hoists.push_back(&loop);
                 }
                 ip_to_native[ip] = em.pos();
                 if (is_top_level && ip < strict_at.size() && strict_at[ip] != nullptr) {
@@ -4465,19 +4795,30 @@ public:
                     return nullptr;
                 }
                 emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
+                pending_src.resize(pending.size(), ip);
                 if (active_cache != nullptr && ip == active_cache->backedge_ip)
                     active_cache = nullptr;
             }
             active_cache = nullptr;
+            active_hoists.clear();
             // Safety net: if control falls off the end, return nil.
             emit_epilogue_nil();
 
         // ── Resolve jumps ─────────────────────────────────
-            for (auto& pj : pending) {
+            for (size_t i = 0; i < pending.size(); ++i) {
+                const auto& pj = pending[i];
                 size_t target_ip = pj.second;
                 if (target_ip >= ip_to_native.size()) return nullptr;
                 size_t native_target = ip_to_native[target_ip];
                 if (native_target == SIZE_MAX) return nullptr;
+                // A branch into a loop header from outside the loop enters
+                // through the pre-header (the outermost of those sharing
+                // the header that the branch is outside of).
+                const size_t src_ip = i < pending_src.size() ? pending_src[i] : SIZE_MAX;
+                for (const PreHeader& ph : preheaders_) {
+                    if (ph.header != target_ip) continue;
+                    if (src_ip < ph.header || src_ip > ph.backedge) { native_target = ph.native; break; }
+                }
                 em.patch_rel32(pj.first, native_target);
             }
         }
@@ -4486,7 +4827,7 @@ public:
             auto nf = std::make_unique<NativeFunc>();
             const Win64UnwindSpec unwind{
                 prolog_size_, alloc_code_offset_, frame_bytes,
-                {{1, 3}, {3, 12}, {5, 13}}, xmm_saves_
+                pushes_, xmm_saves_
             };
             nf->code = ExecCode::from_bytes(buf, unwind);
             if (const char* dump_dir = std::getenv("SURA_JIT_DUMP_DIR")) {
@@ -5470,6 +5811,8 @@ private:
     // saves, so helpers may keep throwing through this frame.
     void plan_loop_caches() {
         loop_caches.clear();
+        hoist_loops.clear();
+        hoist_gpr_count = 0;
         xmm_saved_count = 0;
         frame_bytes = 48;
         if (is_top_level) return;
@@ -5480,6 +5823,35 @@ private:
         for (const LoopCache& cache : loop_caches)
             xmm_saved_count = std::max<int>(xmm_saved_count, static_cast<int>(cache.regs.size()));
         frame_bytes = 48 + 16U * static_cast<uint32_t>(xmm_saved_count);
+        if (jit_array_layout_verified()) {
+            hoist_loops = jit_plan_array_hoists(chunk, entry_ip, end_ip, nullptr, reg_limit,
+                                                native_reuse_flag_reg, kHoistGprs, 4, "full-tier");
+            int used = 0;
+            for (const JitHoistLoop& loop : hoist_loops)
+                for (const auto& rg : loop.regs)
+                    for (int k = 0; k < 4; ++k)
+                        if (kHoistGprs[k] == rg.second) used = std::max(used, k + 1);
+            hoist_gpr_count = used == 0 ? 0 : (used <= 2 ? 2 : 4);
+        }
+    }
+
+    // The GPR holding the container of the index instruction at `ip`,
+    // innermost loop first, or -1.
+    int hoisted_gpr_at(size_t ip) const {
+        for (size_t k = active_hoists.size(); k-- > 0;)
+            for (const auto& ag : active_hoists[k]->access_gpr)
+                if (ag.first == ip) return ag.second;
+        return -1;
+    }
+    // GPR = GCArray* when R[r] is an array, else 0. Clobbers RAX, RCX, R10.
+    void emit_hoist_preheader(const JitHoistLoop& loop) {
+        for (const auto& rg : loop.regs) {
+            std::vector<size_t> slow;
+            em.xor_rr(rg.second, rg.second);
+            sura_x64_emit_object_receiver_guard(em, off_r(rg.first), OBJ_TYPE_ARRAY, slow);
+            em.mov_rr(rg.second, XR::RAX);
+            for (size_t p : slow) em.patch_rel32(p, em.pos());
+        }
     }
 
     void emit_frame_teardown() {
@@ -5487,6 +5859,7 @@ private:
             em.movdqu_x_mem(XR::XMM6 + k, XR::RSP, 48 + 16 * k);
         if (frame_bytes <= 127) em.add_rsp_imm8(static_cast<int8_t>(frame_bytes));
         else em.add_rsp_imm32(static_cast<int32_t>(frame_bytes));
+        for (int k = hoist_gpr_count; k-- > 0;) em.pop_r(kHoistGprs[k]);
     }
 
     // ── Loop register cache: emission ─────────────────────────────────
@@ -5656,9 +6029,86 @@ private:
                 return emit_cmp_ord(inst, ip);
             case O::CMP_EQ: case O::CMP_NEQ:
                 return emit_cmp_eq(inst, ip);
+            case O::INDEX_GET:
+                return emit_index_get(inst, ip, nullptr);
+            case O::INDEX_SET:
+                return emit_index_set(inst, ip, nullptr);
             default:
                 return false;
         }
+    }
+
+    // INDEX_GET / INDEX_SET: array + in-bounds non-negative numeric index
+    // inline; the helper keeps dict/string targets, negative wrap-around,
+    // non-number keys and the range error. A container hoisted for the
+    // enclosing loop skips the object check, a proven-number key skips the
+    // tag check, and a cached register moves straight between its XMM copy
+    // and the element slot. Works with or without an active loop cache.
+    bool emit_index_get(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
+        const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+        const bool plain = runtime_inst == nullptr;
+        const int32_t oa = off_r(inst.a), ob = off_r(inst.b), oc = off_r(inst.c);
+        std::vector<size_t> slow_jmps;
+        size_t done_jmp = 0;
+        const bool fast = jit_array_layout_verified();
+        if (fast) {
+            sura_x64_emit_array_index_guard_ex(
+                em, ob, plain ? hoisted_gpr_at(ip) : -1, oc,
+                plain ? cached_xmm(inst.c) : -1,
+                plain && proven_num_at(ip, inst.c), slow_jmps);
+            const int ax = plain ? cached_xmm(inst.a) : -1;
+            if (ax >= 0) {
+                em.movsd_x_mem(ax, XR::RCX, 0);
+                em.movsd_mem_x(XR::RBX, oa, ax);
+            } else {
+                em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                em.mov_mem_r(XR::RBX, oa, XR::RAX);
+            }
+            done_jmp = em.jmp_rel32_placeholder();
+            const size_t slow_pos = em.pos();
+            for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        }
+        em.mov_rr(XR::RCX, XR::R13);
+        em.mov_rr(XR::RDX, XR::RBX);
+        em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_get);
+        em.call_rax();
+        if (plain) store_result_rax(inst.a);
+        else em.mov_mem_r(XR::RBX, oa, XR::RAX);
+        if (fast) em.patch_rel32(done_jmp, em.pos());
+        return true;
+    }
+
+    bool emit_index_set(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
+        const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+        const bool plain = runtime_inst == nullptr;
+        const int32_t oa = off_r(inst.a), ob = off_r(inst.b), oc = off_r(inst.c);
+        std::vector<size_t> slow_jmps;
+        size_t done_jmp = 0;
+        const bool fast = jit_array_layout_verified();
+        if (fast) {
+            sura_x64_emit_array_index_guard_ex(
+                em, oa, plain ? hoisted_gpr_at(ip) : -1, ob,
+                plain ? cached_xmm(inst.b) : -1,
+                plain && proven_num_at(ip, inst.b), slow_jmps);
+            const int cx = plain ? cached_xmm(inst.c) : -1;
+            if (cx >= 0) {
+                em.movsd_mem_x(XR::RCX, 0, cx);
+            } else {
+                em.mov_r_mem(XR::RDX, XR::RBX, oc);
+                em.mov_mem_r(XR::RCX, 0, XR::RDX);
+            }
+            done_jmp = em.jmp_rel32_placeholder();
+            const size_t slow_pos = em.pos();
+            for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        }
+        em.mov_rr(XR::RCX, XR::R13);
+        em.mov_rr(XR::RDX, XR::RBX);
+        em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
+        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_set);
+        em.call_rax();
+        if (fast) em.patch_rel32(done_jmp, em.pos());
+        return true;
     }
 
     // CMP_LT / LTE / GT / GTE: proven or tag-checked numbers compare inline;
@@ -6808,32 +7258,8 @@ private:
 
             // INDEX_SET — sura_jit_index_set(vm, R, &inst); no result. Unlike
             // INDEX_GET, register a is the container being written to.
-            case O::INDEX_SET: {
-                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
-                std::vector<size_t> slow_jmps;
-                size_t done_jmp = 0;
-                const bool fast = jit_array_layout_verified();
-                if (fast) {
-                    // Fast path: R[a] is an array, R[b] a non-negative number
-                    // inside its bounds -> elements[idx] = R[c]. arr_set only
-                    // ever writes in-bounds slots, so this is exactly what the
-                    // helper would do; everything else (dict, negative index,
-                    // out of range, non-number key) takes the helper.
-                    emit_array_index_guard(em, oa, ob, slow_jmps);
-                    em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                    em.mov_mem_r(XR::RCX, 0, XR::RDX);
-                    done_jmp = em.jmp_rel32_placeholder();
-                    size_t slow_pos = em.pos();
-                    for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
-                }
-                em.mov_rr(XR::RCX, XR::R13);
-                em.mov_rr(XR::RDX, XR::RBX);
-                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_set);
-                em.call_rax();
-                if (fast) em.patch_rel32(done_jmp, em.pos());
-                return true;
-            }
+            case O::INDEX_SET:
+                return emit_index_set(inst, ip, runtime_inst);
 
             // INDEX_GET — sura_jit_index_get(vm, R, &inst); R[a] = result.
             // Indexing is polymorphic (array / dict / string / nil) and raises
@@ -6841,32 +7267,8 @@ private:
             // than inline code. Previously it had no case at all and fell to
             // the default bail, which disqualified 53 of the 136 programs in
             // tests/ from native compilation - the largest single blocker.
-            case O::INDEX_GET: {
-                const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
-                std::vector<size_t> slow_jmps;
-                size_t done_jmp = 0;
-                const bool fast = jit_array_layout_verified();
-                if (fast) {
-                    // Fast path: array + in-bounds non-negative numeric index
-                    // -> R[a] = elements[idx], no call. Mirrors the array arm
-                    // of jit_index_get; negative wrap-around, dict/string
-                    // targets and the range error stay in the helper.
-                    emit_array_index_guard(em, ob, oc, slow_jmps);
-                    em.mov_r_mem(XR::RAX, XR::RCX, 0);
-                    em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                    done_jmp = em.jmp_rel32_placeholder();
-                    size_t slow_pos = em.pos();
-                    for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
-                }
-                em.mov_rr(XR::RCX, XR::R13);
-                em.mov_rr(XR::RDX, XR::RBX);
-                em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_index_get);
-                em.call_rax();
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                if (fast) em.patch_rel32(done_jmp, em.pos());
-                return true;
-            }
+            case O::INDEX_GET:
+                return emit_index_get(inst, ip, runtime_inst);
 
             // USE_LIB — sura_jit_use_lib(vm, R, &inst); binds a stdlib module
             // into its global slot. Previously an unconditional bail, which

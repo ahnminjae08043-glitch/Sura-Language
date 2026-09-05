@@ -317,6 +317,13 @@ public:
         emit8(0x0F); emit8(0x2C);
         mem_disp32(dst, base, disp);
     }
+    // ── cvttsd2si r64, xmm  (F2 REX.W 0F 2C /r) ─────────────
+    void cvttsd2si_r_x(int dst, int x) {
+        emit8(0xF2);
+        rex(true, dst, 0, x);
+        emit8(0x0F); emit8(0x2C);
+        emit8(modrm(3, dst, x));
+    }
     // ── cvtsi2sd xmm, r64  (F2 REX.W 0F 2A /r) ─────────────
     // Convert int64 in reg → double in xmm
     void cvtsi2sd_x_r(int x, int src) {
@@ -334,6 +341,24 @@ public:
         rex(true, b, 0, a);
         emit8(0x39);
         emit8(modrm(3, b, a));
+    }
+    // ── test r64, r64  (REX.W 85 /r) ──────────────────────
+    void test_rr(int a, int b) {
+        rex(true, b, 0, a);
+        emit8(0x85);
+        emit8(modrm(3, b, a));
+    }
+    // ── lea r64, [base + index*8]  (REX.W 8D /r + SIB) ────
+    // index must not be RSP; a base of RBP/R13 takes the disp8 form.
+    void lea_r_base_index8(int dst, int base, int index) {
+        rex(true, dst, index, base);
+        emit8(0x8D);
+        const uint8_t sib = (uint8_t)((3 << 6) | ((index & 7) << 3) | (base & 7));
+        if ((base & 7) == 5) {
+            emit8(modrm(1, dst, 4)); emit8(sib); emit8(0);
+        } else {
+            emit8(modrm(0, dst, 4)); emit8(sib);
+        }
     }
 
     void cmp_r_imm32(int reg, int32_t imm) {

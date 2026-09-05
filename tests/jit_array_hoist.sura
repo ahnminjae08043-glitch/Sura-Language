@@ -1,0 +1,239 @@
+# JIT 루프 불변 배열 끌어올리기: 루프가 쓰지 않는 컨테이너 레지스터의
+# "배열인가" 검사는 루프 진입 때 한 번만 하고 GCArray*를 GPR에 둔다.
+# 원소 포인터와 길이는 매 접근마다 다시 읽으므로 루프 안 push도 안전해야 하고,
+# 배열이 아닌 컨테이너·범위 밖·음수 인덱스는 helper 경로로 가야 한다.
+# 각 함수는 검사 호출 전에 충분히 불러 네이티브 코드로 컴파일되게 한다.
+
+use array
+
+# 1) 읽는 배열에 루프 안에서 push: 재할당돼도 접근이 맞아야 한다.
+func read_and_grow(n) do
+  a is [1]
+  i is 0
+  total is 0
+  while i < n do
+    total is total + a[i]
+    a.push(a[i] + 1)
+    i is i + 1
+  end
+  return total
+end
+
+# 2) dict를 숫자 키로 인덱싱: 배열이 아니므로 helper가 처리한다.
+func dict_reads(d, n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + d[i % 3]
+    i is i + 1
+  end
+  return total
+end
+
+# 3) 문자열 인덱싱: 역시 helper.
+func string_reads(s, n) do
+  out is ""
+  i is 0
+  while i < n do
+    out is out + s[i % 3]
+    i is i + 1
+  end
+  return out
+end
+
+# 4) if 블록 바로 뒤의 루프: 분기가 루프 헤더로 직접 들어온다.
+#    pre-header(배열 검사)를 거쳐야 하므로 두 진입 경로 모두 검사한다.
+func entry_via_branch(a, n, flag) do
+  total is 0
+  i is 0
+  if flag then
+    total is 1000
+  end
+  while i < n do
+    total is total + a[i]
+    i is i + 1
+  end
+  return total
+end
+
+# 5) 같은 함수가 배열과 dict 양쪽으로 불린다 (진입 때마다 다시 판정).
+func sum_any(c, n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + c[i]
+    i is i + 1
+  end
+  return total
+end
+
+# 6) 범위 밖 인덱스는 helper가 예외를 던진다.
+func read_at(a, n, idx) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + a[idx]
+    i is i + 1
+  end
+  return total
+end
+
+# 7) 음수 인덱스는 helper가 뒤에서부터 센다.
+func negative_reads(a, n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + a[0 - 1 - (i % 2)]
+    i is i + 1
+  end
+  return total
+end
+
+# 8) 행 접근 3중 루프 (matmul 모양): 안쪽 루프의 crow·brow가 끌어올려진다.
+func matmul(n) do
+  a is []
+  b is []
+  i is 0
+  while i < n do
+    ra is []
+    rb is []
+    j is 0
+    while j < n do
+      ra.push(i + j)
+      rb.push(i * j)
+      j is j + 1
+    end
+    a.push(ra)
+    b.push(rb)
+    i is i + 1
+  end
+  c is []
+  r is 0
+  while r < n do
+    row is []
+    q is 0
+    while q < n do
+      row.push(0)
+      q is q + 1
+    end
+    c.push(row)
+    r is r + 1
+  end
+  r is 0
+  while r < n do
+    k is 0
+    while k < n do
+      av is a[r][k]
+      brow is b[k]
+      crow is c[r]
+      q is 0
+      while q < n do
+        crow[q] is crow[q] + av * brow[q]
+        q is q + 1
+      end
+      k is k + 1
+    end
+    r is r + 1
+  end
+  total is 0
+  r is 0
+  while r < n do
+    q is 0
+    while q < n do
+      total is total + c[r][q]
+      q is q + 1
+    end
+    r is r + 1
+  end
+  return total
+end
+
+# 9) for…in 안의 불변 배열 읽기와 쓰기.
+func foreach_index(a, idxs) do
+  total is 0
+  for i in idxs do
+    a[i] is a[i] * 2
+    total is total + a[i]
+  end
+  return total
+end
+
+# 10) 루프 안에서 컨테이너 레지스터가 바뀌는 경우 (끌어올리지 않음).
+func alternating(rows, n) do
+  total is 0
+  i is 0
+  while i < n do
+    row is rows[i % 2]
+    total is total + row[i % 3]
+    i is i + 1
+  end
+  return total
+end
+
+# 11) 중첩 루프에서 바깥 루프의 컨테이너를 안쪽에서도 읽는다.
+func nested_shared(a, n) do
+  total is 0
+  i is 0
+  while i < n do
+    j is 0
+    while j < n do
+      total is total + a[i] * a[j]
+      j is j + 1
+    end
+    i is i + 1
+  end
+  return total
+end
+
+# ── warm-up ──
+small is [1, 2, 3, 4]
+d is {}
+d[0] is 10
+d[1] is 20
+d[2] is 30
+rows is [[1, 2, 3], [4, 5, 6]]
+w is 0
+while w < 40 do
+  t1 is read_and_grow(10)
+  t2 is dict_reads(d, 9)
+  t3 is string_reads("abc", 6)
+  t4 is entry_via_branch(small, 4, w % 2 == 0)
+  t5 is sum_any(small, 4)
+  t6 is sum_any(d, 3)
+  t7 is read_at(small, 5, 2)
+  t8 is negative_reads(small, 6)
+  t9 is matmul(4)
+  t10 is foreach_index([1, 2, 3, 4], [0, 1])
+  t11 is alternating(rows, 6)
+  t12 is nested_shared(small, 4)
+  w is w + 1
+end
+
+# ── 검사 ──
+assert_eq(read_and_grow(100), 5050)
+assert_eq(dict_reads(d, 300), 6000)
+assert_eq(string_reads("xyz", 7), "xyzxyzx")
+assert_eq(entry_via_branch(small, 4, true), 1010)
+assert_eq(entry_via_branch(small, 4, false), 10)
+assert_eq(sum_any(small, 4), 10)
+assert_eq(sum_any(d, 3), 60)
+assert_eq(read_at(small, 10, 3), 40)
+assert_eq(negative_reads(small, 10), 35)
+assert_eq(matmul(8), 53312)
+assert_eq(foreach_index([1, 2, 3, 4], [0, 2, 3, 0]), 20)
+assert_eq(alternating(rows, 12), 42)
+assert_eq(nested_shared(small, 4), 100)
+
+caught is ""
+try
+  x is read_at(small, 3, 9)
+catch e
+  caught is "range"
+end
+assert_eq(caught, "range")
+
+# 예외 뒤에도 끌어올린 루프가 정상 동작해야 한다.
+assert_eq(read_at(small, 10, 0), 10)
+assert_eq(matmul(3), 72)
+
+print "jit_array_hoist: PASS"
