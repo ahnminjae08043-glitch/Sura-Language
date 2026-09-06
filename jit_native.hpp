@@ -4287,6 +4287,272 @@ static constexpr int32_t JVM_STACK_TOP_OFFSET        = 24;  // vm->stack_top
 static constexpr int32_t JVM_GLOBALS_DATA_OFFSET     = 32;  // vm->globals._M_start
 static constexpr int32_t JVM_STACK_CAPACITY          = 1 << 17;
 
+// ── Loop-local record scalar replacement (full tier) ────────────────────────
+// A record built by a plain constructor inside a loop, used in that loop
+// only through field reads and writes (directly or through the temporaries
+// the compiler copies it into) and dead once the loop is left, is never
+// allocated: its fields live in frame slots past the callable's registers,
+// the constructor becomes a few moves and each field access a load or a
+// store. The plan is static - it trusts the same compile-time constructor
+// inline cache the exact-width construct path trusts - so it carries no
+// guard and no deoptimization, and anything it cannot prove keeps the
+// allocation. The loop body has to be straight-line apart from exits and
+// the backedge, because the alias facts are tracked in program order.
+struct JitVirtualRecord {
+    size_t header = 0;
+    size_t backedge = 0;
+    size_t ctor_ip = 0;
+    uint16_t reg = 0;
+    uint16_t field_count = 0;
+    uint32_t shadow_base = 0;          // frame slot of field 0
+    const JitClassInfo* cls = nullptr;
+    std::vector<size_t> access_ips;    // DOT_GET / DOT_SET through the record
+};
+
+// Register reads and writes of one instruction, for the opcodes whose
+// register use is fully described by a, b, c and operand; false for any
+// other opcode, which the planner then treats as touching everything.
+inline bool jit_inst_reg_use(const JitInst& inst, std::vector<uint16_t>& reads,
+                             std::vector<uint16_t>& writes) {
+    using O = JitOp;
+    reads.clear();
+    writes.clear();
+    auto range = [&](uint32_t from, int count) {
+        for (int i = 0; i < count; ++i) {
+            if (from + static_cast<uint32_t>(i) > 65535U) return;
+            reads.push_back(static_cast<uint16_t>(from + static_cast<uint32_t>(i)));
+        }
+    };
+    switch (inst.op) {
+        case O::NOP: case O::JUMP: case O::RETURN_NONE: case O::HALT:
+            return true;
+        case O::LOAD_CONST: case O::LOAD_NIL: case O::LOAD_BOOL: case O::LOAD_GLOBAL:
+            writes.push_back(inst.a);
+            return true;
+        case O::STORE_GLOBAL: case O::RETURN_VAL: case O::JUMP_IF_FALSE: case O::JUMP_IF_TRUE:
+            reads.push_back(inst.a);
+            return true;
+        case O::MOVE: case O::NEG: case O::BIT_NOT: case O::LOGICAL_NOT:
+        case O::DOT_GET: case O::DICT_KEYS:
+            reads.push_back(inst.b);
+            writes.push_back(inst.a);
+            return true;
+        case O::ADD: case O::SUB: case O::MUL: case O::DIV: case O::MOD:
+        case O::BIT_AND: case O::BIT_OR: case O::BIT_XOR: case O::LSHIFT: case O::RSHIFT:
+        case O::CMP_EQ: case O::CMP_NEQ: case O::CMP_LT: case O::CMP_LTE:
+        case O::CMP_GT: case O::CMP_GTE: case O::INDEX_GET: case O::OP_IN:
+            reads.push_back(inst.b);
+            reads.push_back(inst.c);
+            writes.push_back(inst.a);
+            return true;
+        case O::INDEX_SET:
+            reads.push_back(inst.a);
+            reads.push_back(inst.b);
+            reads.push_back(inst.c);
+            return true;
+        case O::DOT_SET:
+            reads.push_back(inst.a);
+            reads.push_back(inst.b);
+            return true;
+        case O::CALL_FUNC:
+            reads.push_back(inst.b);
+            range(inst.c, std::max(inst.operand, 0));
+            writes.push_back(inst.a);
+            return true;
+        case O::METHOD_CALL:
+            reads.push_back(inst.b);
+            range(static_cast<uint32_t>(inst.b) + 1U, std::max(inst.operand, 0));
+            writes.push_back(inst.a);
+            return true;
+        case O::MAKE_ARRAY:
+            range(inst.b, std::max(inst.operand, 0));
+            writes.push_back(inst.a);
+            return true;
+        case O::MAKE_DICT:
+            range(inst.b, 2 * std::max(inst.operand, 0));
+            writes.push_back(inst.a);
+            return true;
+        default:
+            return false;
+    }
+}
+
+// A CALL_FUNC whose constructor inline cache names a plain prefix
+// constructor of exact width: field i of the record is argument i. This is
+// the shape sura_jit_construct_exact2/3 allocate for.
+inline bool jit_is_exact_plain_ctor_site(const JitInst& inst) {
+    if (inst.op != JitOp::CALL_FUNC) return false;
+    if (inst.ic_class == nullptr || inst.ic_method == nullptr || inst.ic_native_fn != nullptr) return false;
+    if (inst.operand != 2 && inst.operand != 3) return false;
+    if (inst.ic_method->params.size() != static_cast<size_t>(inst.operand)) return false;
+    if (inst.ic_class->field_defaults.size() != static_cast<size_t>(inst.operand)) return false;
+    for (int i = 0; i < inst.operand; ++i) {
+        const auto fit = inst.ic_class->field_indices.find(inst.ic_method->params[static_cast<size_t>(i)]);
+        if (fit == inst.ic_class->field_indices.end() || fit->second != i) return false;
+    }
+    return true;
+}
+
+// Plans the records of one callable. `next_slot` is the first free frame
+// slot; it advances past the shadow slots handed out.
+inline std::vector<JitVirtualRecord> jit_plan_virtual_records(
+        const JitChunk& chunk, size_t entry_ip, size_t end_ip, uint32_t& next_slot,
+        const char* tier_name) {
+    std::vector<JitVirtualRecord> records;
+    if (std::getenv("SURA_JIT_DISABLE_VIRTUAL_RECORDS")) return records;
+    if (entry_ip >= end_ip || end_ip > chunk.code.size()) return records;
+
+    // Every instruction of the callable has to have a known register shape;
+    // otherwise nothing can be said about where a record might travel.
+    std::vector<uint16_t> reads, writes;
+    for (size_t ip = entry_ip; ip < end_ip; ++ip)
+        if (!jit_inst_reg_use(chunk.code[ip], reads, writes)) return records;
+
+    struct Candidate { size_t header; size_t backedge; };
+    std::vector<Candidate> loops;
+    for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+        const JitInst& inst = chunk.code[ip];
+        if (inst.op != JitOp::JUMP || inst.operand < 0) continue;
+        const size_t target = static_cast<size_t>(inst.operand);
+        if (target < entry_ip || target >= ip) continue;
+        loops.push_back({target, ip});
+    }
+    std::sort(loops.begin(), loops.end(), [](const Candidate& l, const Candidate& r) {
+        return (l.backedge - l.header) < (r.backedge - r.header);
+    });
+
+    std::vector<uint8_t> taken(65536, 0);
+    const bool diag = std::getenv("SURA_JIT_DIAG") != nullptr;
+    auto contains = [](const std::vector<uint16_t>& set, uint16_t r) {
+        return std::find(set.begin(), set.end(), r) != set.end();
+    };
+    auto erase_reg = [](std::vector<uint16_t>& set, uint16_t r) {
+        set.erase(std::remove(set.begin(), set.end(), r), set.end());
+    };
+    // First mention of `r` after the loop, in program order: a read means the
+    // record (or a copy of it) would be observed outside the loop.
+    auto read_after_loop = [&](size_t backedge, uint16_t r) {
+        for (size_t ip = backedge + 1; ip < end_ip; ++ip) {
+            jit_inst_reg_use(chunk.code[ip], reads, writes);
+            if (contains(reads, r)) return true;
+            if (contains(writes, r)) return false;
+        }
+        return false;
+    };
+
+    for (const Candidate& loop : loops) {
+        if (!jit_loop_entered_at_header_only(chunk, entry_ip, end_ip, loop.header, loop.backedge))
+            continue;
+        // Straight-line body: the only jumps are exits and the backedge.
+        bool straight = true;
+        for (size_t ip = loop.header; ip < loop.backedge && straight; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            if (inst.op != JitOp::JUMP && inst.op != JitOp::JUMP_IF_FALSE &&
+                inst.op != JitOp::JUMP_IF_TRUE) continue;
+            const size_t target = inst.operand < 0 ? size_t(0) : static_cast<size_t>(inst.operand);
+            if (target >= loop.header && target <= loop.backedge) straight = false;
+        }
+        if (!straight) continue;
+
+        for (size_t ctor_ip = loop.header; ctor_ip < loop.backedge; ++ctor_ip) {
+            const JitInst& ctor = chunk.code[ctor_ip];
+            if (!jit_is_exact_plain_ctor_site(ctor)) continue;
+            const uint16_t r = ctor.a;
+            if (r == 0 || taken[r]) continue;
+            const uint16_t field_count = static_cast<uint16_t>(ctor.operand);
+            // The record register may not be read after the loop before it
+            // is written again.
+            if (read_after_loop(loop.backedge, r)) continue;
+
+            bool ok = true;
+            std::vector<size_t> accesses;
+            std::vector<uint16_t> alias;
+            std::vector<std::vector<uint16_t>> exit_alias_sets;
+            auto is_exit = [&](const JitInst& inst) {
+                if (inst.op != JitOp::JUMP && inst.op != JitOp::JUMP_IF_FALSE &&
+                    inst.op != JitOp::JUMP_IF_TRUE) return false;
+                const size_t target = inst.operand < 0 ? size_t(0) : static_cast<size_t>(inst.operand);
+                return target < loop.header || target > loop.backedge;
+            };
+            // One instruction after the constructor: aliases may only feed
+            // field accesses; a MOVE from an alias makes another alias; any
+            // write ends an alias.
+            auto step = [&](size_t ip) {
+                const JitInst& inst = chunk.code[ip];
+                if (is_exit(inst)) exit_alias_sets.push_back(alias);
+                jit_inst_reg_use(inst, reads, writes);
+                if (inst.op == JitOp::MOVE) {
+                    const bool from_alias = contains(alias, inst.b);
+                    erase_reg(alias, inst.a);
+                    if (from_alias) {
+                        if (inst.a == 0) { ok = false; return; }
+                        alias.push_back(inst.a);
+                    }
+                    return;
+                }
+                if (inst.op == JitOp::DOT_GET && contains(alias, inst.b)) {
+                    if (inst.ic_class != ctor.ic_class || inst.ic_cache < 0 ||
+                        inst.ic_cache >= static_cast<int>(field_count)) { ok = false; return; }
+                    accesses.push_back(ip);
+                    erase_reg(alias, inst.a);
+                    return;
+                }
+                if (inst.op == JitOp::DOT_SET && contains(alias, inst.a)) {
+                    if (contains(alias, inst.b) || inst.ic_class != ctor.ic_class ||
+                        inst.ic_cache < 0 || inst.ic_cache >= static_cast<int>(field_count)) {
+                        ok = false; return;
+                    }
+                    accesses.push_back(ip);
+                    return;
+                }
+                for (uint16_t rd : reads) if (contains(alias, rd)) { ok = false; return; }
+                for (uint16_t wr : writes) erase_reg(alias, wr);
+            };
+            // Pass 1: constructor to backedge.
+            alias.assign(1, r);
+            for (size_t ip = ctor_ip + 1; ip <= loop.backedge && ok; ++ip) step(ip);
+            if (!ok) continue;
+            // Pass 2: header to constructor, starting from the aliases the
+            // previous iteration leaves behind; the constructor's own reads
+            // (callee and arguments) may not be aliases either.
+            for (size_t ip = loop.header; ip < ctor_ip && ok; ++ip) step(ip);
+            if (!ok) continue;
+            jit_inst_reg_use(ctor, reads, writes);
+            for (uint16_t rd : reads) if (contains(alias, rd)) { ok = false; break; }
+            if (!ok) continue;
+            // Whatever is still an alias at an exit may not be read after
+            // the loop before being written.
+            for (const auto& set : exit_alias_sets) {
+                for (uint16_t t : set) if (read_after_loop(loop.backedge, t)) { ok = false; break; }
+                if (!ok) break;
+            }
+            if (!ok) continue;
+            if (next_slot + field_count > 65535U) continue;
+
+            JitVirtualRecord rec;
+            rec.header = loop.header;
+            rec.backedge = loop.backedge;
+            rec.ctor_ip = ctor_ip;
+            rec.reg = r;
+            rec.field_count = field_count;
+            rec.shadow_base = next_slot;
+            rec.cls = ctor.ic_class;
+            rec.access_ips = std::move(accesses);
+            next_slot += field_count;
+            taken[r] = 1;
+            if (diag) {
+                std::cerr << "[jit] " << tier_name << " virtual record ip " << ctor_ip
+                          << " (loop " << loop.header << ".." << loop.backedge << "): r" << r
+                          << " " << ctor.ic_class->name << " (" << field_count << " fields, "
+                          << rec.access_ips.size() << " accesses) -> slots "
+                          << rec.shadow_base << ".." << (rec.shadow_base + field_count - 1) << "\n";
+            }
+            records.push_back(std::move(rec));
+        }
+    }
+    return records;
+}
+
 class NativeCompiler {
     const JitChunk& chunk;
     size_t          entry_ip;
@@ -4321,6 +4587,9 @@ class NativeCompiler {
     bool callable_is_method = false;
     bool used_scalar_plan = false;
     bool has_record_reuse_materializer = false;
+    std::vector<JitVirtualRecord> virtual_records;
+    std::unordered_map<size_t, size_t> virtual_ctor_at;    // ip -> record
+    std::unordered_map<size_t, size_t> virtual_access_at;  // ip -> record
     uint16_t scalar_scratch_used = 0;
     size_t scalar_last_ip = 0;
     JitOp scalar_last_op = JitOp::NOP;
@@ -4725,6 +4994,7 @@ public:
             numeric_proof.reset();
         }
         plan_loop_caches();
+        plan_virtual_records();
 
         // ── Prologue ──────────────────────────────────────
         // Save non-volatile regs we use (Win64: RBX, R12-R15 are callee-saved).
@@ -5898,6 +6168,54 @@ private:
     // The copies live in XMM6..XMM15, which Win64 makes callee-saved: the
     // prologue saves the ones in use and the unwind record describes the
     // saves, so helpers may keep throwing through this frame.
+    // Loop-local records (see JitVirtualRecord). Shadow slots come after the
+    // callable's registers and, when it has one, after its scalar scratch
+    // window, so the scalar plan cannot hand out the same slots later.
+    void plan_virtual_records() {
+        virtual_records.clear();
+        virtual_ctor_at.clear();
+        virtual_access_at.clear();
+        if (is_top_level) return;
+        uint32_t next_slot = native_scratch_regs
+            ? static_cast<uint32_t>(native_scratch_base) + native_scratch_regs
+            : native_frame_regs;
+        virtual_records = jit_plan_virtual_records(chunk, entry_ip, end_ip, next_slot, "full-tier");
+        if (virtual_records.empty()) return;
+        native_frame_regs = std::max<uint32_t>(native_frame_regs, next_slot);
+        for (size_t i = 0; i < virtual_records.size(); ++i) {
+            virtual_ctor_at[virtual_records[i].ctor_ip] = i;
+            for (size_t ip : virtual_records[i].access_ips) virtual_access_at[ip] = i;
+        }
+    }
+
+    // The constructor, field reads and field writes of a planned record.
+    // Leaves the written register's value in RAX, as reload_after expects.
+    bool emit_virtual_record_op(const JitInst& inst, size_t ip) {
+        auto ctor = virtual_ctor_at.find(ip);
+        if (ctor != virtual_ctor_at.end()) {
+            const JitVirtualRecord& rec = virtual_records[ctor->second];
+            for (uint16_t f = 0; f < rec.field_count; ++f) {
+                em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + f)));
+                em.mov_mem_r(XR::RBX, off_r(static_cast<uint16_t>(rec.shadow_base + f)), XR::RAX);
+            }
+            em.mov_ri64(XR::RAX, JIT_NBNIL);
+            em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+            return true;
+        }
+        auto access = virtual_access_at.find(ip);
+        if (access == virtual_access_at.end()) return false;
+        const JitVirtualRecord& rec = virtual_records[access->second];
+        const int32_t slot = off_r(static_cast<uint16_t>(rec.shadow_base + inst.ic_cache));
+        if (inst.op == JitOp::DOT_GET) {
+            em.mov_r_mem(XR::RAX, XR::RBX, slot);
+            em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+            return true;
+        }
+        em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
+        em.mov_mem_r(XR::RBX, slot, XR::RDX);
+        return true;
+    }
+
     void plan_loop_caches() {
         loop_caches.clear();
         hoist_loops.clear();
@@ -6281,6 +6599,12 @@ private:
 
     bool emit_op(const JitInst& inst, size_t ip,
                  const JitInst* runtime_inst = nullptr) {
+        if (runtime_inst == nullptr && !virtual_records.empty() &&
+            ip < chunk.code.size() && &inst == &chunk.code[ip] &&
+            emit_virtual_record_op(inst, ip)) {
+            if (active_cache != nullptr) reload_after(inst);
+            return true;
+        }
         if (active_cache != nullptr && runtime_inst == nullptr) {
             if (emit_cached_op(inst, ip)) return true;
             if (!emit_op_impl(inst, ip, runtime_inst)) return false;

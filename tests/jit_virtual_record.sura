@@ -1,0 +1,181 @@
+# 루프 안 레코드 스칼라 치환: plain 생성자로 만든 레코드가 루프 안에서 필드 접근으로만
+# 쓰이고 루프 밖에서 죽으면 할당 없이 프레임 슬롯에 필드를 둔다. 치환되는 모양과
+# 치환되면 안 되는 모양(배열에 담김, 루프 뒤에 읽힘, 함수에 넘겨짐, 분기 포함) 모두
+# 인터프리터와 같은 값을 내야 한다.
+
+class Point do
+  func init(x, y) do
+    self.x is x
+    self.y is y
+  end
+end
+
+class Triple do
+  func init(a, b, c) do
+    self.a is a
+    self.b is b
+    self.c is c
+  end
+end
+
+class Named do
+  func init(name, n) do
+    self.name is name
+    self.n is n
+  end
+end
+
+func plain_loop(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, i + 1)
+    p.x is p.x + 1
+    total is total + p.x + p.y
+    i is i + 1
+  end
+  return total
+end
+
+func triple_loop(n) do
+  total is 0
+  i is 0
+  while i < n do
+    t is Triple(i, i * 2, i * 3)
+    t.b is t.b + t.a
+    t.c is t.c - t.b
+    total is total + t.a + t.b + t.c
+    i is i + 1
+  end
+  return total
+end
+
+func string_fields(n) do
+  acc is 0
+  i is 0
+  while i < n do
+    r is Named("item" + i, i)
+    junk is "garbage" + i + "-" + (i * 7)
+    acc is acc + r.name.len() + r.n
+    i is i + 1
+  end
+  return acc
+end
+
+func escapes_to_array(n) do
+  arr is []
+  i is 0
+  while i < n do
+    p is Point(i, i * 2)
+    p.x is p.x + 1
+    arr.push(p)
+    i is i + 1
+  end
+  total is 0
+  j is 0
+  while j < n do
+    q is arr[j]
+    total is total + q.x + q.y
+    j is j + 1
+  end
+  return total
+end
+
+func read_after_loop(n) do
+  i is 0
+  p is Point(0, 0)
+  while i < n do
+    p is Point(i, i + 1)
+    p.y is p.y + p.x
+    i is i + 1
+  end
+  return p.x * 1000 + p.y
+end
+
+func takes(o) do
+  return o.x + o.y
+end
+
+func passed_to_call(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 1)
+    total is total + takes(p)
+    i is i + 1
+  end
+  return total
+end
+
+func with_branch(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 0)
+    if i % 2 == 0 then
+      p.y is p.x * 2
+    else
+      p.y is p.x + 1
+    end
+    total is total + p.y
+    i is i + 1
+  end
+  return total
+end
+
+func nested(n, m) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 0)
+    j is 0
+    while j < m do
+      p.y is p.y + j
+      j is j + 1
+    end
+    total is total + p.x + p.y
+    i is i + 1
+  end
+  return total
+end
+
+func field_to_field(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 100)
+    p.y is p.x
+    p.x is p.y + p.y
+    total is total + p.x + p.y
+    i is i + 1
+  end
+  return total
+end
+
+r is 0
+while r < 30 do
+  a is plain_loop(40)
+  b is triple_loop(40)
+  c is string_fields(40)
+  d is escapes_to_array(40)
+  e is read_after_loop(40)
+  f is passed_to_call(40)
+  g is with_branch(40)
+  h is nested(10, 10)
+  k is field_to_field(40)
+  r is r + 1
+end
+
+# plain_loop: (i+1) + (i+1) = 2i + 2 → n(n-1) + 2n
+assert_eq(plain_loop(1000), 1000 * 999 + 2000)
+# triple_loop: a=i, b=3i, c=0 → 4i
+assert_eq(triple_loop(1000), 4 * 1000 * 999 / 2)
+assert_eq(string_fields(1000), 4 * 1000 + 10 + 90 * 2 + 900 * 3 + 1000 * 999 / 2)
+assert_eq(escapes_to_array(1000), 1000 + 3 * 1000 * 999 / 2)
+assert_eq(read_after_loop(1000), 999 * 1000 + 1999)
+assert_eq(passed_to_call(1000), 1000 * 999 / 2 + 1000)
+assert_eq(with_branch(1000), 749500)
+assert_eq(nested(100, 10), 100 * 99 / 2 + 100 * 45)
+assert_eq(field_to_field(1000), 3 * 1000 * 999 / 2)
+
+print "jit_virtual_record: PASS"

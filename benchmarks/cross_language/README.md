@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 19.4 | 20.6 | 8.1 | 63.7 |
+| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 19.4 | 20.6 | 2.6 | 63.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -190,12 +190,13 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 6.6x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 7.7x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
-  constructor such as `Point(x, y)` is a single allocation, and loop-carried
-  numbers stay in registers, which is what moved the `numeric`, `array`,
-  `object` and `matmul` columns; hoisting the container checks out of the
-  loop then took `matmul` from 90 to 63.7 ms.
+  constructor such as `Point(x, y)` is a single allocation - or none at all
+  when the record never leaves its loop - and loop-carried numbers stay in
+  registers, which is what moved the `numeric`, `array`, `object` and
+  `matmul` columns; hoisting the container checks out of the loop then took
+  `matmul` from 90 to 63.7 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 4.3x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
@@ -241,7 +242,7 @@ steps for that column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 6.6 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 7.7 times as fast as CPython,
 roughly three times slower than Node, and six times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
@@ -249,17 +250,22 @@ flattering.
 Sura is competitive at sorting, because `array.sort` calls a native C++ sort
 rather than interpreting a comparison per element.
 
-Sura is still well behind the compiled languages at `object`. There is no
-escape analysis, so every object in a loop is really allocated: creating one
-instance costs about 16 ns, against roughly 0.6 ns per iteration for the
-compiled languages, which do not allocate at all. Splitting that benchmark
-shows where the time goes — allocating each iteration takes 7.8 ms, reusing
-one object takes 3.5 ms. Most of what is left is allocation and collection;
-the field access itself is cheap. (It used to be 145 ns per instance: the
-plain-constructor shortcut was rejected on the very first `Point(x, y)`
-because the class had not discovered its fields yet, and that verdict was
-cached for the rest of the run, so every instance went through a native
-constructor frame. The layout is now widened at that first check instead.)
+The `object` column is the one where escape analysis matters, and the full
+tier now has a loop-local form of it. A record built by a plain constructor
+inside a loop, used in that loop only through field reads and writes
+(directly or through the temporaries the compiler copies it into) and dead
+once the loop is left, is never allocated: its fields live in frame slots
+past the callable's registers, the constructor becomes a few moves and each
+field access a load or a store. The plan trusts the compile-time
+constructor cache, as the exact-width allocation path already did, so it
+carries no guard; a record that is pushed into an array, passed to a call,
+read after the loop, or built inside a loop with branches keeps its
+allocation. That took `object` from 8.1 to 2.6 ms - about 5 ns per
+iteration, which is the loop and the field traffic - against roughly 0.6 ns
+for the compiled languages, which keep the two fields in registers. (Before
+that, each instance cost about 16 ns to allocate and collect, and before
+the plain-constructor shortcut learned to widen the class layout on its
+first call, 145 ns.)
 
 ### The matmul column is the naive loop, not the fast path
 
