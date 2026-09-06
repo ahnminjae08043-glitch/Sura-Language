@@ -3841,7 +3841,11 @@ _reenter:
                 if (R[b].is_inst()) {
                     GCInstance* iobj = R[b].as_inst();
                     const std::string& cname = iobj->type_name();
-                    if (inst.ic_cache != -1 && iobj->fields.size() > (size_t)inst.ic_cache) {
+                    // The cache is keyed on the class the instance was built
+                    // from, as the native tiers' guard is: a site that sees
+                    // two classes with `x` at different offsets must miss.
+                    if (inst.ic_cache != -1 && iobj->jit_info == inst.ic_class &&
+                        iobj->fields.size() > (size_t)inst.ic_cache) {
                         R[a] = iobj->fields[inst.ic_cache];
                     } else {
                         int offset = -1;
@@ -3867,7 +3871,8 @@ _reenter:
                 if (R[a].is_inst()) {
                     GCInstance* iobj = R[a].as_inst();
                     const std::string& cname = iobj->type_name();
-                    if (inst.ic_cache != -1 && iobj->fields.size() > (size_t)inst.ic_cache) {
+                    if (inst.ic_cache != -1 && iobj->jit_info == inst.ic_class &&
+                        iobj->fields.size() > (size_t)inst.ic_cache) {
                         iobj->fields[inst.ic_cache] = R[b];
                     } else {
                         auto class_it = rt_classes.find(cname);

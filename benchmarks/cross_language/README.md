@@ -152,9 +152,16 @@ writes fields through helpers and that, not allocation, is where its time
 goes.
 In this suite all ten functions get native code on Linux; only the
 operations that genuinely need the runtime (string concatenation, dictionary
-reads and writes, field access, calls) still cost what they cost in the
-interpreter. Field reads and writes from those helpers use the same
-class-keyed inline cache as the interpreter. The ARM64 tier is validated by the unit tests on the ARM64 CI
+reads and writes, calls) still cost what they cost in the interpreter.
+Instance field reads and writes are inline in the baseline too: the native
+code reads the site's inline cache - the class it last saw and the field's
+index, which the interpreter and the helpers fill - at run time, and takes
+the fast path when the instance was built from that class and is wide
+enough; a site compiled cold therefore warms up without recompiling. That
+took `object` from 14.9 to 11.5 ms on Linux. (The interpreter's own field
+cache checked only the field count, not the class, so a site that saw two
+classes with `x` at different offsets read the wrong field; it now checks
+the class, as both native tiers always did.) The ARM64 tier is validated by the unit tests on the ARM64 CI
 runners and by instruction-level emulation of the emitted bodies, including a
 helper-backed body; the ARM64 row below predates it and still shows the
 loop-only tier.
@@ -169,7 +176,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 18.3 | 21.6 | 14.9 | 63.6 |
+| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 18.3 | 21.6 | 11.5 | 63.6 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -184,7 +191,7 @@ rather than quoting the better platform:
   `object` and `matmul` columns; hoisting the container checks out of the
   loop then took `matmul` from 90 to 63.7 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 4.1x faster than CPython by geometric mean — well
+  Overall Sura is about 4.3x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
   matmul now that indexing, guarded arithmetic, the loop register cache and
   the hoisted container checks are in, roughly even on strings and, since

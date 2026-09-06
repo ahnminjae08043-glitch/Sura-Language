@@ -1703,6 +1703,8 @@ static const int32_t CLOSURE_FUNC_IDX_OFFSET = (int32_t)__builtin_offsetof(GCClo
 static const int32_t JITINST_IC_NATIVE_FN_OFFSET = (int32_t)__builtin_offsetof(JitInst, ic_native_fn);
 static const int32_t JITINST_IC_NATIVE_FRAME_REGS_OFFSET =
     (int32_t)__builtin_offsetof(JitInst, ic_native_frame_regs);
+static const int32_t JITINST_IC_CACHE_OFFSET = (int32_t)__builtin_offsetof(JitInst, ic_cache);
+static const int32_t JITINST_IC_CLASS_OFFSET = (int32_t)__builtin_offsetof(JitInst, ic_class);
 #pragma GCC diagnostic pop
 static constexpr int32_t VECTOR_DATA_OFFSET = 0;   // _M_start at vector base
 static constexpr int32_t SMALL_VALUE_VEC_SIZE_OFFSET = 8; // data_ then size_ on Win64
@@ -1759,6 +1761,23 @@ inline bool jit_array_layout_verified() {
     return ok;
 }
 
+// The baseline instance field cache reads SmallValueVec's {data_, size_}
+// pair by offset, so probe that layout once too, the way arrays are probed.
+inline bool jit_instance_layout_verified() {
+    static const bool ok = [] {
+        if (std::getenv("SURA_JIT_DISABLE_FIELD_IC")) return false;
+        SmallValueVec probe;
+        for (int i = 0; i < 6; ++i) probe.push_back(Value((double)i));   // past the inline slots
+        const char* base = reinterpret_cast<const char*>(&probe);
+        Value* data = nullptr;
+        size_t size = 0;
+        std::memcpy(&data, base + VECTOR_DATA_OFFSET, sizeof data);
+        std::memcpy(&size, base + SMALL_VALUE_VEC_SIZE_OFFSET, sizeof size);
+        return data == &probe[0] && size == probe.size();
+    }();
+    return ok;
+}
+
 // ── Inline guards shared by every x64 tier ──────────────────────────────────
 // The Win64 full tier and the x64 baseline (SysV on Linux, Win64 as the
 // baseline-first tier) all keep the register file base in RBX, so the same
@@ -1776,6 +1795,33 @@ inline void sura_x64_emit_object_receiver_guard(X64Emitter& em, int32_t containe
     em.and_rr(XR::RAX, XR::R10);
     em.cmp_mem32_imm8(XR::RAX, ARRAY_OBJTYPE_OFFSET, obj_tag);
     slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+}
+
+// Instance field inline cache for the baseline tier. The class and field
+// index are read at run time from the instruction's own IC slots - the ones
+// the interpreter and the field helpers fill - so a site compiled cold takes
+// this path from the first access after it warms up, with no recompilation.
+// On exit RCX = &fields[ic_cache]; every failing guard is queued in slow_jmps.
+//   1-2. R[recv] is an object with obj_type == INSTANCE     (RAX = GCInstance*)
+//   3.   inst->ic_class != nullptr and it equals the instance's jit_info
+//   4.   (uint64)ic_cache < fields.size()   (a cold -1 reads as 0xFFFFFFFF)
+// Guard 4 is what keeps an instance built before its class gained a field
+// on the helper path, which widens it. Clobbers RAX, RCX, RDX, R10.
+inline void sura_x64_emit_field_ic_guard(X64Emitter& em, int32_t recv_off,
+                                         const JitInst* inst_ptr,
+                                         std::vector<size_t>& slow_jmps) {
+    sura_x64_emit_object_receiver_guard(em, recv_off, OBJ_TYPE_INSTANCE, slow_jmps);
+    em.mov_ri64(XR::R10, (uint64_t)(uintptr_t)inst_ptr);
+    em.mov_r_mem(XR::RCX, XR::R10, JITINST_IC_CLASS_OFFSET);
+    em.test_rr(XR::RCX, XR::RCX);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+    em.cmp_r_mem(XR::RCX, XR::RAX, INST_JITINFO_OFFSET);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+    em.mov_r32_mem(XR::RDX, XR::R10, JITINST_IC_CACHE_OFFSET);
+    em.cmp_r_mem(XR::RDX, XR::RAX, INST_FIELDS_OFFSET + SMALL_VALUE_VEC_SIZE_OFFSET);
+    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+    em.mov_r_mem(XR::RCX, XR::RAX, INST_FIELDS_OFFSET + VECTOR_DATA_OFFSET);
+    em.lea_r_base_index8(XR::RCX, XR::RCX, XR::RDX);
 }
 
 // On exit RCX = &elements[idx] for an array receiver with an in-bounds,
@@ -2094,6 +2140,7 @@ public:
         struct SelfCallFixup { size_t disp_pos; bool unguarded; };
         std::vector<SelfCallFixup> self_call_fixups;
         const bool inline_collections = allow_helpers && jit_array_layout_verified();
+        const bool inline_fields = allow_helpers && jit_instance_layout_verified();
         // Branch to `slow` unless R[off] is a NaN-boxed number: the high
         // 32 bits carry the whole tag, so a 32-bit compare suffices.
         auto emit_non_number_to = [&](int32_t off, std::vector<size_t>& slow) {
@@ -2337,16 +2384,17 @@ public:
                     else refresh_from_rax(inst.a);
                     return;
                 case JitOp::INDEX_GET: case JitOp::INDEX_SET:
+                case JitOp::DOT_GET: case JitOp::DOT_SET:
                     // The cases refresh the copies themselves: the inline
                     // path moves the element between the XMM copy and the
                     // element slot, the helper path calls after_call.
                     return;
-                case JitOp::STORE_GLOBAL: case JitOp::DOT_SET: case JitOp::PRINT:
+                case JitOp::STORE_GLOBAL: case JitOp::PRINT:
                 case JitOp::PRINT_NO_NL:
                     after_call(65535);
                     return;
                 case JitOp::MOD: case JitOp::MAKE_ARRAY: case JitOp::MAKE_DICT:
-                case JitOp::DOT_GET: case JitOp::CALL_BUILTIN: case JitOp::CALL_FUNC:
+                case JitOp::CALL_BUILTIN: case JitOp::CALL_FUNC:
                     after_call(inst.a);
                     return;
                 case JitOp::METHOD_CALL:
@@ -2715,12 +2763,55 @@ public:
                     em.patch_rel32(done, em.pos());
                     break;
                 }
-                case JitOp::DOT_GET:
+                case JitOp::DOT_GET: {
+                    // Instance field read through the site's inline cache
+                    // (class + field index, read at run time); a miss, a
+                    // cold site, a dictionary or nil receiver go to the
+                    // helper, which also fills the cache.
+                    if (!inline_fields) {
+                        helper_store(&sura_bl_dot_get, ip, inst.a);
+                        after_call(inst.a);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    sura_x64_emit_field_ic_guard(em, off_r(inst.b), &chunk.code[ip], slow);
+                    const int ax = cached_xmm(inst.a);
+                    if (ax >= 0) {
+                        em.movsd_x_mem(ax, XR::RCX, 0);
+                        em.movsd_mem_x(XR::RBX, off_r(inst.a), ax);
+                    } else {
+                        em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                        em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    }
+                    const size_t done = em.jmp_rel32_placeholder();
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
                     helper_store(&sura_bl_dot_get, ip, inst.a);
+                    after_call(inst.a);
+                    em.patch_rel32(done, em.pos());
                     break;
-                case JitOp::DOT_SET:
+                }
+                case JitOp::DOT_SET: {
+                    if (!inline_fields) {
+                        emit_helper(&sura_bl_dot_set, ip);
+                        after_call(65535);
+                        break;
+                    }
+                    std::vector<size_t> slow;
+                    sura_x64_emit_field_ic_guard(em, off_r(inst.a), &chunk.code[ip], slow);
+                    const int bx = cached_xmm(inst.b);
+                    if (bx >= 0) {
+                        em.movsd_mem_x(XR::RCX, 0, bx);
+                    } else {
+                        em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
+                        em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                    }
+                    const size_t done = em.jmp_rel32_placeholder();
+                    for (size_t j : slow) em.patch_rel32(j, em.pos());
                     emit_helper(&sura_bl_dot_set, ip);
+                    after_call(65535);
+                    em.patch_rel32(done, em.pos());
                     break;
+                }
                 case JitOp::OP_IN:
                     emit_helper(&sura_bl_op_in, ip);
                     break;
