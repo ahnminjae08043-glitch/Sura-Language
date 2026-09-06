@@ -178,8 +178,10 @@ struct GCArray : public GCObject {
 // A compact open-addressing hash table with the std::unordered_map surface
 // the runtime uses (find / count / insert / emplace / try_emplace / at /
 // operator[] / erase / iteration / reserve / clear). Entries live in
-// insertion order in fixed 256-slot chunks - so a reference to a mapped
-// value stays valid across later insertions, as with unordered_map - and a
+// insertion order in chunks whose sizes double (4, 8, 16, ...) - so a
+// three-key dictionary costs one small block while a large one has O(log n)
+// chunks, and a reference to a mapped value stays valid across later
+// insertions, as with unordered_map - and a
 // power-of-two index of int32 entry numbers (linear probing, at most 3/4
 // full) maps hashes to them. Compared with the node-based unordered_map a
 // lookup touches the index and one entry instead of a bucket, a node chain
@@ -211,23 +213,43 @@ public:
 
 private:
     using Entry = SuraDictEntry<V>;
-    static constexpr size_t kChunkShift = 8;
-    static constexpr size_t kChunkSize = size_t(1) << kChunkShift;
-    static constexpr size_t kChunkMask = kChunkSize - 1;
     static constexpr int32_t kEmpty = -1;
     static constexpr int32_t kDeleted = -2;
-    struct Chunk {
-        alignas(Entry) unsigned char bytes[sizeof(Entry) * kChunkSize];
-    };
+    // Chunk k holds kFirstSize << k entries, so chunk k starts at entry
+    // kFirstSize * (2^k - 1): entry i is in chunk floor(log2(i + kFirstSize))
+    // - kFirstShift, at offset (i + kFirstSize) - (kFirstSize << k).
+    static constexpr size_t kFirstShift = 2;
+    static constexpr size_t kFirstSize = size_t(1) << kFirstShift;
+    static size_t chunk_of(size_t i, size_t& offset) {
+        const size_t v = i + kFirstSize;
+        const size_t top = sizeof(size_t) * 8 - 1 - static_cast<size_t>(__builtin_clzll(v));
+        const size_t k = top - kFirstShift;
+        offset = v - (kFirstSize << k);
+        return k;
+    }
+    static Entry* new_chunk(size_t k) {
+        return static_cast<Entry*>(::operator new(sizeof(Entry) * (kFirstSize << k)));
+    }
+    static void delete_chunk(Entry* c) { ::operator delete(c); }
 
     std::vector<int32_t> index_;    // entry number, kEmpty or kDeleted
-    std::vector<Chunk*> chunks_;
+    std::vector<Entry*> chunks_;    // raw storage, entries constructed in place
     size_t entries_ = 0;            // entries appended, dead ones included
     size_t live_ = 0;
     size_t index_used_ = 0;         // index slots that are not kEmpty
 
     Entry* entry_at(size_t i) const {
-        return reinterpret_cast<Entry*>(chunks_[i >> kChunkShift]->bytes) + (i & kChunkMask);
+        size_t offset;
+        const size_t k = chunk_of(i, offset);
+        return chunks_[k] + offset;
+    }
+    // Storage for entry number `i`, appending a chunk when it is the first
+    // entry of one that does not exist yet.
+    static Entry* slot_for(std::vector<Entry*>& chunks, size_t i) {
+        size_t offset;
+        const size_t k = chunk_of(i, offset);
+        if (k == chunks.size()) chunks.push_back(new_chunk(k));
+        return chunks[k] + offset;
     }
     static size_t hash_of(const std::string& key) { return sura_dict_hash(key); }
     int32_t lookup(const std::string& key, size_t h) const {
@@ -245,7 +267,7 @@ private:
         }
     }
     static size_t index_size_for(size_t live) {
-        size_t n = 16;
+        size_t n = 8;
         while (n * 3 < live * 4 + 4) n <<= 1;
         return n;
     }
@@ -268,25 +290,24 @@ private:
         }
     }
     void compact() {
-        std::vector<Chunk*> chunks;
+        std::vector<Entry*> chunks;
         size_t count = 0;
         for (size_t i = 0; i < entries_; ++i) {
             Entry* en = entry_at(i);
             if (!en->alive) { en->~Entry(); continue; }
-            if ((count & kChunkMask) == 0) chunks.push_back(new Chunk);
-            Entry* dst = reinterpret_cast<Entry*>(chunks[count >> kChunkShift]->bytes) + (count & kChunkMask);
+            Entry* dst = slot_for(chunks, count);
             new (dst) Entry(en->hash, en->kv.first, std::move(en->kv.second));
             en->~Entry();
             ++count;
         }
-        for (Chunk* c : chunks_) delete c;
+        for (Entry* c : chunks_) delete_chunk(c);
         chunks_.swap(chunks);
         entries_ = count;
         live_ = count;
     }
     void destroy_all() {
         for (size_t i = 0; i < entries_; ++i) entry_at(i)->~Entry();
-        for (Chunk* c : chunks_) delete c;
+        for (Entry* c : chunks_) delete_chunk(c);
         chunks_.clear();
         index_.clear();
         entries_ = live_ = index_used_ = 0;
@@ -294,8 +315,7 @@ private:
     template<class K, class... Args>
     int32_t append(size_t h, K&& key, Args&&... args) {
         if ((index_used_ + 1) * 4 > index_.size() * 3) rebuild(live_ + 1);
-        if ((entries_ & kChunkMask) == 0) chunks_.push_back(new Chunk);
-        Entry* slot = reinterpret_cast<Entry*>(chunks_[entries_ >> kChunkShift]->bytes) + (entries_ & kChunkMask);
+        Entry* slot = slot_for(chunks_, entries_);
         new (slot) Entry(h, std::forward<K>(key), std::forward<Args>(args)...);
         const int32_t e = static_cast<int32_t>(entries_);
         ++entries_;

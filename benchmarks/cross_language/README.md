@@ -127,7 +127,7 @@ is what first moved the `dict` column (it builds a key string per
 iteration) and the string- and allocation-heavy micro-benchmarks, on both
 platforms. The dictionary itself then changed representation: a compact
 open-addressing table (a power-of-two index of entry numbers with linear
-probing, entries kept in insertion order in fixed chunks) replaced the
+probing, entries kept in insertion order in chunks) replaced the
 node-based `std::unordered_map`, so a lookup touches the index and one
 entry instead of a bucket, a node chain and the key's heap block. That took
 `dict` from 38 to 25.1 ms on Windows and from 37 to 23.1 ms on Linux - ahead of
@@ -149,7 +149,13 @@ two-field record went from about 25 ns to 16 ns: `object` 12.6 to 8.1 ms
 on Windows, `dict` to 19.4 ms, and a string-building loop about 10% faster.
 On Linux `object` is unchanged, because its baseline tier still reads and
 writes fields through helpers and that, not allocation, is where its time
-goes.
+goes. The table's first version kept its entries in 256-slot chunks, so a
+three-key dictionary cost a 14 KB block: fine for this suite's one large
+dictionary, and a regression the CI benchmark gate caught on workloads that
+build thousands of small ones (`bench_ai_schema.sura`, +14% here and +50%
+on the runner). Chunk sizes now double from 4, which made that workload 18%
+faster than before the table and left the large-dictionary numbers where
+they were.
 In this suite all ten functions get native code on Linux; only the
 operations that genuinely need the runtime (string concatenation, dictionary
 reads and writes, calls) still cost what they cost in the interpreter.
