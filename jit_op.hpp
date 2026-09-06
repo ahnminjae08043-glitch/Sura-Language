@@ -90,6 +90,12 @@ struct JitMethodInfo {
     uint16_t                 max_regs = 0;
     uint16_t                 native_scratch_base = 0;
     uint16_t                 native_scratch_regs = 0;
+    // Runtime-only verdict of JitVM::plain_ctor_fields for this constructor:
+    // 0 not decided, 1 plain (field_by_param below is valid), -1 not plain.
+    // Kept on the method so the hot record path reads one byte instead of
+    // probing a hash table keyed by the method pointer.
+    mutable int8_t           plain_ctor_state = 0;
+    mutable std::vector<int> plain_ctor_field_by_param;
 };
 
 struct JitClassInfo {

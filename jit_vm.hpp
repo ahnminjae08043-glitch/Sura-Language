@@ -165,8 +165,6 @@ class JitVM {
     // Methods are keyed by JitMethodInfo pointer (they live inside class_table).
     std::unordered_map<const JitMethodInfo*, std::unique_ptr<NativeFunc>> native_methods;
     std::unordered_set<const JitMethodInfo*> jit_method_failed;
-    std::unordered_map<const JitMethodInfo*, std::vector<int>> plain_ctor_field_cache;
-    std::unordered_set<const JitMethodInfo*> non_plain_ctor_cache;
     // ── Lazy JIT compilation thresholds (Option A inline IC) ──
     // Methods warm one call earlier so caller functions can bake their ICs.
     static constexpr int METHOD_LAZY_JIT_THRESHOLD = 5;
@@ -3059,20 +3057,19 @@ private:
     }
 
     const std::vector<int>* plain_ctor_fields(const JitClassInfo* cls, const JitMethodInfo* ctor) {
-        auto cached = plain_ctor_field_cache.find(ctor);
-        if (cached != plain_ctor_field_cache.end()) return &cached->second;
-        if (non_plain_ctor_cache.count(ctor)) return nullptr;
+        if (ctor && ctor->plain_ctor_state > 0) return &ctor->plain_ctor_field_by_param;
+        if (ctor && ctor->plain_ctor_state < 0) return nullptr;
         // A class with executable instance-field initializers must pass through
         // the common allocation path before its user constructor. The plain
         // record shortcuts are reserved for auto structs without that method.
         if (class_has_instance_field_initializers(cls)) {
-            if (ctor) non_plain_ctor_cache.insert(ctor);
+            if (ctor) ctor->plain_ctor_state = -1;
             return nullptr;
         }
         if (!active_chunk || !cls || !ctor ||
             ctor->entry_ip > ctor->end_ip || ctor->end_ip > active_chunk->code.size() ||
             ctor->defaults.size() < ctor->params.size()) {
-            if (ctor) non_plain_ctor_cache.insert(ctor);
+            if (ctor) ctor->plain_ctor_state = -1;
             return nullptr;
         }
 
@@ -3123,7 +3120,7 @@ private:
         if (ok) {
             // The class layout is discovered lazily by DOT_SET, so on the very
             // first `Point(x, y)` no field exists yet. Rejecting the ctor here
-            // used to poison non_plain_ctor_cache for the rest of the run and
+            // used to mark the ctor as not plain for the rest of the run and
             // every later instantiation paid for a native ctor frame. Widen
             // the layout in body order instead - exactly what the interpreter's
             // DOT_SET would do when the constructor ran - so the record path
@@ -3149,12 +3146,13 @@ private:
             }
         }
         if (!ok) {
-            non_plain_ctor_cache.insert(ctor);
+            ctor->plain_ctor_state = -1;
             return nullptr;
         }
 
-        auto inserted = plain_ctor_field_cache.emplace(ctor, std::move(field_by_param)).first;
-        return &inserted->second;
+        ctor->plain_ctor_field_by_param = std::move(field_by_param);
+        ctor->plain_ctor_state = 1;
+        return &ctor->plain_ctor_field_by_param;
     }
 
     void apply_plain_ctor_fields(GCInstance* idata, const JitMethodInfo* ctor,

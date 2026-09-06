@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 21.4 | 20.6 | 12.6 | 63.7 |
+| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 19.4 | 20.6 | 8.1 | 63.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -137,7 +137,19 @@ object, so a string used as a key is hashed once however many `has`, reads
 and writes it takes part in, and those accesses look the key up by
 reference instead of copying it first; a string built from a number no
 longer formats the number into a temporary. That is another step on
-`dict`, to 21.4 ms on Windows and 19.9 ms on Linux.
+`dict`, to 21.4 ms on Windows and 19.9 ms on Linux. Allocation itself then
+lost its largest fixed cost: every allocation used to take the process-wide
+recursive runtime mutex, which exists for the embedding API, where host code
+may drive VM operations from several threads. A single VM on one thread -
+the command-line engine - never needs it, so the lock is now taken only
+once an embedded context has been created (and from then on for the life of
+the process). With it, the record constructor's "plain shape" verdict moved
+from a hash table keyed by the method onto the method itself. Creating a
+two-field record went from about 25 ns to 16 ns: `object` 12.6 to 8.1 ms
+on Windows, `dict` to 19.4 ms, and a string-building loop about 10% faster.
+On Linux `object` is unchanged, because its baseline tier still reads and
+writes fields through helpers and that, not allocation, is where its time
+goes.
 In this suite all ten functions get native code on Linux; only the
 operations that genuinely need the runtime (string concatenation, dictionary
 reads and writes, field access, calls) still cost what they cost in the
@@ -157,7 +169,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 19.9 | 21.6 | 14.9 | 63.6 |
+| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 18.3 | 21.6 | 14.9 | 63.6 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -165,7 +177,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 6.2x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 6.6x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation, and loop-carried
   numbers stay in registers, which is what moved the `numeric`, `array`,
@@ -216,7 +228,7 @@ steps for that column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 6.2 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 6.6 times as fast as CPython,
 roughly three times slower than Node, and six times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
@@ -226,10 +238,10 @@ rather than interpreting a comparison per element.
 
 Sura is still well behind the compiled languages at `object`. There is no
 escape analysis, so every object in a loop is really allocated: creating one
-instance costs about 25 ns, against roughly 0.6 ns per iteration for the
+instance costs about 16 ns, against roughly 0.6 ns per iteration for the
 compiled languages, which do not allocate at all. Splitting that benchmark
-shows where the time goes — allocating each iteration takes 12.5 ms, reusing
-one object takes 3.0 ms. Most of what is left is allocation and collection;
+shows where the time goes — allocating each iteration takes 7.8 ms, reusing
+one object takes 3.5 ms. Most of what is left is allocation and collection;
 the field access itself is cheap. (It used to be 145 ns per instance: the
 plain-constructor shortcut was rejected on the very first `Point(x, y)`
 because the class had not discovered its fields yet, and that verdict was

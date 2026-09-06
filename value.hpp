@@ -501,13 +501,35 @@ inline std::recursive_mutex& gc_runtime_mutex() {
     return mutex;
 }
 
+// Whether allocate() has to take that mutex. One VM on one thread - the CLI -
+// never needs it: nothing else touches the heap, and the lock was the largest
+// single cost of allocating a short string or a small record. The embedding
+// API sets the flag, permanently, when it creates its first context, since
+// host code may then drive VM operations from more than one thread; each such
+// operation holds the mutex outright and allocate() re-enters it.
+inline std::atomic<bool>& gc_allocation_locking_flag() {
+    static std::atomic<bool> required{false};
+    return required;
+}
+inline void gc_require_allocation_locking() {
+    gc_allocation_locking_flag().store(true, std::memory_order_release);
+}
+
 class GC {
 public:
     static std::vector<GCObject*>& get_objects();
 
     template<typename T, typename... Args>
     static T* allocate(Args&&... args) {
-        std::lock_guard<std::recursive_mutex> lock(gc_runtime_mutex());
+        if (gc_allocation_locking_flag().load(std::memory_order_acquire)) {
+            std::lock_guard<std::recursive_mutex> lock(gc_runtime_mutex());
+            return allocate_unlocked<T>(std::forward<Args>(args)...);
+        }
+        return allocate_unlocked<T>(std::forward<Args>(args)...);
+    }
+
+    template<typename T, typename... Args>
+    static T* allocate_unlocked(Args&&... args) {
         T* obj = nullptr;
         if constexpr (std::is_same_v<T, GCInstance>) {
             obj = allocate_instance(std::forward<Args>(args)...);

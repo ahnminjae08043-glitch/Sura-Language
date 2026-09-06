@@ -565,6 +565,9 @@ void mutate_globals_transactionally(SuraContext& context, Mutation&& mutation) {
 
 SURA_API SuraHandle sura_new() SURA_NOEXCEPT {
     try {
+        // From the first embedded context on, allocation takes the runtime
+        // mutex: host threads may run VM operations concurrently.
+        gc_require_allocation_locking();
         auto context = std::make_unique<SuraContext>();
         auto control = std::make_shared<ContextControl>();
         control->context = std::move(context);
