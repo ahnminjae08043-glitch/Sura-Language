@@ -3507,9 +3507,13 @@ private:
 
         if (receiver.is_dict()) {
             GCDict* dict = receiver.as_dict();
-            auto module_it = dict->elements.find("__module");
-            if (module_it != dict->elements.end() && module_it->second.is_str()) {
-                std::string builtin = module_builtin_name(module_it->second.as_str_ref(), meth);
+            // Every dict method call checks for a module marker first; the
+            // marker's hash is computed once, not per call.
+            static const std::string kModuleKey = "__module";
+            static const size_t kModuleHash = sura_dict_hash(kModuleKey);
+            const Value* module_val = dict->elements.find_hashed(kModuleKey, kModuleHash);
+            if (module_val && module_val->is_str()) {
+                std::string builtin = module_builtin_name(module_val->as_str_ref(), meth);
                 Value outv;
                 if (!builtin.empty() && SuraStd::try_dispatch(builtin, args, nargs, line, outv)) {
                     out = outv;
@@ -3530,12 +3534,13 @@ private:
                 out = arrv; return true;
             }
             if (meth == "has" || meth == "contains") {
-                std::string key = nargs >= 1 ? args[0].to_str() : "";
-                out = Value(dict->elements.count(key) > 0); return true;
+                out = Value(nargs >= 1 ? Value::dict_find_key(dict, args[0]) != nullptr
+                                       : dict->elements.contains(""));
+                return true;
             }
             if (meth == "delete" || meth == "remove") {
                 bool removed = false;
-                if (nargs >= 1) removed = dict->elements.erase(args[0].to_str()) > 0;
+                if (nargs >= 1) removed = Value::dict_erase_key(dict, args[0]);
                 out = Value(removed); return true;
             }
             if (dispatch_dict_callable_field(receiver, meth, args, nargs, line, out)) {
@@ -3805,7 +3810,7 @@ _reenter:
             _CASE(MAKE_DICT) {
                 Value dict = Value::make_dict();
                 for (int i = 0; i < inst.operand; ++i)
-                    dict.dict_set(R[b+i*2].to_str(), R[b+i*2+1]);
+                    dict.dict_set_key(R[b+i*2], R[b+i*2+1]);
                 R[a] = dict;
             } _END_CASE
 
@@ -3817,7 +3822,7 @@ _reenter:
                     if (idx >= 0 && idx < (int)arr->elements.size()) R[a] = arr->elements[idx];
                     else throw JitThrow{"[E202] 배열 범위 초과", inst.line};
                 }
-                else if (R[b].is_dict()) R[a] = R[b].dict_get(R[c].to_str());
+                else if (R[b].is_dict()) R[a] = R[b].dict_get_key(R[c]);
                 else if (R[b].is_str()) {
                     int i = (int)R[c].to_num();
                     const std::string& s = R[b].as_str_ref();
@@ -3829,7 +3834,7 @@ _reenter:
             } _END_CASE
             _CASE(INDEX_SET) {
                 if      (R[a].is_arr())  R[a].arr_set((int)R[b].to_num(), R[c]);
-                else if (R[a].is_dict()) R[a].dict_set(R[b].to_str(), R[c]);
+                else if (R[a].is_dict()) R[a].dict_set_key(R[b], R[c]);
             } _END_CASE
             
             
@@ -3902,7 +3907,7 @@ _reenter:
                     bool f=false;
                     for (auto& el : R[c].as_arr()->elements) if (R[b].eq(el)){f=true;break;}
                     R[a] = Value(f);
-                } else if (R[c].is_dict()) R[a] = Value(R[c].dict_has(R[b].to_str()));
+                } else if (R[c].is_dict()) R[a] = Value(R[c].dict_has_key(R[b]));
                 else if (R[c].is_str()) R[a] = Value(R[c].as_str_ref().find(R[b].to_str()) != std::string::npos);
                 else R[a] = Value::nil();
             } _END_CASE
@@ -4211,8 +4216,8 @@ _reenter:
                     if (meth == "len" || meth == "size" || meth == "length") {
                         R[a] = Value((double)dict->elements.size());
                     } else if (meth == "has" || meth == "contains") {
-                        std::string key = nargs >= 1 ? R[b+1].to_str() : "";
-                        R[a] = Value(dict->elements.count(key) > 0);
+                        R[a] = Value(nargs >= 1 ? Value::dict_find_key(dict, R[b+1]) != nullptr
+                                                : dict->elements.contains(""));
                     } else if (meth == "keys") {
                         Value arr = Value::make_array();
                         for (auto& [k, v] : dict->elements) arr.as_arr()->elements.push_back(Value(k));
@@ -4222,7 +4227,7 @@ _reenter:
                         for (auto& [k, v] : dict->elements) arr.as_arr()->elements.push_back(v);
                         R[a] = arr;
                     } else if (meth == "remove" || meth == "delete") {
-                        if (nargs >= 1) dict->elements.erase(R[b+1].to_str());
+                        if (nargs >= 1) Value::dict_erase_key(dict, R[b+1]);
                         R[a] = Value::nil();
                     } else if (meth == "clear") {
                         dict->elements.clear(); R[a] = Value::nil();
@@ -4537,7 +4542,7 @@ inline uint64_t JitVM::make_dict_from_jit(Value* R, const JitInst* ins) {
         for (int i = 0; i < ins->operand; ++i) {
             const size_t key = static_cast<size_t>(ins->b) +
                                static_cast<size_t>(i) * 2U;
-            dictionary.dict_set(R[key].to_str(), R[key + 1U]);
+            dictionary.dict_set_key(R[key], R[key + 1U]);
         }
     }
     return dictionary.raw_bits();
@@ -4929,8 +4934,8 @@ inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* in
         if (meth == "len" || meth == "size" || meth == "length")
             return Value((double)dict->elements.size()).raw_bits();
         if (meth == "has" || meth == "contains") {
-            std::string key = nargs >= 1 ? R[b+1].to_str() : "";
-            return Value(dict->elements.count(key) > 0).raw_bits();
+            return Value(nargs >= 1 ? Value::dict_find_key(dict, R[b+1]) != nullptr
+                                    : dict->elements.contains("")).raw_bits();
         }
         if (meth == "keys") {
             Value arr = Value::make_array();
@@ -4943,7 +4948,7 @@ inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* in
             return arr.raw_bits();
         }
         if (meth == "remove" || meth == "delete") {
-            if (nargs >= 1) dict->elements.erase(R[b+1].to_str());
+            if (nargs >= 1) Value::dict_erase_key(dict, R[b+1]);
             return Value::nil().raw_bits();
         }
         if (meth == "clear") { dict->elements.clear(); return Value::nil().raw_bits(); }
@@ -5172,7 +5177,7 @@ inline uint64_t JitVM::jit_index_get(Value* R, const JitInst* ins) {
             return arr->elements[idx].raw_bits();
         throw JitThrow{"[E202] 배열 범위 초과", ins->line};
     }
-    if (target.is_dict()) return target.dict_get(key.to_str()).raw_bits();
+    if (target.is_dict()) return target.dict_get_key(key).raw_bits();
     if (target.is_str()) {
         int i = (int)key.to_num();
         const std::string& s = target.as_str_ref();
@@ -5192,7 +5197,7 @@ inline uint64_t JitVM::jit_index_get(Value* R, const JitInst* ins) {
 inline void JitVM::jit_index_set(Value* R, const JitInst* ins) {
     Value& target = R[ins->a];
     if      (target.is_arr())  target.arr_set((int)R[ins->b].to_num(), R[ins->c]);
-    else if (target.is_dict()) target.dict_set(R[ins->b].to_str(), R[ins->c]);
+    else if (target.is_dict()) target.dict_set_key(R[ins->b], R[ins->c]);
 }
 
 // Mirrors the NEW_INSTANCE case in execute_frame.
@@ -5254,7 +5259,7 @@ inline void JitVM::jit_op_in(Value* R, const JitInst* ins) {
         for (auto& el : hay.as_arr()->elements) if (needle.eq(el)) { found = true; break; }
         R[ins->a] = Value(found);
     } else if (hay.is_dict()) {
-        R[ins->a] = Value(hay.dict_has(needle.to_str()));
+        R[ins->a] = Value(hay.dict_has_key(needle));
     } else if (hay.is_str()) {
         R[ins->a] = Value(hay.as_str_ref().find(needle.to_str()) != std::string::npos);
     } else {

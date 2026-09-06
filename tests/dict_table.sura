@@ -105,4 +105,39 @@ assert_eq(e.has("a"), false)
 e.remove("a")
 assert_eq(e.keys().len(), 0)
 
+# 9) 키 종류: 같은 내용의 다른 문자열 객체, 숫자와 문자열 키의 동일성,
+#    숫자 키로 has/remove, 한 키 문자열을 여러 딕셔너리에 재사용(해시 캐시)
+k1 is "key" + 1
+k2 is "ke" + "y1"
+kd is {}
+kd[k1] is "first"
+assert_eq(kd[k2], "first")
+assert_eq(kd.has(k2), true)
+kd[k2] is "second"
+assert_eq(kd[k1], "second")
+assert_eq(kd.keys().len(), 1)
+kd[7] is "seven"
+assert_eq(kd["7"], "seven")
+assert_eq(kd.has(7), true)
+assert_eq(kd.has("7"), true)
+kd["8"] is "eight"
+assert_eq(kd[8], "eight")
+kd.remove(8)
+assert_eq(kd.has("8"), false)
+kd.remove(k2)
+assert_eq(kd.has(k1), false)
+assert_eq(kd.keys().len(), 1)
+assert_eq(kd.keys()[0], "7")
+other is {}
+other[k1] is 1
+other[k2] is 2
+assert_eq(other.keys().len(), 1)
+assert_eq(other[k1], 2)
+assert_eq(k1 in other, true)
+assert_eq(("key" + 2) in other, false)
+assert_eq(7 in kd, true)
+assert_eq(kd.has(true), false)
+kd[true] is "t"
+assert_eq(kd["true"], "t")
+
 print "dict_table: PASS"

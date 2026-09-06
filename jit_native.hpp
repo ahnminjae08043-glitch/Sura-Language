@@ -1733,14 +1733,12 @@ static_assert(static_cast<int>(ObjType::ARRAY) == OBJ_TYPE_ARRAY,
 static_assert(static_cast<int>(ObjType::DICT) == OBJ_TYPE_DICT,
               "native JIT DICT tag must match ObjType");
 
-// `d.has(k)` on a proven dict: one hash probe, no method-name dispatch. The
-// key is converted with Value::to_str exactly as the builtin does.
+// `d.has(k)` on a proven dict: one probe with the key's cached hash, no
+// method-name dispatch. A non-string key is converted with Value::to_str
+// exactly as the builtin does.
 extern "C" inline uint64_t sura_jit_dict_has(GCDict* dict, uint64_t key_bits) {
     const Value key = Value::from_bits(key_bits);
-    const bool found = key.is_str()
-        ? dict->elements.find(key.as_str_ref()) != dict->elements.end()
-        : dict->elements.find(key.to_str()) != dict->elements.end();
-    return found ? JIT_NBTRUE : JIT_NBFALSE;
+    return Value::dict_find_key(dict, key) != nullptr ? JIT_NBTRUE : JIT_NBFALSE;
 }
 
 inline bool jit_array_layout_verified() {

@@ -79,10 +79,28 @@ struct GCObject {
 // consume the native call stack.
 inline void gc_mark_object(GCObject* object);
 
+// The hash every dictionary uses for its keys. Defined here, ahead of the
+// table, so a string object can cache it: a dictionary key that is a Sura
+// string is hashed once, however many lookups it takes part in.
+inline size_t sura_dict_hash(const std::string& key) {
+    size_t h = std::hash<std::string>{}(key);
+    h ^= h >> 29; h *= 0x9E3779B97F4A7C15ULL; h ^= h >> 32;   // spread low bits
+    return h;
+}
+
 struct GCString : public GCObject {
     std::string str;
+    // Cached sura_dict_hash(str); 0 means not computed yet. The contents never
+    // change after construction, so the cache is valid for the object's life
+    // (a pooled slot is re-constructed, which resets it).
+    mutable size_t hash_cache = 0;
     GCString(const std::string& s) : GCObject(ObjType::STRING), str(s) {}
     GCString(std::string&& s) : GCObject(ObjType::STRING), str(std::move(s)) {}
+    size_t dict_hash() const {
+        size_t h = hash_cache;
+        if (h == 0) { h = sura_dict_hash(str); hash_cache = h; }
+        return h;
+    }
 };
 
 class Value;
@@ -211,11 +229,7 @@ private:
     Entry* entry_at(size_t i) const {
         return reinterpret_cast<Entry*>(chunks_[i >> kChunkShift]->bytes) + (i & kChunkMask);
     }
-    static size_t hash_of(const std::string& key) {
-        size_t h = std::hash<std::string>{}(key);
-        h ^= h >> 29; h *= 0x9E3779B97F4A7C15ULL; h ^= h >> 32;   // spread low bits
-        return h;
-    }
+    static size_t hash_of(const std::string& key) { return sura_dict_hash(key); }
     int32_t lookup(const std::string& key, size_t h) const {
         if (index_.empty()) return -1;
         const size_t mask = index_.size() - 1;
@@ -369,6 +383,29 @@ public:
     }
     size_t count(const std::string& key) const { return lookup(key, hash_of(key)) >= 0 ? 1 : 0; }
     bool contains(const std::string& key) const { return lookup(key, hash_of(key)) >= 0; }
+
+    // Pre-hashed entry points, for callers that already hold hash_of(key)
+    // (a Sura string caches it). They never hash and never copy the key
+    // unless a new entry has to be appended.
+    V* find_hashed(const std::string& key, size_t h) {
+        const int32_t e = lookup(key, h);
+        return e < 0 ? nullptr : &entry_at(static_cast<size_t>(e))->kv.second;
+    }
+    const V* find_hashed(const std::string& key, size_t h) const {
+        const int32_t e = lookup(key, h);
+        return e < 0 ? nullptr : &entry_at(static_cast<size_t>(e))->kv.second;
+    }
+    V& slot_hashed(const std::string& key, size_t h) {
+        const int32_t found = lookup(key, h);
+        if (found >= 0) return entry_at(static_cast<size_t>(found))->kv.second;
+        return entry_at(static_cast<size_t>(append(h, key)))->kv.second;
+    }
+    size_t erase_hashed(const std::string& key, size_t h) {
+        const int32_t e = lookup(key, h);
+        if (e < 0) return 0;
+        erase_at(static_cast<size_t>(e));
+        return 1;
+    }
 
     template<class K, class... Args>
     std::pair<iterator, bool> try_emplace(K&& key, Args&&... args) {
@@ -1207,6 +1244,24 @@ public:
         return true;
     }
 
+    // Appends to_str() to `out` without building it as a separate string
+    // first; an integral number is formatted straight into `out`.
+    void append_str_to(std::string& out) const {
+        if (is_num()) {
+            double v = as_num();
+            const double integer_min = -std::ldexp(1.0, 63);
+            const double integer_limit = std::ldexp(1.0, 63);
+            if (std::isfinite(v) && v == std::floor(v)
+                && v >= integer_min && v < integer_limit) {
+                char buffer[24];
+                auto converted = std::to_chars(buffer, buffer + sizeof(buffer), (long long)v);
+                out.append(buffer, converted.ptr);
+                return;
+            }
+        } else if (is_str()) { out += as_str_ref(); return; }
+        out += to_str();
+    }
+
     std::string to_str() const {
         if (is_nil()) return "nil";
         if (is_bool()) return as_bool() ? "true" : "false";
@@ -1281,8 +1336,8 @@ public:
         if (is_num() && r.is_num()) return Value(as_num() + r.as_num());
         if (is_str() || r.is_str()) {
             std::string joined;
-            if (is_str()) joined = as_str_ref(); else joined = to_str();
-            if (r.is_str()) joined += r.as_str_ref(); else joined += r.to_str();
+            if (is_str()) joined = as_str_ref(); else append_str_to(joined);
+            if (r.is_str()) joined += r.as_str_ref(); else r.append_str_to(joined);
             return Value(std::move(joined));
         }
         if (is_arr() && r.is_arr()) {
@@ -1341,6 +1396,46 @@ public:
     }
     bool dict_has(const std::string& k) const {
         return is_dict() ? as_dict()->elements.count(k) > 0 : false;
+    }
+
+    // Dictionary access keyed by a Value. A string key is looked up by
+    // reference with the hash cached in its object; any other key is
+    // formatted with to_str(), exactly as the interpreter always did, so the
+    // observable keys are unchanged.
+    static const Value* dict_find_key(const GCDict* dict, const Value& key) {
+        if (key.is_str()) {
+            const GCString* s = static_cast<const GCString*>(key.as_obj());
+            return dict->elements.find_hashed(s->str, s->dict_hash());
+        }
+        const std::string k = key.to_str();
+        return dict->elements.find_hashed(k, sura_dict_hash(k));
+    }
+    static Value& dict_slot_key(GCDict* dict, const Value& key) {
+        if (key.is_str()) {
+            const GCString* s = static_cast<const GCString*>(key.as_obj());
+            return dict->elements.slot_hashed(s->str, s->dict_hash());
+        }
+        const std::string k = key.to_str();
+        return dict->elements.slot_hashed(k, sura_dict_hash(k));
+    }
+    static bool dict_erase_key(GCDict* dict, const Value& key) {
+        if (key.is_str()) {
+            const GCString* s = static_cast<const GCString*>(key.as_obj());
+            return dict->elements.erase_hashed(s->str, s->dict_hash()) > 0;
+        }
+        const std::string k = key.to_str();
+        return dict->elements.erase_hashed(k, sura_dict_hash(k)) > 0;
+    }
+    Value dict_get_key(const Value& key) const {
+        if (!is_dict()) return nil();
+        const Value* found = dict_find_key(as_dict(), key);
+        return found ? *found : nil();
+    }
+    void dict_set_key(const Value& key, const Value& val) {
+        if (is_dict()) dict_slot_key(as_dict(), key) = val;
+    }
+    bool dict_has_key(const Value& key) const {
+        return is_dict() && dict_find_key(as_dict(), key) != nullptr;
     }
 };
 
