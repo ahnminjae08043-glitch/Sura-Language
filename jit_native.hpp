@@ -4576,6 +4576,9 @@ class NativeCompiler {
     // Pending jumps to resolve after full body is emitted.
     // (disp_field_pos, bytecode_target_ip)
     std::vector<std::pair<size_t, size_t>> pending;
+    // A conditional jump folded into the compare before it (see
+    // fusable_jump_after); the emit loop skips this instruction.
+    size_t fused_jump_ip = SIZE_MAX;
     // Map from bytecode IP to native code offset.
     std::vector<size_t> ip_to_native;
     std::vector<std::vector<uint8_t>> definitely_initialized_globals;
@@ -5115,9 +5118,20 @@ public:
             active_hoists.clear();
             preheaders_.clear();
             pending_src.assign(pending.size(), SIZE_MAX);
+            fused_jump_ip = SIZE_MAX;
             for (size_t ip = entry_ip; ip < end_ip; ++ip) {
                 while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
                     active_hoists.pop_back();
+                if (ip == fused_jump_ip) {
+                    // Already emitted as part of the compare before it.
+                    fused_jump_ip = SIZE_MAX;
+                    ip_to_native[ip] = em.pos();
+                    emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
+                    pending_src.resize(pending.size(), ip);
+                    if (active_cache != nullptr && ip == active_cache->backedge_ip)
+                        active_cache = nullptr;
+                    continue;
+                }
                 // Pre-headers: loop cache loads first, then the hoisted
                 // container checks, outer loops before inner ones that
                 // share the header.
@@ -6087,6 +6101,65 @@ private:
     // For JUMP_IF_FALSE / JUMP_IF_TRUE we need to know the condition
     // register holds a bool (NBTRUE/NBFALSE). We enforce that by refusing
     // to compile unless the previous op is a CMP_* writing the same reg.
+    // True when no path from `ip` reads `reg` before writing it. Follows
+    // jumps both ways with a small step budget; anything unknown (an opcode
+    // the register model does not cover, the budget running out, leaving
+    // the callable) counts as a read.
+    bool reg_dead_from(size_t ip, uint16_t reg, int& budget) const {
+        std::vector<uint16_t> reads, writes;
+        while (budget-- > 0) {
+            if (ip < entry_ip || ip >= end_ip) return false;
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_inst_reg_use(inst, reads, writes)) return false;
+            for (uint16_t r : reads) if (r == reg) return false;
+            for (uint16_t r : writes) if (r == reg) return true;
+            switch (inst.op) {
+                case JitOp::JUMP:
+                    if (inst.operand < 0) return false;
+                    ip = (size_t)inst.operand;
+                    continue;
+                case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                    if (inst.operand < 0) return false;
+                    return reg_dead_from((size_t)inst.operand, reg, budget) &&
+                           reg_dead_from(ip + 1, reg, budget);
+                case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT:
+                    return true;
+                default:
+                    ++ip;
+            }
+        }
+        return false;
+    }
+
+    // A compare whose boolean feeds only the conditional jump right after
+    // it can branch on the flags directly and leave R[a] unwritten: the
+    // jump must be the compare's sole successor (nothing else jumps to it),
+    // and the register must be dead on both paths out of the jump. Returns
+    // 1 for JUMP_IF_FALSE, 2 for JUMP_IF_TRUE, 0 when the pair cannot fuse.
+    int fusable_jump_after(size_t ip, uint16_t reg) const {
+        static const bool disabled = std::getenv("SURA_JIT_DISABLE_BRANCH_FUSION") != nullptr;
+        if (disabled) return 0;
+        if (ip + 1 >= end_ip) return 0;
+        const JitInst& jmp = chunk.code[ip + 1];
+        const bool on_false = jmp.op == JitOp::JUMP_IF_FALSE;
+        if (!on_false && jmp.op != JitOp::JUMP_IF_TRUE) return 0;
+        if (jmp.a != reg || jmp.operand < 0) return 0;
+        if (has_non_fallthrough_predecessor(ip + 1)) return 0;
+        int budget = 64;
+        if (!reg_dead_from((size_t)jmp.operand, reg, budget)) return 0;
+        if (!reg_dead_from(ip + 2, reg, budget)) return 0;
+        return on_false ? 1 : 2;
+    }
+
+    // Branch on RAX holding NBTRUE/NBFALSE, for the slow path of a fused
+    // compare: JUMP_IF_FALSE takes the jump on NBFALSE, JUMP_IF_TRUE on
+    // anything else (the helpers return exactly one of the two).
+    void emit_fused_jump_on_rax(int fuse, size_t target_ip) {
+        em.mov_ri64(XR::RCX, JIT_NBFALSE);
+        em.cmp_rr(XR::RAX, XR::RCX);
+        pending.push_back({em.jcc_rel32_placeholder(fuse == 1 ? CC::E : CC::NE), target_ip});
+    }
+
     bool prev_is_cmp_to(size_t ip, uint16_t reg) const {
         if (ip == 0 || ip - 1 < entry_ip) return false;
         const JitInst& p = chunk.code[ip - 1];
@@ -6436,6 +6509,10 @@ private:
                 return emit_cmp_ord(inst, ip);
             case O::CMP_EQ: case O::CMP_NEQ:
                 return emit_cmp_eq(inst, ip);
+            case O::DIV:
+                return emit_div(inst, ip, nullptr);
+            case O::MOD:
+                return emit_mod(inst, ip, nullptr);
             case O::INDEX_GET:
                 return emit_index_get(inst, ip, nullptr);
             case O::INDEX_SET:
@@ -6522,10 +6599,129 @@ private:
     // b < c is evaluated as c > b so that an unordered compare (NaN) yields
     // false, the way Value::lt does. Anything else keeps the checked helper
     // (the ordering type error). Works with or without an active loop cache.
-    bool emit_cmp_ord(const JitInst& inst, size_t ip) {
+    // Operand loads for the arithmetic fast paths: from the XMM copy when
+    // the loop cache holds the register (plain instructions only), else
+    // from the frame.
+    void load_xmm_operand(int x, uint16_t r, bool plain) {
+        const int c = plain ? cached_xmm(r) : -1;
+        if (c >= 0) em.movaps_xx(x, c);
+        else em.movsd_x_mem(x, XR::RBX, off_r(r));
+    }
+    void emit_arith_slow_call(const JitInst& inst, int32_t ob, int32_t oc, void* helper) {
+        em.mov_r_mem(XR::RCX, XR::RBX, ob);
+        em.mov_r_mem(XR::RDX, XR::RBX, oc);
+        em.mov_ri64(XR::R8, (uint64_t)(uint32_t)inst.line);
+        em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)helper);
+        em.call_rax();
+    }
+    // Type guards shared by DIV and MOD: a register not proven numeric is
+    // tag-checked, and the failing check jumps to the helper, which raises
+    // the interpreter's [E200].
+    void emit_arith_type_guards(const JitInst& inst, size_t ip, bool plain,
+                                std::vector<size_t>& slow_jmps) {
+        if (inst.ic_numeric_fast) return;
+        if (!(plain && proven_num_at(ip, inst.b)))
+            slow_jmps.push_back(emit_non_number_jump(off_r(inst.b)));
+        if (!(plain && proven_num_at(ip, inst.c)))
+            slow_jmps.push_back(emit_non_number_jump(off_r(inst.c)));
+    }
+    void emit_arith_finish(const JitInst& inst, bool plain, bool result_in_xmm0,
+                           std::vector<size_t>& slow_jmps, int32_t ob, int32_t oc,
+                           void* helper) {
+        if (result_in_xmm0) {
+            if (plain) store_result_xmm0(inst.a);
+            else em.movsd_mem_x(XR::RBX, off_r(inst.a), XR::XMM0);
+        }
+        const size_t done_jmp = em.jmp_rel32_placeholder();
+        const size_t slow_pos = em.pos();
+        for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        emit_arith_slow_call(inst, ob, oc, helper);
+        if (plain) store_result_rax(inst.a);
+        else em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+        em.patch_rel32(done_jmp, em.pos());
+    }
+
+    // DIV inline: two numbers divide with divsd; a divisor that compares
+    // equal to zero (either sign) or unordered (NaN) takes the checked
+    // helper, which raises [E202] or returns the NaN. Works with or without
+    // an active loop cache.
+    bool emit_div(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
+        const bool plain = runtime_inst == nullptr;
+        const int32_t ob = off_r(inst.b), oc = off_r(inst.c);
+        std::vector<size_t> slow_jmps;
+        emit_arith_type_guards(inst, ip, plain, slow_jmps);
+        em.pxor_xx(XR::XMM1, XR::XMM1);
+        {
+            const int xc = plain ? cached_xmm(inst.c) : -1;
+            if (xc >= 0) em.ucomisd_xx(XR::XMM1, xc);
+            else em.ucomisd_x_mem(XR::XMM1, XR::RBX, oc);
+        }
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        load_xmm_operand(XR::XMM0, inst.b, plain);
+        {
+            const int xc = plain ? cached_xmm(inst.c) : -1;
+            if (xc >= 0) em.divsd_xx(XR::XMM0, xc);
+            else em.divsd_x_mem(XR::XMM0, XR::RBX, oc);
+        }
+        emit_arith_finish(inst, plain, true, slow_jmps, ob, oc,
+                          (void*)&sura_jit_checked_div);
+        return true;
+    }
+
+    // MOD inline for the common case: both operands integer-valued, the
+    // divisor neither 0 nor -1 and below 2^53 in magnitude. Then the
+    // integer remainder (sign of the dividend, like fmod) is exact, and a
+    // zero result keeps the dividend's sign as fmod does. Everything else
+    // - fractions, NaN, infinities, huge divisors, division by zero - takes
+    // the checked helper, so the result is bit-identical to the interpreter.
+    bool emit_mod(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
+        const bool plain = runtime_inst == nullptr;
+        const int32_t ob = off_r(inst.b), oc = off_r(inst.c);
+        std::vector<size_t> slow_jmps;
+        emit_arith_type_guards(inst, ip, plain, slow_jmps);
+        load_xmm_operand(XR::XMM0, inst.b, plain);
+        load_xmm_operand(XR::XMM1, inst.c, plain);
+        em.movq_r_x(XR::R8, XR::XMM0);                 // dividend bits (sign later)
+        em.cvttsd2si_r_x(XR::RAX, XR::XMM0);
+        em.cvtsi2sd_x_r(XR::XMM2, XR::RAX);
+        em.ucomisd_xx(XR::XMM2, XR::XMM0);             // integer-valued dividend?
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
+        em.cvttsd2si_r_x(XR::RCX, XR::XMM1);
+        em.cvtsi2sd_x_r(XR::XMM2, XR::RCX);
+        em.ucomisd_xx(XR::XMM2, XR::XMM1);             // integer-valued divisor?
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
+        em.test_rr(XR::RCX, XR::RCX);                  // divisor 0 -> [E202]
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        em.cmp_r_imm32(XR::RCX, -1);                   // avoid INT64_MIN / -1
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        em.mov_rr(XR::RDX, XR::RCX);                   // |divisor| < 2^53
+        em.sar_r_imm8(XR::RDX, 53);
+        em.add_r_imm32(XR::RDX, 1);
+        em.cmp_r_imm32(XR::RDX, 1);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
+        em.cqo();
+        em.idiv_r(XR::RCX);                            // RDX = remainder
+        em.cvtsi2sd_x_r(XR::XMM0, XR::RDX);
+        em.test_rr(XR::RDX, XR::RDX);
+        const size_t nonzero = em.jcc_rel32_placeholder(CC::NE);
+        em.test_rr(XR::R8, XR::R8);                    // zero result: -0.0 for a negative dividend
+        const size_t positive = em.jcc_rel32_placeholder(CC::NS);
+        em.mov_ri64(XR::RAX, 0x8000000000000000ULL);
+        em.movq_x_r(XR::XMM0, XR::RAX);
+        em.patch_rel32(nonzero, em.pos());
+        em.patch_rel32(positive, em.pos());
+        emit_arith_finish(inst, plain, true, slow_jmps, ob, oc,
+                          (void*)&sura_jit_checked_mod);
+        return true;
+    }
+
+    bool emit_cmp_ord(const JitInst& inst, size_t ip, bool allow_fuse = true) {
         using O = JitOp;
         const int32_t ob = off_r(inst.b);
         const int32_t oc = off_r(inst.c);
+        const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
         std::vector<size_t> slow_jmps;
         if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(ob));
         if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(oc));
@@ -6533,6 +6729,23 @@ private:
         load_operand_xmm0(swapped ? inst.c : inst.b);
         ucomisd_xmm0(swapped ? inst.b : inst.c);
         const uint8_t cc = (inst.op == O::CMP_LT || inst.op == O::CMP_GT) ? CC::A : CC::AE;
+        if (fuse) {
+            // Branch straight on the flags. JUMP_IF_FALSE takes the inverse
+            // condition, which an unordered compare (NaN, where the compare
+            // is false) also satisfies: A -> BE, AE -> B.
+            const size_t target_ip = (size_t)chunk.code[ip + 1].operand;
+            const uint8_t jcc = fuse == 1 ? (cc == CC::A ? CC::BE : CC::B) : cc;
+            pending.push_back({em.jcc_rel32_placeholder(jcc), target_ip});
+            fused_jump_ip = ip + 1;
+            if (slow_jmps.empty()) return true;
+            const size_t done_jmp = em.jmp_rel32_placeholder();
+            const size_t slow_pos = em.pos();
+            for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+            emit_cmp_ord_helper(inst, ob, oc);
+            emit_fused_jump_on_rax(fuse, target_ip);
+            em.patch_rel32(done_jmp, em.pos());
+            return true;
+        }
         em.mov_ri64(XR::RAX, JIT_NBFALSE);
         em.mov_ri64(XR::RCX, JIT_NBTRUE);
         em.cmov_rr(cc, XR::RAX, XR::RCX);
@@ -6541,6 +6754,15 @@ private:
         const size_t done_jmp = em.jmp_rel32_placeholder();
         const size_t slow_pos = em.pos();
         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        emit_cmp_ord_helper(inst, ob, oc);
+        store_result_rax(inst.a);
+        em.patch_rel32(done_jmp, em.pos());
+        return true;
+    }
+    // RAX = the ordered compare through the checked helper (type error on
+    // non-numbers, result NBTRUE/NBFALSE).
+    void emit_cmp_ord_helper(const JitInst& inst, int32_t ob, int32_t oc) {
+        using O = JitOp;
         int helper_op = JIT_CMP_LT;
         switch (inst.op) {
             case O::CMP_LTE: helper_op = JIT_CMP_LTE; break;
@@ -6554,9 +6776,6 @@ private:
         em.mov_ri64(XR::R9, (uint64_t)(uint32_t)inst.line);
         em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_binary);
         em.call_rax();
-        store_result_rax(inst.a);
-        em.patch_rel32(done_jmp, em.pos());
-        return true;
     }
 
     // CMP_EQ / CMP_NEQ: two numbers compare inline (Value::eq: identical
@@ -6564,10 +6783,12 @@ private:
     // itself); operands not proven numeric are tag-checked first and
     // anything else (strings, objects, nil) keeps the helper. Works with or
     // without an active loop cache.
-    bool emit_cmp_eq(const JitInst& inst, size_t ip) {
+    bool emit_cmp_eq(const JitInst& inst, size_t ip, bool allow_fuse = true) {
         const bool neq = inst.op == JitOp::CMP_NEQ;
         const uint64_t when_equal = neq ? JIT_NBFALSE : JIT_NBTRUE;
         const uint64_t when_differ = neq ? JIT_NBTRUE : JIT_NBFALSE;
+        const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
+        const size_t target_ip = fuse ? (size_t)chunk.code[ip + 1].operand : 0;
         std::vector<size_t> slow_jmps;
         if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.b)));
         if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.c)));
@@ -6582,7 +6803,8 @@ private:
         load_bits(XR::R8, inst.c);
         em.cmp_rr(XR::RDX, XR::R8);
         em.cmov_rr(CC::E, XR::RAX, XR::RCX);
-        store_result_rax(inst.a);
+        if (fuse) { emit_fused_jump_on_rax(fuse, target_ip); fused_jump_ip = ip + 1; }
+        else store_result_rax(inst.a);
         if (slow_jmps.empty()) return true;
         const size_t done_jmp = em.jmp_rel32_placeholder();
         const size_t slow_pos = em.pos();
@@ -6592,7 +6814,8 @@ private:
         em.mov_ri64(XR::R8, neq ? 1 : 0);
         em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_eq);
         em.call_rax();
-        store_result_rax(inst.a);
+        if (fuse) emit_fused_jump_on_rax(fuse, target_ip);
+        else store_result_rax(inst.a);
         em.patch_rel32(done_jmp, em.pos());
         return true;
     }
@@ -6651,15 +6874,8 @@ private:
             // Guarded helper, same shape as MOD: division by zero must raise
             // [E202] instead of yielding an infinity, so the inline SSE path
             // below is not usable here.
-            case O::DIV: {
-                em.mov_r_mem(XR::RCX, XR::RBX, ob);
-                em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                em.mov_ri64(XR::R8, (uint64_t)(uint32_t)inst.line);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_div);
-                em.call_rax();
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                return true;
-            }
+            case O::DIV:
+                return emit_div(inst, ip, runtime_inst);
 
             case O::ADD: case O::SUB: case O::MUL: {
                 if (inst.ic_numeric_fast ||
@@ -6735,14 +6951,14 @@ private:
             }
 
             case O::CMP_LT: case O::CMP_LTE: case O::CMP_GT: case O::CMP_GTE:
-                return emit_cmp_ord(inst, ip);
+                return emit_cmp_ord(inst, ip, runtime_inst == nullptr);
 
             // ── Phase 9: equality comparisons (bit-equal fast path) ──
             // Matches interpreter for: nil, bool, identical numbers, same pointer.
             // Differs for: strings with same content but different GCString*.
             // (The existing arithmetic ops similarly skip type checks for speed.)
             case O::CMP_EQ: case O::CMP_NEQ:
-                return emit_cmp_eq(inst, ip);
+                return emit_cmp_eq(inst, ip, runtime_inst == nullptr);
 
             // ── Phase 9: NEG (flip sign bit) ─────────────────────────
             // Numeric values flip the sign bit after a NaN-box type guard;
@@ -6779,16 +6995,9 @@ private:
                 return true;
             }
 
-            // ── Phase 9: MOD via libm fmod() ─────────────────────────
-            case O::MOD: {
-                em.mov_r_mem(XR::RCX, XR::RBX, ob);
-                em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                em.mov_ri64(XR::R8, (uint64_t)(uint32_t)inst.line);
-                em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_checked_mod);
-                em.call_rax();
-                em.mov_mem_r(XR::RBX, oa, XR::RAX);
-                return true;
-            }
+            // ── MOD: inline integer remainder, libm fmod() in the helper ──
+            case O::MOD:
+                return emit_mod(inst, ip, runtime_inst);
 
             // ── Phase 9: BIT_AND / BIT_OR / BIT_XOR ──────────────────
             // Truncating cast double→int64, op, cast back.

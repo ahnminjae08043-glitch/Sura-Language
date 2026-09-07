@@ -308,6 +308,20 @@ public:
         emit8(0xD3);
         emit8(modrm(3, 7, r));  // /7 = SAR
     }
+    void sar_r_imm8(int r, uint8_t imm) {
+        rex(true, 0, 0, r);
+        emit8(0xC1);
+        emit8(modrm(3, 7, r));  // /7 = SAR
+        emit8(imm);
+    }
+    // ── cqo: sign-extend RAX into RDX:RAX (REX.W 99) ────────
+    void cqo() { emit8(0x48); emit8(0x99); }
+    // ── idiv r64: RDX:RAX / r -> RAX quotient, RDX remainder ─
+    void idiv_r(int r) {
+        rex(true, 0, 0, r);
+        emit8(0xF7);
+        emit8(modrm(3, 7, r));  // /7 = IDIV
+    }
 
     // ── cvttsd2si r64, [base+disp32]  (F2 REX.W 0F 2C /r) ──
     // Truncating convert: double in mem → int64 in reg
