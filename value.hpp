@@ -237,6 +237,10 @@ private:
     size_t entries_ = 0;            // entries appended, dead ones included
     size_t live_ = 0;
     size_t index_used_ = 0;         // index slots that are not kEmpty
+    // Bumped whenever an entry's storage can die or move (erase, compact,
+    // rebuild, clear); appends leave existing entries in place. Lets a
+    // holder of a mapped-value pointer know it is still the same entry.
+    uint32_t shape_epoch_ = 0;
 
     Entry* entry_at(size_t i) const {
         size_t offset;
@@ -281,6 +285,7 @@ private:
     // Rebuild the index for `wanted` live entries; drop dead entries first
     // when they outnumber the live ones.
     void rebuild(size_t wanted) {
+        ++shape_epoch_;
         if (entries_ - live_ > live_ && entries_ - live_ >= 64) compact();
         index_.assign(index_size_for(std::max(wanted, live_)), kEmpty);
         index_used_ = 0;
@@ -290,6 +295,7 @@ private:
         }
     }
     void compact() {
+        ++shape_epoch_;
         std::vector<Entry*> chunks;
         size_t count = 0;
         for (size_t i = 0; i < entries_; ++i) {
@@ -306,6 +312,7 @@ private:
         live_ = count;
     }
     void destroy_all() {
+        ++shape_epoch_;
         for (size_t i = 0; i < entries_; ++i) entry_at(i)->~Entry();
         for (Entry* c : chunks_) delete_chunk(c);
         chunks_.clear();
@@ -388,6 +395,7 @@ public:
     size_t size() const { return live_; }
     bool empty() const { return live_ == 0; }
     size_t bucket_count() const { return index_.size(); }
+    uint32_t shape_epoch() const { return shape_epoch_; }
     void clear() { destroy_all(); }
     void reserve(size_t n) {
         if (index_size_for(n) > index_.size()) rebuild(n);
@@ -488,6 +496,7 @@ private:
     void erase_at(size_t i) {
         Entry* en = entry_at(i);
         if (!en->alive) return;
+        ++shape_epoch_;
         const size_t mask = index_.size() - 1;
         size_t slot = en->hash & mask;
         while (index_[slot] != static_cast<int32_t>(i)) slot = (slot + 1) & mask;
@@ -504,6 +513,13 @@ private:
 
 struct GCDict : public GCObject {
     SuraDictMap<Value> elements;
+    // The last string-keyed lookup: the key object, the entry it found and
+    // the map's shape epoch at the time. `d.has(k)` / `d[k]` / `d[k] = v`
+    // on one key then probe once. The key is marked with the dictionary,
+    // so its address cannot be reused while it is cached.
+    mutable const GCString* last_key = nullptr;
+    mutable Value*          last_slot = nullptr;
+    mutable uint32_t        last_epoch = 0;
     GCDict() : GCObject(ObjType::DICT) {}
     void mark() override;
 };
@@ -1447,7 +1463,15 @@ public:
     static const Value* dict_find_key(const GCDict* dict, const Value& key) {
         if (key.is_str()) {
             const GCString* s = static_cast<const GCString*>(key.as_obj());
-            return dict->elements.find_hashed(s->str, s->dict_hash());
+            if (dict->last_key == s && dict->last_epoch == dict->elements.shape_epoch())
+                return dict->last_slot;
+            const Value* found = dict->elements.find_hashed(s->str, s->dict_hash());
+            if (found) {
+                dict->last_key = s;
+                dict->last_slot = const_cast<Value*>(found);
+                dict->last_epoch = dict->elements.shape_epoch();
+            }
+            return found;
         }
         const std::string k = key.to_str();
         return dict->elements.find_hashed(k, sura_dict_hash(k));
@@ -1455,7 +1479,13 @@ public:
     static Value& dict_slot_key(GCDict* dict, const Value& key) {
         if (key.is_str()) {
             const GCString* s = static_cast<const GCString*>(key.as_obj());
-            return dict->elements.slot_hashed(s->str, s->dict_hash());
+            if (dict->last_key == s && dict->last_epoch == dict->elements.shape_epoch())
+                return *dict->last_slot;
+            Value& slot = dict->elements.slot_hashed(s->str, s->dict_hash());
+            dict->last_key = s;
+            dict->last_slot = &slot;
+            dict->last_epoch = dict->elements.shape_epoch();
+            return slot;
         }
         const std::string k = key.to_str();
         return dict->elements.slot_hashed(k, sura_dict_hash(k));
@@ -1655,6 +1685,7 @@ inline void GCArray::mark() {
 }
 inline void GCDict::mark() {
     for (auto& [k, v] : elements) v.mark_value();
+    if (last_key) gc_mark_object(const_cast<GCString*>(last_key));
 }
 inline void GCTensor::mark() {
     for (auto* parent : parents) gc_mark_object(parent);

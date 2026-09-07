@@ -236,6 +236,11 @@ public:
         emit8(0x03);
         emit8(modrm(3, dst, src));
     }
+    void sub_rr(int dst, int src) {
+        rex(true, dst, 0, src);
+        emit8(0x2B);
+        emit8(modrm(3, dst, src));
+    }
 
     // ── add r64, imm32  (REX.W 81 /0 imm32) ───────────────
     void add_r_imm32(int dst, int32_t imm) {

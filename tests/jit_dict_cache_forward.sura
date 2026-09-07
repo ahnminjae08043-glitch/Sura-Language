@@ -1,0 +1,129 @@
+# 딕셔너리의 마지막 조회 슬롯 캐시와 인덱스 명령으로 넘어가는 MOVE 임시 레지스터 접기가
+# 인터프리터와 같은 값을 내야 한다: 같은 키의 has→get→set, 삭제 뒤 재조회, 키 문자열이
+# 새로 만들어지는 루프(GC 압박), 배열/딕셔너리가 섞인 컨테이너, 인덱스 키 임시.
+
+func same_key_chain(n) do
+  d is {}
+  i is 0
+  while i < n do
+    k is "k" + (i % 10)
+    if d.has(k) then
+      d[k] is d[k] + i
+    else
+      d[k] is i
+    end
+    i is i + 1
+  end
+  total is 0
+  j is 0
+  while j < 10 do
+    total is total + d["k" + j]
+    j is j + 1
+  end
+  return total
+end
+
+func delete_between(n) do
+  d is {}
+  k is "x"
+  d[k] is 1
+  hits is 0
+  i is 0
+  while i < n do
+    if d.has(k) then
+      hits is hits + d[k]
+      d.delete(k)
+    else
+      d[k] is 2
+    end
+    i is i + 1
+  end
+  return hits
+end
+
+func rebuild_between(n) do
+  d is {}
+  k is "anchor"
+  d[k] is 7
+  acc is 0
+  i is 0
+  while i < n do
+    acc is acc + d[k]
+    d["g" + i] is i
+    d[k] is d[k] + 1
+    i is i + 1
+  end
+  return acc + d[k]
+end
+
+func forward_keys(arr, n) do
+  total is 0
+  i is 0
+  while i < n do
+    j is i % arr.len()
+    total is total + arr[j] * 2
+    arr[j] is arr[j] + 1
+    i is i + 1
+  end
+  return total
+end
+
+func make_numdict() do
+  d is {}
+  d[0] is 1
+  d[1] is 2
+  d[2] is 3
+  d[3] is 4
+  return d
+end
+
+func mixed_container(arr, d, n) do
+  total is 0
+  i is 0
+  while i < n do
+    c is arr
+    if i % 2 == 1 then
+      c is d
+    end
+    key is i % 4
+    total is total + c[key]
+    i is i + 1
+  end
+  return total
+end
+
+func gc_pressure(n) do
+  d is {}
+  i is 0
+  while i < n do
+    key is "p" + (i % 50)
+    junk is "j" + i + "k" + (i * 3)
+    if d.has(key) then
+      d[key] is d[key] + 1
+    else
+      d[key] is 1
+    end
+    i is i + 1
+  end
+  return d["p7"] + d.keys().len()
+end
+
+r is 0
+while r < 40 do
+  a is same_key_chain(100)
+  b is delete_between(20)
+  c is rebuild_between(30)
+  e is forward_keys([1, 2, 3, 4], 20)
+  f is mixed_container([10, 20, 30, 40], make_numdict(), 20)
+  g is gc_pressure(200)
+  r is r + 1
+end
+
+assert_eq(same_key_chain(1000), 1000 * 999 / 2)
+assert_eq(delete_between(10), 5 * 1 + 4 * 2 - 4)
+assert_eq(rebuild_between(100), 7 * 100 + 100 * 99 / 2 + 107)
+assert_eq(forward_keys([1, 2, 3, 4], 8), 2 * (1 + 2 + 3 + 4 + 2 + 3 + 4 + 5))
+assert_eq(mixed_container([10, 20, 30, 40], make_numdict(), 8), 2 * (10 + 30) + 2 * (2 + 4))
+assert_eq(gc_pressure(5000), 100 + 50)
+
+print "jit_dict_cache_forward: PASS"

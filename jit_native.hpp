@@ -4790,6 +4790,12 @@ class NativeCompiler {
     size_t fused_jump_ip = SIZE_MAX;
     // True while active_cache is a write-back cache (JitLoopCache::writeback).
     bool cache_writeback = false;
+    // MOVE temporaries folded into the index instruction that consumes
+    // them (see try_forward_move): index ip -> (temporary, source, role),
+    // role 0 = key, 1 = container. The fast path reads the source; the
+    // helper slow path writes the temporary's slot first.
+    struct ForwardedMove { uint16_t temp; uint16_t src; int role; };
+    std::unordered_map<size_t, std::vector<ForwardedMove>> forward_at;
     // Conditional jumps leaving a write-back region go through a stub that
     // writes the cached registers back first; emitted after the body.
     struct ExitStub { size_t jcc_pos; size_t target_ip; size_t src_ip; const JitLoopCache* cache; };
@@ -5400,6 +5406,7 @@ public:
             preheaders_.clear();
             pending_src.assign(pending.size(), SIZE_MAX);
             fused_jump_ip = SIZE_MAX;
+            forward_at.clear();
             for (size_t ip = entry_ip; ip < end_ip; ++ip) {
                 while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
                     active_hoists.pop_back();
@@ -6411,6 +6418,66 @@ private:
     // For JUMP_IF_FALSE / JUMP_IF_TRUE we need to know the condition
     // register holds a bool (NBTRUE/NBFALSE). We enforce that by refusing
     // to compile unless the previous op is a CMP_* writing the same reg.
+    // `MOVE t, s` followed (possibly through one more MOVE) by an index
+    // instruction whose key or hoisted container is `t`, with `t` dead
+    // after it: the copy is skipped and the index instruction reads `s`.
+    // Returns true when the MOVE was folded (nothing emitted for it).
+    bool try_forward_move(const JitInst& inst, size_t ip) {
+        static const bool disabled = std::getenv("SURA_JIT_DISABLE_MOVE_FORWARD") != nullptr;
+        if (disabled || inst.op != JitOp::MOVE || inst.a == inst.b) return false;
+        const uint16_t t = inst.a, src = inst.b;
+        size_t j = ip + 1;
+        for (int step = 0; step < 2 && j < end_ip; ++step, ++j) {
+            if (has_non_fallthrough_predecessor(j)) return false;
+            const JitInst& n = chunk.code[j];
+            if (n.op == JitOp::MOVE) {
+                // An intermediate copy must not touch either register.
+                if (n.a == t || n.a == src || n.b == t) return false;
+                continue;
+            }
+            int role = -1;
+            if (n.op == JitOp::INDEX_GET) {
+                if (n.c == t && n.b != t) role = 0;
+                else if (n.b == t && n.c != t) role = 1;
+            } else if (n.op == JitOp::INDEX_SET) {
+                if (n.b == t && n.a != t && n.c != t) role = 0;
+                else if (n.a == t && n.b != t && n.c != t) role = 1;
+            }
+            if (role < 0) return false;
+            if (role == 1 && hoisted_gpr_at(j) < 0) return false;
+            if (virtual_access_at.count(j) || virtual_ctor_at.count(j)) return false;
+            int budget = 64;
+            if (!reg_dead_from(j + 1, t, budget)) return false;
+            forward_at[j].push_back({t, src, role});
+            return true;
+        }
+        return false;
+    }
+    // The register an index instruction at `ip` reads for `reg` (its own
+    // operand, or the source of a folded MOVE).
+    uint16_t forwarded_source(size_t ip, uint16_t reg, int role) const {
+        auto it = forward_at.find(ip);
+        if (it == forward_at.end()) return reg;
+        for (const ForwardedMove& f : it->second)
+            if (f.temp == reg && f.role == role) return f.src;
+        return reg;
+    }
+    // Before an index helper call: give every folded temporary its value
+    // in the frame, since the helper reads the instruction's registers.
+    void materialize_forwarded(size_t ip) {
+        auto it = forward_at.find(ip);
+        if (it == forward_at.end()) return;
+        for (const ForwardedMove& f : it->second) {
+            const int x = cached_xmm(f.src);
+            if (x >= 0) {
+                em.movsd_mem_x(XR::RBX, off_r(f.temp), x);
+            } else {
+                em.mov_r_mem(XR::RAX, XR::RBX, off_r(f.src));
+                em.mov_mem_r(XR::RBX, off_r(f.temp), XR::RAX);
+            }
+        }
+    }
+
     // True when no path from `ip` reads `reg` before writing it. Follows
     // jumps both ways with a small step budget; anything unknown (an opcode
     // the register model does not cover, the budget running out, leaving
@@ -6973,11 +7040,12 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            const uint16_t key = plain ? forwarded_source(ip, inst.c, 0) : inst.c;
             if (plain && hoist_gpr < 0) ensure_in_memory(inst.b);
             sura_x64_emit_array_index_guard_ex(
-                em, ob, hoist_gpr, oc,
-                plain ? cached_xmm(inst.c) : -1,
-                plain && proven_num_at(ip, inst.c), slow_jmps);
+                em, ob, hoist_gpr, off_r(key),
+                plain ? cached_xmm(key) : -1,
+                plain && proven_num_at(ip, key), slow_jmps);
             const int ax = plain ? cached_xmm(inst.a) : -1;
             if (ax >= 0) {
                 em.movsd_x_mem(ax, XR::RCX, 0);
@@ -6990,7 +7058,7 @@ private:
             const size_t slow_pos = em.pos();
             for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
         }
-        if (plain) flush_all_cached();
+        if (plain) { flush_all_cached(); materialize_forwarded(ip); }
         em.mov_rr(XR::RCX, XR::R13);
         em.mov_rr(XR::RDX, XR::RBX);
         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -7011,11 +7079,12 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            const uint16_t key = plain ? forwarded_source(ip, inst.b, 0) : inst.b;
             if (plain && hoist_gpr < 0) ensure_in_memory(inst.a);
             sura_x64_emit_array_index_guard_ex(
-                em, oa, hoist_gpr, ob,
-                plain ? cached_xmm(inst.b) : -1,
-                plain && proven_num_at(ip, inst.b), slow_jmps);
+                em, oa, hoist_gpr, off_r(key),
+                plain ? cached_xmm(key) : -1,
+                plain && proven_num_at(ip, key), slow_jmps);
             const int cx = plain ? cached_xmm(inst.c) : -1;
             if (cx >= 0) {
                 em.movsd_mem_x(XR::RCX, 0, cx);
@@ -7027,7 +7096,7 @@ private:
             const size_t slow_pos = em.pos();
             for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
         }
-        if (plain) flush_all_cached();
+        if (plain) { flush_all_cached(); materialize_forwarded(ip); }
         em.mov_rr(XR::RCX, XR::R13);
         em.mov_rr(XR::RDX, XR::RBX);
         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -7277,6 +7346,10 @@ private:
         if (runtime_inst == nullptr && !virtual_records.empty() &&
             ip < chunk.code.size() && &inst == &chunk.code[ip] &&
             emit_virtual_record_op(inst, ip)) {
+            return true;
+        }
+        if (runtime_inst == nullptr && ip < chunk.code.size() && &inst == &chunk.code[ip] &&
+            try_forward_move(inst, ip)) {
             return true;
         }
         if (active_cache != nullptr && runtime_inst == nullptr) {
@@ -8244,11 +8317,43 @@ private:
                     return true;
                 }
                 const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                // Inside a function the slot is read inline when it is in
+                // range and holds something other than nil: an unset global
+                // is nil, and only then does the helper have to decide
+                // between an error and a legitimate nil.
+                std::vector<size_t> slow_jmps;
+                // A class name resolves through the helper (its slot is
+                // nil), so the inline probe would only add to that call.
+                bool names_class = false;
+                if (inst.operand >= 0 && (size_t)inst.operand < chunk.global_names.size()) {
+                    const std::string& gname = chunk.global_names[(size_t)inst.operand];
+                    for (const JitClassInfo& cls : chunk.class_table)
+                        if (cls.name == gname) { names_class = true; break; }
+                }
+                if (!is_top_level && inst.operand >= 0 && !names_class) {
+                    em.mov_r_mem(XR::RAX, XR::R13, JVM_GLOBALS_DATA_OFFSET);
+                    em.mov_r_mem(XR::RCX, XR::R13, JVM_GLOBALS_DATA_OFFSET + 8);
+                    em.sub_rr(XR::RCX, XR::RAX);              // bytes in use
+                    em.cmp_r_imm32(XR::RCX, off_c(inst.operand) + 8);
+                    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::B));
+                    em.mov_r_mem(XR::RAX, XR::RAX, off_c(inst.operand));
+                    em.mov_ri64(XR::RCX, JIT_NBNIL);
+                    em.cmp_rr(XR::RAX, XR::RCX);
+                    slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+                    em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                }
+                size_t done_jmp = 0;
+                if (!slow_jmps.empty()) {
+                    done_jmp = em.jmp_rel32_placeholder();
+                    const size_t slow_pos = em.pos();
+                    for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                }
                 em.mov_rr(XR::RCX, XR::R13);
                 em.mov_ri64(XR::RDX, (uint64_t)(uintptr_t)inst_ptr);
                 em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_load_global_inst);
                 em.call_rax();
                 em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                if (!slow_jmps.empty()) em.patch_rel32(done_jmp, em.pos());
                 return true;
             }
 
