@@ -419,9 +419,12 @@ int main() {
         require(fib_compiler.unguarded_entry_offset > 0 &&
                     fib_compiler.unguarded_entry_offset < fib_bytes.size(),
                 "fib must expose an unguarded entry past its parameter guard");
-        require(link.pinned.size() == 2 &&
+        // A pure body checks each guarded global once at its entry (both
+        // reads of `fib` share one hoisted identity guard), so the closure
+        // is pinned once; an unhoisted body pins it at every guard.
+        require(!link.pinned.empty() && link.pinned.size() <= 2 &&
                     link.pinned[0] == fake_vm.globals[0].raw_bits() &&
-                    link.pinned[1] == fake_vm.globals[0].raw_bits(),
+                    link.pinned.back() == fake_vm.globals[0].raw_bits(),
                 "each identity guard must pin the closure it compares against");
         ExecCode fib_code = ExecCode::from_bytes(fib_bytes);
         auto fib_function = reinterpret_cast<SysVNativeTestFn>(fib_code.ptr);

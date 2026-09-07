@@ -2195,6 +2195,43 @@ public:
         const int hoist_gprs = hoist_loops.empty() ? 0 : 2;
 
         unguarded_entry_offset = em.pos();
+        // Global guards hoisted to the entry. In a pure body (direct calls
+        // only, no helper, so no STORE_GLOBAL and nothing that could rebind
+        // a global) every global read yields what the entry saw, so the
+        // identity / number check of each guarded global runs once here -
+        // after the unguarded entry, since a caller of any purity may enter
+        // there - and the reads in the body are plain loads. Failing checks
+        // escape to the entry deopt tail: nothing has run yet.
+        std::vector<uint8_t> global_hoisted(body_len, 0);
+        if (analysis.pure && needs_vm && !std::getenv("SURA_JIT_DISABLE_GLOBAL_HOIST")) {
+            std::vector<BaselineBodyAnalysis::GlobalGuard> seen;
+            for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                if (!analysis.reached[ip - entry_ip]) continue;
+                if (chunk.code[ip].op != JitOp::LOAD_GLOBAL) continue;
+                const auto& g = analysis.global_guard[ip - entry_ip];
+                if (g.mode != BaselineBodyAnalysis::GlobalGuard::Identity &&
+                    g.mode != BaselineBodyAnalysis::GlobalGuard::NumTag) continue;
+                global_hoisted[ip - entry_ip] = 1;
+                bool done = false;
+                for (const auto& prev : seen)
+                    if (prev.index == g.index && prev.mode == g.mode && prev.bits == g.bits) done = true;
+                if (done) continue;
+                seen.push_back(g);
+                em.mov_r_mem(XR::RAX, arg_vm(), globals_off);
+                em.mov_r_mem(XR::RAX, XR::RAX, off_c(g.index));
+                if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
+                    em.mov_ri64(XR::R10, g.bits);
+                    em.cmp_rr(XR::RAX, XR::R10);
+                    entry_deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::NE));
+                    link->pin_value(g.bits);
+                } else {
+                    em.mov_ri64(XR::R10, NBQNAN);
+                    em.and_rr(XR::RAX, XR::R10);
+                    em.cmp_rr(XR::RAX, XR::R10);
+                    entry_deopt_fixups.push_back(em.jcc_rel32_placeholder(CC::E));
+                }
+            }
+        }
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         if (needs_vm) em.push_r(XR::R13);
@@ -2896,7 +2933,9 @@ public:
                     }
                     em.mov_r_mem(XR::RAX, XR::R13, globals_off);
                     em.mov_r_mem(XR::RAX, XR::RAX, off_c(g.index));
-                    if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
+                    if (global_hoisted[ip - entry_ip]) {
+                        // Checked at the entry.
+                    } else if (g.mode == BaselineBodyAnalysis::GlobalGuard::Identity) {
                         em.mov_ri64(XR::RCX, g.bits);
                         em.cmp_rr(XR::RAX, XR::RCX);
                         deopt_here(CC::NE, ip, false);
