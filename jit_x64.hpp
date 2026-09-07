@@ -327,6 +327,20 @@ public:
     }
     // ── cqo: sign-extend RAX into RDX:RAX (REX.W 99) ────────
     void cqo() { emit8(0x48); emit8(0x99); }
+    // ── cdq: sign-extend EAX into EDX:EAX (99) ─────────────
+    void cdq() { emit8(0x99); }
+    // ── idiv r32: EDX:EAX / r -> EAX quotient, EDX remainder ─
+    void idiv_r32(int r) {
+        rex(false, 0, 0, r);
+        emit8(0xF7);
+        emit8(modrm(3, 7, r));
+    }
+    // ── movsxd r64, r32  (REX.W 63 /r) ─────────────────────
+    void movsxd_rr(int dst, int src) {
+        rex(true, dst, 0, src);
+        emit8(0x63);
+        emit8(modrm(3, dst, src));
+    }
     // ── idiv r64: RDX:RAX / r -> RAX quotient, RDX remainder ─
     void idiv_r(int r) {
         rex(true, 0, 0, r);

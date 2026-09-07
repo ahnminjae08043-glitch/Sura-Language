@@ -7208,8 +7208,22 @@ private:
         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
         em.test_rr(XR::RCX, XR::RCX);                  // divisor 0 -> [E202]
         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
-        em.cmp_r_imm32(XR::RCX, -1);                   // avoid INT64_MIN / -1
+        em.cmp_r_imm32(XR::RCX, -1);                   // avoid INT_MIN / -1
         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        // Operands that fit in 32 bits divide with the 32-bit idiv, which
+        // is several times faster than the 64-bit one on older cores.
+        em.movsxd_rr(XR::RDX, XR::RAX);
+        em.cmp_rr(XR::RDX, XR::RAX);
+        const size_t wide_a = em.jcc_rel32_placeholder(CC::NE);
+        em.movsxd_rr(XR::RDX, XR::RCX);
+        em.cmp_rr(XR::RDX, XR::RCX);
+        const size_t wide_b = em.jcc_rel32_placeholder(CC::NE);
+        em.cdq();
+        em.idiv_r32(XR::RCX);                          // EDX = remainder
+        em.movsxd_rr(XR::RDX, XR::RDX);
+        const size_t have_rem = em.jmp_rel32_placeholder();
+        em.patch_rel32(wide_a, em.pos());
+        em.patch_rel32(wide_b, em.pos());
         em.mov_rr(XR::RDX, XR::RCX);                   // |divisor| < 2^53
         em.sar_r_imm8(XR::RDX, 53);
         em.add_r_imm32(XR::RDX, 1);
@@ -7217,6 +7231,7 @@ private:
         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
         em.cqo();
         em.idiv_r(XR::RCX);                            // RDX = remainder
+        em.patch_rel32(have_rem, em.pos());
         em.cvtsi2sd_x_r(XR::XMM0, XR::RDX);
         em.test_rr(XR::RDX, XR::RDX);
         const size_t nonzero = em.jcc_rel32_placeholder(CC::NE);
