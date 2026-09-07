@@ -236,6 +236,23 @@ public:
         emit8(0x03);
         emit8(modrm(3, dst, src));
     }
+    // Pad with multi-byte NOPs so the next instruction starts on a
+    // `boundary`-byte address (loop headers; the padding runs once per
+    // entry, the backedge lands past it).
+    void align(size_t boundary) {
+        static const uint8_t nops[][9] = {
+            {0x90}, {0x66, 0x90}, {0x0F, 0x1F, 0x00}, {0x0F, 0x1F, 0x40, 0x00},
+            {0x0F, 0x1F, 0x44, 0x00, 0x00}, {0x66, 0x0F, 0x1F, 0x44, 0x00, 0x00},
+            {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
+            {0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
+            {0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}};
+        size_t pad = (boundary - (pos() % boundary)) % boundary;
+        while (pad > 0) {
+            const size_t n = pad > 9 ? 9 : pad;
+            for (size_t i = 0; i < n; ++i) emit8(nops[n - 1][i]);
+            pad -= n;
+        }
+    }
     void sub_rr(int dst, int src) {
         rex(true, dst, 0, src);
         emit8(0x2B);

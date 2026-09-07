@@ -2366,6 +2366,15 @@ public:
         // A conditional jump folded into the compare before it
         // (jit_fusable_jump_after); the emit loop skips this instruction.
         size_t fused_ip = SIZE_MAX;
+        // Loop headers (targets of backward jumps) start 16-byte aligned.
+        std::vector<uint8_t> loop_header_bl(body_len, 0);
+        for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            const JitInst& j = chunk.code[ip];
+            if (jit_is_branch_op(j.op) && j.operand >= 0 &&
+                static_cast<size_t>(j.operand) >= entry_ip && static_cast<size_t>(j.operand) <= ip)
+                loop_header_bl[static_cast<size_t>(j.operand) - entry_ip] = 1;
+        }
+        const bool no_loop_align = std::getenv("SURA_JIT_DISABLE_LOOP_ALIGN") != nullptr;
         // Ordered compare fused with the jump after it: branch on the flags
         // (JUMP_IF_FALSE takes the inverse condition, which an unordered
         // compare also satisfies: A -> BE, AE -> B). Dynamic operands take
@@ -2628,6 +2637,8 @@ public:
                 }
                 active_hoists.push_back(&loop);
             }
+            if (branch_target[ip - entry_ip] && loop_header_bl[ip - entry_ip] && !no_loop_align)
+                em.align(16);
             ip_off[ip - entry_ip] = em.pos();
             const JitInst& inst = chunk.code[ip];
             const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
@@ -4796,6 +4807,8 @@ class NativeCompiler {
     // helper slow path writes the temporary's slot first.
     struct ForwardedMove { uint16_t temp; uint16_t src; int role; };
     std::unordered_map<size_t, std::vector<ForwardedMove>> forward_at;
+    std::vector<uint8_t> loop_header_at_;
+    const bool no_loop_align_ = std::getenv("SURA_JIT_DISABLE_LOOP_ALIGN") != nullptr;
     // Conditional jumps leaving a write-back region go through a stub that
     // writes the cached registers back first; emitted after the body.
     struct ExitStub { size_t jcc_pos; size_t target_ip; size_t src_ip; const JitLoopCache* cache; };
@@ -5407,6 +5420,18 @@ public:
             pending_src.assign(pending.size(), SIZE_MAX);
             fused_jump_ip = SIZE_MAX;
             forward_at.clear();
+            // Loop headers (targets of backward jumps) start on a 16-byte
+            // boundary: the code before a loop changes its length with
+            // every emitter change, and an unaligned header costs the
+            // hottest loops several percent.
+            loop_header_at_.assign(end_ip - entry_ip, 0);
+            for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                const JitInst& j = chunk.code[ip];
+                if (jit_is_branch_op(j.op) && j.operand >= 0 &&
+                    static_cast<size_t>(j.operand) >= entry_ip &&
+                    static_cast<size_t>(j.operand) <= ip)
+                    loop_header_at_[static_cast<size_t>(j.operand) - entry_ip] = 1;
+            }
             for (size_t ip = entry_ip; ip < end_ip; ++ip) {
                 while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
                     active_hoists.pop_back();
@@ -5442,6 +5467,7 @@ public:
                     emit_hoist_preheader(loop);
                     active_hoists.push_back(&loop);
                 }
+                if (loop_header_at_[ip - entry_ip] && !no_loop_align_) em.align(16);
                 ip_to_native[ip] = em.pos();
                 if (is_top_level && ip < strict_at.size() && strict_at[ip] != nullptr) {
                     const JitStrictCountedLoop* spec = strict_at[ip];
