@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 8.6 | 5.7 | 6.6 | 4.7 | 19.4 | 20.6 | 2.6 | 63.7 |
+| **Sura JIT** | 9.0 | 3.4 | 5.2 | 2.2 | 18.6 | 9.7 | 1.9 | 51.3 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -182,7 +182,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 9.7 | 5.7 | 7.8 | 3.8 | 18.3 | 21.6 | 11.5 | 63.6 |
+| **Sura JIT** | 9.7 | 5.7 | 7.8 | 2.4 | 18.3 | 12.3 | 11.5 | 63.6 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -190,15 +190,22 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 7.7x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 10.9x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
   registers, which is what moved the `numeric`, `array`, `object` and
   `matmul` columns; hoisting the container checks out of the loop then took
-  `matmul` from 90 to 63.7 ms.
+  `matmul` from 90 to 63.7 ms. The loop register cache is now write-back
+  for loops the cache emits on its own (the frame is written only before a
+  helper call and on the way out), a compare feeding a conditional jump
+  branches on the flags, division and integer remainder are inline, and a
+  closure's numeric parameters are checked once at entry - a non-number
+  hands the call back to the interpreter, as the baseline always did - so
+  `i <= n` inside the loop no longer tests `n`. That took `numeric` from 5.7
+  to 3.4 ms and `matmul` to 51.3 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 4.3x faster than CPython by geometric mean — well
+  Overall Sura is about 4.8x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
   matmul now that indexing, guarded arithmetic, the loop register cache and
   the hoisted container checks are in, roughly even on strings and, since
@@ -217,9 +224,9 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 9.0x faster | 6.2x faster |
-| numeric loop vs CPython | 29x faster | 19x faster |
-| sort vs CPython | 4.2x faster | 3.4x faster |
+| `fib(30)` vs CPython | 8.6x faster | 6.2x faster |
+| numeric loop vs CPython | 49x faster | 19x faster |
+| sort vs CPython | 8.9x faster | 6.0x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
@@ -228,27 +235,34 @@ dictionary reads and writes, which still call out; both tiers now share the
 same inline array indexing, guarded arithmetic, loop register cache and
 hoisted container checks.
 Beyond that, both platforms pay for the same two things: a value that is not
-proven numeric — every array element, and a loop-invariant operand such as
-`av` in `crow[q] + av * brow[q]` — re-checks its tag on every use (the
-container check is hoisted now; the tag checks of invariant operands are
-the next step, and element checks would need a typed array
-representation), and a call inside a loop moves its arguments and result
-through the frame and between the GPR and XMM register files, so a numeric
-calling convention is the step after that. Dictionary reads and writes
-still go through a helper (the key's hash is cached in the string now, so
-the helper only probes); inlining that probe into native code, and a
-number-keyed fast path that avoids formatting the key, would be the next
-steps for that column.
+proven numeric — every array element, and a loop-invariant local such as
+`av` in `crow[q] + av * brow[q]` (parameters are guarded at entry on
+Windows now, locals are not) — re-checks its tag on every use (the
+container check is hoisted; the tag checks of invariant locals are the
+next step, and element checks would need a typed array representation),
+and a call inside a loop moves its arguments and result through the frame
+and between the GPR and XMM register files, so a numeric calling
+convention is the step after that. Dictionary reads and writes still go
+through a helper (the key's hash is cached in the string, so the helper
+only probes); inlining that probe into native code, and a number-keyed
+fast path that avoids formatting the key, would be the next steps for that
+column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 7.7 times as fast as CPython,
-roughly three times slower than Node, and six times slower than C++. On Linux,
+On Windows, by geometric mean Sura's JIT is about 10.9 times as fast as CPython,
+roughly 1.2 times slower than Node, and 2.5 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
 
-Sura is competitive at sorting, because `array.sort` calls a native C++ sort
-rather than interpreting a comparison per element.
+Sura is competitive at sorting, because `array.sort` never interprets a
+comparison: an all-number array is sorted by an LSD radix sort on the IEEE
+bit pattern (passes whose byte is constant across the array are skipped,
+which is most of them for small integers), anything else by a native C++
+comparison sort. `string.join` sizes its result once and appends the
+pieces in place, and a module call such as `string.len(s)` resolves its
+function once per call site instead of rebuilding the module's name table
+on every call.
 
 The `object` column is the one where escape analysis matters, and the full
 tier now has a loop-local form of it. A record built by a plain constructor
