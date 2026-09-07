@@ -1933,6 +1933,123 @@ inline int inline_method_kind(const JitChunk& chunk, const JitInst& inst) {
     return 0;
 }
 
+inline bool jit_inst_reg_use(const JitInst& inst, std::vector<uint16_t>& reads,
+                             std::vector<uint16_t>& writes);
+
+// True when no path from `ip` reads `reg` before writing it. Follows jumps
+// both ways with a small step budget; anything unknown (an opcode the
+// register model does not cover, the budget running out, leaving the
+// callable) counts as a read.
+inline bool jit_reg_dead_from(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+                              size_t ip, uint16_t reg, int& budget) {
+    std::vector<uint16_t> reads, writes;
+    while (budget-- > 0) {
+        if (ip < entry_ip || ip >= end_ip) return false;
+        const JitInst& inst = chunk.code[ip];
+        if (!jit_inst_reg_use(inst, reads, writes)) return false;
+        for (uint16_t r : reads) if (r == reg) return false;
+        for (uint16_t r : writes) if (r == reg) return true;
+        switch (inst.op) {
+            case JitOp::JUMP:
+                if (inst.operand < 0) return false;
+                ip = static_cast<size_t>(inst.operand);
+                continue;
+            case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                if (inst.operand < 0) return false;
+                return jit_reg_dead_from(chunk, entry_ip, end_ip,
+                                         static_cast<size_t>(inst.operand), reg, budget) &&
+                       jit_reg_dead_from(chunk, entry_ip, end_ip, ip + 1, reg, budget);
+            case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT:
+                return true;
+            default:
+                ++ip;
+        }
+    }
+    return false;
+}
+
+// A compare whose boolean feeds only the conditional jump right after it
+// can branch on the flags and leave R[a] unwritten: the jump must be the
+// compare's sole successor (branch_target, indexed ip - entry_ip, says
+// whether anything jumps to it) and the register dead on both paths out.
+// Returns 1 for JUMP_IF_FALSE, 2 for JUMP_IF_TRUE, 0 when the pair cannot
+// fuse.
+inline int jit_fusable_jump_after(const JitChunk& chunk, size_t entry_ip, size_t end_ip,
+                                  size_t ip, uint16_t reg,
+                                  const std::vector<uint8_t>& branch_target) {
+    static const bool disabled = std::getenv("SURA_JIT_DISABLE_BRANCH_FUSION") != nullptr;
+    if (disabled || ip + 1 >= end_ip) return 0;
+    const JitInst& jmp = chunk.code[ip + 1];
+    const bool on_false = jmp.op == JitOp::JUMP_IF_FALSE;
+    if (!on_false && jmp.op != JitOp::JUMP_IF_TRUE) return 0;
+    if (jmp.a != reg || jmp.operand < 0) return 0;
+    if (branch_target[ip + 1 - entry_ip]) return 0;
+    int budget = 64;
+    if (!jit_reg_dead_from(chunk, entry_ip, end_ip, static_cast<size_t>(jmp.operand), reg, budget)) return 0;
+    if (!jit_reg_dead_from(chunk, entry_ip, end_ip, ip + 2, reg, budget)) return 0;
+    return on_false ? 1 : 2;
+}
+
+// Registers of a callee frame that some path may read before writing,
+// given that registers 0..argc-1 arrive written: bit r set means the frame
+// must hold the interpreter's zero fill in slot r. Forward dataflow of
+// "definitely written" sets (intersection at joins). Returns all bits when
+// the body has more than 64 registers or an opcode the register model
+// does not cover.
+inline uint64_t jit_regs_read_before_write(const JitChunk& chunk, size_t entry_ip,
+                                           size_t end_ip, uint32_t nregs, uint32_t argc) {
+    if (nregs > 64 || entry_ip >= end_ip || end_ip > chunk.code.size()) return ~0ULL;
+    const size_t n = end_ip - entry_ip;
+    const uint64_t all = nregs >= 64 ? ~0ULL : ((uint64_t{1} << nregs) - 1);
+    std::vector<uint64_t> in(n, all);
+    std::vector<uint8_t> reached(n, 0);
+    in[0] = argc >= 64 ? ~0ULL : ((uint64_t{1} << argc) - 1);
+    reached[0] = 1;
+    uint64_t need = 0;
+    std::vector<uint16_t> reads, writes;
+    bool changed = true;
+    int rounds = 0;
+    while (changed && rounds++ < 64) {
+        changed = false;
+        for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            const size_t i = ip - entry_ip;
+            if (!reached[i]) continue;
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_inst_reg_use(inst, reads, writes)) return ~0ULL;
+            uint64_t st = in[i];
+            for (uint16_t r : reads) {
+                if (r >= 64) return ~0ULL;
+                if (!((st >> r) & 1)) need |= uint64_t{1} << r;
+            }
+            for (uint16_t r : writes) {
+                if (r >= 64) return ~0ULL;
+                st |= uint64_t{1} << r;
+            }
+            auto flow = [&](size_t t) {
+                if (t < entry_ip || t >= end_ip) return;
+                const size_t j = t - entry_ip;
+                const uint64_t merged = reached[j] ? (in[j] & st) : st;
+                if (!reached[j] || merged != in[j]) { in[j] = merged; reached[j] = 1; changed = true; }
+            };
+            switch (inst.op) {
+                case JitOp::JUMP:
+                    if (inst.operand >= 0) flow(static_cast<size_t>(inst.operand));
+                    break;
+                case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                    if (inst.operand >= 0) flow(static_cast<size_t>(inst.operand));
+                    flow(ip + 1);
+                    break;
+                case JitOp::RETURN_VAL: case JitOp::RETURN_NONE: case JitOp::HALT:
+                    break;
+                default:
+                    flow(ip + 1);
+                    break;
+            }
+        }
+    }
+    return changed ? ~0ULL : need;
+}
+
 class SysVBaselineCompiler {
     const JitChunk& chunk;
     size_t entry_ip;
@@ -2239,6 +2356,36 @@ public:
         auto touches_cache = [&](const JitInst& inst) {
             return cached_xmm(inst.a) >= 0 || cached_xmm(inst.b) >= 0 || cached_xmm(inst.c) >= 0;
         };
+        std::vector<uint8_t> branch_target(body_len, 0);
+        for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+            const JitInst& inst = chunk.code[ip];
+            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+            const size_t target = static_cast<size_t>(inst.operand);
+            if (target >= entry_ip && target < end_ip) branch_target[target - entry_ip] = 1;
+        }
+        // A conditional jump folded into the compare before it
+        // (jit_fusable_jump_after); the emit loop skips this instruction.
+        size_t fused_ip = SIZE_MAX;
+        // Ordered compare fused with the jump after it: branch on the flags
+        // (JUMP_IF_FALSE takes the inverse condition, which an unordered
+        // compare also satisfies: A -> BE, AE -> B). Dynamic operands take
+        // the helper on the slow path and branch on its NBTRUE/NBFALSE.
+        auto emit_fused_cmp_jump = [&](const JitInst& inst, size_t ip, int fuse, uint8_t cc,
+                                       bool dyn, std::vector<size_t>& slow) {
+            const size_t target = static_cast<size_t>(chunk.code[ip + 1].operand);
+            const uint8_t jcc = fuse == 1 ? (cc == CC::A ? CC::BE : CC::B) : cc;
+            jump_fixups.push_back({em.jcc_rel32_placeholder(jcc), target, ip});
+            fused_ip = ip + 1;
+            if (!dyn) return;
+            const size_t done = em.jmp_rel32_placeholder();
+            for (size_t j : slow) em.patch_rel32(j, em.pos());
+            emit_helper(&sura_bl_arith, ip);
+            after_call(inst.a);
+            em.mov_ri64(XR::RCX, NBFALSE);
+            em.cmp_rr(XR::RAX, XR::RCX);
+            jump_fixups.push_back({em.jcc_rel32_placeholder(fuse == 1 ? CC::E : CC::NE), target, ip});
+            em.patch_rel32(done, em.pos());
+        };
         // The operations the cache emits itself; false hands the instruction
         // to the switch below, followed by reload_after.
         auto emit_cached = [&](const JitInst& inst, size_t ip, bool dyn) -> bool {
@@ -2317,6 +2464,16 @@ public:
                     const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
                     load_operand_xmm0(swapped ? inst.c : inst.b);
                     ucomisd_xmm0(swapped ? inst.b : inst.c);
+                    if (inst.op != JitOp::CMP_EQ && inst.op != JitOp::CMP_NEQ) {
+                        const int fuse = jit_fusable_jump_after(chunk, entry_ip, end_ip, ip,
+                                                                inst.a, branch_target);
+                        if (fuse) {
+                            const uint8_t cc = (inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_GT)
+                                ? CC::A : CC::AE;
+                            emit_fused_cmp_jump(inst, ip, fuse, cc, dyn, slow);
+                            return true;
+                        }
+                    }
                     em.mov_ri64(XR::RAX, NBFALSE);
                     em.mov_ri64(XR::RCX, NBTRUE);
                     switch (inst.op) {
@@ -2423,13 +2580,6 @@ public:
         // Instruction ips that some branch targets: a value left in XMM0 by
         // the previous instruction is only known there when control cannot
         // arrive from elsewhere.
-        std::vector<uint8_t> branch_target(body_len, 0);
-        for (size_t ip = entry_ip; ip < end_ip; ++ip) {
-            const JitInst& inst = chunk.code[ip];
-            if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
-            const size_t target = static_cast<size_t>(inst.operand);
-            if (target >= entry_ip && target < end_ip) branch_target[target - entry_ip] = 1;
-        }
         int xmm0_holds_reg = -1;      // register whose value XMM0 holds
         size_t xmm0_holds_ip = 0;     // ip of the instruction that left it there
 
@@ -2452,6 +2602,13 @@ public:
             if (!analysis.reached[ip - entry_ip]) continue;
             while (!active_hoists.empty() && active_hoists.back()->backedge_ip < ip)
                 active_hoists.pop_back();
+            if (ip == fused_ip) {
+                // Already emitted as part of the compare before it.
+                fused_ip = SIZE_MAX;
+                ip_off[ip - entry_ip] = em.pos();
+                if (cache != nullptr && ip == cache->backedge_ip) cache = nullptr;
+                continue;
+            }
             if (next_loop_cache < loop_caches.size() &&
                 loop_caches[next_loop_cache].header_ip == ip) {
                 cache = &loop_caches[next_loop_cache++];
@@ -2581,14 +2738,46 @@ public:
                     em.xor_rr(XR::RAX, XR::RCX);
                     em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
                     break;
-                case JitOp::CMP_EQ:
-                case JitOp::CMP_NEQ:
                 case JitOp::CMP_LT:
                 case JitOp::CMP_LTE:
                 case JitOp::CMP_GT:
                 case JitOp::CMP_GTE: {
+                    // b < c is evaluated as c > b so an unordered compare
+                    // (NaN) yields false, the way Value::lt does. Dynamic
+                    // operands: numbers compare inline, anything else (the
+                    // ordering type error) in the helper.
+                    std::vector<size_t> slow;
+                    if (dyn) {
+                        emit_non_number_to(off_r(inst.b), slow);
+                        emit_non_number_to(off_r(inst.c), slow);
+                    }
+                    const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
+                    em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.c : inst.b));
+                    em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.b : inst.c));
+                    const uint8_t cc = (inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_GT)
+                        ? CC::A : CC::AE;
+                    const int fuse = jit_fusable_jump_after(chunk, entry_ip, end_ip, ip,
+                                                            inst.a, branch_target);
+                    if (fuse) {
+                        emit_fused_cmp_jump(inst, ip, fuse, cc, dyn, slow);
+                        break;
+                    }
+                    em.mov_ri64(XR::RAX, NBFALSE);
+                    em.mov_ri64(XR::RCX, NBTRUE);
+                    em.cmov_rr(cc, XR::RAX, XR::RCX);
+                    em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+                    if (dyn) {
+                        const size_t done = em.jmp_rel32_placeholder();
+                        for (size_t j : slow) em.patch_rel32(j, em.pos());
+                        helper_store(&sura_bl_arith, ip, inst.a);
+                        em.patch_rel32(done, em.pos());
+                    }
+                    break;
+                }
+                case JitOp::CMP_EQ:
+                case JitOp::CMP_NEQ: {
                     // Dynamic operands: numbers compare inline, anything else
-                    // (string equality, the ordering type error) in the helper.
+                    // (string equality) in the helper.
                     std::vector<size_t> slow;
                     if (dyn) {
                         emit_non_number_to(off_r(inst.b), slow);
@@ -2917,7 +3106,16 @@ public:
                             load_bits(XR::RAX, static_cast<uint16_t>(inst.c + i));
                             em.mov_mem_r(XR::RSP, static_cast<int32_t>(i * 8U), XR::RAX);
                         }
+                        // A slot the callee always writes before reading
+                        // needs no fill: nothing scans a machine-stack
+                        // frame. Known for the body being compiled (a
+                        // self call); other callees keep the full fill.
+                        static const bool zero_all = std::getenv("SURA_JIT_ZERO_ALL_FRAMES") != nullptr;
+                        const uint64_t zero_mask = (dc.self && !zero_all)
+                            ? jit_regs_read_before_write(chunk, entry_ip, end_ip, callee_regs, argc)
+                            : ~0ULL;
                         for (uint32_t r = argc; r < callee_regs; ++r) {
+                            if (r < 64 && !((zero_mask >> r) & 1)) continue;
                             em.mov_mem_imm32(XR::RSP, static_cast<int32_t>(r * 8U), 0);
                         }
                         em.mov_rr(arg_vm(), XR::R13);
