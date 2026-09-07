@@ -430,16 +430,68 @@ inline Value b_split(const Value* a, int n, int l) {
     }
     return arr;
 }
+// Sorts an all-number array. Short arrays use std::sort on the unboxed
+// doubles; longer ones use an LSD radix sort on the IEEE bit pattern (sign
+// bit flipped so unsigned order is numeric order), skipping the passes in
+// which every key shares the same byte - integers below 2^20 leave the low
+// mantissa bytes zero, so a typical array takes three or four passes instead
+// of eight. Returns false, leaving the array untouched, when any element is
+// not a number; the caller then falls back to the comparator sort.
+inline bool sura_sort_numbers(std::vector<Value>& v) {
+    const size_t n = v.size();
+    for (const Value& e : v) if (!e.is_num()) return false;
+    if (n < 512) {
+        std::sort(v.begin(), v.end(),
+                  [](const Value& x, const Value& y) { return x.as_num() < y.as_num(); });
+        return true;
+    }
+    std::vector<uint64_t> a(n), b(n);
+    const uint64_t sign = uint64_t(1) << 63;
+    for (size_t i = 0; i < n; ++i) {
+        const uint64_t k = v[i].raw_bits();
+        a[i] = (k & sign) ? ~k : (k | sign);
+    }
+    uint64_t* src = a.data();
+    uint64_t* dst = b.data();
+    for (int pass = 0; pass < 8; ++pass) {
+        const int sh = pass * 8;
+        size_t hist[256] = {0};
+        for (size_t i = 0; i < n; ++i) ++hist[(src[i] >> sh) & 255];
+        if (hist[(src[0] >> sh) & 255] == n) continue;
+        size_t sum = 0;
+        for (size_t d = 0; d < 256; ++d) { const size_t c = hist[d]; hist[d] = sum; sum += c; }
+        for (size_t i = 0; i < n; ++i) dst[hist[(src[i] >> sh) & 255]++] = src[i];
+        std::swap(src, dst);
+    }
+    for (size_t i = 0; i < n; ++i) {
+        uint64_t k = src[i];
+        k = (k & sign) ? (k & ~sign) : ~k;
+        v[i] = Value::from_bits(k);
+    }
+    return true;
+}
+inline void sura_sort_values(std::vector<Value>& v) {
+    if (sura_sort_numbers(v)) return;
+    std::sort(v.begin(), v.end(), [](const Value& x, const Value& y) { return x.lt(y); });
+}
+// Joins the elements' string forms with `sep`, sized up front: one
+// reservation, no per-element temporaries.
+inline std::string sura_join_values(const std::vector<Value>& v, const std::string& sep) {
+    std::string out;
+    size_t total = v.empty() ? 0 : sep.size() * (v.size() - 1);
+    for (const Value& e : v) total += e.is_str() ? e.as_str_ref().size() : 8;
+    out.reserve(total);
+    for (size_t i = 0; i < v.size(); ++i) {
+        if (i) out += sep;
+        v[i].append_str_to(out);
+    }
+    return out;
+}
 inline Value b_join(const Value* a, int n, int l) {
     need_args("join", n, 2, 2, l);
     GCArray* arr = need_arr("join", a[0], 0, l);
     std::string sep = need_str("join", a[1], 1, l);
-    std::string out;
-    for (size_t i = 0; i < arr->elements.size(); ++i) {
-        if (i) out += sep;
-        out += arr->elements[i].to_str();
-    }
-    return Value(out);
+    return Value(sura_join_values(arr->elements, sep));
 }
 inline Value b_trim(const Value* a, int n, int l) {
     need_args("trim", n, 1, 1, l);
@@ -722,8 +774,7 @@ inline Value b_slice(const Value* a, int n, int l) {
 inline Value b_sort(const Value* a, int n, int l) {
     need_args("sort", n, 1, 1, l);
     GCArray* arr = need_arr("sort", a[0], 0, l);
-    std::sort(arr->elements.begin(), arr->elements.end(),
-              [](const Value& x, const Value& y){ return x.lt(y); });
+    sura_sort_values(arr->elements);
     return a[0]; // return same array for chaining
 }
 inline Value b_reverse(const Value* a, int n, int l) {
@@ -16326,6 +16377,14 @@ inline bool try_dispatch(const std::string& name, const Value* args, int nargs, 
     if (it == t.end()) return false;
     out = it->second(args, nargs, line);
     return true;
+}
+
+// The builtin registered under `name`, or nullptr. Call sites cache the
+// result so a module call resolves its name once.
+inline BuiltinFn lookup(const std::string& name) {
+    auto& t = table();
+    auto it = t.find(name);
+    return it == t.end() ? nullptr : it->second;
 }
 
 // Enumerates all names (used by typo-suggestion).

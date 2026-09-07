@@ -45,6 +45,12 @@ struct JitInst {
     mutable bool                 ic_numeric_fast; // scalar plan proved numeric operands at entry
     mutable bool                 ic_scalar_guarded_field; // class/layout guarded by scalar entry
     mutable bool                 ic_scalar_numeric_field; // numeric check fused into guarded load
+    // Module-function call cache for METHOD_CALL on a stdlib module object
+    // (`string.len(s)`): the module dictionary this site last dispatched on
+    // and the builtin it resolved to. Module dictionaries are pinned as GC
+    // roots for the life of the process, so the pointer identity is stable.
+    mutable const void*          ic_module_dict = nullptr;
+    mutable void*                ic_module_fn = nullptr;
 
     JitInst(JitOp op, uint16_t a = 0, uint16_t b = 0, uint16_t c = 0,
             int operand = 0, int str_idx = -1, int line = 0)

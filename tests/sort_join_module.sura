@@ -1,0 +1,96 @@
+# 숫자 배열 정렬(기수 정렬 경로), join의 한 번 예약 경로, 모듈 함수 호출 캐시가
+# 인터프리터와 같은 값을 내야 한다.
+use array
+use string
+
+# 1) 짧은 배열(비교 정렬)과 긴 배열(기수 정렬) 모두 오름차순
+func lcg_list(n, seed) do
+  a is []
+  i is 0
+  while i < n do
+    seed is (seed * 1103515245 + 12345) % 2147483648
+    a.push(seed % 1000000 - 500000)
+    i is i + 1
+  end
+  return a
+end
+
+func is_sorted(a) do
+  i is 1
+  while i < a.len() do
+    if a[i - 1] > a[i] then
+      return false
+    end
+    i is i + 1
+  end
+  return true
+end
+
+short is array.sort(lcg_list(100, 7))
+assert_eq(is_sorted(short), true)
+assert_eq(short.len(), 100)
+long is array.sort(lcg_list(5000, 99))
+assert_eq(is_sorted(long), true)
+assert_eq(long.len(), 5000)
+
+# 2) 소수·음수·0·-0·매우 큰 값·작은 값이 섞여도 순서가 맞다
+huge is 1000000000000000000000
+tiny is 0.000000001
+mixed is [3.5, -2.25, 0, -0.0, huge, 0 - huge, tiny, 0 - tiny, 2, -2, 0.5]
+i is 0
+while i < 6 do
+  mixed is array.concat(mixed, mixed)
+  i is i + 1
+end
+sorted_mixed is array.sort(mixed)
+assert_eq(sorted_mixed.len(), 704)
+assert_eq(is_sorted(sorted_mixed), true)
+assert_eq(sorted_mixed[0], 0 - huge)
+assert_eq(sorted_mixed[703], huge)
+assert_eq(sorted_mixed[64], -2.25)
+assert_eq(sorted_mixed[128], -2)
+assert_eq(sorted_mixed[448], 0.5)
+
+# 3) 메서드 형태 정렬도 같은 경로
+m is lcg_list(1000, 3)
+m.sort()
+assert_eq(is_sorted(m), true)
+
+# 4) 숫자가 아닌 원소가 섞이면 이전과 같이 비교 정렬로 처리되어 오류가 없다
+strs is ["b", "a", "c"]
+strs.sort()
+assert_eq(strs.len(), 3)
+
+# 5) join: 문자열, 숫자, 빈 배열, 빈 구분자, 긴 배열
+assert_eq(string.join(["a", "b", "c"], ","), "a,b,c")
+assert_eq(string.join([1, 2.5, 3], "-"), "1-2.5-3")
+assert_eq(string.join([], ","), "")
+assert_eq(string.join(["x"], ","), "x")
+assert_eq(["p", "q"].join(""), "pq")
+assert_eq([true, nil, 7].join(" "), "true nil 7")
+parts is []
+i is 0
+while i < 3000 do
+  parts.push("item")
+  i is i + 1
+end
+joined is string.join(parts, ",")
+assert_eq(string.len(joined), 3000 * 4 + 2999)
+
+# 6) 모듈 함수 호출 캐시: 같은 사이트가 반복 호출되어도, 다른 모듈이 같은 사이트를
+#    지나가도 올바른 함수를 부른다
+func call_len(mod, v) do
+  return mod.len(v)
+end
+
+total is 0
+i is 0
+while i < 2000 do
+  total is total + string.len("abc") + call_len(string, "hello") + call_len(array, [1, 2, 3])
+  i is i + 1
+end
+assert_eq(total, 2000 * (3 + 5 + 3))
+assert_eq(string.upper("ab"), "AB")
+assert_eq(array.sum([1, 2, 3]), 6)
+
+print "sort_join_module: PASS"

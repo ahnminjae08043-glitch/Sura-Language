@@ -1094,7 +1094,14 @@ class JitVM {
         return "";
     }
 
+    // One dictionary per stdlib module name for the life of the process:
+    // `use string` twice yields the same object, and the object is pinned as
+    // a GC root so METHOD_CALL sites can cache module functions by the
+    // dictionary's address (JitInst::ic_module_dict).
     static Value make_stdlib_module(const std::string& raw_module) {
+        static std::unordered_map<std::string, Value> modules;
+        auto found = modules.find(raw_module);
+        if (found != modules.end()) return found->second;
         std::string module = canonical_stdlib_module(raw_module);
         Value mod = Value::make_dict();
         auto* d = mod.as_dict();
@@ -1104,6 +1111,8 @@ class JitVM {
             d->elements["pi"] = Value(3.14159265358979323846);
             d->elements["e"] = Value(2.71828182845904523536);
         }
+        gc_native_roots_registry().push_back(static_cast<GCObject*>(d));
+        modules.emplace(raw_module, mod);
         return mod;
     }
 
@@ -3294,7 +3303,8 @@ private:
     }
 
     bool dispatch_builtin_method(const Value& receiver, const std::string& meth,
-                                 Value* args, int nargs, int line, Value& out) {
+                                 Value* args, int nargs, int line, Value& out,
+                                 const JitInst* site = nullptr) {
         if (receiver.is_arr()) {
             GCArray* arr = receiver.as_arr();
             if (meth == "len" || meth == "size" || meth == "length") {
@@ -3370,19 +3380,13 @@ private:
                             return call_callable(cmp, {x, y}, line).truthy();
                         });
                 } else {
-                    std::sort(arr->elements.begin(), arr->elements.end(),
-                        [](const Value& x, const Value& y) { return x.lt(y); });
+                    SuraStd::sura_sort_values(arr->elements);
                 }
                 out = receiver; return true;
             }
             if (meth == "join") {
                 std::string sep = (nargs >= 1) ? args[0].to_str() : "";
-                std::string s;
-                for (size_t i = 0; i < arr->elements.size(); ++i) {
-                    if (i > 0) s += sep;
-                    s += arr->elements[i].to_str();
-                }
-                out = Value(s); return true;
+                out = Value(SuraStd::sura_join_values(arr->elements, sep)); return true;
             }
             if (meth == "slice") {
                 int from = nargs >= 1 ? (int)args[0].to_num() : 0;
@@ -3505,6 +3509,13 @@ private:
 
         if (receiver.is_dict()) {
             GCDict* dict = receiver.as_dict();
+            // A site that already resolved a module function on this very
+            // dictionary calls it directly (module dictionaries are pinned,
+            // so the address identifies the module).
+            if (site != nullptr && site->ic_module_fn != nullptr && site->ic_module_dict == dict) {
+                out = reinterpret_cast<SuraStd::BuiltinFn>(site->ic_module_fn)(args, nargs, line);
+                return true;
+            }
             // Every dict method call checks for a module marker first; the
             // marker's hash is computed once, not per call.
             static const std::string kModuleKey = "__module";
@@ -3512,10 +3523,15 @@ private:
             const Value* module_val = dict->elements.find_hashed(kModuleKey, kModuleHash);
             if (module_val && module_val->is_str()) {
                 std::string builtin = module_builtin_name(module_val->as_str_ref(), meth);
-                Value outv;
-                if (!builtin.empty() && SuraStd::try_dispatch(builtin, args, nargs, line, outv)) {
-                    out = outv;
-                    return true;
+                if (!builtin.empty()) {
+                    if (SuraStd::BuiltinFn fn = SuraStd::lookup(builtin)) {
+                        if (site != nullptr) {
+                            site->ic_module_dict = dict;
+                            site->ic_module_fn = reinterpret_cast<void*>(fn);
+                        }
+                        out = fn(args, nargs, line);
+                        return true;
+                    }
                 }
             }
             if (meth == "len" || meth == "size" || meth == "length") {
@@ -4081,7 +4097,7 @@ _reenter:
                 }
                 // Built-in array methods
                 Value builtin_method_result;
-                if (dispatch_builtin_method(R[b], meth, &R[b+1], nargs, inst.line, builtin_method_result)) {
+                if (dispatch_builtin_method(R[b], meth, &R[b+1], nargs, inst.line, builtin_method_result, &inst)) {
                     R[a] = builtin_method_result;
                 } else if (R[b].is_arr()) {
                     GCArray* arr = R[b].as_arr();
@@ -4832,7 +4848,7 @@ inline uint64_t JitVM::dispatch_method_call_from_jit(Value* R, const JitInst* in
     uint16_t b = ins->b;
 
     Value builtin_method_result;
-    if (dispatch_builtin_method(R[b], meth, &R[b+1], nargs, ins->line, builtin_method_result)) {
+    if (dispatch_builtin_method(R[b], meth, &R[b+1], nargs, ins->line, builtin_method_result, ins)) {
         return builtin_method_result.raw_bits();
     }
 
