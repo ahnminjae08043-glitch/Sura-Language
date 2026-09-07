@@ -4619,6 +4619,13 @@ class NativeCompiler {
     // Numeric proof for the general body, used to drop per-operation type
     // guards. Null whenever the proof does not apply.
     std::unique_ptr<BaselineBodyAnalysis> numeric_proof;
+    // Entry guards on parameters the body uses as numbers (deoptable
+    // closures only): a non-number argument hands the call back to the
+    // interpreter with SURA_JIT_DEOPT_SENTINEL before any side effect, and
+    // the numeric proof may take those parameters as numbers from entry.
+    uint32_t             param_guard_count_ = 0;
+    uint64_t             param_guard_mask_ = 0;
+    std::vector<size_t>  param_guard_jumps_;
     std::vector<JitStrictCountedLoop> strict_counted_loops;
     // Direct-call linkage for the baseline tiers; null keeps LOAD_GLOBAL and
     // CALL_FUNC out of those tiers. Set by the VM for function bodies only.
@@ -4902,6 +4909,23 @@ public:
             // can replay: pure numeric closures, where its guarded entry and
             // native-to-native calls beat the full tier's helper calls.
             if (!deoptable) throw std::runtime_error("baseline: not replayable");
+            if (std::getenv("SURA_JIT_DISABLE_BASELINE"))
+                throw std::runtime_error("baseline: disabled");
+            {
+                // The full tier's write-back loop cache and parameter guards
+                // beat the baseline's store-through cache on call-free loop
+                // bodies; the baseline keeps the bodies that call (its
+                // native-to-native calls are what it is best at).
+                bool has_loop = false, has_call = false;
+                for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                    const JitInst& inst = chunk.code[ip];
+                    if (inst.op == JitOp::JUMP && inst.operand >= 0 &&
+                        static_cast<size_t>(inst.operand) <= ip) has_loop = true;
+                    if (inst.op == JitOp::CALL_FUNC) has_call = true;
+                }
+                if (has_loop && !has_call && !std::getenv("SURA_JIT_BASELINE_LOOPS"))
+                    throw std::runtime_error("baseline: call-free loop body prefers the full tier");
+            }
             baseline.set_abi(X64BaselineAbi::Win64);
 #endif
             // A body can be a direct callee only when a direct call binds
@@ -4993,28 +5017,64 @@ public:
         compute_definitely_initialized_globals();
 
         // Whole-body numeric proof, used below to drop per-operation type
-        // guards. Parameters are deliberately not assumed numeric (0 guarded
-        // registers): this tier has no entry guard to enforce that, so only
-        // values this body itself produced from constants and arithmetic
-        // count as proven. DIV keeps its checked helper, so the analysis is
-        // told not to reject a body over an unprovable divisor.
+        // guards. A deoptable closure gets entry guards on the parameters
+        // its body uses as numbers (see param_guard_mask_), and those count
+        // as numbers from entry; everything else proven comes from constants
+        // and arithmetic in the body itself. The guard mask excludes
+        // parameters the interpreter has already seen with non-numbers, so a
+        // guard that would fire on every call is never emitted. DIV keeps
+        // its checked helper, so the analysis is told not to reject a body
+        // over an unprovable divisor.
+        param_guard_count_ = 0;
+        param_guard_mask_ = 0;
+        static const bool no_param_guards = std::getenv("SURA_JIT_DISABLE_PARAM_GUARDS") != nullptr;
+        if (!no_param_guards && !is_top_level && !callable_is_method &&
+            callable_param_count > 0 && callable_param_count <= 64 &&
+            jit_default_arg_count_reg(chunk, entry_ip, 0, callable_param_count) < 0) {
+            uint64_t used = 0;
+            auto mark = [&](uint16_t r) {
+                if (r < callable_param_count) used |= uint64_t{1} << r;
+            };
+            for (size_t ip = entry_ip; ip < end_ip; ++ip) {
+                const JitInst& inst = chunk.code[ip];
+                switch (inst.op) {
+                    case JitOp::ADD: case JitOp::SUB: case JitOp::MUL: case JitOp::DIV:
+                    case JitOp::MOD: case JitOp::CMP_LT: case JitOp::CMP_LTE:
+                    case JitOp::CMP_GT: case JitOp::CMP_GTE: case JitOp::CMP_EQ:
+                    case JitOp::CMP_NEQ:
+                        mark(inst.b); mark(inst.c); break;
+                    case JitOp::NEG:       mark(inst.b); break;
+                    case JitOp::INDEX_GET: mark(inst.c); break;
+                    case JitOp::INDEX_SET: mark(inst.b); break;
+                    default: break;
+                }
+            }
+            const uint64_t all = callable_param_count >= 64
+                ? ~0ULL : ((uint64_t{1} << callable_param_count) - 1);
+            param_guard_mask_ = used & all & baseline_guard_mask_;
+            if (param_guard_mask_ != 0)
+                param_guard_count_ = static_cast<uint32_t>(callable_param_count);
+        }
         try {
             auto proof = std::make_unique<BaselineBodyAnalysis>(
                 chunk, entry_ip, end_ip, native_frame_regs,
-                /*guarded_params=*/0u,
+                /*guarded_params=*/param_guard_count_,
                 std::numeric_limits<uint16_t>::max(),
                 std::numeric_limits<int32_t>::max() / 8,
-                /*allow_runtime_deopt=*/false,
+                /*allow_runtime_deopt=*/param_guard_count_ > 0,
                 /*require_provable_div=*/false,
                 /*link=*/nullptr, /*self_fidx=*/-1, /*self_callable=*/false,
-                /*guard_mask=*/~0ULL, /*allow_helpers=*/false,
+                /*guard_mask=*/param_guard_count_ > 0 ? param_guard_mask_ : ~0ULL,
+                /*allow_helpers=*/false,
                 /*proof_only=*/true);
             if (proof->ok) numeric_proof = std::move(proof);
         } catch (...) {
             numeric_proof.reset();
         }
+        if (!numeric_proof) { param_guard_count_ = 0; param_guard_mask_ = 0; }
         plan_loop_caches();
         plan_virtual_records();
+        plan_writeback();
 
         // ── Prologue ──────────────────────────────────────
         // Save non-volatile regs we use (Win64: RBX, R12-R15 are callee-saved).
@@ -5060,6 +5120,12 @@ public:
         em.mov_rr(XR::R13, XR::RCX);
         em.mov_rr(XR::RBX, XR::RDX);
         em.mov_rr(XR::R12, XR::R8);
+        // Parameter guards: a failing one returns the deopt sentinel from
+        // the tail emitted after the body, before anything else ran.
+        param_guard_jumps_.clear();
+        for (uint32_t p = 0; p < param_guard_count_; ++p)
+            if (BaselineBodyAnalysis::guarded_bit(param_guard_mask_, p))
+                param_guard_jumps_.push_back(emit_non_number_jump(off_r(static_cast<uint16_t>(p))));
 
         // Materialize strict counted-loop descriptors once.  The probe is
         // deliberately a side path: a failed runtime shape check returns 0
@@ -5212,6 +5278,16 @@ public:
                 pending_src.push_back(stub.src_ip);
             }
             exit_stubs.clear();
+            if (!param_guard_jumps_.empty()) {
+                for (size_t p : param_guard_jumps_) em.patch_rel32(p, em.pos());
+                em.mov_ri64(XR::RAX, SURA_JIT_DEOPT_SENTINEL);
+                emit_frame_teardown();
+                em.pop_r(XR::R13);
+                em.pop_r(XR::R12);
+                em.pop_r(XR::RBX);
+                em.ret();
+                param_guard_jumps_.clear();
+            }
 
         // ── Resolve jumps ─────────────────────────────────
             for (size_t i = 0; i < pending.size(); ++i) {
@@ -6299,16 +6375,26 @@ private:
 
     // The constructor, field reads and field writes of a planned record.
     // Leaves the written register's value in RAX, as reload_after expects.
+    // Cached registers move straight between their XMM copy and the shadow
+    // slots (the slots lie past the cacheable registers, so they are frame
+    // memory in both cache modes).
     bool emit_virtual_record_op(const JitInst& inst, size_t ip) {
         auto ctor = virtual_ctor_at.find(ip);
         if (ctor != virtual_ctor_at.end()) {
             const JitVirtualRecord& rec = virtual_records[ctor->second];
             for (uint16_t f = 0; f < rec.field_count; ++f) {
-                em.mov_r_mem(XR::RAX, XR::RBX, off_r(static_cast<uint16_t>(inst.c + f)));
-                em.mov_mem_r(XR::RBX, off_r(static_cast<uint16_t>(rec.shadow_base + f)), XR::RAX);
+                const uint16_t src = static_cast<uint16_t>(inst.c + f);
+                const int32_t slot = off_r(static_cast<uint16_t>(rec.shadow_base + f));
+                const int x = cached_xmm(src);
+                if (x >= 0) {
+                    em.movsd_mem_x(XR::RBX, slot, x);
+                } else {
+                    em.mov_r_mem(XR::RAX, XR::RBX, off_r(src));
+                    em.mov_mem_r(XR::RBX, slot, XR::RAX);
+                }
             }
             em.mov_ri64(XR::RAX, JIT_NBNIL);
-            em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+            store_result_rax(inst.a);
             return true;
         }
         auto access = virtual_access_at.find(ip);
@@ -6316,12 +6402,23 @@ private:
         const JitVirtualRecord& rec = virtual_records[access->second];
         const int32_t slot = off_r(static_cast<uint16_t>(rec.shadow_base + inst.ic_cache));
         if (inst.op == JitOp::DOT_GET) {
-            em.mov_r_mem(XR::RAX, XR::RBX, slot);
-            em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+            const int x = cached_xmm(inst.a);
+            if (x >= 0) {
+                em.movsd_x_mem(x, XR::RBX, slot);
+                if (!cache_writeback) em.movsd_mem_x(XR::RBX, off_r(inst.a), x);
+            } else {
+                em.mov_r_mem(XR::RAX, XR::RBX, slot);
+                em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
+            }
             return true;
         }
-        em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
-        em.mov_mem_r(XR::RBX, slot, XR::RDX);
+        const int x = cached_xmm(inst.b);
+        if (x >= 0) {
+            em.movsd_mem_x(XR::RBX, slot, x);
+        } else {
+            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
+            em.mov_mem_r(XR::RBX, slot, XR::RDX);
+        }
         return true;
     }
 
@@ -6336,12 +6433,31 @@ private:
         loop_caches = jit_plan_loop_caches(chunk, entry_ip, end_ip, nullptr, reg_limit,
                                            native_reuse_flag_reg, kLoopCacheXmmFirst,
                                            kLoopCacheXmmCount, "full-tier");
-        // A loop whose body consists only of operations the cache emits
-        // itself keeps its registers in XMM alone (write-back): every
-        // memory read of a cached register, every helper call and every
-        // exit of the region is under this compiler's control there.
+        for (const LoopCache& cache : loop_caches)
+            xmm_saved_count = std::max<int>(xmm_saved_count, static_cast<int>(cache.regs.size()));
+        frame_bytes = 48 + 16U * static_cast<uint32_t>(xmm_saved_count);
+        if (jit_array_layout_verified()) {
+            hoist_loops = jit_plan_array_hoists(chunk, entry_ip, end_ip, nullptr, reg_limit,
+                                                native_reuse_flag_reg, kHoistGprs, 4, "full-tier");
+            int used = 0;
+            for (const JitHoistLoop& loop : hoist_loops)
+                for (const auto& rg : loop.regs)
+                    for (int k = 0; k < 4; ++k)
+                        if (kHoistGprs[k] == rg.second) used = std::max(used, k + 1);
+            hoist_gpr_count = used == 0 ? 0 : (used <= 2 ? 2 : 4);
+        }
+    }
+
+    // A loop whose body consists only of operations the cache emits itself
+    // keeps its registers in XMM alone (write-back): every memory read of a
+    // cached register, every helper call and every exit of the region is
+    // under this compiler's control there. Virtual record sites and the
+    // inline array/dict method shapes count as such operations.
+    void plan_writeback() {
         static const bool no_writeback = std::getenv("SURA_JIT_DISABLE_WRITEBACK") != nullptr;
+        const bool arrays_inline = jit_array_layout_verified();
         for (LoopCache& cache : loop_caches) {
+            cache.writeback = false;
             if (no_writeback || cache.regs.empty()) continue;
             bool ok = chunk.code[cache.backedge_ip].op == JitOp::JUMP;
             for (size_t ip = cache.header_ip; ok && ip <= cache.backedge_ip; ++ip) {
@@ -6359,6 +6475,27 @@ private:
                     case JitOp::JUMP: case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
                         ok = inst.operand >= 0;
                         break;
+                    case JitOp::CALL_FUNC:
+                        ok = virtual_ctor_at.count(ip) != 0;
+                        break;
+                    case JitOp::DOT_GET: case JitOp::DOT_SET:
+                        ok = virtual_access_at.count(ip) != 0;
+                        break;
+                    case JitOp::LOAD_GLOBAL:
+                        // Inline load, or a helper that reads only the
+                        // globals table (no frame access, no collection).
+                        ok = inst.operand >= 0;
+                        break;
+                    case JitOp::METHOD_CALL: {
+                        const std::string& mname = chunk.get_string(inst.str_idx);
+                        ok = arrays_inline &&
+                             ((inst.operand == 0 &&
+                               (mname == "len" || mname == "size" || mname == "length")) ||
+                              (inst.operand == 1 &&
+                               (mname == "has" || mname == "contains" ||
+                                mname == "push" || mname == "append")));
+                        break;
+                    }
                     default:
                         ok = false;
                         break;
@@ -6368,19 +6505,6 @@ private:
             if (ok && std::getenv("SURA_JIT_DIAG"))
                 std::fprintf(stderr, "[jit] full-tier loop cache ip %zu..%zu: write-back\n",
                              cache.header_ip, cache.backedge_ip);
-        }
-        for (const LoopCache& cache : loop_caches)
-            xmm_saved_count = std::max<int>(xmm_saved_count, static_cast<int>(cache.regs.size()));
-        frame_bytes = 48 + 16U * static_cast<uint32_t>(xmm_saved_count);
-        if (jit_array_layout_verified()) {
-            hoist_loops = jit_plan_array_hoists(chunk, entry_ip, end_ip, nullptr, reg_limit,
-                                                native_reuse_flag_reg, kHoistGprs, 4, "full-tier");
-            int used = 0;
-            for (const JitHoistLoop& loop : hoist_loops)
-                for (const auto& rg : loop.regs)
-                    for (int k = 0; k < 4; ++k)
-                        if (kHoistGprs[k] == rg.second) used = std::max(used, k + 1);
-            hoist_gpr_count = used == 0 ? 0 : (used <= 2 ? 2 : 4);
         }
     }
 
@@ -6955,7 +7079,6 @@ private:
         if (runtime_inst == nullptr && !virtual_records.empty() &&
             ip < chunk.code.size() && &inst == &chunk.code[ip] &&
             emit_virtual_record_op(inst, ip)) {
-            if (active_cache != nullptr) reload_after(inst);
             return true;
         }
         if (active_cache != nullptr && runtime_inst == nullptr) {
@@ -7500,6 +7623,7 @@ private:
                     if (inst.operand == 0 &&
                         (mname == "len" || mname == "size" || mname == "length")) {
                         std::vector<size_t> slow_jmps;
+                        if (runtime_inst == nullptr) ensure_in_memory(inst.b);
                         emit_array_receiver_guard(em, ob, slow_jmps);
                         em.mov_r_mem(XR::RCX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
                         em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
@@ -7516,6 +7640,7 @@ private:
                         size_t slow_pos = em.pos();
                         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
                         const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        if (runtime_inst == nullptr) flush_all_cached();
                         em.mov_rr(XR::RCX, XR::R13);
                         em.mov_rr(XR::RDX, XR::RBX);
                         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -7528,9 +7653,11 @@ private:
                     // d.has(k) / d.contains(k): proven dict -> single hash probe.
                     if (inst.operand == 1 && (mname == "has" || mname == "contains")) {
                         std::vector<size_t> slow_jmps;
+                        if (runtime_inst == nullptr) ensure_in_memory(inst.b);
                         emit_object_receiver_guard(em, ob, OBJ_TYPE_DICT, slow_jmps);
                         em.mov_rr(XR::RCX, XR::RAX);
-                        em.mov_r_mem(XR::RDX, XR::RBX, off_r(static_cast<uint16_t>(inst.b + 1)));
+                        if (runtime_inst == nullptr) load_bits(XR::RDX, static_cast<uint16_t>(inst.b + 1));
+                        else em.mov_r_mem(XR::RDX, XR::RBX, off_r(static_cast<uint16_t>(inst.b + 1)));
                         em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_dict_has);
                         em.call_rax();
                         em.mov_mem_r(XR::RBX, oa, XR::RAX);
@@ -7538,6 +7665,7 @@ private:
                         size_t slow_pos = em.pos();
                         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
                         const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        if (runtime_inst == nullptr) flush_all_cached();
                         em.mov_rr(XR::RCX, XR::R13);
                         em.mov_rr(XR::RDX, XR::RBX);
                         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -7550,13 +7678,20 @@ private:
                     if (inst.operand == 1 && (mname == "push" || mname == "append")) {
                         const int32_t arg_off = off_r(static_cast<uint16_t>(inst.b + 1));
                         std::vector<size_t> slow_jmps;
+                        if (runtime_inst == nullptr) ensure_in_memory(inst.b);
                         emit_array_receiver_guard(em, ob, slow_jmps);
                         em.mov_r_mem(XR::RDX, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
                         em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_CAP_OFFSET);
                         em.cmp_rr(XR::RDX, XR::R10);
                         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
-                        em.mov_r_mem(XR::RCX, XR::RBX, arg_off);
-                        em.mov_mem_r(XR::RDX, 0, XR::RCX);
+                        const int arg_xmm = runtime_inst == nullptr
+                            ? cached_xmm(static_cast<uint16_t>(inst.b + 1)) : -1;
+                        if (arg_xmm >= 0) {
+                            em.movsd_mem_x(XR::RDX, 0, arg_xmm);
+                        } else {
+                            em.mov_r_mem(XR::RCX, XR::RBX, arg_off);
+                            em.mov_mem_r(XR::RDX, 0, XR::RCX);
+                        }
                         em.add_r_imm32(XR::RDX, 8);
                         em.mov_mem_r(XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET, XR::RDX);
                         em.mov_r_mem(XR::RAX, XR::RBX, ob);
@@ -7566,6 +7701,7 @@ private:
                         size_t slow_pos = em.pos();
                         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
                         const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
+                        if (runtime_inst == nullptr) flush_all_cached();
                         em.mov_rr(XR::RCX, XR::R13);
                         em.mov_rr(XR::RDX, XR::RBX);
                         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
