@@ -1,0 +1,125 @@
+# 루프 레지스터 캐시의 write-back 모드: 루프 안에서는 XMM 사본만 갱신하고, 루프를
+# 벗어나는 모든 경로(조건 탈출, break)와 helper 호출 앞에서만 프레임에 되쓴다.
+# 탈출 뒤에 읽는 값, 문자열 누적(GC 압박 + helper), 딕셔너리 인덱스(helper),
+# 중첩 루프 탈출, 0 나눗셈 오류가 인터프리터와 같아야 한다.
+
+func break_mid(n) do
+  total is 0
+  i is 0
+  last is -1
+  while i < n do
+    total is total + i * 2
+    if total > 1000 then
+      last is i
+      break
+    end
+    i is i + 1
+  end
+  return total * 100000 + last * 100 + i
+end
+
+func string_acc(n) do
+  s is ""
+  acc is 0
+  i is 0
+  while i < n do
+    s is s + "ab"
+    acc is acc + i
+    junk is "x" + i + "y" + (i * 3)
+    i is i + 1
+  end
+  return s.len() * 1000000 + acc
+end
+
+func dict_index(n) do
+  d is {}
+  i is 0
+  hits is 0
+  while i < n do
+    k is i % 7
+    d[k] is i
+    hits is hits + d[k]
+    i is i + 1
+  end
+  return hits + d[3]
+end
+
+func nested_exit(n, m) do
+  total is 0
+  i is 0
+  while i < n do
+    j is 0
+    while j < m do
+      if j == i then
+        break
+      end
+      total is total + j
+      j is j + 1
+    end
+    total is total + j * 10
+    i is i + 1
+  end
+  return total
+end
+
+func mixed_until(n) do
+  i is 0
+  acc is 0
+  while true do
+    acc is acc + i
+    i is i + 1
+    if i >= n then
+      break
+    end
+  end
+  return acc * 10 + i
+end
+
+func div_error(n) do
+  i is 0
+  acc is 1
+  while i < n do
+    acc is acc + 10 / (n - i - 3)
+    i is i + 1
+  end
+  return acc
+end
+
+func float_index(arr) do
+  total is 0
+  i is 0
+  while i < 6 do
+    total is total + arr[i * 0.5]
+    i is i + 1
+  end
+  return total
+end
+
+r is 0
+while r < 40 do
+  a is break_mid(100)
+  b is string_acc(50)
+  c is dict_index(30)
+  d is nested_exit(6, 8)
+  e is mixed_until(20)
+  f is float_index([10, 20, 30, 40])
+  r is r + 1
+end
+
+assert_eq(break_mid(100), 1056 * 100000 + 32 * 100 + 32)
+assert_eq(break_mid(10), 90 * 100000 - 100 + 10)
+assert_eq(string_acc(20000), 40000 * 1000000 + 20000 * 19999 / 2)
+assert_eq(dict_index(100), 4950 + 94)
+assert_eq(nested_exit(6, 8), 170)
+assert_eq(mixed_until(20), 190 * 10 + 20)
+assert_eq(float_index([10, 20, 30, 40]), 10 + 10 + 20 + 20 + 30 + 30)
+
+caught is ""
+try
+  x is div_error(10)
+catch err
+  caught is err
+end
+print("div: {caught}")
+
+print "jit_writeback_cache: PASS"

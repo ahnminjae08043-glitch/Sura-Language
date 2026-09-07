@@ -1261,6 +1261,10 @@ struct JitLoopCache {
     size_t backedge_ip = 0;
     std::vector<int8_t> xmm_of;    // per register: XMM number or -1
     std::vector<uint16_t> regs;    // cached registers in XMM order
+    // Write-back mode: inside the loop the XMM copies are the only current
+    // value of the cached registers; the frame slots are written when the
+    // loop is left and before any helper call. Store-through otherwise.
+    bool writeback = false;
 };
 
 inline bool jit_is_branch_op(JitOp op) {
@@ -1854,7 +1858,14 @@ inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container
     }
     if (!key_proven) {
         static constexpr uint32_t TAG32 = 0x7ffc0000U;
-        em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+        if (key_xmm >= 0) {
+            // The XMM copy is the key's current value (its frame slot may
+            // be stale under a write-back cache).
+            em.movq_r_x(XR::RCX, key_xmm);
+            em.shr_r_imm8(XR::RCX, 32);
+        } else {
+            em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+        }
         em.and_r32_imm32(XR::RCX, TAG32);
         em.cmp_r32_imm32(XR::RCX, TAG32);
         slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
@@ -4579,6 +4590,12 @@ class NativeCompiler {
     // A conditional jump folded into the compare before it (see
     // fusable_jump_after); the emit loop skips this instruction.
     size_t fused_jump_ip = SIZE_MAX;
+    // True while active_cache is a write-back cache (JitLoopCache::writeback).
+    bool cache_writeback = false;
+    // Conditional jumps leaving a write-back region go through a stub that
+    // writes the cached registers back first; emitted after the body.
+    struct ExitStub { size_t jcc_pos; size_t target_ip; size_t src_ip; const JitLoopCache* cache; };
+    std::vector<ExitStub> exit_stubs;
     // Map from bytecode IP to native code offset.
     std::vector<size_t> ip_to_native;
     std::vector<std::vector<uint8_t>> definitely_initialized_globals;
@@ -5128,8 +5145,10 @@ public:
                     ip_to_native[ip] = em.pos();
                     emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
                     pending_src.resize(pending.size(), ip);
-                    if (active_cache != nullptr && ip == active_cache->backedge_ip)
+                    if (active_cache != nullptr && ip == active_cache->backedge_ip) {
                         active_cache = nullptr;
+                        cache_writeback = false;
+                    }
                     continue;
                 }
                 // Pre-headers: loop cache loads first, then the hoisted
@@ -5138,6 +5157,7 @@ public:
                 if (next_loop_cache < loop_caches.size() &&
                     loop_caches[next_loop_cache].header_ip == ip) {
                     active_cache = &loop_caches[next_loop_cache++];
+                    cache_writeback = active_cache->writeback;
                     preheaders_.push_back({active_cache->header_ip, active_cache->backedge_ip, em.pos()});
                     for (uint16_t r : active_cache->regs)
                         em.movsd_x_mem(active_cache->xmm_of[r], XR::RBX, off_r(r));
@@ -5145,6 +5165,9 @@ public:
                 while (next_hoist < hoist_loops.size() && hoist_loops[next_hoist].header_ip == ip) {
                     const JitHoistLoop& loop = hoist_loops[next_hoist++];
                     preheaders_.push_back({loop.header_ip, loop.backedge_ip, em.pos()});
+                    // The container guards read the frame; an inner loop's
+                    // pre-header inside a write-back region sees the copies.
+                    for (const auto& rg : loop.regs) ensure_in_memory(rg.first);
                     emit_hoist_preheader(loop);
                     active_hoists.push_back(&loop);
                 }
@@ -5169,13 +5192,26 @@ public:
                 }
                 emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
                 pending_src.resize(pending.size(), ip);
-                if (active_cache != nullptr && ip == active_cache->backedge_ip)
+                if (active_cache != nullptr && ip == active_cache->backedge_ip) {
                     active_cache = nullptr;
+                    cache_writeback = false;
+                }
             }
             active_cache = nullptr;
+            cache_writeback = false;
             active_hoists.clear();
             // Safety net: if control falls off the end, return nil.
             emit_epilogue_nil();
+            // Exit stubs of write-back regions: registers back to the frame,
+            // then on to the real target (resolved like any other jump).
+            for (const ExitStub& stub : exit_stubs) {
+                em.patch_rel32(stub.jcc_pos, em.pos());
+                for (uint16_t r : stub.cache->regs)
+                    em.movsd_mem_x(XR::RBX, off_r(r), stub.cache->xmm_of[r]);
+                pending.push_back({em.jmp_rel32_placeholder(), stub.target_ip});
+                pending_src.push_back(stub.src_ip);
+            }
+            exit_stubs.clear();
 
         // ── Resolve jumps ─────────────────────────────────
             for (size_t i = 0; i < pending.size(); ++i) {
@@ -6154,10 +6190,10 @@ private:
     // Branch on RAX holding NBTRUE/NBFALSE, for the slow path of a fused
     // compare: JUMP_IF_FALSE takes the jump on NBFALSE, JUMP_IF_TRUE on
     // anything else (the helpers return exactly one of the two).
-    void emit_fused_jump_on_rax(int fuse, size_t target_ip) {
+    void emit_fused_jump_on_rax(int fuse, size_t target_ip, size_t src_ip) {
         em.mov_ri64(XR::RCX, JIT_NBFALSE);
         em.cmp_rr(XR::RAX, XR::RCX);
-        pending.push_back({em.jcc_rel32_placeholder(fuse == 1 ? CC::E : CC::NE), target_ip});
+        emit_jcc_to(fuse == 1 ? CC::E : CC::NE, target_ip, src_ip);
     }
 
     bool prev_is_cmp_to(size_t ip, uint16_t reg) const {
@@ -6300,6 +6336,39 @@ private:
         loop_caches = jit_plan_loop_caches(chunk, entry_ip, end_ip, nullptr, reg_limit,
                                            native_reuse_flag_reg, kLoopCacheXmmFirst,
                                            kLoopCacheXmmCount, "full-tier");
+        // A loop whose body consists only of operations the cache emits
+        // itself keeps its registers in XMM alone (write-back): every
+        // memory read of a cached register, every helper call and every
+        // exit of the region is under this compiler's control there.
+        static const bool no_writeback = std::getenv("SURA_JIT_DISABLE_WRITEBACK") != nullptr;
+        for (LoopCache& cache : loop_caches) {
+            if (no_writeback || cache.regs.empty()) continue;
+            bool ok = chunk.code[cache.backedge_ip].op == JitOp::JUMP;
+            for (size_t ip = cache.header_ip; ok && ip <= cache.backedge_ip; ++ip) {
+                const JitInst& inst = chunk.code[ip];
+                switch (inst.op) {
+                    case JitOp::LOAD_CONST:
+                        ok = inst.operand >= 0 && (size_t)inst.operand < chunk.constants.size();
+                        break;
+                    case JitOp::LOAD_NIL: case JitOp::LOAD_BOOL: case JitOp::MOVE: case JitOp::NOP:
+                    case JitOp::ADD: case JitOp::SUB: case JitOp::MUL: case JitOp::DIV: case JitOp::MOD:
+                    case JitOp::CMP_EQ: case JitOp::CMP_NEQ: case JitOp::CMP_LT: case JitOp::CMP_LTE:
+                    case JitOp::CMP_GT: case JitOp::CMP_GTE:
+                    case JitOp::INDEX_GET: case JitOp::INDEX_SET:
+                        break;
+                    case JitOp::JUMP: case JitOp::JUMP_IF_FALSE: case JitOp::JUMP_IF_TRUE:
+                        ok = inst.operand >= 0;
+                        break;
+                    default:
+                        ok = false;
+                        break;
+                }
+            }
+            cache.writeback = ok;
+            if (ok && std::getenv("SURA_JIT_DIAG"))
+                std::fprintf(stderr, "[jit] full-tier loop cache ip %zu..%zu: write-back\n",
+                             cache.header_ip, cache.backedge_ip);
+        }
         for (const LoopCache& cache : loop_caches)
             xmm_saved_count = std::max<int>(xmm_saved_count, static_cast<int>(cache.regs.size()));
         frame_bytes = 48 + 16U * static_cast<uint32_t>(xmm_saved_count);
@@ -6376,14 +6445,54 @@ private:
     }
     // R[a] = xmm0 / rax: the slot and, when cached, the XMM copy.
     void store_result_xmm0(uint16_t a) {
-        em.movsd_mem_x(XR::RBX, off_r(a), XR::XMM0);
         const int x = cached_xmm(a);
+        if (!(cache_writeback && x >= 0)) em.movsd_mem_x(XR::RBX, off_r(a), XR::XMM0);
         if (x >= 0) em.movaps_xx(x, XR::XMM0);
     }
     void store_result_rax(uint16_t a) {
-        em.mov_mem_r(XR::RBX, off_r(a), XR::RAX);
         const int x = cached_xmm(a);
+        if (!(cache_writeback && x >= 0)) em.mov_mem_r(XR::RBX, off_r(a), XR::RAX);
         if (x >= 0) em.movq_x_r(x, XR::RAX);
+    }
+    // ── Write-back cache support ─────────────────────────────────────
+    bool wb_cached(uint16_t r) const { return cache_writeback && cached_xmm(r) >= 0; }
+    // Frame slots of every cached register brought up to date: before a
+    // helper call (it reads operands from the frame, and a collection it
+    // triggers scans the frame) and when the region is left.
+    void flush_all_cached() {
+        if (!cache_writeback || active_cache == nullptr) return;
+        for (uint16_t r : active_cache->regs)
+            em.movsd_mem_x(XR::RBX, off_r(r), active_cache->xmm_of[r]);
+    }
+    void ensure_in_memory(uint16_t r) {
+        if (wb_cached(r)) em.movsd_mem_x(XR::RBX, off_r(r), cached_xmm(r));
+    }
+    bool in_active_region(size_t ip) const {
+        return active_cache != nullptr && ip >= active_cache->header_ip &&
+               ip <= active_cache->backedge_ip;
+    }
+    // A conditional jump to `target_ip`; leaving a write-back region goes
+    // through an exit stub that writes the registers back first.
+    void emit_jcc_to(uint8_t cc, size_t target_ip, size_t src_ip) {
+        const size_t p = em.jcc_rel32_placeholder(cc);
+        if (cache_writeback && !in_active_region(target_ip))
+            exit_stubs.push_back({p, target_ip, src_ip, active_cache});
+        else
+            pending.push_back({p, target_ip});
+    }
+    void emit_jmp_to(size_t target_ip) {
+        if (cache_writeback && !in_active_region(target_ip)) flush_all_cached();
+        pending.push_back({em.jmp_rel32_placeholder(), target_ip});
+    }
+    // Tag check of R[r] from wherever its current value lives.
+    size_t emit_non_number_jump_reg(uint16_t r) {
+        if (!wb_cached(r)) return emit_non_number_jump(off_r(r));
+        static constexpr uint32_t TAG32 = 0x7ffc0000U;
+        em.movq_r_x(XR::RAX, cached_xmm(r));
+        em.shr_r_imm8(XR::RAX, 32);
+        em.and_r32_imm32(XR::RAX, TAG32);
+        em.cmp_r32_imm32(XR::RAX, TAG32);
+        return em.jcc_rel32_placeholder(CC::E);
     }
     void reload_cached(uint16_t r) {
         const int x = cached_xmm(r);
@@ -6448,7 +6557,7 @@ private:
                 if (x < 0) return false;
                 if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size()) return false;
                 em.movsd_x_mem(x, XR::R12, off_c(inst.operand));
-                em.movsd_mem_x(XR::RBX, oa, x);
+                if (!cache_writeback) em.movsd_mem_x(XR::RBX, oa, x);
                 return true;
             }
             case O::LOAD_NIL: case O::LOAD_BOOL: {
@@ -6463,25 +6572,29 @@ private:
                 const int xb = cached_xmm(inst.b);
                 if (xa < 0 && xb < 0) return false;
                 if (xb >= 0 && xa >= 0) {
-                    em.movsd_mem_x(XR::RBX, oa, xb);
+                    if (!cache_writeback) em.movsd_mem_x(XR::RBX, oa, xb);
                     if (xa != xb) em.movaps_xx(xa, xb);
                 } else if (xb >= 0) {
-                    em.mov_r_mem(XR::RAX, XR::RBX, ob);
-                    em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                    if (cache_writeback) {
+                        em.movsd_mem_x(XR::RBX, oa, xb);
+                    } else {
+                        em.mov_r_mem(XR::RAX, XR::RBX, ob);
+                        em.mov_mem_r(XR::RBX, oa, XR::RAX);
+                    }
                 } else {
                     em.movsd_x_mem(xa, XR::RBX, ob);
-                    em.movsd_mem_x(XR::RBX, oa, xa);
+                    if (!cache_writeback) em.movsd_mem_x(XR::RBX, oa, xa);
                 }
                 return true;
             }
             case O::ADD: case O::SUB: case O::MUL: {
-                if (!touches_cache(inst)) return false;
+                if (!touches_cache(inst) && !cache_writeback) return false;
                 const bool fast = inst.ic_numeric_fast ||
                                   (proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
                 std::vector<size_t> slow_jmps;
                 if (!fast) {
-                    if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(ob));
-                    if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(oc));
+                    if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump_reg(inst.b));
+                    if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump_reg(inst.c));
                 }
                 load_operand_xmm0(inst.b);
                 arith_xmm0(inst.op, inst.c);
@@ -6490,6 +6603,7 @@ private:
                 const size_t done_jmp = em.jmp_rel32_placeholder();
                 const size_t slow_pos = em.pos();
                 for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+                flush_all_cached();
                 em.mov_r_mem(XR::RCX, XR::RBX, ob);
                 em.mov_r_mem(XR::RDX, XR::RBX, oc);
                 if (inst.op == O::ADD) {
@@ -6536,14 +6650,16 @@ private:
         size_t done_jmp = 0;
         const bool fast = jit_array_layout_verified();
         if (fast) {
+            const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            if (plain && hoist_gpr < 0) ensure_in_memory(inst.b);
             sura_x64_emit_array_index_guard_ex(
-                em, ob, plain ? hoisted_gpr_at(ip) : -1, oc,
+                em, ob, hoist_gpr, oc,
                 plain ? cached_xmm(inst.c) : -1,
                 plain && proven_num_at(ip, inst.c), slow_jmps);
             const int ax = plain ? cached_xmm(inst.a) : -1;
             if (ax >= 0) {
                 em.movsd_x_mem(ax, XR::RCX, 0);
-                em.movsd_mem_x(XR::RBX, oa, ax);
+                if (!cache_writeback) em.movsd_mem_x(XR::RBX, oa, ax);
             } else {
                 em.mov_r_mem(XR::RAX, XR::RCX, 0);
                 em.mov_mem_r(XR::RBX, oa, XR::RAX);
@@ -6552,6 +6668,7 @@ private:
             const size_t slow_pos = em.pos();
             for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
         }
+        if (plain) flush_all_cached();
         em.mov_rr(XR::RCX, XR::R13);
         em.mov_rr(XR::RDX, XR::RBX);
         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -6571,8 +6688,10 @@ private:
         size_t done_jmp = 0;
         const bool fast = jit_array_layout_verified();
         if (fast) {
+            const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            if (plain && hoist_gpr < 0) ensure_in_memory(inst.a);
             sura_x64_emit_array_index_guard_ex(
-                em, oa, plain ? hoisted_gpr_at(ip) : -1, ob,
+                em, oa, hoist_gpr, ob,
                 plain ? cached_xmm(inst.b) : -1,
                 plain && proven_num_at(ip, inst.b), slow_jmps);
             const int cx = plain ? cached_xmm(inst.c) : -1;
@@ -6586,6 +6705,7 @@ private:
             const size_t slow_pos = em.pos();
             for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
         }
+        if (plain) flush_all_cached();
         em.mov_rr(XR::RCX, XR::R13);
         em.mov_rr(XR::RDX, XR::RBX);
         em.mov_ri64(XR::R8, (uint64_t)(uintptr_t)inst_ptr);
@@ -6621,9 +6741,11 @@ private:
                                 std::vector<size_t>& slow_jmps) {
         if (inst.ic_numeric_fast) return;
         if (!(plain && proven_num_at(ip, inst.b)))
-            slow_jmps.push_back(emit_non_number_jump(off_r(inst.b)));
+            slow_jmps.push_back(plain ? emit_non_number_jump_reg(inst.b)
+                                      : emit_non_number_jump(off_r(inst.b)));
         if (!(plain && proven_num_at(ip, inst.c)))
-            slow_jmps.push_back(emit_non_number_jump(off_r(inst.c)));
+            slow_jmps.push_back(plain ? emit_non_number_jump_reg(inst.c)
+                                      : emit_non_number_jump(off_r(inst.c)));
     }
     void emit_arith_finish(const JitInst& inst, bool plain, bool result_in_xmm0,
                            std::vector<size_t>& slow_jmps, int32_t ob, int32_t oc,
@@ -6635,6 +6757,7 @@ private:
         const size_t done_jmp = em.jmp_rel32_placeholder();
         const size_t slow_pos = em.pos();
         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        if (plain) flush_all_cached();
         emit_arith_slow_call(inst, ob, oc, helper);
         if (plain) store_result_rax(inst.a);
         else em.mov_mem_r(XR::RBX, off_r(inst.a), XR::RAX);
@@ -6723,8 +6846,10 @@ private:
         const int32_t oc = off_r(inst.c);
         const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
         std::vector<size_t> slow_jmps;
-        if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(ob));
-        if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(oc));
+        if (!proven_num_at(ip, inst.b))
+            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.b) : emit_non_number_jump(ob));
+        if (!proven_num_at(ip, inst.c))
+            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.c) : emit_non_number_jump(oc));
         const bool swapped = inst.op == O::CMP_LT || inst.op == O::CMP_LTE;
         load_operand_xmm0(swapped ? inst.c : inst.b);
         ucomisd_xmm0(swapped ? inst.b : inst.c);
@@ -6735,14 +6860,15 @@ private:
             // is false) also satisfies: A -> BE, AE -> B.
             const size_t target_ip = (size_t)chunk.code[ip + 1].operand;
             const uint8_t jcc = fuse == 1 ? (cc == CC::A ? CC::BE : CC::B) : cc;
-            pending.push_back({em.jcc_rel32_placeholder(jcc), target_ip});
+            emit_jcc_to(jcc, target_ip, ip);
             fused_jump_ip = ip + 1;
             if (slow_jmps.empty()) return true;
             const size_t done_jmp = em.jmp_rel32_placeholder();
             const size_t slow_pos = em.pos();
             for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+            flush_all_cached();
             emit_cmp_ord_helper(inst, ob, oc);
-            emit_fused_jump_on_rax(fuse, target_ip);
+            emit_fused_jump_on_rax(fuse, target_ip, ip);
             em.patch_rel32(done_jmp, em.pos());
             return true;
         }
@@ -6754,6 +6880,7 @@ private:
         const size_t done_jmp = em.jmp_rel32_placeholder();
         const size_t slow_pos = em.pos();
         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        if (allow_fuse) flush_all_cached();
         emit_cmp_ord_helper(inst, ob, oc);
         store_result_rax(inst.a);
         em.patch_rel32(done_jmp, em.pos());
@@ -6790,8 +6917,10 @@ private:
         const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
         const size_t target_ip = fuse ? (size_t)chunk.code[ip + 1].operand : 0;
         std::vector<size_t> slow_jmps;
-        if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.b)));
-        if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump(off_r(inst.c)));
+        if (!proven_num_at(ip, inst.b))
+            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.b) : emit_non_number_jump(off_r(inst.b)));
+        if (!proven_num_at(ip, inst.c))
+            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.c) : emit_non_number_jump(off_r(inst.c)));
         load_operand_xmm0(inst.b);
         ucomisd_xmm0(inst.c);
         em.mov_ri64(XR::RAX, when_differ);
@@ -6803,18 +6932,19 @@ private:
         load_bits(XR::R8, inst.c);
         em.cmp_rr(XR::RDX, XR::R8);
         em.cmov_rr(CC::E, XR::RAX, XR::RCX);
-        if (fuse) { emit_fused_jump_on_rax(fuse, target_ip); fused_jump_ip = ip + 1; }
+        if (fuse) { emit_fused_jump_on_rax(fuse, target_ip, ip); fused_jump_ip = ip + 1; }
         else store_result_rax(inst.a);
         if (slow_jmps.empty()) return true;
         const size_t done_jmp = em.jmp_rel32_placeholder();
         const size_t slow_pos = em.pos();
         for (size_t p : slow_jmps) em.patch_rel32(p, slow_pos);
+        if (allow_fuse) flush_all_cached();
         em.mov_r_mem(XR::RCX, XR::RBX, off_r(inst.b));
         em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.c));
         em.mov_ri64(XR::R8, neq ? 1 : 0);
         em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_eq);
         em.call_rax();
-        if (fuse) emit_fused_jump_on_rax(fuse, target_ip);
+        if (fuse) emit_fused_jump_on_rax(fuse, target_ip, ip);
         else store_result_rax(inst.a);
         em.patch_rel32(done_jmp, em.pos());
         return true;
@@ -7044,19 +7174,19 @@ private:
             }
 
             case O::JUMP: {
-                size_t p = em.jmp_rel32_placeholder();
-                pending.push_back({p, (size_t)inst.operand});
+                if (inst.operand < 0) return false;
+                emit_jmp_to((size_t)inst.operand);
                 return true;
             }
 
             case O::JUMP_IF_FALSE: {
+                if (inst.operand < 0) return false;
                 if (prev_is_cmp_to(ip, inst.a) &&
                     !has_non_fallthrough_predecessor(ip)) {
-                    em.mov_r_mem(XR::RAX, XR::RBX, oa);
+                    load_bits(XR::RAX, inst.a);
                     em.mov_ri64(XR::RCX, JIT_NBFALSE);
                     em.cmp_rr(XR::RAX, XR::RCX);
-                    size_t p = em.jcc_rel32_placeholder(CC::E);
-                    pending.push_back({p, (size_t)inst.operand});
+                    emit_jcc_to(CC::E, (size_t)inst.operand, ip);
                     return true;
                 }
                 // Full truthiness via C helper — supports any Value type
@@ -7068,31 +7198,31 @@ private:
                 //   add rsp, 40
                 //   test eax, eax
                 //   je <target>       ; if 0 → jump
-                em.mov_r_mem(XR::RCX, XR::RBX, oa);
+                flush_all_cached();
+                load_bits(XR::RCX, inst.a);
                 em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_truthy);
                 em.call_rax();
                 // test eax, eax — encoded as 85 C0
                 em.emit8(0x85); em.emit8(0xC0);
-                size_t p = em.jcc_rel32_placeholder(CC::E);
-                pending.push_back({p, (size_t)inst.operand});
+                emit_jcc_to(CC::E, (size_t)inst.operand, ip);
                 return true;
             }
             case O::JUMP_IF_TRUE: {
+                if (inst.operand < 0) return false;
                 if (prev_is_cmp_to(ip, inst.a) &&
                     !has_non_fallthrough_predecessor(ip)) {
-                    em.mov_r_mem(XR::RAX, XR::RBX, oa);
+                    load_bits(XR::RAX, inst.a);
                     em.mov_ri64(XR::RCX, JIT_NBTRUE);
                     em.cmp_rr(XR::RAX, XR::RCX);
-                    size_t p = em.jcc_rel32_placeholder(CC::E);
-                    pending.push_back({p, (size_t)inst.operand});
+                    emit_jcc_to(CC::E, (size_t)inst.operand, ip);
                     return true;
                 }
-                em.mov_r_mem(XR::RCX, XR::RBX, oa);
+                flush_all_cached();
+                load_bits(XR::RCX, inst.a);
                 em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)&sura_jit_truthy);
                 em.call_rax();
                 em.emit8(0x85); em.emit8(0xC0); // test eax, eax
-                size_t p = em.jcc_rel32_placeholder(CC::NE);
-                pending.push_back({p, (size_t)inst.operand});
+                emit_jcc_to(CC::NE, (size_t)inst.operand, ip);
                 return true;
             }
 

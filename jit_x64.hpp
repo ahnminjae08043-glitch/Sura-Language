@@ -308,6 +308,12 @@ public:
         emit8(0xD3);
         emit8(modrm(3, 7, r));  // /7 = SAR
     }
+    void shr_r_imm8(int r, uint8_t imm) {
+        rex(true, 0, 0, r);
+        emit8(0xC1);
+        emit8(modrm(3, 5, r));  // /5 = SHR
+        emit8(imm);
+    }
     void sar_r_imm8(int r, uint8_t imm) {
         rex(true, 0, 0, r);
         emit8(0xC1);
