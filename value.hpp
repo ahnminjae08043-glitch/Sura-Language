@@ -1307,6 +1307,17 @@ public:
     void append_str_to(std::string& out) const {
         if (is_num()) {
             double v = as_num();
+            // Small integers (the common key / counter case) take one
+            // conversion: no floor, no ldexp. NaN fails both range tests.
+            if (v >= -2147483648.0 && v <= 2147483647.0) {
+                const int32_t iv = static_cast<int32_t>(v);
+                if (static_cast<double>(iv) == v) {
+                    char buffer[12];
+                    auto converted = std::to_chars(buffer, buffer + sizeof(buffer), iv);
+                    out.append(buffer, converted.ptr);
+                    return;
+                }
+            }
             const double integer_min = -std::ldexp(1.0, 63);
             const double integer_limit = std::ldexp(1.0, 63);
             if (std::isfinite(v) && v == std::floor(v)

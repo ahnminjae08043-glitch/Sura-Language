@@ -1857,18 +1857,16 @@ inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container
         sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
     }
     if (!key_proven) {
-        static constexpr uint32_t TAG32 = 0x7ffc0000U;
+        // Unordered self-compare: every NaN-boxed non-number is a NaN
+        // pattern. The XMM copy is the key's current value (its frame slot
+        // may be stale under a write-back cache).
         if (key_xmm >= 0) {
-            // The XMM copy is the key's current value (its frame slot may
-            // be stale under a write-back cache).
-            em.movq_r_x(XR::RCX, key_xmm);
-            em.shr_r_imm8(XR::RCX, 32);
+            em.ucomisd_xx(key_xmm, key_xmm);
         } else {
-            em.mov_r32_mem(XR::RCX, XR::RBX, key_off + 4);
+            em.movsd_x_mem(XR::XMM1, XR::RBX, key_off);
+            em.ucomisd_xx(XR::XMM1, XR::XMM1);
         }
-        em.and_r32_imm32(XR::RCX, TAG32);
-        em.cmp_r32_imm32(XR::RCX, TAG32);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
     }
     if (key_xmm >= 0) em.cvttsd2si_r_x(XR::RCX, key_xmm);
     else em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
@@ -2309,11 +2307,11 @@ public:
         // Branch to `slow` unless R[off] is a NaN-boxed number: the high
         // 32 bits carry the whole tag, so a 32-bit compare suffices.
         auto emit_non_number_to = [&](int32_t off, std::vector<size_t>& slow) {
-            static constexpr uint32_t TAG32 = 0x7ffc0000U;
-            em.mov_r32_mem(XR::RCX, XR::RBX, off + 4);
-            em.and_r32_imm32(XR::RCX, TAG32);
-            em.cmp_r32_imm32(XR::RCX, TAG32);
-            slow.push_back(em.jcc_rel32_placeholder(CC::E));
+            // Unordered self-compare: every NaN-boxed non-number is a NaN
+            // pattern (a numeric NaN takes the slow path too, exactly).
+            em.movsd_x_mem(XR::XMM1, XR::RBX, off);
+            em.ucomisd_xx(XR::XMM1, XR::XMM1);
+            slow.push_back(em.jcc_rel32_placeholder(CC::P));
         };
 
         // ── Loop register cache: emission ──
@@ -6645,12 +6643,14 @@ private:
                numeric_proof->proven_num(ip, inst.c);
     }
 
+    // Every NaN-boxed non-number is a NaN pattern, so an unordered
+    // self-compare (PF set) tells a number from everything else in two
+    // instructions. A NaN that really is a number also takes the branch;
+    // the slow path handles it exactly, so only its speed differs.
     size_t emit_non_number_jump(int32_t value_offset) {
-        static constexpr uint32_t TAG32 = 0x7ffc0000U;
-        em.mov_r32_mem(XR::RAX, XR::RBX, value_offset + 4);
-        em.and_r32_imm32(XR::RAX, TAG32);
-        em.cmp_r32_imm32(XR::RAX, TAG32);
-        return em.jcc_rel32_placeholder(CC::E);
+        em.movsd_x_mem(XR::XMM1, XR::RBX, value_offset);
+        em.ucomisd_xx(XR::XMM1, XR::XMM1);
+        return em.jcc_rel32_placeholder(CC::P);
     }
 
     // Emits the guards shared by the INDEX_GET / INDEX_SET array fast paths.
@@ -6940,13 +6940,10 @@ private:
     }
     // Tag check of R[r] from wherever its current value lives.
     size_t emit_non_number_jump_reg(uint16_t r) {
-        if (!wb_cached(r)) return emit_non_number_jump(off_r(r));
-        static constexpr uint32_t TAG32 = 0x7ffc0000U;
-        em.movq_r_x(XR::RAX, cached_xmm(r));
-        em.shr_r_imm8(XR::RAX, 32);
-        em.and_r32_imm32(XR::RAX, TAG32);
-        em.cmp_r32_imm32(XR::RAX, TAG32);
-        return em.jcc_rel32_placeholder(CC::E);
+        const int x = cached_xmm(r);
+        if (x < 0) return emit_non_number_jump(off_r(r));
+        em.ucomisd_xx(x, x);
+        return em.jcc_rel32_placeholder(CC::P);
     }
     void reload_cached(uint16_t r) {
         const int x = cached_xmm(r);
