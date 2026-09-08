@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 7.5 | 3.4 | 5.2 | 2.2 | 17.2 | 9.8 | 1.9 | 47.4 |
+| **Sura JIT** | 7.5 | 3.4 | 5.2 | 2.2 | 17.2 | 9.8 | 1.8 | 47.4 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -190,7 +190,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 11.3x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 11.4x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
@@ -208,7 +208,12 @@ rather than quoting the better platform:
   compares the same way and, on a self-recursive call, zeroes only the
   frame slots the callee could read before writing (`fib` 9.5 to 7.5 ms). A
   dictionary remembers its last string-keyed lookup, so `has`, the read and
-  the write of one key probe once (`dict` 18.6 to 17.2 ms).
+  the write of one key probe once (`dict` 18.6 to 17.2 ms). A number's tag
+  is now checked with an unordered self-compare (two instructions instead
+  of five: every NaN-boxed non-number is a NaN pattern, and a numeric NaN
+  simply takes the exact slow path), a pure baseline body checks each
+  guarded global once at its entry, and a small integer formats with one
+  conversion when it is appended to a string.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 4.9x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
@@ -255,7 +260,7 @@ column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 11.3 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 11.4 times as fast as CPython,
 roughly 1.1 times slower than Node, and 2.4 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
