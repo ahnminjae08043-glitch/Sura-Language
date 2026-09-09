@@ -1317,6 +1317,13 @@ struct JitHoistLoop {
     size_t header_ip = 0;
     size_t backedge_ip = 0;
     std::vector<std::pair<uint16_t, int>> regs;        // (register, GPR number)
+    // Direct mode (full tier): nothing in the loop can resize an array, so
+    // the GPR holds the element data pointer and the frame slot paired
+    // with it holds the end pointer; an access is then one lea and one
+    // compare against the slot. Otherwise the GPR holds GCArray* and each
+    // access reloads both pointers.
+    bool direct = false;
+    std::vector<std::pair<int, uint16_t>> finish_slots;  // (GPR number, frame slot)
     // INDEX_GET / INDEX_SET instructions whose container is one of those
     // registers, or a temporary the loop fills from one by MOVE just
     // before the access: (ip, GPR number).
@@ -1847,7 +1854,9 @@ inline void sura_x64_emit_field_ic_guard(X64Emitter& em, int32_t recv_off,
 inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container_off,
                                                int hoist_gpr, int32_t key_off,
                                                int key_xmm, bool key_proven,
-                                               std::vector<size_t>& slow_jmps) {
+                                               std::vector<size_t>& slow_jmps,
+                                               bool direct = false,
+                                               int32_t finish_off = 0) {
     int base = XR::RAX;
     if (hoist_gpr >= 0) {
         em.test_rr(hoist_gpr, hoist_gpr);
@@ -1872,6 +1881,14 @@ inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container
     else em.cvttsd2si_r_mem(XR::RCX, XR::RBX, key_off);
     em.cmp_r_imm32(XR::RCX, 0x7fffffff);
     slow_jmps.push_back(em.jcc_rel32_placeholder(CC::A));
+    if (direct && hoist_gpr >= 0) {
+        // The GPR is the element data pointer; the end pointer sits in the
+        // frame (JitHoistLoop::direct).
+        em.lea_r_base_index8(XR::RCX, hoist_gpr, XR::RCX);
+        em.cmp_r_mem(XR::RCX, XR::RBX, finish_off);
+        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+        return;
+    }
     em.mov_r_mem(XR::RDX, base, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
     em.mov_r_mem(XR::R10, base, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
     em.lea_r_base_index8(XR::RCX, XR::RDX, XR::RCX);
@@ -6836,6 +6853,50 @@ private:
                 std::fprintf(stderr, "[jit] full-tier loop cache ip %zu..%zu: write-back\n",
                              cache.header_ip, cache.backedge_ip);
         }
+        // A hoisted container inside a write-back region whose loop has no
+        // METHOD_CALL (the only listed operation that can resize an array:
+        // push) keeps its data pointer in the GPR and its end pointer in a
+        // frame slot past the registers.
+        static const bool no_direct = std::getenv("SURA_JIT_DISABLE_DIRECT_HOIST") != nullptr;
+        for (JitHoistLoop& loop : hoist_loops) {
+            loop.direct = false;
+            loop.finish_slots.clear();
+            if (no_direct) continue;
+            bool inside = false;
+            for (const LoopCache& cache : loop_caches)
+                if (cache.writeback && loop.header_ip >= cache.header_ip &&
+                    loop.backedge_ip <= cache.backedge_ip) inside = true;
+            if (!inside) continue;
+            bool resizes = false;
+            for (size_t ip = loop.header_ip; ip <= loop.backedge_ip; ++ip)
+                if (chunk.code[ip].op == JitOp::METHOD_CALL) resizes = true;
+            if (resizes) continue;
+            if (native_frame_regs + loop.regs.size() > 65535U) continue;
+            loop.direct = true;
+            for (const auto& rg : loop.regs) {
+                loop.finish_slots.push_back({rg.second, static_cast<uint16_t>(native_frame_regs)});
+                ++native_frame_regs;
+            }
+            if (std::getenv("SURA_JIT_DIAG"))
+                std::fprintf(stderr, "[jit] full-tier array hoist ip %zu..%zu: direct (data GPR + end slot)\n",
+                             loop.header_ip, loop.backedge_ip);
+        }
+    }
+
+    // The end-pointer frame slot offset for a direct-mode hoisted container
+    // at `ip` (the loop hoisted_gpr_at found), or INT32_MIN.
+    int32_t hoisted_finish_off_at(size_t ip, int gpr) const {
+        for (size_t k = active_hoists.size(); k-- > 0;) {
+            const JitHoistLoop* loop = active_hoists[k];
+            for (const auto& ag : loop->access_gpr) {
+                if (ag.first != ip) continue;
+                if (!loop->direct) return INT32_MIN;
+                for (const auto& fs : loop->finish_slots)
+                    if (fs.first == gpr) return off_r(fs.second);
+                return INT32_MIN;
+            }
+        }
+        return INT32_MIN;
     }
 
     // The GPR holding the container of the index instruction at `ip`,
@@ -6852,7 +6913,18 @@ private:
             std::vector<size_t> slow;
             em.xor_rr(rg.second, rg.second);
             sura_x64_emit_object_receiver_guard(em, off_r(rg.first), OBJ_TYPE_ARRAY, slow);
-            em.mov_rr(rg.second, XR::RAX);
+            if (loop.direct) {
+                // GPR = element data (null for an empty vector, which then
+                // takes the helper like a non-array), slot = end pointer.
+                int32_t finish_off = 0;
+                for (const auto& fs : loop.finish_slots)
+                    if (fs.first == rg.second) finish_off = off_r(fs.second);
+                em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
+                em.mov_mem_r(XR::RBX, finish_off, XR::R10);
+                em.mov_r_mem(rg.second, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+            } else {
+                em.mov_rr(rg.second, XR::RAX);
+            }
             for (size_t p : slow) em.patch_rel32(p, em.pos());
         }
     }
@@ -7102,12 +7174,14 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            const int32_t finish_off = hoist_gpr >= 0 ? hoisted_finish_off_at(ip, hoist_gpr) : INT32_MIN;
             const uint16_t key = plain ? forwarded_source(ip, inst.c, 0) : inst.c;
             if (plain && hoist_gpr < 0) ensure_in_memory(inst.b);
             sura_x64_emit_array_index_guard_ex(
                 em, ob, hoist_gpr, off_r(key),
                 plain ? cached_xmm(key) : -1,
-                plain && proven_num_at(ip, key), slow_jmps);
+                plain && proven_num_at(ip, key), slow_jmps,
+                finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
             const int ax = plain ? cached_xmm(inst.a) : -1;
             if (ax >= 0) {
                 em.movsd_x_mem(ax, XR::RCX, 0);
@@ -7141,12 +7215,14 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
+            const int32_t finish_off = hoist_gpr >= 0 ? hoisted_finish_off_at(ip, hoist_gpr) : INT32_MIN;
             const uint16_t key = plain ? forwarded_source(ip, inst.b, 0) : inst.b;
             if (plain && hoist_gpr < 0) ensure_in_memory(inst.a);
             sura_x64_emit_array_index_guard_ex(
                 em, oa, hoist_gpr, off_r(key),
                 plain ? cached_xmm(key) : -1,
-                plain && proven_num_at(ip, key), slow_jmps);
+                plain && proven_num_at(ip, key), slow_jmps,
+                finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
             const int cx = plain ? cached_xmm(inst.c) : -1;
             if (cx >= 0) {
                 em.movsd_mem_x(XR::RCX, 0, cx);
