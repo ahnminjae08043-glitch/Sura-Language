@@ -213,7 +213,10 @@ rather than quoting the better platform:
   of five: every NaN-boxed non-number is a NaN pattern, and a numeric NaN
   simply takes the exact slow path), a pure baseline body checks each
   guarded global once at its entry, and a small integer formats with one
-  conversion when it is appended to a string.
+  conversion when it is appended to a string. In a loop that cannot resize
+  an array (no method call in it), a hoisted container's data pointer
+  lives in the GPR and its end pointer in a frame slot, so an element
+  access is one `lea` and one compare instead of two loads first.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 4.9x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
