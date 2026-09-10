@@ -1,0 +1,182 @@
+# 산술은 결과가 NaN인지 한 번만 보고 숫자 여부를 판정한다(비숫자는 모두 NaN 패턴).
+# 진짜 NaN이 나오는 경우(무한대끼리 빼기, 0 곱하기 무한대, NaN 피연산자)도 느린 경로로
+# 가서 인터프리터와 똑같은 값을 내야 한다. Sura에서 NaN은 비트가 같으면 == 가 참이므로
+# 판정은 문자열 형태로 한다.
+
+func make_inf() do
+  x is 1000000000000000000000
+  i is 0
+  while i < 40 do
+    x is x * x
+    i is i + 1
+  end
+  return x
+end
+
+func make_nan() do
+  inf is make_inf()
+  return inf - inf
+end
+
+func nan_math(n) do
+  nan is make_nan()
+  count is 0
+  i is 0
+  while i < n do
+    a is nan + i
+    b is nan * 2
+    c is nan - i
+    d is i - nan
+    if ("" + a) == "nan" then
+      count is count + 1
+    end
+    if ("" + b) == "nan" then
+      count is count + 1
+    end
+    if ("" + c) == "nan" then
+      count is count + 1
+    end
+    if ("" + d) == "nan" then
+      count is count + 1
+    end
+    i is i + 1
+  end
+  return count
+end
+
+func inf_math(n) do
+  inf is make_inf()
+  count is 0
+  i is 0
+  while i < n do
+    a is inf - inf
+    b is inf * 0
+    c is inf + inf
+    if ("" + a) == "nan" then
+      count is count + 1
+    end
+    if ("" + b) == "nan" then
+      count is count + 1
+    end
+    if ("" + c) == "inf" then
+      count is count + 1
+    end
+    i is i + 1
+  end
+  return count
+end
+
+func nan_compare(n) do
+  nan is make_nan()
+  hits is 0
+  i is 0
+  while i < n do
+    if nan < 1 then
+      hits is hits + 1
+    end
+    if nan > 1 then
+      hits is hits + 1
+    end
+    if nan <= 1 then
+      hits is hits + 1
+    end
+    if nan >= 1 then
+      hits is hits + 1
+    end
+    if 1 < nan then
+      hits is hits + 1
+    end
+    if nan == nan then
+      hits is hits + 100
+    end
+    if nan != nan then
+      hits is hits + 1000
+    end
+    i is i + 1
+  end
+  return hits
+end
+
+func nan_in_array(n) do
+  arr is [make_nan(), 1, 2, make_nan()]
+  count is 0
+  i is 0
+  while i < n do
+    j is i % 4
+    v is arr[j] + 1
+    if ("" + v) == "nan" then
+      count is count + 1
+    end
+    i is i + 1
+  end
+  return count
+end
+
+func nan_div_mod(n) do
+  nan is make_nan()
+  count is 0
+  i is 0
+  while i < n do
+    a is nan / 2
+    b is nan % 7
+    if ("" + a) == "nan" then
+      count is count + 1
+    end
+    if ("" + b) == "nan" then
+      count is count + 1
+    end
+    i is i + 1
+  end
+  return count
+end
+
+func string_ops(n) do
+  total is 0
+  i is 0
+  while i < n do
+    s is "n" + i
+    t is s + "!"
+    if t == "n0!" then
+      total is total + 1
+    end
+    if s != "zzz" then
+      total is total + 2
+    end
+    total is total + t.len()
+    i is i + 1
+  end
+  return total
+end
+
+func bad_order(a, b) do
+  if a < b then
+    return 1
+  end
+  return 0
+end
+
+r is 0
+while r < 60 do
+  x1 is nan_math(20)
+  x2 is inf_math(20)
+  x3 is nan_compare(20)
+  x4 is nan_in_array(20)
+  x5 is nan_div_mod(20)
+  x6 is string_ops(20)
+  r is r + 1
+end
+
+assert_eq(nan_math(1000), 4000)
+assert_eq(inf_math(1000), 3000)
+assert_eq(nan_compare(1000), 100000)
+assert_eq(nan_in_array(1000), 500)
+assert_eq(nan_div_mod(1000), 2000)
+assert_eq(string_ops(1000), 6891)
+caught is ""
+try
+  z is bad_order("a", 1)
+catch err
+  caught is err
+end
+assert_eq(caught, "[E200] ordering comparison operands must be numbers")
+print "jit_nan_arith: PASS"

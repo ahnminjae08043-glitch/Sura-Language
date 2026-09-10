@@ -2323,13 +2323,6 @@ public:
         const bool inline_fields = allow_helpers && jit_instance_layout_verified();
         // Branch to `slow` unless R[off] is a NaN-boxed number: the high
         // 32 bits carry the whole tag, so a 32-bit compare suffices.
-        auto emit_non_number_to = [&](int32_t off, std::vector<size_t>& slow) {
-            // Unordered self-compare: every NaN-boxed non-number is a NaN
-            // pattern (a numeric NaN takes the slow path too, exactly).
-            em.movsd_x_mem(XR::XMM1, XR::RBX, off);
-            em.ucomisd_xx(XR::XMM1, XR::XMM1);
-            slow.push_back(em.jcc_rel32_placeholder(CC::P));
-        };
 
         // ── Loop register cache: emission ──
         const JitLoopCache* cache = nullptr;
@@ -2492,12 +2485,14 @@ public:
                 case JitOp::MUL: {
                     if (!touches_cache(inst)) return false;
                     std::vector<size_t> slow;
-                    if (dyn) {
-                        emit_non_number_to(off_r(inst.b), slow);
-                        emit_non_number_to(off_r(inst.c), slow);
-                    }
                     load_operand_xmm0(inst.b);
                     arith_xmm0(inst.op, inst.c);
+                    // A non-NaN result proves both operands were numbers
+                    // (every NaN-box pattern is a NaN and propagates).
+                    if (dyn) {
+                        em.ucomisd_xx(XR::XMM0, XR::XMM0);
+                        slow.push_back(em.jcc_rel32_placeholder(CC::P));
+                    }
                     store_result_xmm0(inst.a);
                     if (dyn) {
                         const size_t done = em.jmp_rel32_placeholder();
@@ -2516,15 +2511,14 @@ public:
                 case JitOp::CMP_GTE: {
                     if (!touches_cache(inst)) return false;
                     std::vector<size_t> slow;
-                    if (dyn) {
-                        emit_non_number_to(off_r(inst.b), slow);
-                        emit_non_number_to(off_r(inst.c), slow);
-                    }
                     // b < c is evaluated as c > b so an unordered compare
                     // (NaN) yields false, the way Value::lt does.
                     const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
                     load_operand_xmm0(swapped ? inst.c : inst.b);
                     ucomisd_xmm0(swapped ? inst.b : inst.c);
+                    // Unordered is exactly "a NaN pattern on one side": every
+                    // non-number, plus a genuine NaN the helper then handles.
+                    if (dyn) slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     if (inst.op != JitOp::CMP_EQ && inst.op != JitOp::CMP_NEQ) {
                         const int fuse = jit_fusable_jump_after(chunk, entry_ip, end_ip, ip,
                                                                 inst.a, branch_target);
@@ -2734,8 +2728,6 @@ public:
                     // the helper raises [E202].
                     std::vector<size_t> slow;
                     if (dyn) {
-                        emit_non_number_to(off_r(inst.b), slow);
-                        emit_non_number_to(off_r(inst.c), slow);
                         if (inst.op == JitOp::DIV) {
                             em.mov_r_mem(XR::RAX, XR::RBX, off_r(inst.c));
                             em.mov_ri64(XR::RCX, 0x7FFFFFFFFFFFFFFFULL);
@@ -2764,6 +2756,11 @@ public:
                         em.mulsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
                     } else {
                         em.divsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
+                    }
+                    // A non-NaN result proves both operands were numbers.
+                    if (dyn) {
+                        em.ucomisd_xx(XR::XMM0, XR::XMM0);
+                        slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     }
                     em.movsd_mem_x(XR::RBX, off_r(inst.a), XR::XMM0);
                     if (dyn) {
@@ -2810,13 +2807,10 @@ public:
                     // operands: numbers compare inline, anything else (the
                     // ordering type error) in the helper.
                     std::vector<size_t> slow;
-                    if (dyn) {
-                        emit_non_number_to(off_r(inst.b), slow);
-                        emit_non_number_to(off_r(inst.c), slow);
-                    }
                     const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.c : inst.b));
                     em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.b : inst.c));
+                    if (dyn) slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     const uint8_t cc = (inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_GT)
                         ? CC::A : CC::AE;
                     const int fuse = jit_fusable_jump_after(chunk, entry_ip, end_ip, ip,
@@ -2842,12 +2836,9 @@ public:
                     // Dynamic operands: numbers compare inline, anything else
                     // (string equality) in the helper.
                     std::vector<size_t> slow;
-                    if (dyn) {
-                        emit_non_number_to(off_r(inst.b), slow);
-                        emit_non_number_to(off_r(inst.c), slow);
-                    }
                     em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
                     em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
+                    if (dyn) slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     em.mov_ri64(XR::RAX, NBFALSE);
                     em.mov_ri64(XR::RCX, NBTRUE);
                     switch (inst.op) {
@@ -6670,6 +6661,19 @@ private:
         return em.jcc_rel32_placeholder(CC::P);
     }
 
+    // Speculative arithmetic: a result that is not a NaN proves both
+    // operands were numbers, because every NaN-boxed non-number is itself a
+    // NaN pattern and propagates through addsd/subsd/mulsd/divsd. One check
+    // on the result replaces a tag check per operand. A genuine NaN result
+    // (a NaN operand, inf - inf, 0 * inf) takes the slow path as well, which
+    // computes exactly what the interpreter would - only more slowly.
+    // Emitted before the result is stored, so R[a] is untouched on the slow
+    // path even when it names an operand.
+    size_t emit_result_nan_jump() {
+        em.ucomisd_xx(XR::XMM0, XR::XMM0);
+        return em.jcc_rel32_placeholder(CC::P);
+    }
+
     // Emits the guards shared by the INDEX_GET / INDEX_SET array fast paths.
     // On exit RCX holds &elements[idx] and every failing guard has been
     // recorded in slow_jmps for the caller to patch to its helper call.
@@ -7115,12 +7119,9 @@ private:
                 const bool fast = inst.ic_numeric_fast ||
                                   (proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
                 std::vector<size_t> slow_jmps;
-                if (!fast) {
-                    if (!proven_num_at(ip, inst.b)) slow_jmps.push_back(emit_non_number_jump_reg(inst.b));
-                    if (!proven_num_at(ip, inst.c)) slow_jmps.push_back(emit_non_number_jump_reg(inst.c));
-                }
                 load_operand_xmm0(inst.b);
                 arith_xmm0(inst.op, inst.c);
+                if (!fast) slow_jmps.push_back(emit_result_nan_jump());
                 store_result_xmm0(inst.a);
                 if (slow_jmps.empty()) return true;
                 const size_t done_jmp = em.jmp_rel32_placeholder();
@@ -7168,7 +7169,7 @@ private:
     bool emit_index_get(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
         const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
         const bool plain = runtime_inst == nullptr;
-        const int32_t oa = off_r(inst.a), ob = off_r(inst.b), oc = off_r(inst.c);
+        const int32_t oa = off_r(inst.a), ob = off_r(inst.b);
         std::vector<size_t> slow_jmps;
         size_t done_jmp = 0;
         const bool fast = jit_array_layout_verified();
@@ -7209,7 +7210,7 @@ private:
     bool emit_index_set(const JitInst& inst, size_t ip, const JitInst* runtime_inst) {
         const JitInst* inst_ptr = runtime_inst ? runtime_inst : &chunk.code[ip];
         const bool plain = runtime_inst == nullptr;
-        const int32_t oa = off_r(inst.a), ob = off_r(inst.b), oc = off_r(inst.c);
+        const int32_t oa = off_r(inst.a), oc = off_r(inst.c);
         std::vector<size_t> slow_jmps;
         size_t done_jmp = 0;
         const bool fast = jit_array_layout_verified();
@@ -7263,19 +7264,6 @@ private:
         em.mov_ri64(XR::RAX, (uint64_t)(uintptr_t)helper);
         em.call_rax();
     }
-    // Type guards shared by DIV and MOD: a register not proven numeric is
-    // tag-checked, and the failing check jumps to the helper, which raises
-    // the interpreter's [E200].
-    void emit_arith_type_guards(const JitInst& inst, size_t ip, bool plain,
-                                std::vector<size_t>& slow_jmps) {
-        if (inst.ic_numeric_fast) return;
-        if (!(plain && proven_num_at(ip, inst.b)))
-            slow_jmps.push_back(plain ? emit_non_number_jump_reg(inst.b)
-                                      : emit_non_number_jump(off_r(inst.b)));
-        if (!(plain && proven_num_at(ip, inst.c)))
-            slow_jmps.push_back(plain ? emit_non_number_jump_reg(inst.c)
-                                      : emit_non_number_jump(off_r(inst.c)));
-    }
     void emit_arith_finish(const JitInst& inst, bool plain, bool result_in_xmm0,
                            std::vector<size_t>& slow_jmps, int32_t ob, int32_t oc,
                            void* helper) {
@@ -7301,7 +7289,11 @@ private:
         const bool plain = runtime_inst == nullptr;
         const int32_t ob = off_r(inst.b), oc = off_r(inst.c);
         std::vector<size_t> slow_jmps;
-        emit_arith_type_guards(inst, ip, plain, slow_jmps);
+        // No operand tag checks: a non-number divisor compares unordered
+        // against zero below (ZF set, like an exact zero) and a non-number
+        // dividend leaves a NaN result, both of which reach the helper.
+        const bool guard_nan = !inst.ic_numeric_fast &&
+                               !(plain && proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
         em.pxor_xx(XR::XMM1, XR::XMM1);
         {
             const int xc = plain ? cached_xmm(inst.c) : -1;
@@ -7315,6 +7307,7 @@ private:
             if (xc >= 0) em.divsd_xx(XR::XMM0, xc);
             else em.divsd_x_mem(XR::XMM0, XR::RBX, oc);
         }
+        if (guard_nan) slow_jmps.push_back(emit_result_nan_jump());
         emit_arith_finish(inst, plain, true, slow_jmps, ob, oc,
                           (void*)&sura_jit_checked_div);
         return true;
@@ -7330,7 +7323,9 @@ private:
         const bool plain = runtime_inst == nullptr;
         const int32_t ob = off_r(inst.b), oc = off_r(inst.c);
         std::vector<size_t> slow_jmps;
-        emit_arith_type_guards(inst, ip, plain, slow_jmps);
+        // No operand tag checks: the integer round-trip below compares
+        // unordered for a non-number (every NaN-box pattern is a NaN) and
+        // takes the helper through the same jump.
         load_xmm_operand(XR::XMM0, inst.b, plain);
         load_xmm_operand(XR::XMM1, inst.c, plain);
         em.movq_r_x(XR::R8, XR::XMM0);                 // dividend bits (sign later)
@@ -7390,13 +7385,14 @@ private:
         const int32_t oc = off_r(inst.c);
         const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
         std::vector<size_t> slow_jmps;
-        if (!proven_num_at(ip, inst.b))
-            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.b) : emit_non_number_jump(ob));
-        if (!proven_num_at(ip, inst.c))
-            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.c) : emit_non_number_jump(oc));
+        const bool guarded = !proven_num_at(ip, inst.b) || !proven_num_at(ip, inst.c);
         const bool swapped = inst.op == O::CMP_LT || inst.op == O::CMP_LTE;
         load_operand_xmm0(swapped ? inst.c : inst.b);
         ucomisd_xmm0(swapped ? inst.b : inst.c);
+        // An unordered compare is exactly "one of them is a NaN pattern":
+        // every non-number, plus a genuine NaN, which the helper then
+        // compares the way the interpreter does.
+        if (guarded) slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
         const uint8_t cc = (inst.op == O::CMP_LT || inst.op == O::CMP_GT) ? CC::A : CC::AE;
         if (fuse) {
             // Branch straight on the flags. JUMP_IF_FALSE takes the inverse
@@ -7461,12 +7457,12 @@ private:
         const int fuse = allow_fuse ? fusable_jump_after(ip, inst.a) : 0;
         const size_t target_ip = fuse ? (size_t)chunk.code[ip + 1].operand : 0;
         std::vector<size_t> slow_jmps;
-        if (!proven_num_at(ip, inst.b))
-            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.b) : emit_non_number_jump(off_r(inst.b)));
-        if (!proven_num_at(ip, inst.c))
-            slow_jmps.push_back(allow_fuse ? emit_non_number_jump_reg(inst.c) : emit_non_number_jump(off_r(inst.c)));
+        const bool guarded = !proven_num_at(ip, inst.b) || !proven_num_at(ip, inst.c);
         load_operand_xmm0(inst.b);
         ucomisd_xmm0(inst.c);
+        // Unordered: a non-number on either side (string equality, object
+        // identity) or a genuine NaN. Both are the helper's exact business.
+        if (guarded) slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
         em.mov_ri64(XR::RAX, when_differ);
         em.mov_ri64(XR::RCX, when_equal);
         em.cmov_rr(CC::E, XR::RAX, XR::RCX);
@@ -7568,15 +7564,13 @@ private:
                 // The guarded slow path preserves string/array concat and the
                 // numeric error contract for dynamic operands.
                 if (inst.op == O::ADD) {
-                    // Guarded numeric fast path. This uses the same NaN-box
-                    // predicate as Value::is_num(); strings and all other
-                    // values retain the exact helper semantics below.
+                    // Speculative numeric fast path (emit_result_nan_jump);
+                    // strings and all other values retain the exact helper
+                    // semantics below.
                     std::vector<size_t> slow_jmps;
-                    slow_jmps.push_back(emit_non_number_jump(ob));
-                    slow_jmps.push_back(emit_non_number_jump(oc));
-
                     em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
                     em.addsd_x_mem(XR::XMM0, XR::RBX, oc);
+                    slow_jmps.push_back(emit_result_nan_jump());
                     em.movsd_mem_x(XR::RBX, oa, XR::XMM0);
                     size_t done_jmp = em.jmp_rel32_placeholder();
 
@@ -7593,12 +7587,10 @@ private:
                 }
                 if (inst.op == O::SUB || inst.op == O::MUL) {
                     std::vector<size_t> slow_jmps;
-                    slow_jmps.push_back(emit_non_number_jump(ob));
-                    slow_jmps.push_back(emit_non_number_jump(oc));
-
                     em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
                     if (inst.op == O::SUB) em.subsd_x_mem(XR::XMM0, XR::RBX, oc);
                     else                   em.mulsd_x_mem(XR::XMM0, XR::RBX, oc);
+                    slow_jmps.push_back(emit_result_nan_jump());
                     em.movsd_mem_x(XR::RBX, oa, XR::XMM0);
                     size_t done_jmp = em.jmp_rel32_placeholder();
 
