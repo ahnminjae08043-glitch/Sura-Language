@@ -182,7 +182,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 8.7 | 5.7 | 7.8 | 2.4 | 18.3 | 12.3 | 11.5 | 63.6 |
+| **Sura JIT** | 8.0 | 5.7 | 7.8 | 2.4 | 18.3 | 12.3 | 11.5 | 57.0 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -225,9 +225,12 @@ rather than quoting the better platform:
   unordered. A genuine NaN result - a NaN operand, `inf - inf`, `0 * inf` -
   takes the same slow path as a string or an object, which computes exactly
   what the interpreter would. That took `matmul` from 47.4 to 41.7 ms,
-  `object` to 1.7 ms and `array` to 5.0 ms.
+  `object` to 1.7 ms and `array` to 5.0 ms. The Linux baseline gets the
+  same treatment, which took its `matmul` from 63.6 to 57 ms and `fib` from
+  8.7 to 8.0 ms - there a recursive call's result is not proven numeric, so
+  the addition that combines two of them used to tag-check both.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 4.9x faster than CPython by geometric mean — well
+  Overall Sura is about 5.0x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
   matmul now that indexing, guarded arithmetic, the loop register cache and
   the hoisted container checks are in, roughly even on strings and, since
@@ -246,7 +249,7 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 10.4x faster | 6.9x faster |
+| `fib(30)` vs CPython | 10.4x faster | 7.5x faster |
 | numeric loop vs CPython | 49x faster | 19x faster |
 | sort vs CPython | 8.8x faster | 6.0x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
