@@ -1,7 +1,8 @@
 # 산술은 결과가 NaN인지 한 번만 보고 숫자 여부를 판정한다(비숫자는 모두 NaN 패턴).
 # 진짜 NaN이 나오는 경우(무한대끼리 빼기, 0 곱하기 무한대, NaN 피연산자)도 느린 경로로
-# 가서 인터프리터와 똑같은 값을 내야 한다. Sura에서 NaN은 비트가 같으면 == 가 참이므로
-# 판정은 문자열 형태로 한다.
+# 가서 인터프리터와 똑같은 값을 내야 한다. NaN 판정은 순서 비교로만 한다: 어떤 실수든
+# v < 0 과 v >= 0 중 하나는 참인데 NaN은 둘 다 거짓이다(NaN의 문자열 표기는 플랫폼마다
+# 다르고, Sura의 == 는 비트가 같은 NaN을 같다고 본다).
 
 func make_inf() do
   x is 1000000000000000000000
@@ -18,6 +19,16 @@ func make_nan() do
   return inf - inf
 end
 
+func is_nan(v) do
+  if v < 0 then
+    return false
+  end
+  if v >= 0 then
+    return false
+  end
+  return true
+end
+
 func nan_math(n) do
   nan is make_nan()
   count is 0
@@ -27,16 +38,16 @@ func nan_math(n) do
     b is nan * 2
     c is nan - i
     d is i - nan
-    if ("" + a) == "nan" then
+    if is_nan(a) then
       count is count + 1
     end
-    if ("" + b) == "nan" then
+    if is_nan(b) then
       count is count + 1
     end
-    if ("" + c) == "nan" then
+    if is_nan(c) then
       count is count + 1
     end
-    if ("" + d) == "nan" then
+    if is_nan(d) then
       count is count + 1
     end
     i is i + 1
@@ -52,13 +63,13 @@ func inf_math(n) do
     a is inf - inf
     b is inf * 0
     c is inf + inf
-    if ("" + a) == "nan" then
+    if is_nan(a) then
       count is count + 1
     end
-    if ("" + b) == "nan" then
+    if is_nan(b) then
       count is count + 1
     end
-    if ("" + c) == "inf" then
+    if c == make_inf() then
       count is count + 1
     end
     i is i + 1
@@ -104,7 +115,7 @@ func nan_in_array(n) do
   while i < n do
     j is i % 4
     v is arr[j] + 1
-    if ("" + v) == "nan" then
+    if is_nan(v) then
       count is count + 1
     end
     i is i + 1
@@ -119,10 +130,10 @@ func nan_div_mod(n) do
   while i < n do
     a is nan / 2
     b is nan % 7
-    if ("" + a) == "nan" then
+    if is_nan(a) then
       count is count + 1
     end
-    if ("" + b) == "nan" then
+    if is_nan(b) then
       count is count + 1
     end
     i is i + 1
