@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 7.5 | 3.4 | 5.2 | 2.2 | 17.2 | 9.8 | 1.8 | 47.4 |
+| **Sura JIT** | 7.5 | 3.4 | 5.0 | 2.2 | 17.2 | 9.8 | 1.7 | 41.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -190,7 +190,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 11.4x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 11.7x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
@@ -217,6 +217,15 @@ rather than quoting the better platform:
   an array (no method call in it), a hoisted container's data pointer
   lives in the GPR and its end pointer in a frame slot, so an element
   access is one `lea` and one compare instead of two loads first.
+  Arithmetic is now speculative: every NaN-boxed non-number is itself a NaN
+  pattern and propagates through `addsd`/`subsd`/`mulsd`/`divsd`, so a
+  result that is not a NaN proves both operands were numbers. One check on
+  the result replaces a tag check per operand, and an ordered or equality
+  compare needs no tag check at all because `ucomisd` already reports
+  unordered. A genuine NaN result - a NaN operand, `inf - inf`, `0 * inf` -
+  takes the same slow path as a string or an object, which computes exactly
+  what the interpreter would. That took `matmul` from 47.4 to 41.7 ms,
+  `object` to 1.7 ms and `array` to 5.0 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 4.9x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
@@ -263,7 +272,7 @@ column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 11.4 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 11.7 times as fast as CPython,
 roughly 1.1 times slower than Node, and 2.4 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
