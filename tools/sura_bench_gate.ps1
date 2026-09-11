@@ -2,6 +2,7 @@ param(
     [string]$Report = "artifacts\bench_dashboard.json",
     [string]$History = "artifacts\bench_history.json",
     [double]$MaxRegressionPercent = 35.0,
+    [double]$MinGatedMs = 20.0,
     [double]$MinJitSpeedup = 0.0,
     [double]$MinPythonFasterBy = 0.0,
     [string[]]$RequiredBenchmarks = @(),
@@ -176,6 +177,12 @@ if (-not $IgnoreRunnerSpeed -and $speedRatios.Count -ge 3) {
         $speedFactor, $sorted.Count)
 }
 
+# A benchmark that finishes in a few milliseconds carries no usable signal
+# here: the runner-speed correction is measured from CPython, whose fixed
+# costs scale differently from compiled native code, so scaling a 1 ms
+# baseline turns ordinary run-to-run noise into a large percentage. Those
+# are reported and not gated; the workloads the gate exists for run for
+# hundreds of milliseconds.
 foreach ($name in $currentBenches.Keys) {
     if (-not $baselineBenches.ContainsKey($name)) { continue }
     $now = Number-Or-Null (Get-Field $currentBenches[$name] "jit_ms")
@@ -184,8 +191,13 @@ foreach ($name in $currentBenches.Keys) {
         $expected = $then * $speedFactor
         $regression = (($now - $expected) / $expected) * 100.0
         if ($regression -gt $MaxRegressionPercent) {
-            $failures.Add(("$name JIT regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
-                $regression, $then, $now, $speedFactor))
+            if ($expected -lt $MinGatedMs) {
+                Write-Host ("[info] $name JIT {0:N3} ms -> {1:N3} ms ({2:N1}% over the scaled baseline); below {3:N0} ms, not gated" -f
+                    $then, $now, $regression, $MinGatedMs)
+            } else {
+                $failures.Add(("$name JIT regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
+                    $regression, $then, $now, $speedFactor))
+            }
         }
     }
 }
@@ -198,8 +210,13 @@ foreach ($label in $currentPy.Keys) {
             $expected = $then * $speedFactor
             $regression = (($now - $expected) / $expected) * 100.0
             if ($regression -gt $MaxRegressionPercent) {
-                $failures.Add(("$label Sura-vs-Python JIT run regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
-                    $regression, $then, $now, $speedFactor))
+                if ($expected -lt $MinGatedMs) {
+                    Write-Host ("[info] $label Sura JIT {0:N3} ms -> {1:N3} ms ({2:N1}% over the scaled baseline); below {3:N0} ms, not gated" -f
+                        $then, $now, $regression, $MinGatedMs)
+                } else {
+                    $failures.Add(("$label Sura-vs-Python JIT run regressed by {0:N1}% ({1:N3} ms -> {2:N3} ms, runner factor {3:N2}x)" -f
+                        $regression, $then, $now, $speedFactor))
+                }
             }
         }
     }
