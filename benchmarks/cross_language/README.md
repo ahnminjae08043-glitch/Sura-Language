@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 7.5 | 3.4 | 5.0 | 2.2 | 17.2 | 9.8 | 1.7 | 41.7 |
+| **Sura JIT** | 7.0 | 3.1 | 4.9 | 2.1 | 17.0 | 9.8 | 1.7 | 37.9 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -182,7 +182,7 @@ Same machine, Ubuntu under WSL2, ms:
 | language | fib | numeric | array | string | dict | sort | object | matmul |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | C++ -O2 | 0.8 | 1.4 | 0.8 | 1.4 | 13.4 | 15.7 | 0.3 | 4.8 |
-| **Sura JIT** | 8.0 | 5.7 | 7.8 | 2.4 | 18.3 | 12.3 | 11.5 | 57.0 |
+| **Sura JIT** | 7.2 | 4.3 | 7.8 | 2.4 | 18.3 | 12.1 | 11.0 | 54.0 |
 | Sura VM | 86.9 | 87.9 | 69.3 | 10.5 | 76.2 | 33.4 | 76.5 | 790.7 |
 | Python 3.14 | 59.8 | 109.3 | 56.7 | 3.9 | 22.6 | 73.6 | 45.1 | 467.2 |
 
@@ -190,7 +190,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 11.7x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 12.2x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
@@ -229,8 +229,19 @@ rather than quoting the better platform:
   same treatment, which took its `matmul` from 63.6 to 57 ms and `fib` from
   8.7 to 8.0 ms - there a recursive call's result is not proven numeric, so
   the addition that combines two of them used to tag-check both.
+  Two smaller things followed. A hoisted container needs no null test per
+  access: the pre-header leaves its end pointer equal to its data pointer
+  for an empty vector and zeroes both when the register holds no array, so
+  the bounds compare already rejects every index. And a numeric constant
+  read only by the instruction after it is never written to a frame slot -
+  that instruction takes it straight out of the constants array, which
+  every arithmetic and compare encoding accepts as a memory operand.
+  Together those took `matmul` to 37.9 ms, `numeric` to 3.1 ms and `fib` to
+  7.0 ms. The Linux baseline gains most from the constant: it was writing
+  every literal to a frame slot before reading it back, so `numeric` fell
+  from 5.7 to 4.3 ms and `fib` from 8.0 to 7.2 ms there.
 - **On Linux x86-64** every function in the suite reaches native code.
-  Overall Sura is about 5.0x faster than CPython by geometric mean — well
+  Overall Sura is about 5.3x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
   matmul now that indexing, guarded arithmetic, the loop register cache and
   the hoisted container checks are in, roughly even on strings and, since
@@ -249,8 +260,8 @@ actually applies:
 
 | | Windows | Linux |
 | --- | ---: | ---: |
-| `fib(30)` vs CPython | 10.4x faster | 7.5x faster |
-| numeric loop vs CPython | 49x faster | 19x faster |
+| `fib(30)` vs CPython | 11.1x faster | 8.3x faster |
+| numeric loop vs CPython | 54x faster | 25x faster |
 | sort vs CPython | 8.8x faster | 6.0x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
@@ -275,7 +286,7 @@ column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 11.7 times as fast as CPython,
+On Windows, by geometric mean Sura's JIT is about 12.2 times as fast as CPython,
 roughly 1.1 times slower than Node, and 2.4 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
