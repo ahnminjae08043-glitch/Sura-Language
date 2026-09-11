@@ -1,0 +1,122 @@
+# 바로 뒤 명령만 읽고 그 뒤로 죽는 LOAD_CONST는 프레임에 쓰지 않고 상수 배열에서 바로
+# 읽는다. 상수 레지스터가 뒤에서 다시 쓰이거나, 분기 대상이거나, 숫자가 아니거나,
+# 피연산자가 숫자로 증명되지 않으면 접으면 안 된다. 모두 인터프리터와 같아야 한다.
+
+# 1) 가장 흔한 모양: 루프 증가와 비교
+func simple_loop(n) do
+  acc is 0
+  i is 0
+  while i < n do
+    acc is acc + i * 3 - 1
+    i is i + 1
+  end
+  return acc
+end
+
+# 2) 상수가 왼쪽 피연산자
+func const_left(n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + (100 - i)
+    total is total + (2 * i)
+    i is i + 1
+  end
+  return total
+end
+
+# 3) 같은 상수 레지스터를 뒤에서 다시 쓰는 모양(컴파일러가 재사용할 수 있으므로
+#    접히면 값이 틀어진다)
+func reuse_const(n) do
+  total is 0
+  i is 0
+  while i < n do
+    k is 7
+    total is total + (i + k)
+    total is total + (i * k)
+    total is total + k
+    i is i + 1
+  end
+  return total
+end
+
+# 4) 숫자가 아닌 피연산자와 섞임: helper로 가는 덧셈은 접히면 안 된다
+func with_strings(n) do
+  total is 0
+  i is 0
+  while i < n do
+    s is "v" + 1
+    t is s + 2
+    total is total + t.len()
+    i is i + 1
+  end
+  return total
+end
+
+# 5) 배열 원소는 숫자로 증명되지 않는다: 상수와 더해도 helper 경로가 살아 있어야 한다
+func from_array(arr, n) do
+  total is 0
+  i is 0
+  while i < n do
+    j is i % 4
+    total is total + (arr[j] + 10)
+    total is total + (arr[j] * 2)
+    i is i + 1
+  end
+  return total
+end
+
+# 6) 비교의 상수: 경계값이 정확해야 한다
+func compare_const(n) do
+  hits is 0
+  i is 0
+  while i < n do
+    if i == 5 then
+      hits is hits + 1
+    end
+    if i != 5 then
+      hits is hits + 10
+    end
+    if i <= 3 then
+      hits is hits + 100
+    end
+    if i > 7 then
+      hits is hits + 1000
+    end
+    i is i + 1
+  end
+  return hits
+end
+
+# 7) 나눗셈·나머지의 상수(접지 않는 경로)
+func div_mod_const(n) do
+  total is 0
+  i is 1
+  while i <= n do
+    total is total + (i / 2) + (i % 3)
+    i is i + 1
+  end
+  return total
+end
+
+r is 0
+while r < 60 do
+  a is simple_loop(20)
+  b is const_left(20)
+  c is reuse_const(20)
+  d is with_strings(20)
+  e is from_array([1, 2, 3, 4], 20)
+  f is compare_const(20)
+  g is div_mod_const(20)
+  r is r + 1
+end
+
+assert_eq(simple_loop(1000), 3 * (1000 * 999 / 2) - 1000)
+assert_eq(const_left(1000), 100 * 1000 - (1000 * 999 / 2) + 2 * (1000 * 999 / 2))
+assert_eq(reuse_const(1000), (1000 * 999 / 2) + 7 * 1000 + 7 * (1000 * 999 / 2) + 7 * 1000)
+assert_eq(with_strings(1000), 3 * 1000)
+assert_eq(from_array([1, 2, 3, 4], 1000), 250 * (1 + 2 + 3 + 4) + 10 * 1000 + 2 * 250 * (1 + 2 + 3 + 4))
+assert_eq(compare_const(1000), 1 + 10 * 999 + 100 * 4 + 1000 * 992)
+assert_eq(div_mod_const(1000), 251250)
+
+print "jit_const_fold: PASS"

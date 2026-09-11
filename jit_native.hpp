@@ -1859,8 +1859,14 @@ inline void sura_x64_emit_array_index_guard_ex(X64Emitter& em, int32_t container
                                                int32_t finish_off = 0) {
     int base = XR::RAX;
     if (hoist_gpr >= 0) {
-        em.test_rr(hoist_gpr, hoist_gpr);
-        slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        // Direct mode needs no null test: the pre-header leaves the end
+        // pointer equal to the data pointer for an empty vector, and zeroes
+        // both when the register does not hold an array, so the bounds
+        // compare below rejects every index in either case.
+        if (!direct) {
+            em.test_rr(hoist_gpr, hoist_gpr);
+            slow_jmps.push_back(em.jcc_rel32_placeholder(CC::E));
+        }
         base = hoist_gpr;
     } else {
         sura_x64_emit_object_receiver_guard(em, container_off, OBJ_TYPE_ARRAY, slow_jmps);
@@ -2003,6 +2009,27 @@ inline int jit_fusable_jump_after(const JitChunk& chunk, size_t entry_ip, size_t
     if (!jit_reg_dead_from(chunk, entry_ip, end_ip, static_cast<size_t>(jmp.operand), reg, budget)) return 0;
     if (!jit_reg_dead_from(chunk, entry_ip, end_ip, ip + 2, reg, budget)) return 0;
     return on_false ? 1 : 2;
+}
+
+// A LOAD_CONST whose value is only read by the instruction right after it
+// need not be written to a frame slot: that instruction can take the
+// constant straight out of the constants array, which every arithmetic and
+// compare encoding accepts as a memory operand. Requires a numeric constant
+// (the arithmetic encodings are the only consumers), a consumer that reads
+// the register exactly once and cannot fall back to a helper (a helper reads
+// its operands from the frame), and the register dead afterwards.
+inline bool jit_const_foldable_use(const JitChunk& chunk, const JitInst& use, uint16_t reg) {
+    switch (use.op) {
+        case JitOp::ADD: case JitOp::SUB: case JitOp::MUL:
+        case JitOp::CMP_EQ: case JitOp::CMP_NEQ: case JitOp::CMP_LT:
+        case JitOp::CMP_LTE: case JitOp::CMP_GT: case JitOp::CMP_GTE:
+            break;
+        default:
+            return false;
+    }
+    (void)chunk;
+    if (use.a == reg) return false;
+    return (use.b == reg) != (use.c == reg);
 }
 
 // Registers of a callee frame that some path may read before writing,
@@ -2363,27 +2390,45 @@ public:
                 if (in_rax) refresh_from_rax(written); else reload_cached(written);
             }
         };
+        // A LOAD_CONST folded into the instruction being emitted
+        // (jit_const_foldable_use): that operand is read from the constants
+        // array, and the LOAD_CONST itself is never emitted. Set per
+        // instruction by the emit loop below.
+        uint16_t fold_reg_now = 65535;
+        int      fold_idx_now = -1;
+        auto folded_now = [&](uint16_t r) -> int {
+            return r == fold_reg_now ? fold_idx_now : -1;
+        };
         auto load_operand_xmm0 = [&](uint16_t r) {
+            const int f = folded_now(r);
+            if (f >= 0) { em.movsd_x_mem(XR::XMM0, XR::R12, off_c(f)); return; }
             const int x = cached_xmm(r);
             if (x >= 0) em.movaps_xx(XR::XMM0, x);
             else em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
         };
         auto arith_xmm0 = [&](JitOp op, uint16_t r) {
-            const int x = cached_xmm(r);
+            const int f = folded_now(r);
+            const int x = f >= 0 ? -1 : cached_xmm(r);
+            const int base = f >= 0 ? XR::R12 : XR::RBX;
+            const int32_t off = f >= 0 ? off_c(f) : off_r(r);
             if (op == JitOp::ADD) {
-                if (x >= 0) em.addsd_xx(XR::XMM0, x); else em.addsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+                if (x >= 0) em.addsd_xx(XR::XMM0, x); else em.addsd_x_mem(XR::XMM0, base, off);
             } else if (op == JitOp::SUB) {
-                if (x >= 0) em.subsd_xx(XR::XMM0, x); else em.subsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+                if (x >= 0) em.subsd_xx(XR::XMM0, x); else em.subsd_x_mem(XR::XMM0, base, off);
             } else {
-                if (x >= 0) em.mulsd_xx(XR::XMM0, x); else em.mulsd_x_mem(XR::XMM0, XR::RBX, off_r(r));
+                if (x >= 0) em.mulsd_xx(XR::XMM0, x); else em.mulsd_x_mem(XR::XMM0, base, off);
             }
         };
         auto ucomisd_xmm0 = [&](uint16_t r) {
+            const int f = folded_now(r);
+            if (f >= 0) { em.ucomisd_x_mem(XR::XMM0, XR::R12, off_c(f)); return; }
             const int x = cached_xmm(r);
             if (x >= 0) em.ucomisd_xx(XR::XMM0, x);
             else em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(r));
         };
         auto load_bits = [&](int gpr, uint16_t r) {
+            const int f = folded_now(r);
+            if (f >= 0) { em.mov_r_mem(gpr, XR::R12, off_c(f)); return; }
             const int x = cached_xmm(r);
             if (x >= 0) em.movq_r_x(gpr, x);
             else em.mov_r_mem(gpr, XR::RBX, off_r(r));
@@ -2407,6 +2452,30 @@ public:
             if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
             const size_t target = static_cast<size_t>(inst.operand);
             if (target >= entry_ip && target < end_ip) branch_target[target - entry_ip] = 1;
+        }
+        // LOAD_CONSTs folded into the instruction that consumes them: the
+        // consumer must not be able to fall back to a helper (it would read
+        // the operand from the frame) and must not be a branch target.
+        std::vector<int> fold_index(body_len, -1);
+        std::vector<uint16_t> fold_register(body_len, 65535);
+        std::vector<uint8_t> fold_skip(body_len, 0);
+        if (std::getenv("SURA_JIT_DISABLE_CONST_FOLD") == nullptr) {
+            for (size_t ip = entry_ip; ip + 1 < end_ip; ++ip) {
+                const size_t i = ip - entry_ip;
+                if (!analysis.reached[i] || !analysis.reached[i + 1]) continue;
+                const JitInst& lc = chunk.code[ip];
+                if (lc.op != JitOp::LOAD_CONST) continue;
+                if (lc.operand < 0 || (size_t)lc.operand >= chunk.constants.size()) continue;
+                if (!chunk.constants[(size_t)lc.operand].is_num()) continue;
+                if (branch_target[i] || branch_target[i + 1]) continue;
+                if (analysis.dynamic[i + 1]) continue;
+                if (!jit_const_foldable_use(chunk, chunk.code[ip + 1], lc.a)) continue;
+                int budget = 64;
+                if (!jit_reg_dead_from(chunk, entry_ip, end_ip, ip + 2, lc.a, budget)) continue;
+                fold_skip[i] = 1;
+                fold_index[i + 1] = lc.operand;
+                fold_register[i + 1] = lc.a;
+            }
         }
         // A conditional jump folded into the compare before it
         // (jit_fusable_jump_after); the emit loop skips this instruction.
@@ -2686,6 +2755,9 @@ public:
             if (branch_target[ip - entry_ip] && loop_header_bl[ip - entry_ip] && !no_loop_align)
                 em.align(16);
             ip_off[ip - entry_ip] = em.pos();
+            fold_reg_now = fold_register[ip - entry_ip];
+            fold_idx_now = fold_index[ip - entry_ip];
+            if (fold_skip[ip - entry_ip]) { xmm0_holds_reg = -1; continue; }
             const JitInst& inst = chunk.code[ip];
             const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
             const bool xmm0_fresh = xmm0_holds_reg >= 0 && xmm0_holds_ip + 1 == ip &&
@@ -2747,15 +2819,13 @@ public:
                         em.cmp_r_imm32(XR::RAX, 0);
                         deopt_here(CC::E, ip, false);
                     }
-                    em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
-                    if (inst.op == JitOp::ADD) {
-                        em.addsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
-                    } else if (inst.op == JitOp::SUB) {
-                        em.subsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
-                    } else if (inst.op == JitOp::MUL) {
-                        em.mulsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
+                    load_operand_xmm0(inst.b);
+                    if (inst.op == JitOp::DIV) {
+                        const int x = cached_xmm(inst.c);
+                        if (x >= 0) em.divsd_xx(XR::XMM0, x);
+                        else em.divsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
                     } else {
-                        em.divsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
+                        arith_xmm0(inst.op, inst.c);
                     }
                     // A non-NaN result proves both operands were numbers.
                     if (dyn) {
@@ -2808,8 +2878,8 @@ public:
                     // ordering type error) in the helper.
                     std::vector<size_t> slow;
                     const bool swapped = inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_LTE;
-                    em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.c : inst.b));
-                    em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(swapped ? inst.b : inst.c));
+                    load_operand_xmm0(swapped ? inst.c : inst.b);
+                    ucomisd_xmm0(swapped ? inst.b : inst.c);
                     if (dyn) slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     const uint8_t cc = (inst.op == JitOp::CMP_LT || inst.op == JitOp::CMP_GT)
                         ? CC::A : CC::AE;
@@ -2836,8 +2906,8 @@ public:
                     // Dynamic operands: numbers compare inline, anything else
                     // (string equality) in the helper.
                     std::vector<size_t> slow;
-                    em.movsd_x_mem(XR::XMM0, XR::RBX, off_r(inst.b));
-                    em.ucomisd_x_mem(XR::XMM0, XR::RBX, off_r(inst.c));
+                    load_operand_xmm0(inst.b);
+                    ucomisd_xmm0(inst.c);
                     if (dyn) slow.push_back(em.jcc_rel32_placeholder(CC::P));
                     em.mov_ri64(XR::RAX, NBFALSE);
                     em.mov_ri64(XR::RCX, NBTRUE);
@@ -2848,16 +2918,16 @@ public:
                             em.cmov_rr(CC::E, XR::RAX, XR::RCX);
                             em.mov_ri64(XR::RDX, NBFALSE);
                             em.cmov_rr(CC::P, XR::RAX, XR::RDX);
-                            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
-                            em.mov_r_mem(XR::R8, XR::RBX, off_r(inst.c));
+                            load_bits(XR::RDX, inst.b);
+                            load_bits(XR::R8, inst.c);
                             em.cmp_rr(XR::RDX, XR::R8);
                             em.cmov_rr(CC::E, XR::RAX, XR::RCX);
                             break;
                         case JitOp::CMP_NEQ:
                             em.cmov_rr(CC::NE, XR::RAX, XR::RCX);
                             em.cmov_rr(CC::P, XR::RAX, XR::RCX);
-                            em.mov_r_mem(XR::RDX, XR::RBX, off_r(inst.b));
-                            em.mov_r_mem(XR::R8, XR::RBX, off_r(inst.c));
+                            load_bits(XR::RDX, inst.b);
+                            load_bits(XR::R8, inst.c);
                             em.cmp_rr(XR::RDX, XR::R8);
                             em.mov_ri64(XR::RDX, NBFALSE);
                             em.cmov_rr(CC::E, XR::RAX, XR::RDX);
@@ -4852,6 +4922,11 @@ class NativeCompiler {
     // helper slow path writes the temporary's slot first.
     struct ForwardedMove { uint16_t temp; uint16_t src; int role; };
     std::unordered_map<size_t, std::vector<ForwardedMove>> forward_at;
+    // LOAD_CONSTs folded into the instruction that consumes them
+    // (jit_const_foldable_use): consumer ip -> (register, constant index).
+    struct FoldedConst { uint16_t reg; int index; };
+    std::unordered_map<size_t, FoldedConst> const_fold_at;
+    const bool no_const_fold_ = std::getenv("SURA_JIT_DISABLE_CONST_FOLD") != nullptr;
     std::vector<uint8_t> loop_header_at_;
     const bool no_loop_align_ = std::getenv("SURA_JIT_DISABLE_LOOP_ALIGN") != nullptr;
     // Conditional jumps leaving a write-back region go through a stub that
@@ -5465,6 +5540,7 @@ public:
             pending_src.assign(pending.size(), SIZE_MAX);
             fused_jump_ip = SIZE_MAX;
             forward_at.clear();
+            const_fold_at.clear();
             // Loop headers (targets of backward jumps) start on a 16-byte
             // boundary: the code before a loop changes its length with
             // every emitter change, and an unaligned header costs the
@@ -6489,6 +6565,53 @@ private:
     // For JUMP_IF_FALSE / JUMP_IF_TRUE we need to know the condition
     // register holds a bool (NBTRUE/NBFALSE). We enforce that by refusing
     // to compile unless the previous op is a CMP_* writing the same reg.
+    // A LOAD_CONST the next instruction consumes and nothing else reads is
+    // not emitted at all; the consumer reads the constants array instead.
+    // Only consumers that cannot reach a helper qualify, so no slow path
+    // ever needs the value in the frame.
+    bool try_fold_const(const JitInst& inst, size_t ip) {
+        if (no_const_fold_ || inst.op != JitOp::LOAD_CONST) return false;
+        if (inst.operand < 0 || (size_t)inst.operand >= chunk.constants.size()) return false;
+        if (!chunk.constants[(size_t)inst.operand].is_num()) return false;
+        if (ip + 1 >= end_ip) return false;
+        if (has_non_fallthrough_predecessor(ip) || has_non_fallthrough_predecessor(ip + 1)) return false;
+        const JitInst& use = chunk.code[ip + 1];
+        if (!jit_const_foldable_use(chunk, use, inst.a)) return false;
+        if (!(use.ic_numeric_fast ||
+              (proven_num_at(ip + 1, use.b) && proven_num_at(ip + 1, use.c)))) return false;
+        if (virtual_ctor_at.count(ip + 1) || virtual_access_at.count(ip + 1)) return false;
+        int budget = 64;
+        if (!reg_dead_from(ip + 2, inst.a, budget)) return false;
+        const_fold_at[ip + 1] = {inst.a, inst.operand};
+        return true;
+    }
+    // The constants-array index a folded LOAD_CONST left for this operand,
+    // or -1 when the operand is an ordinary register.
+    int folded_const_of(size_t ip, uint16_t reg) const {
+        auto it = const_fold_at.find(ip);
+        if (it == const_fold_at.end() || it->second.reg != reg) return -1;
+        return it->second.index;
+    }
+    void load_operand_xmm0_at(uint16_t r, size_t ip, bool plain) {
+        const int c = plain ? folded_const_of(ip, r) : -1;
+        if (c >= 0) em.movsd_x_mem(XR::XMM0, XR::R12, off_c(c));
+        else load_operand_xmm0(r);
+    }
+    void arith_xmm0_at(JitOp op, uint16_t r, size_t ip, bool plain) {
+        const int c = plain ? folded_const_of(ip, r) : -1;
+        if (c < 0) { arith_xmm0(op, r); return; }
+        switch (op) {
+            case JitOp::ADD: em.addsd_x_mem(XR::XMM0, XR::R12, off_c(c)); break;
+            case JitOp::SUB: em.subsd_x_mem(XR::XMM0, XR::R12, off_c(c)); break;
+            default:         em.mulsd_x_mem(XR::XMM0, XR::R12, off_c(c)); break;
+        }
+    }
+    void ucomisd_xmm0_at(uint16_t r, size_t ip, bool plain) {
+        const int c = plain ? folded_const_of(ip, r) : -1;
+        if (c >= 0) em.ucomisd_x_mem(XR::XMM0, XR::R12, off_c(c));
+        else ucomisd_xmm0(r);
+    }
+
     // `MOVE t, s` followed (possibly through one more MOVE) by an index
     // instruction whose key or hoisted container is `t`, with `t` dead
     // after it: the copy is skipped and the index instruction reads `s`.
@@ -6918,18 +7041,24 @@ private:
             em.xor_rr(rg.second, rg.second);
             sura_x64_emit_object_receiver_guard(em, off_r(rg.first), OBJ_TYPE_ARRAY, slow);
             if (loop.direct) {
-                // GPR = element data (null for an empty vector, which then
-                // takes the helper like a non-array), slot = end pointer.
+                // GPR = element data, slot = end pointer. Both are zero when
+                // the register does not hold an array, and equal when the
+                // vector is empty, so every access fails its bounds compare
+                // and reaches the helper without a separate null test.
                 int32_t finish_off = 0;
                 for (const auto& fs : loop.finish_slots)
                     if (fs.first == rg.second) finish_off = off_r(fs.second);
                 em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
                 em.mov_mem_r(XR::RBX, finish_off, XR::R10);
                 em.mov_r_mem(rg.second, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+                const size_t done = em.jmp_rel32_placeholder();
+                for (size_t p : slow) em.patch_rel32(p, em.pos());
+                em.mov_mem_imm32(XR::RBX, finish_off, 0);
+                em.patch_rel32(done, em.pos());
             } else {
                 em.mov_rr(rg.second, XR::RAX);
+                for (size_t p : slow) em.patch_rel32(p, em.pos());
             }
-            for (size_t p : slow) em.patch_rel32(p, em.pos());
         }
     }
 
@@ -7119,8 +7248,8 @@ private:
                 const bool fast = inst.ic_numeric_fast ||
                                   (proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
                 std::vector<size_t> slow_jmps;
-                load_operand_xmm0(inst.b);
-                arith_xmm0(inst.op, inst.c);
+                load_operand_xmm0_at(inst.b, ip, true);
+                arith_xmm0_at(inst.op, inst.c, ip, true);
                 if (!fast) slow_jmps.push_back(emit_result_nan_jump());
                 store_result_xmm0(inst.a);
                 if (slow_jmps.empty()) return true;
@@ -7387,8 +7516,8 @@ private:
         std::vector<size_t> slow_jmps;
         const bool guarded = !proven_num_at(ip, inst.b) || !proven_num_at(ip, inst.c);
         const bool swapped = inst.op == O::CMP_LT || inst.op == O::CMP_LTE;
-        load_operand_xmm0(swapped ? inst.c : inst.b);
-        ucomisd_xmm0(swapped ? inst.b : inst.c);
+        load_operand_xmm0_at(swapped ? inst.c : inst.b, ip, allow_fuse);
+        ucomisd_xmm0_at(swapped ? inst.b : inst.c, ip, allow_fuse);
         // An unordered compare is exactly "one of them is a NaN pattern":
         // every non-number, plus a genuine NaN, which the helper then
         // compares the way the interpreter does.
@@ -7458,8 +7587,8 @@ private:
         const size_t target_ip = fuse ? (size_t)chunk.code[ip + 1].operand : 0;
         std::vector<size_t> slow_jmps;
         const bool guarded = !proven_num_at(ip, inst.b) || !proven_num_at(ip, inst.c);
-        load_operand_xmm0(inst.b);
-        ucomisd_xmm0(inst.c);
+        load_operand_xmm0_at(inst.b, ip, allow_fuse);
+        ucomisd_xmm0_at(inst.c, ip, allow_fuse);
         // Unordered: a non-number on either side (string equality, object
         // identity) or a genuine NaN. Both are the helper's exact business.
         if (guarded) slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
@@ -7468,8 +7597,21 @@ private:
         em.cmov_rr(CC::E, XR::RAX, XR::RCX);
         em.mov_ri64(XR::RDX, when_differ);
         em.cmov_rr(CC::P, XR::RAX, XR::RDX);
-        load_bits(XR::RDX, inst.b);
-        load_bits(XR::R8, inst.c);
+        if (folded_const_of(ip, inst.b) >= 0 || folded_const_of(ip, inst.c) >= 0) {
+            // A folded operand has no frame slot; the ordered compare above
+            // already decided equality for two numbers, and the bit compare
+            // only adds "a NaN equals itself", which cannot involve a
+            // numeric constant paired with an unordered operand here.
+            const int cb = folded_const_of(ip, inst.b);
+            const int cc2 = folded_const_of(ip, inst.c);
+            if (cb >= 0) em.mov_r_mem(XR::RDX, XR::R12, off_c(cb));
+            else load_bits(XR::RDX, inst.b);
+            if (cc2 >= 0) em.mov_r_mem(XR::R8, XR::R12, off_c(cc2));
+            else load_bits(XR::R8, inst.c);
+        } else {
+            load_bits(XR::RDX, inst.b);
+            load_bits(XR::R8, inst.c);
+        }
         em.cmp_rr(XR::RDX, XR::R8);
         em.cmov_rr(CC::E, XR::RAX, XR::RCX);
         if (fuse) { emit_fused_jump_on_rax(fuse, target_ip, ip); fused_jump_ip = ip + 1; }
@@ -7498,7 +7640,7 @@ private:
             return true;
         }
         if (runtime_inst == nullptr && ip < chunk.code.size() && &inst == &chunk.code[ip] &&
-            try_forward_move(inst, ip)) {
+            (try_forward_move(inst, ip) || try_fold_const(inst, ip))) {
             return true;
         }
         if (active_cache != nullptr && runtime_inst == nullptr) {
@@ -7553,10 +7695,16 @@ private:
             case O::ADD: case O::SUB: case O::MUL: {
                 if (inst.ic_numeric_fast ||
                     operands_proven_numeric(inst, ip, runtime_inst)) {
-                    em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
-                    if (inst.op == O::ADD) em.addsd_x_mem(XR::XMM0, XR::RBX, oc);
-                    else if (inst.op == O::SUB) em.subsd_x_mem(XR::XMM0, XR::RBX, oc);
-                    else em.mulsd_x_mem(XR::XMM0, XR::RBX, oc);
+                    const bool plain = runtime_inst == nullptr;
+                    const int cb = plain ? folded_const_of(ip, inst.b) : -1;
+                    const int cc = plain ? folded_const_of(ip, inst.c) : -1;
+                    if (cb >= 0) em.movsd_x_mem(XR::XMM0, XR::R12, off_c(cb));
+                    else em.movsd_x_mem(XR::XMM0, XR::RBX, ob);
+                    const int rhs_base = cc >= 0 ? XR::R12 : XR::RBX;
+                    const int32_t rhs_off = cc >= 0 ? off_c(cc) : oc;
+                    if (inst.op == O::ADD) em.addsd_x_mem(XR::XMM0, rhs_base, rhs_off);
+                    else if (inst.op == O::SUB) em.subsd_x_mem(XR::XMM0, rhs_base, rhs_off);
+                    else em.mulsd_x_mem(XR::XMM0, rhs_base, rhs_off);
                     em.movsd_mem_x(XR::RBX, oa, XR::XMM0);
                     return true;
                 }
