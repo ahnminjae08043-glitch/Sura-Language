@@ -1324,6 +1324,14 @@ struct JitHoistLoop {
     // access reloads both pointers.
     bool direct = false;
     std::vector<std::pair<int, uint16_t>> finish_slots;  // (GPR number, frame slot)
+    // Induction mode (direct mode plus a key that only counts up): the GPR
+    // holds the element pointer itself, the pre-header seeds it with
+    // data + trunc(key) * 8 and each iteration adds the step, so an access
+    // is a bounds compare and a move - no conversion, no address maths.
+    bool     induction = false;
+    uint16_t induction_key = 65535;
+    int      induction_step = 0;      // elements per iteration
+    size_t   induction_bump_ip = 0;   // pointers advance after this instruction
     // INDEX_GET / INDEX_SET instructions whose container is one of those
     // registers, or a temporary the loop fills from one by MOVE just
     // before the access: (ip, GPR number).
@@ -2009,6 +2017,84 @@ inline int jit_fusable_jump_after(const JitChunk& chunk, size_t entry_ip, size_t
     if (!jit_reg_dead_from(chunk, entry_ip, end_ip, static_cast<size_t>(jmp.operand), reg, budget)) return 0;
     if (!jit_reg_dead_from(chunk, entry_ip, end_ip, ip + 2, reg, budget)) return 0;
     return on_false ? 1 : 2;
+}
+
+// Decides induction mode for a direct-mode hoist loop. Every access must
+// index through the same key; that key must be written exactly once in the
+// loop, by `LOAD_CONST c, step` / `ADD t, key, c` / `MOVE key, t` placed
+// after all of those accesses, with a positive whole step. The pointer and
+// the key then advance together on every path that reaches the increment,
+// so a conditional increment stays in step.
+inline void jit_plan_induction(const JitChunk& chunk, JitHoistLoop& loop) {
+    loop.induction = false;
+    static const bool disabled = std::getenv("SURA_JIT_DISABLE_INDUCTION") != nullptr;
+    if (disabled || !loop.direct || loop.access_gpr.empty()) return;
+    const size_t h = loop.header_ip, b = loop.backedge_ip;
+    // The register an access indexes through, following the temporaries the
+    // compiler copies it into (two levels is all it ever emits).
+    auto key_of = [&](size_t ip) -> int {
+        const JitInst& access = chunk.code[ip];
+        int reg = access.op == JitOp::INDEX_GET ? access.c
+                : access.op == JitOp::INDEX_SET ? access.b : -1;
+        if (reg < 0) return -1;
+        for (int level = 0; level < 2; ++level) {
+            size_t def = SIZE_MAX;
+            for (size_t j = ip; j-- > h;) {
+                const JitInst& d = chunk.code[j];
+                const int shape = jit_hoist_write_shape(d.op);
+                if (shape < 0) return -1;
+                const bool writes = (shape >= 1 && d.a == reg) || (shape == 2 && d.b == reg);
+                if (writes) { def = j; break; }
+            }
+            if (def == SIZE_MAX) return reg;          // the loop-carried value itself
+            if (chunk.code[def].op != JitOp::MOVE) return -1;
+            reg = chunk.code[def].b;
+        }
+        return reg;
+    };
+    int key = -1;
+    size_t last_access = h;
+    for (const auto& ag : loop.access_gpr) {
+        const int k = key_of(ag.first);
+        if (k < 0) return;
+        if (key < 0) key = k;
+        else if (key != k) return;
+        last_access = std::max(last_access, ag.first);
+    }
+    if (key < 0) return;
+    size_t writer = SIZE_MAX;
+    for (size_t ip = h; ip <= b; ++ip) {
+        const JitInst& inst = chunk.code[ip];
+        const int shape = jit_hoist_write_shape(inst.op);
+        if (shape < 0) return;
+        const bool writes = (shape >= 1 && inst.a == key) || (shape == 2 && inst.b == key);
+        if (!writes) continue;
+        if (writer != SIZE_MAX) return;               // more than one definition
+        writer = ip;
+    }
+    if (writer == SIZE_MAX || writer < last_access || writer < h + 2) return;
+    const JitInst& mv = chunk.code[writer];
+    const JitInst& ad = chunk.code[writer - 1];
+    const JitInst& lc = chunk.code[writer - 2];
+    if (mv.op != JitOp::MOVE || ad.op != JitOp::ADD || lc.op != JitOp::LOAD_CONST) return;
+    if (ad.a != mv.b) return;
+    const int cst = ad.b == key ? ad.c : (ad.c == key ? ad.b : -1);
+    if (cst < 0 || lc.a != cst) return;
+    if (lc.operand < 0 || (size_t)lc.operand >= chunk.constants.size()) return;
+    const Value& step_value = chunk.constants[(size_t)lc.operand];
+    if (!step_value.is_num()) return;
+    const double step = step_value.as_num();
+    if (!(step >= 1.0 && step <= 1024.0) || step != std::floor(step)) return;
+    for (size_t ip = h; ip <= b; ++ip) {       // the three must run together
+        const JitInst& inst = chunk.code[ip];
+        if (!jit_is_branch_op(inst.op) || inst.operand < 0) continue;
+        const size_t target = static_cast<size_t>(inst.operand);
+        if (target > writer - 2 && target <= writer) return;
+    }
+    loop.induction = true;
+    loop.induction_key = static_cast<uint16_t>(key);
+    loop.induction_step = static_cast<int>(step);
+    loop.induction_bump_ip = writer;
 }
 
 // A LOAD_CONST whose value is only read by the instruction right after it
@@ -5609,6 +5695,12 @@ public:
                     return nullptr;
                 }
                 emitted_ops |= (uint64_t)1 << (int)chunk.code[ip].op;
+                // Induction pointers advance with the key they track.
+                for (const JitHoistLoop* loop : active_hoists) {
+                    if (!loop->induction || loop->induction_bump_ip != ip) continue;
+                    for (const auto& rg : loop->regs)
+                        em.add_r_imm32(rg.second, 8 * loop->induction_step);
+                }
                 pending_src.resize(pending.size(), ip);
                 if (active_cache != nullptr && ip == active_cache->backedge_ip) {
                     active_cache = nullptr;
@@ -7008,18 +7100,40 @@ private:
                 std::fprintf(stderr, "[jit] full-tier array hoist ip %zu..%zu: direct (data GPR + end slot)\n",
                              loop.header_ip, loop.backedge_ip);
         }
+        // Induction mode belongs to the innermost hoist loop that owns an
+        // access; an enclosing loop would advance a pointer nothing reads.
+        for (JitHoistLoop& loop : hoist_loops) {
+            jit_plan_induction(chunk, loop);
+            if (!loop.induction) continue;
+            for (const JitHoistLoop& inner : hoist_loops) {
+                if (&inner == &loop) continue;
+                if (inner.header_ip < loop.header_ip || inner.backedge_ip > loop.backedge_ip) continue;
+                for (const auto& ag : loop.access_gpr)
+                    for (const auto& inner_ag : inner.access_gpr)
+                        if (ag.first == inner_ag.first) loop.induction = false;
+            }
+            if (loop.induction && std::getenv("SURA_JIT_DIAG"))
+                std::fprintf(stderr, "[jit] full-tier array hoist ip %zu..%zu: induction on r%u step %d\n",
+                             loop.header_ip, loop.backedge_ip,
+                             loop.induction_key, loop.induction_step);
+        }
     }
 
     // The end-pointer frame slot offset for a direct-mode hoisted container
-    // at `ip` (the loop hoisted_gpr_at found), or INT32_MIN.
-    int32_t hoisted_finish_off_at(size_t ip, int gpr) const {
+    // at `ip` (the loop hoisted_gpr_at found), or INT32_MIN. `induction`
+    // reports whether that loop keeps the element pointer in the GPR.
+    int32_t hoisted_finish_off_at(size_t ip, int gpr, bool* induction = nullptr) const {
+        if (induction) *induction = false;
         for (size_t k = active_hoists.size(); k-- > 0;) {
             const JitHoistLoop* loop = active_hoists[k];
             for (const auto& ag : loop->access_gpr) {
                 if (ag.first != ip) continue;
                 if (!loop->direct) return INT32_MIN;
                 for (const auto& fs : loop->finish_slots)
-                    if (fs.first == gpr) return off_r(fs.second);
+                    if (fs.first == gpr) {
+                        if (induction) *induction = loop->induction;
+                        return off_r(fs.second);
+                    }
                 return INT32_MIN;
             }
         }
@@ -7051,9 +7165,28 @@ private:
                 em.mov_r_mem(XR::R10, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_FINISH_OFFSET);
                 em.mov_mem_r(XR::RBX, finish_off, XR::R10);
                 em.mov_r_mem(rg.second, XR::RAX, ARRAY_ELEMENTS_OFFSET + VECTOR_DATA_OFFSET);
+                if (loop.induction) {
+                    // Seed the element pointer with the key's current value.
+                    // A key that is not a whole number in [0, 2^31) leaves
+                    // the pointer at the end, so every access in the loop
+                    // takes the helper, which indexes exactly as the
+                    // interpreter does (negative keys wrap there).
+                    std::vector<size_t> bad;
+                    const int kx = cached_xmm(loop.induction_key);
+                    if (kx >= 0) em.cvttsd2si_r_x(XR::R10, kx);
+                    else em.cvttsd2si_r_mem(XR::R10, XR::RBX, off_r(loop.induction_key));
+                    em.cmp_r_imm32(XR::R10, 0x7fffffff);
+                    bad.push_back(em.jcc_rel32_placeholder(CC::A));
+                    em.lea_r_base_index8(rg.second, rg.second, XR::R10);
+                    const size_t seeded = em.jmp_rel32_placeholder();
+                    for (size_t q : bad) em.patch_rel32(q, em.pos());
+                    em.mov_r_mem(rg.second, XR::RBX, finish_off);
+                    em.patch_rel32(seeded, em.pos());
+                }
                 const size_t done = em.jmp_rel32_placeholder();
                 for (size_t p : slow) em.patch_rel32(p, em.pos());
                 em.mov_mem_imm32(XR::RBX, finish_off, 0);
+                em.xor_rr(rg.second, rg.second);
                 em.patch_rel32(done, em.pos());
             } else {
                 em.mov_rr(rg.second, XR::RAX);
@@ -7304,20 +7437,29 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
-            const int32_t finish_off = hoist_gpr >= 0 ? hoisted_finish_off_at(ip, hoist_gpr) : INT32_MIN;
+            bool induction = false;
+            const int32_t finish_off = hoist_gpr >= 0
+                ? hoisted_finish_off_at(ip, hoist_gpr, &induction) : INT32_MIN;
             const uint16_t key = plain ? forwarded_source(ip, inst.c, 0) : inst.c;
-            if (plain && hoist_gpr < 0) ensure_in_memory(inst.b);
-            sura_x64_emit_array_index_guard_ex(
-                em, ob, hoist_gpr, off_r(key),
-                plain ? cached_xmm(key) : -1,
-                plain && proven_num_at(ip, key), slow_jmps,
-                finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
+            int addr = XR::RCX;
+            if (induction) {
+                em.cmp_r_mem(hoist_gpr, XR::RBX, finish_off);
+                slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+                addr = hoist_gpr;
+            } else {
+                if (plain && hoist_gpr < 0) ensure_in_memory(inst.b);
+                sura_x64_emit_array_index_guard_ex(
+                    em, ob, hoist_gpr, off_r(key),
+                    plain ? cached_xmm(key) : -1,
+                    plain && proven_num_at(ip, key), slow_jmps,
+                    finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
+            }
             const int ax = plain ? cached_xmm(inst.a) : -1;
             if (ax >= 0) {
-                em.movsd_x_mem(ax, XR::RCX, 0);
+                em.movsd_x_mem(ax, addr, 0);
                 if (!cache_writeback) em.movsd_mem_x(XR::RBX, oa, ax);
             } else {
-                em.mov_r_mem(XR::RAX, XR::RCX, 0);
+                em.mov_r_mem(XR::RAX, addr, 0);
                 em.mov_mem_r(XR::RBX, oa, XR::RAX);
             }
             done_jmp = em.jmp_rel32_placeholder();
@@ -7345,20 +7487,29 @@ private:
         const bool fast = jit_array_layout_verified();
         if (fast) {
             const int hoist_gpr = plain ? hoisted_gpr_at(ip) : -1;
-            const int32_t finish_off = hoist_gpr >= 0 ? hoisted_finish_off_at(ip, hoist_gpr) : INT32_MIN;
+            bool induction = false;
+            const int32_t finish_off = hoist_gpr >= 0
+                ? hoisted_finish_off_at(ip, hoist_gpr, &induction) : INT32_MIN;
             const uint16_t key = plain ? forwarded_source(ip, inst.b, 0) : inst.b;
-            if (plain && hoist_gpr < 0) ensure_in_memory(inst.a);
-            sura_x64_emit_array_index_guard_ex(
-                em, oa, hoist_gpr, off_r(key),
-                plain ? cached_xmm(key) : -1,
-                plain && proven_num_at(ip, key), slow_jmps,
-                finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
+            int addr = XR::RCX;
+            if (induction) {
+                em.cmp_r_mem(hoist_gpr, XR::RBX, finish_off);
+                slow_jmps.push_back(em.jcc_rel32_placeholder(CC::AE));
+                addr = hoist_gpr;
+            } else {
+                if (plain && hoist_gpr < 0) ensure_in_memory(inst.a);
+                sura_x64_emit_array_index_guard_ex(
+                    em, oa, hoist_gpr, off_r(key),
+                    plain ? cached_xmm(key) : -1,
+                    plain && proven_num_at(ip, key), slow_jmps,
+                    finish_off != INT32_MIN, finish_off != INT32_MIN ? finish_off : 0);
+            }
             const int cx = plain ? cached_xmm(inst.c) : -1;
             if (cx >= 0) {
-                em.movsd_mem_x(XR::RCX, 0, cx);
+                em.movsd_mem_x(addr, 0, cx);
             } else {
                 em.mov_r_mem(XR::RDX, XR::RBX, oc);
-                em.mov_mem_r(XR::RCX, 0, XR::RDX);
+                em.mov_mem_r(addr, 0, XR::RDX);
             }
             done_jmp = em.jmp_rel32_placeholder();
             const size_t slow_pos = em.pos();
