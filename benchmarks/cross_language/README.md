@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 7.0 | 3.1 | 4.9 | 2.1 | 17.0 | 9.8 | 1.7 | 37.9 |
+| **Sura JIT** | 7.0 | 3.1 | 4.9 | 2.1 | 17.0 | 9.8 | 1.7 | 27.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -190,7 +190,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 12.2x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 12.7x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
@@ -240,6 +240,18 @@ rather than quoting the better platform:
   7.0 ms. The Linux baseline gains most from the constant: it was writing
   every literal to a frame slot before reading it back, so `numeric` fell
   from 5.7 to 4.3 ms and `fib` from 8.0 to 7.2 ms there.
+  Indexing came last. When every access to a hoisted container in a loop
+  indexes through the same key, and that key is only ever raised by a whole
+  constant step placed after those accesses, the register holds the element
+  pointer rather than the start of the array: the pre-header seeds it with
+  `data + trunc(key) * 8` and each iteration adds the step, so an access is
+  a bounds compare and a move - no conversion, no address arithmetic. A key
+  that is not a whole number in range leaves the pointer at the end, which
+  sends every access in that loop to the helper, where a negative index
+  still counts from the back as the interpreter does. That took `matmul`
+  from 37.9 to 27.7 ms. The `array` column does not move: a million doubles
+  stream from memory, so that loop is bandwidth-bound rather than
+  instruction-bound.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 5.3x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
@@ -286,8 +298,8 @@ column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 12.2 times as fast as CPython,
-roughly 1.1 times slower than Node, and 2.4 times slower than C++. On Linux,
+On Windows, by geometric mean Sura's JIT is about 12.7 times as fast as CPython,
+about level with Node, and 2.2 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
 
