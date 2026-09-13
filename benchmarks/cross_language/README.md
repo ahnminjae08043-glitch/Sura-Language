@@ -76,7 +76,7 @@ numbers will differ, the shape should not.
 | C# .NET 10 | 3.5 | 1.4 | 2.2 | 1.0 | 14.4 | 39.9 | 1.5 | 8.3 |
 | Java 25 | 3.1 | 1.4 | 10.7 | 2.3 | 4.5 | 17.4 | 0.3 | 2.2 |
 | Node 24 | 7.6 | 1.7 | 8.4 | 2.6 | 17.0 | 73.2 | 0.4 | 10.8 |
-| **Sura JIT** | 7.0 | 3.1 | 4.9 | 2.1 | 17.0 | 9.8 | 1.7 | 27.7 |
+| **Sura JIT** | 7.0 | 3.1 | 4.9 | 2.1 | 17.0 | 8.7 | 0.8 | 27.7 |
 | Sura VM | 73.8 | 67.5 | 62.6 | 12.5 | 91.4 | 33.8 | 79.5 | 575.5 |
 | Python 3.12 | 77.8 | 167.9 | 90.3 | 7.3 | 33.5 | 86.1 | 75.1 | 637.5 |
 
@@ -190,7 +190,7 @@ So the honest summary is platform-dependent, and it is worth stating plainly
 rather than quoting the better platform:
 
 - **On Windows x64** the JIT compiles everything in this suite and Sura runs
-  about 12.7x as fast as CPython by geometric mean. Array indexing, `push`,
+  about 14.2x as fast as CPython by geometric mean. Array indexing, `push`,
   `len` and dictionary `has` are inline in the full tier, a plain
   constructor such as `Point(x, y)` is a single allocation - or none at all
   when the record never leaves its loop - and loop-carried numbers stay in
@@ -252,6 +252,18 @@ rather than quoting the better platform:
   from 37.9 to 27.7 ms. The `array` column does not move: a million doubles
   stream from memory, so that loop is bandwidth-bound rather than
   instruction-bound.
+  Then `object`. The record never reached memory any more, but the loop
+  still loaded the class for its constructor call on every iteration -
+  through a helper, since a class name's global slot is nil and the helper
+  has to look the name up - and the replaced constructor never reads that
+  register. Not emitting a global load whose only reader is a replaced
+  constructor's callee, together with dropping the copies of the record
+  register the compiler makes for each field access (nothing reads their
+  value either), took `object` from 1.7 to 0.8 ms. A known power-of-two
+  divisor now divides by multiplying with its exact reciprocal and takes a
+  remainder as the low bits of a non-negative whole dividend; the
+  `% 2147483648` in `sort`'s generator had been a 64-bit `idiv`, and `sort`
+  went from 9.8 to 8.7 ms.
 - **On Linux x86-64** every function in the suite reaches native code.
   Overall Sura is about 5.3x faster than CPython by geometric mean — well
   ahead on calls and arithmetic, ahead on arrays, sorting, objects and
@@ -274,7 +286,7 @@ actually applies:
 | --- | ---: | ---: |
 | `fib(30)` vs CPython | 11.1x faster | 8.3x faster |
 | numeric loop vs CPython | 54x faster | 25x faster |
-| sort vs CPython | 8.8x faster | 6.0x faster |
+| sort vs CPython | 9.9x faster | 6.0x faster |
 | startup vs CPython | 2.3x faster | 3.2x faster |
 | `autograd.matmul` 256x256 | 0.98 ms | 1.88 ms |
 
@@ -298,8 +310,8 @@ column.
 
 ### How to read this
 
-On Windows, by geometric mean Sura's JIT is about 12.7 times as fast as CPython,
-about level with Node, and 2.2 times slower than C++. On Linux,
+On Windows, by geometric mean Sura's JIT is about 14.2 times as fast as CPython,
+about 10% faster than Node, and 2.0 times slower than C++. On Linux,
 see the platform section above — the summary there is different and less
 flattering.
 
