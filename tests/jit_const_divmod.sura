@@ -1,0 +1,148 @@
+# 컴파일 시점에 알려진 상수 제수: 2의 거듭제곱으로 나누기는 역수 곱하기로, 2의 거듭제곱
+# 나머지는 음이 아닌 정수 피제수의 하위 비트로 계산한다. 음수·소수·NaN·무한대·아주 큰
+# 피제수, 2의 거듭제곱이 아닌 제수, 0으로 나누기 오류가 모두 인터프리터와 같아야 한다.
+
+func make_inf() do
+  x is 1000000000000000000000
+  i is 0
+  while i < 40 do
+    x is x * x
+    i is i + 1
+  end
+  return x
+end
+
+func is_nan(v) do
+  if v < 0 then
+    return false
+  end
+  if v >= 0 then
+    return false
+  end
+  return true
+end
+
+func div_pow2(n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + i / 2 + i / 4 + i / 0.5 + i / -8 + i / 1024
+    i is i + 1
+  end
+  return total
+end
+
+func div_other(n) do
+  total is 0
+  i is 1
+  while i <= n do
+    total is total + i / 3 + i / 10
+    i is i + 1
+  end
+  return total
+end
+
+func div_specials(n) do
+  inf is make_inf()
+  nan is inf - inf
+  hits is 0
+  i is 0
+  while i < n do
+    a is inf / 2
+    b is nan / 2
+    c is (0 - 0) / 4
+    if a == inf then
+      hits is hits + 1
+    end
+    if is_nan(b) then
+      hits is hits + 10
+    end
+    if c == 0 then
+      hits is hits + 100
+    end
+    i is i + 1
+  end
+  return hits
+end
+
+func mod_pow2(n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + i % 8 + i % 1024 + i % 2147483648
+    i is i + 1
+  end
+  return total
+end
+
+func mod_negative(n) do
+  total is 0
+  i is 0
+  while i < n do
+    v is 0 - i
+    total is total + v % 8 + v % 16
+    i is i + 1
+  end
+  return total
+end
+
+func mod_fraction(n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + (i + 0.5) % 4
+    i is i + 1
+  end
+  return total
+end
+
+func lcg(n) do
+  seed is 12345
+  i is 0
+  while i < n do
+    seed is (seed * 1103515245 + 12345) % 2147483648
+    i is i + 1
+  end
+  return seed
+end
+
+func mod_other(n) do
+  total is 0
+  i is 0
+  while i < n do
+    total is total + i % 7 + i % 1000000
+    i is i + 1
+  end
+  return total
+end
+
+r is 0
+while r < 60 do
+  a1 is div_pow2(20)
+  a2 is div_other(20)
+  a3 is div_specials(20)
+  a4 is mod_pow2(20)
+  a5 is mod_negative(20)
+  a6 is mod_fraction(20)
+  a7 is lcg(20)
+  a8 is mod_other(20)
+  r is r + 1
+end
+
+assert_eq(div_pow2(1000), 1311675.29296875)
+assert_eq(div_other(1000) > 216883.33, true)
+assert_eq(div_other(1000) < 216883.34, true)
+assert_eq(div_specials(100), 11100)
+assert_eq(mod_pow2(5000), 15018260)
+assert_eq(mod_negative(1000), 0 - 10968)
+assert_eq(mod_fraction(1000), 2000)
+assert_eq(lcg(100000), 1777412096)
+assert_eq(mod_other(5000), 12512495)
+caught is ""
+try
+  z is 5 / (1 - 1)
+catch err
+  caught is err
+end
+assert_eq(caught, "[E202] division by zero")
+print "jit_const_divmod: PASS"

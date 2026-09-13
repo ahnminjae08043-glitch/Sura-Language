@@ -2209,6 +2209,11 @@ public:
 
     // Filled by compile_bytes() for the direct-call linkage of this body.
     size_t unguarded_entry_offset = 0;   // byte offset past the entry guards
+    // Where this body's own recursive calls enter: past the parameter guards
+    // and past the global guards hoisted to the entry. A pure body cannot
+    // rebind a global, so what the outermost entry checked still holds for
+    // every call it makes to itself.
+    size_t self_entry_offset = 0;
     BaselineBodyAnalysis::RegKind return_kind = BaselineBodyAnalysis::kOther;
     bool pure = true;                    // BaselineBodyAnalysis::pure
     bool vm_frame = false;               // BaselineBodyAnalysis::vm_frame
@@ -2360,6 +2365,11 @@ public:
                 }
             }
         }
+        // The recursive entry is the hottest branch target in a recursive
+        // body; start it on a 16-byte boundary so the call does not land
+        // in the middle of a decoded-instruction cache block.
+        if (std::getenv("SURA_JIT_NO_ENTRY_ALIGN") == nullptr) em.align(16);
+        self_entry_offset = em.pos();
         em.push_r(XR::RBX);
         em.push_r(XR::R12);
         if (needs_vm) em.push_r(XR::R13);
@@ -2566,6 +2576,9 @@ public:
         // A conditional jump folded into the compare before it
         // (jit_fusable_jump_after); the emit loop skips this instruction.
         size_t fused_ip = SIZE_MAX;
+        // Register the next RETURN_VAL reads instead of its own (a skipped
+        // `MOVE a, b` right before it), or -1.
+        int return_from_reg = -1;
         // Loop headers (targets of backward jumps) start 16-byte aligned.
         std::vector<uint8_t> loop_header_bl(body_len, 0);
         for (size_t ip = entry_ip; ip < end_ip; ++ip) {
@@ -2844,6 +2857,19 @@ public:
             fold_reg_now = fold_register[ip - entry_ip];
             fold_idx_now = fold_index[ip - entry_ip];
             if (fold_skip[ip - entry_ip]) { xmm0_holds_reg = -1; continue; }
+            // `MOVE a, b` right before `RETURN_VAL a`, which nothing else
+            // jumps to: the copy is only ever read by that return, so the
+            // return reads b and the copy is not emitted.
+            if (chunk.code[ip].op == JitOp::MOVE && ip + 1 < end_ip &&
+                chunk.code[ip + 1].op == JitOp::RETURN_VAL &&
+                chunk.code[ip + 1].a == chunk.code[ip].a &&
+                !branch_target[ip + 1 - entry_ip] &&
+                analysis.reached[ip + 1 - entry_ip] &&
+                std::getenv("SURA_JIT_KEEP_RETURN_MOVE") == nullptr) {
+                return_from_reg = static_cast<int>(chunk.code[ip].b);
+                xmm0_holds_reg = -1;
+                continue;
+            }
             const JitInst& inst = chunk.code[ip];
             const bool dyn = analysis.dynamic[ip - entry_ip] != 0;
             const bool xmm0_fresh = xmm0_holds_reg >= 0 && xmm0_holds_ip + 1 == ip &&
@@ -3075,8 +3101,14 @@ public:
                                            static_cast<size_t>(inst.operand), ip});
                     break;
                 case JitOp::RETURN_VAL:
-                    if (xmm0_reg == inst.a) em.movq_r_x(XR::RAX, XR::XMM0);
-                    else load_bits(XR::RAX, inst.a);
+                    if (return_from_reg >= 0) {
+                        load_bits(XR::RAX, static_cast<uint16_t>(return_from_reg));
+                        return_from_reg = -1;
+                    } else if (xmm0_reg == inst.a) {
+                        em.movq_r_x(XR::RAX, XR::XMM0);
+                    } else {
+                        load_bits(XR::RAX, inst.a);
+                    }
                     emit_return();
                     break;
                 case JitOp::RETURN_NONE:
@@ -3467,8 +3499,10 @@ public:
             }
             em.patch_rel32(fx.disp_pos, target);
         }
+        static const bool self_regard = std::getenv("SURA_JIT_SELF_CALL_REGUARD") != nullptr;
         for (const SelfCallFixup& fx : self_call_fixups) {
-            em.patch_rel32(fx.disp_pos, fx.unguarded ? unguarded_entry_offset : 0);
+            em.patch_rel32(fx.disp_pos, fx.unguarded
+                ? (self_regard ? unguarded_entry_offset : self_entry_offset) : 0);
         }
         if (const char* dump_dir = std::getenv("SURA_JIT_DUMP_DIR")) {
             // Raw machine code for `objdump -D -b binary -m i386:x86-64`.
@@ -4728,6 +4762,11 @@ struct JitVirtualRecord {
     uint32_t shadow_base = 0;          // frame slot of field 0
     const JitClassInfo* cls = nullptr;
     std::vector<size_t> access_ips;    // DOT_GET / DOT_SET through the record
+    // MOVEs whose source is an alias of the record. The plan guarantees an
+    // alias is only ever read as the receiver of a field access (which the
+    // replacement does not read) or as the source of another such MOVE, and
+    // is never read after the loop, so these copies are dead.
+    std::vector<size_t> alias_move_ips;
 };
 
 // Register reads and writes of one instruction, for the opcodes whose
@@ -4887,6 +4926,7 @@ inline std::vector<JitVirtualRecord> jit_plan_virtual_records(
 
             bool ok = true;
             std::vector<size_t> accesses;
+            std::vector<size_t> alias_moves;
             std::vector<uint16_t> alias;
             std::vector<std::vector<uint16_t>> exit_alias_sets;
             auto is_exit = [&](const JitInst& inst) {
@@ -4908,6 +4948,7 @@ inline std::vector<JitVirtualRecord> jit_plan_virtual_records(
                     if (from_alias) {
                         if (inst.a == 0) { ok = false; return; }
                         alias.push_back(inst.a);
+                        alias_moves.push_back(ip);
                     }
                     return;
                 }
@@ -4959,6 +5000,7 @@ inline std::vector<JitVirtualRecord> jit_plan_virtual_records(
             rec.shadow_base = next_slot;
             rec.cls = ctor.ic_class;
             rec.access_ips = std::move(accesses);
+            rec.alias_move_ips = std::move(alias_moves);
             next_slot += field_count;
             taken[r] = 1;
             if (diag) {
@@ -5033,6 +5075,7 @@ class NativeCompiler {
     std::vector<JitVirtualRecord> virtual_records;
     std::unordered_map<size_t, size_t> virtual_ctor_at;    // ip -> record
     std::unordered_map<size_t, size_t> virtual_access_at;  // ip -> record
+    std::unordered_set<size_t> virtual_dead_move_at;       // alias MOVEs (JitVirtualRecord)
     uint16_t scalar_scratch_used = 0;
     size_t scalar_last_ip = 0;
     JitOp scalar_last_op = JitOp::NOP;
@@ -6956,6 +6999,7 @@ private:
         virtual_records.clear();
         virtual_ctor_at.clear();
         virtual_access_at.clear();
+        virtual_dead_move_at.clear();
         if (is_top_level) return;
         uint32_t next_slot = native_scratch_regs
             ? static_cast<uint32_t>(native_scratch_base) + native_scratch_regs
@@ -6966,6 +7010,8 @@ private:
         for (size_t i = 0; i < virtual_records.size(); ++i) {
             virtual_ctor_at[virtual_records[i].ctor_ip] = i;
             for (size_t ip : virtual_records[i].access_ips) virtual_access_at[ip] = i;
+            if (!std::getenv("SURA_JIT_KEEP_ALIAS_MOVES"))
+                for (size_t ip : virtual_records[i].alias_move_ips) virtual_dead_move_at.insert(ip);
         }
     }
 
@@ -6989,8 +7035,13 @@ private:
                     em.mov_mem_r(XR::RBX, slot, XR::RAX);
                 }
             }
-            em.mov_ri64(XR::RAX, JIT_NBNIL);
-            store_result_rax(inst.a);
+            // The record register is an alias: nothing reads its value, so
+            // it keeps whatever valid Value it held (the GC may still scan
+            // it) instead of being set to nil each iteration.
+            if (std::getenv("SURA_JIT_KEEP_ALIAS_MOVES")) {
+                em.mov_ri64(XR::RAX, JIT_NBNIL);
+                store_result_rax(inst.a);
+            }
             return true;
         }
         auto access = virtual_access_at.find(ip);
@@ -7591,6 +7642,35 @@ private:
         em.patch_rel32(done_jmp, em.pos());
     }
 
+    // The numeric constant `reg` holds when the instruction at `ip` runs:
+    // the instruction right before it loads that constant and nothing jumps
+    // to `ip`. The LOAD_CONST is still emitted, so a helper slow path reads
+    // the same value from the frame.
+    bool known_const_at(size_t ip, uint16_t reg, double& value) const {
+        if (ip == 0 || ip - 1 < entry_ip) return false;
+        if (has_non_fallthrough_predecessor(ip)) return false;
+        const JitInst& lc = chunk.code[ip - 1];
+        if (lc.op != JitOp::LOAD_CONST || lc.a != reg) return false;
+        if (lc.operand < 0 || (size_t)lc.operand >= chunk.constants.size()) return false;
+        const Value& v = chunk.constants[(size_t)lc.operand];
+        if (!v.is_num()) return false;
+        value = v.as_num();
+        return true;
+    }
+    // A finite power of two whose reciprocal is finite too: dividing by it
+    // and multiplying by its reciprocal are the same correctly rounded
+    // operation on the same real number, so they agree bit for bit.
+    static bool exact_reciprocal(double d, double& recip) {
+        if (!(d != 0.0) || !std::isfinite(d)) return false;
+        int e = 0;
+        const double m = std::frexp(d, &e);
+        if (m != 0.5 && m != -0.5) return false;
+        recip = 1.0 / d;
+        if (!std::isfinite(recip)) return false;
+        const double rm = std::frexp(recip, &e);
+        return rm == 0.5 || rm == -0.5;
+    }
+
     // DIV inline: two numbers divide with divsd; a divisor that compares
     // equal to zero (either sign) or unordered (NaN) takes the checked
     // helper, which raises [E202] or returns the NaN. Works with or without
@@ -7604,6 +7684,28 @@ private:
         // dividend leaves a NaN result, both of which reach the helper.
         const bool guard_nan = !inst.ic_numeric_fast &&
                                !(plain && proven_num_at(ip, inst.b) && proven_num_at(ip, inst.c));
+        static const bool no_const_div = std::getenv("SURA_JIT_DISABLE_CONST_DIV") != nullptr;
+        double divisor = 0.0, recip = 0.0;
+        if (plain && !no_const_div && inst.b != inst.c &&
+            known_const_at(ip, inst.c, divisor) && exact_reciprocal(divisor, recip)) {
+            // Divisor is a known nonzero power of two: multiply by its exact
+            // reciprocal. mulsd has a third of divsd's latency, and there is
+            // no zero check to make.
+            load_xmm_operand(XR::XMM0, inst.b, plain);
+            uint64_t bits = 0;
+            std::memcpy(&bits, &recip, sizeof bits);
+            em.mov_ri64(XR::RAX, bits);
+            em.movq_x_r(XR::XMM1, XR::RAX);
+            em.mulsd_xx(XR::XMM0, XR::XMM1);
+            if (guard_nan) slow_jmps.push_back(emit_result_nan_jump());
+            if (slow_jmps.empty()) {
+                store_result_xmm0(inst.a);
+                return true;
+            }
+            emit_arith_finish(inst, plain, true, slow_jmps, ob, oc,
+                              (void*)&sura_jit_checked_div);
+            return true;
+        }
         em.pxor_xx(XR::XMM1, XR::XMM1);
         {
             const int xc = plain ? cached_xmm(inst.c) : -1;
@@ -7636,6 +7738,34 @@ private:
         // No operand tag checks: the integer round-trip below compares
         // unordered for a non-number (every NaN-box pattern is a NaN) and
         // takes the helper through the same jump.
+        static const bool no_const_mod = std::getenv("SURA_JIT_DISABLE_CONST_MOD") != nullptr;
+        double divisor = 0.0;
+        if (plain && !no_const_mod && inst.b != inst.c && known_const_at(ip, inst.c, divisor) &&
+            divisor >= 2.0 && divisor <= 4611686018427387904.0 /* 2^62 */ &&
+            divisor == std::floor(divisor)) {
+            const uint64_t d = static_cast<uint64_t>(divisor);
+            if ((d & (d - 1)) == 0) {
+                // A non-negative whole dividend modulo a known power of two is
+                // its low bits; the result is +0.0 when it divides exactly,
+                // which is what fmod gives for a non-negative dividend.
+                // Negative, fractional, huge or non-number dividends take
+                // the helper, which applies fmod.
+                load_xmm_operand(XR::XMM0, inst.b, plain);
+                em.cvttsd2si_r_x(XR::RAX, XR::XMM0);
+                em.cvtsi2sd_x_r(XR::XMM2, XR::RAX);
+                em.ucomisd_xx(XR::XMM2, XR::XMM0);        // whole dividend?
+                slow_jmps.push_back(em.jcc_rel32_placeholder(CC::NE));
+                slow_jmps.push_back(em.jcc_rel32_placeholder(CC::P));
+                em.test_rr(XR::RAX, XR::RAX);             // negative -> helper
+                slow_jmps.push_back(em.jcc_rel32_placeholder(CC::S));
+                em.mov_ri64(XR::RCX, d - 1);
+                em.and_rr(XR::RAX, XR::RCX);
+                em.cvtsi2sd_x_r(XR::XMM0, XR::RAX);
+                emit_arith_finish(inst, plain, true, slow_jmps, ob, oc,
+                                  (void*)&sura_jit_checked_mod);
+                return true;
+            }
+        }
         load_xmm_operand(XR::XMM0, inst.b, plain);
         load_xmm_operand(XR::XMM1, inst.c, plain);
         em.movq_r_x(XR::R8, XR::XMM0);                 // dividend bits (sign later)
@@ -7815,6 +7945,11 @@ private:
 
     bool emit_op(const JitInst& inst, size_t ip,
                  const JitInst* runtime_inst = nullptr) {
+        if (runtime_inst == nullptr && !virtual_dead_move_at.empty() &&
+            ip < chunk.code.size() && &inst == &chunk.code[ip] &&
+            virtual_dead_move_at.count(ip)) {
+            return true;   // copies an alias of a replaced record: never read
+        }
         if (runtime_inst == nullptr && !virtual_records.empty() &&
             ip < chunk.code.size() && &inst == &chunk.code[ip] &&
             emit_virtual_record_op(inst, ip)) {
