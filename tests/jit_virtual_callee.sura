@@ -1,0 +1,74 @@
+# 가상 레코드로 치환된 생성자 호출의 호출 대상(클래스 전역 읽기)은 치환된 코드가 읽지 않으므로
+# 내보내지 않는다. 같은 루프에서 치환되지 않는 생성자나 일반 함수 호출이 그 값을 쓰면
+# 건너뛰면 안 된다. 모두 인터프리터와 같아야 한다.
+
+class Point do
+  func init(x, y) do
+    self.x is x
+    self.y is y
+  end
+end
+
+func helper_add(a, b) do
+  return a + b
+end
+
+# 1) 치환되는 모양: 루프 안에서만 쓰이는 레코드
+func virtual_only(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, i + 1)
+    p.x is p.x + 1
+    total is total + p.x + p.y
+    i is i + 1
+  end
+  return total
+end
+
+# 2) 같은 클래스로 치환되는 레코드와 탈출하는 레코드를 함께 만든다
+func mixed_escape(n) do
+  keep is []
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 2)
+    total is total + p.x + p.y
+    q is Point(i * 10, 3)
+    keep.push(q)
+    i is i + 1
+  end
+  sum is 0
+  j is 0
+  while j < n do
+    r is keep[j]
+    sum is sum + r.x + r.y
+    j is j + 1
+  end
+  return total * 1000000 + sum
+end
+
+# 3) 일반 함수 호출은 전역 읽기가 그대로 필요하다
+func with_call(n) do
+  total is 0
+  i is 0
+  while i < n do
+    p is Point(i, 1)
+    total is total + helper_add(p.x, p.y)
+    i is i + 1
+  end
+  return total
+end
+
+r is 0
+while r < 60 do
+  a is virtual_only(20)
+  b is mixed_escape(20)
+  c is with_call(20)
+  r is r + 1
+end
+
+assert_eq(virtual_only(1000), 1000 * 999 + 2000)
+assert_eq(mixed_escape(100), (100 * 99 / 2 + 2 * 100) * 1000000 + (10 * 100 * 99 / 2 + 3 * 100))
+assert_eq(with_call(1000), 1000 * 999 / 2 + 1000)
+print "jit_virtual_callee: PASS"

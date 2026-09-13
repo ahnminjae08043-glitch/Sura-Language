@@ -6657,6 +6657,36 @@ private:
     // For JUMP_IF_FALSE / JUMP_IF_TRUE we need to know the condition
     // register holds a bool (NBTRUE/NBFALSE). We enforce that by refusing
     // to compile unless the previous op is a CMP_* writing the same reg.
+    // The global load that fetches a class for a constructor call the
+    // virtual record plan replaced: the replacement never reads the callee
+    // register, so when nothing else reads the loaded value the load (a
+    // helper call for a class name, every iteration) is not emitted. The
+    // plan already trusts the compile-time constructor cache, so the class
+    // is known to exist.
+    bool try_skip_virtual_callee_load(const JitInst& inst, size_t ip) {
+        static const bool disabled = std::getenv("SURA_JIT_DISABLE_CALLEE_SKIP") != nullptr;
+        if (disabled || virtual_ctor_at.empty() || inst.op != JitOp::LOAD_GLOBAL) return false;
+        const uint16_t r = inst.a;
+        std::vector<uint16_t> reads, writes;
+        for (size_t j = ip + 1; j < end_ip && j <= ip + 12; ++j) {
+            if (has_non_fallthrough_predecessor(j)) return false;
+            const JitInst& n = chunk.code[j];
+            if (!jit_inst_reg_use(n, reads, writes)) return false;
+            bool reads_r = false;
+            for (uint16_t x : reads) if (x == r) reads_r = true;
+            if (reads_r) {
+                if (n.op != JitOp::CALL_FUNC || n.b != r || !virtual_ctor_at.count(j)) return false;
+                for (int k = 0; k < std::max(n.operand, 0); ++k)
+                    if (static_cast<uint16_t>(n.c + k) == r) return false;
+                int budget = 64;
+                return reg_dead_from(j + 1, r, budget);
+            }
+            for (uint16_t x : writes) if (x == r) return false;
+            if (jit_is_branch_op(n.op)) return false;
+        }
+        return false;
+    }
+
     // A LOAD_CONST the next instruction consumes and nothing else reads is
     // not emitted at all; the consumer reads the constants array instead.
     // Only consumers that cannot reach a helper qualify, so no slow path
@@ -7791,7 +7821,8 @@ private:
             return true;
         }
         if (runtime_inst == nullptr && ip < chunk.code.size() && &inst == &chunk.code[ip] &&
-            (try_forward_move(inst, ip) || try_fold_const(inst, ip))) {
+            (try_forward_move(inst, ip) || try_fold_const(inst, ip) ||
+             try_skip_virtual_callee_load(inst, ip))) {
             return true;
         }
         if (active_cache != nullptr && runtime_inst == nullptr) {
